@@ -164,7 +164,7 @@ data AgentClient = AgentClient
     -- Bool in tuple keys shows whether the queue is the current one (True) or the one the connection switches to (False)
     activeSubs :: TMap2 SMPServer (ConnId, Bool) RcvQueue,
     pendingSubs :: TMap2 SMPServer (ConnId, Bool) RcvQueue,
-    connMsgsQueued :: TMap ConnId Bool,
+    connMsgsQueued :: TVar (Set (ConnId, Bool)),
     smpQueueMsgQueues :: TMap MsgDeliveryKey (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap MsgDeliveryKey (Async ()),
     nextRcvQueueMsgs :: TMap (SMPServer, SMP.RecipientId) [ServerTransmission BrokerMsg],
@@ -219,7 +219,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   subscrConns <- newTVar S.empty
   activeSubs <- TM2.empty
   pendingSubs <- TM2.empty
-  connMsgsQueued <- TM.empty
+  connMsgsQueued <- newTVar S.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
   nextRcvQueueMsgs <- TM.empty

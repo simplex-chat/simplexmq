@@ -511,8 +511,8 @@ switchCurrRcvQueue db RcvQueue {server = (SMPServer host port _), rcvId} RcvQueu
   DB.execute db "DELETE FROM rcv_queues WHERE host = ? AND port = ? AND rcv_id = ? AND curr_rcv_queue = ?" (host, port, rcvId, True)
   DB.execute db "UPDATE rcv_queues SET curr_rcv_queue = ? WHERE rcv_queue_id = ? AND curr_rcv_queue = ?" (True, dbNextRcvQueueId, False)
 
-switchCurrSndQueue :: DB.Connection -> SndQueue -> SndQueue -> IO ()
-switchCurrSndQueue db SndQueue {server = (SMPServer host port _), sndId} SndQueue {dbNextSndQueueId} = do
+switchCurrSndQueue :: DB.Connection -> SndQueue -> IO ()
+switchCurrSndQueue db SndQueue {server = (SMPServer host port _), sndId, dbNextSndQueueId} = do
   DB.execute db "DELETE FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND curr_snd_queue = ?" (host, port, sndId, True)
   DB.execute db "UPDATE snd_queues SET curr_snd_queue = ? WHERE snd_queue_id = ? AND curr_snd_queue = ?" (True, dbNextSndQueueId, False)
 
@@ -686,31 +686,30 @@ createSndMsg db connId sndMsgData = do
   insertSndMsgDetails_ db connId sndMsgData
   updateHashSnd_ db connId sndMsgData
 
-getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, SndQueue, PendingMsgData))
-getPendingMsgData db connId msgId = runExceptT $ do
-  rq_ <- liftIO $ getRcvQueueByConnId_ db connId
-  sq <- ExceptT $ maybe (Left SEConnNotFound) Right <$> getSndQueueByConnId_ db connId
-  ExceptT $ (rq_,sq,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
+getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
+getPendingMsgData db connId msgId = do
+  rq_ <- getRcvQueueByConnId_ db connId
+  (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
   where
     getMsgData_ =
       DB.query
         db
         [sql|
-          SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts
+          SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.curr_snd_queue
           FROM messages m
           JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
           WHERE m.conn_id = ? AND m.internal_id = ?
         |]
         (connId, msgId)
-    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs) -> PendingMsgData
-    pendingMsgData (msgType, msgFlags_, msgBody, internalTs) =
+    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Bool) -> PendingMsgData
+    pendingMsgData (msgType, msgFlags_, msgBody, internalTs, currSndQueue) =
       let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
-       in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
+       in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs, currSndQueue}
 
-getPendingMsgs :: DB.Connection -> ConnId -> IO [InternalId]
-getPendingMsgs db connId =
+getPendingMsgs :: DB.Connection -> ConnId -> Bool -> IO [InternalId]
+getPendingMsgs db connId current =
   map fromOnly
-    <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
+    <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ? AND curr_snd_queue = ?" (connId, current)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError SMP.MsgId)
 setMsgUserAck db connId agentMsgId = do
@@ -1570,15 +1569,16 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash)
+        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash, curr_snd_queue)
       VALUES
-        (:conn_id,:internal_snd_id,:internal_id,:internal_hash,:previous_msg_hash);
+        (:conn_id,:internal_snd_id,:internal_id,:internal_hash,:previous_msg_hash,:curr_snd_queue);
     |]
     [ ":conn_id" := connId,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
       ":internal_hash" := internalHash,
-      ":previous_msg_hash" := prevMsgHash
+      ":previous_msg_hash" := prevMsgHash,
+      ":curr_snd_queue" := currSndQueue
     ]
 
 updateHashSnd_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()

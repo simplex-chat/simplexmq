@@ -92,6 +92,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
+import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
@@ -513,8 +514,9 @@ subscribeConnection' c connId =
   withStore c (`getConn` connId) >>= \conn -> do
     resumeConnCmds c connId
     case conn of
-      SomeConn _ (DuplexConnection cData rq sq rq' _) -> do
+      SomeConn _ (DuplexConnection cData rq sq rq' sq') -> do
         resumeMsgDelivery c cData sq
+        mapM_ (resumeMsgDelivery c cData) sq'
         void . forkIO $ doRcvQueueAction c cData rq sq
         mapM_ subscribe rq' `catchError` \_ -> pure ()
         subscribe rq
@@ -562,6 +564,7 @@ createNextRcvQueue c cData@ConnData {connId} rq@RcvQueue {server, sndId} sq = do
         pure SMPQueueUri {clientVRange, queueAddress}
       _ -> do
         srv <- getNextSMPServer c [server]
+        liftIO $ putStrLn $ "createNextRcvQueue " <> show server <> " -> " <> show srv
         (rq', qUri) <- newRcvQueue c srv clientVRange False
         withStore' c $ \db -> dbCreateNextRcvQueue db connId rq rq'
         pure qUri
@@ -572,10 +575,10 @@ secureNextRcvQueue :: AgentMonad m => AgentClient -> ConnData -> RcvQueue -> Snd
 secureNextRcvQueue c cData rq sq rq'@RcvQueue {server, sndId, status, sndPublicKey} = do
   when (status == Confirmed) $ case sndPublicKey of
     Just sKey -> do
-      secureQueue c rq sKey
+      secureQueue c rq' sKey
       withStore' c $ \db -> setRcvQueueStatus db rq' Secured
     _ -> do
-      -- notify user: no sender key
+      -- TODO notify user: no sender key
       pure ()
   void . enqueueMessage c cData sq SMP.noMsgFlags $ QREADY (server, sndId)
   withStore' c $ \db -> setRcvQueueAction db rq Nothing
@@ -615,7 +618,7 @@ subscribeConnections' c connIds = do
       -- prepare map for batch subscriptions
       srvRcvQs :: Map SMPServer (Map (ConnId, Bool) RcvQueue) = M.foldlWithKey' addRcvQueues M.empty rcvQs
   -- TODO start message delivery for non-current queues
-  mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
+  mapM_ (mapM_ resumeDelivery . sndQueue) cs
   mapM_ (resumeConnCmds c) $ M.keys cs
   -- send batch subscriptions concurrently to all servers
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
@@ -661,10 +664,14 @@ subscribeConnections' c connIds = do
       forM_ (concatMap M.assocs rcvRs) $ \case
         (connId, Right _) -> atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
         _ -> pure ()
-    sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
+    resumeDelivery :: (ConnData, SndQueue, Maybe SndQueue) -> m ()
+    resumeDelivery (cData, sq, sq') = do
+      resumeMsgDelivery c cData sq
+      mapM_ (resumeMsgDelivery c cData) sq'
+    sndQueue :: SomeConn -> Maybe (ConnData, SndQueue, Maybe SndQueue)
     sndQueue = \case
-      SomeConn _ (DuplexConnection cData _ sq _ _) -> Just (cData, sq)
-      SomeConn _ (SndConnection cData sq) -> Just (cData, sq)
+      SomeConn _ (DuplexConnection cData _ sq _ sq') -> Just (cData, sq, sq')
+      SomeConn _ (SndConnection cData sq) -> Just (cData, sq, Nothing)
       _ -> Nothing
     notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
     notifyResultError rs = do
@@ -829,7 +836,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
 -- ^ ^ ^ async command processing /
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessage c cData@ConnData {connId, connAgentVersion} sq msgFlags aMessage = do
+enqueueMessage c cData@ConnData {connId, connAgentVersion} sq@SndQueue {currSndQueue} msgFlags aMessage = do
   resumeMsgDelivery c cData sq
   msgId <- storeSentMsg
   queuePendingMsgs c sq [msgId]
@@ -846,23 +853,24 @@ enqueueMessage c cData@ConnData {connId, connAgentVersion} sq msgFlags aMessage 
       encAgentMessage <- agentRatchetEncrypt db connId agentMsgStr e2eEncUserMsgLength
       let msgBody = smpEncode $ AgentMsgEnvelope {agentVersion = connAgentVersion, encAgentMessage}
           msgType = agentMessageType agentMsg
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash}
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash, currSndQueue}
       liftIO $ createSndMsg db connId msgData
       pure internalId
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
-resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
+resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId, currSndQueue = current} = do
   let qKey = (server, sndId)
-  unlessM (queueDelivering qKey) $ do
-    mq <- atomically $ getPendingMsgQ c sq
-    async (runSmpQueueMsgDelivery c cData mq)
+  unlessM (queueDelivering qKey) $
+    async (runSmpQueueMsgDelivery c cData sq)
       >>= \a -> atomically (TM.insert qKey a $ smpQueueMsgDeliveries c)
   unlessM connQueued $
-    withStore' c (`getPendingMsgs` connId)
+    withStore' c (\db -> getPendingMsgs db connId current)
       >>= queuePendingMsgs c sq
   where
     queueDelivering qKey = atomically $ TM.member qKey (smpQueueMsgDeliveries c)
-    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connMsgsQueued c)
+    connQueued = atomically $
+      stateTVar (connMsgsQueued c) $ \s ->
+        let k = (connId, current) in (S.member k s, S.insert k s)
 
 queuePendingMsgs :: AgentMonad m => AgentClient -> SndQueue -> [InternalId] -> m ()
 queuePendingMsgs c sq msgIds = atomically $ do
@@ -882,8 +890,9 @@ getPendingMsgQ c SndQueue {server, sndId} = do
       TM.insert qKey mq $ smpQueueMsgQueues c
       pure mq
 
-runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> TQueue InternalId -> m ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandshake} mq = do
+runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
+runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandshake} sq = do
+  mq <- atomically $ getPendingMsgQ c sq
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -895,7 +904,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, sq, PendingMsgData {msgType, msgBody, msgFlags, internalTs}) ->
+      Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, internalTs}) -> do
         withRetryInterval ri $ \loop -> do
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
@@ -1322,11 +1331,11 @@ pickServer = \case
 getNextSMPServer :: AgentMonad m => AgentClient -> [SMPServer] -> m SMPServer
 getNextSMPServer c usedSrvs = do
   srvs <- readTVarIO $ smpServers c
-  case L.nonEmpty $ deleteFirstsBy different (L.toList srvs) usedSrvs of
+  case L.nonEmpty $ deleteFirstsBy sameAddress (L.toList srvs) usedSrvs of
     Just srvs' -> pickServer srvs'
     _ -> pickServer srvs
   where
-    different (SMPServer host port _) (SMPServer host' port' _) = host /= host' || port /= port'
+    sameAddress (SMPServer host port _) (SMPServer host' port' _) = host == host' && port == port'
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -1559,20 +1568,20 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         -- processed by queue sender
         rqNewMsg :: (SMPServer, SMP.SenderId) -> SMPQueueUri -> m ()
         rqNewMsg (smpServer, senderId) nextQUri = case conn of
-          DuplexConnection _ _ sq@SndQueue {server, sndId} nextRq_ _ -> do
-            liftIO $ print $ "rqNewMsg " <> show (SMP.port server) <> " " <> show (currSndQueue sq)
+          DuplexConnection _ _ sq@SndQueue {server, sndId, currSndQueue = curr} nextRq_ _ -> do
+            liftIO $ print $ "rqNewMsg " <> show (SMP.port server) <> " " <> show curr
             unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
             clientVRange <- asks $ smpClientVRange . config
             case (nextQUri `compatibleVersion` clientVRange) of
               Just qInfo@(Compatible nextQInfo) -> do
-                sq'@SndQueue {sndPublicKey, e2ePubKey, server = srv'} <- newSndQueue qInfo False
+                sq'@SndQueue {sndPublicKey, e2ePubKey, server = srv', currSndQueue = curr'} <- newSndQueue qInfo False
                 withStore' c $ \db -> dbCreateNextSndQueue db connId sq sq'
-                liftIO $ print $ "rqNewMsg: next SndQueue " <> show (SMP.port srv') <> " " <> show (currSndQueue sq')
+                liftIO $ print $ "rqNewMsg: next SndQueue " <> show (SMP.port srv') <> " " <> show curr'
                 case (sndPublicKey, e2ePubKey) of
                   (Just nextSenderKey, Just dhPublicKey) -> do
                     let qAddr = (queueAddress (nextQInfo :: SMPQueueInfo)) {dhPublicKey}
                         nextQueueInfo = (nextQInfo :: SMPQueueInfo) {queueAddress = qAddr}
-                    void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
+                    void $ enqueueMessage c cData sq SMP.noMsgFlags QKEYS {nextSenderKey, nextQueueInfo}
                     let conn' = DuplexConnection cData rq sq nextRq_ (Just sq')
                     notify . SWITCH SPStarted $ connectionStats conn'
                   _ -> throwError $ INTERNAL "absent sender keys"
@@ -1604,8 +1613,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         -- processed by queue sender
         rqReady :: (SMPServer, SMP.SenderId) -> m ()
         rqReady (smpServer, senderId) = case conn of
-          DuplexConnection _ _ sq@SndQueue {server = srv1} _ nextSq_ -> do
-            liftIO $ print $ "rqReady " <> show (SMP.port srv1) <> " " <> show (currSndQueue sq)
+          DuplexConnection _ _ SndQueue {server = srv1, currSndQueue = curr} _ nextSq_ -> do
+            liftIO $ print $ "rqReady " <> show (SMP.port srv1) <> " " <> show curr
             case nextSq_ of
               Just sq'@SndQueue {server, sndId, currSndQueue = curr'} -> do
                 liftIO $ print $ "rqReady next SndQueue " <> show (SMP.port server) <> " " <> show curr'
@@ -1645,7 +1654,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                 switchQueues :: MsgDeliveryKey -> MsgDeliveryKey -> m Bool
                 switchQueues k k' = withStore' c $ \db -> do
                   ok <- atomically $ (switchDeliveries k k' $> True) `orElse` pure False
-                  when ok $ switchCurrSndQueue db sq sq'
+                  when ok $ switchCurrSndQueue db sq
                   pure ok
                 switchDeliveries :: MsgDeliveryKey -> MsgDeliveryKey -> STM ()
                 switchDeliveries k k' = do
@@ -1739,7 +1748,7 @@ enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eE
       encConnInfo <- agentRatchetEncrypt db connId agentMsgStr e2eEncConnInfoLength
       let msgBody = smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption, encConnInfo}
           msgType = agentMessageType agentMsg
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, currSndQueue = True}
       liftIO $ createSndMsg db connId msgData
       pure internalId
 

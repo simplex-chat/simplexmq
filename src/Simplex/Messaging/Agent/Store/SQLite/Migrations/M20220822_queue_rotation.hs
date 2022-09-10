@@ -53,4 +53,9 @@ UPDATE snd_queues SET updated_at = '1970-01-01 00:00:00';
 
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(snd_queue_id);
 CREATE UNIQUE INDEX idx_next_snd_queue_id ON snd_queues(next_snd_queue_id);
+
+-- * 
+
+ALTER TABLE snd_messages ADD COLUMN curr_snd_queue INTEGER CHECK (curr_snd_queue NOT NULL);
+UPDATE snd_messages SET curr_snd_queue = 1;
 |]

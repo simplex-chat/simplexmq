@@ -460,7 +460,8 @@ mkSndMsgData internalId internalSndId internalHash =
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
       internalHash,
-      prevMsgHash = internalHash
+      prevMsgHash = internalHash,
+      currSndQueue = True
     }
 
 testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndMsgData -> Expectation

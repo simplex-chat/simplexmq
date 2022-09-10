@@ -293,7 +293,8 @@ data SndMsgData = SndMsgData
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
-    prevMsgHash :: MsgHash
+    prevMsgHash :: MsgHash,
+    currSndQueue :: Bool
   }
 
 data PendingMsgData = PendingMsgData
@@ -301,7 +302,8 @@ data PendingMsgData = PendingMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
-    internalTs :: InternalTs
+    internalTs :: InternalTs,
+    currSndQueue :: Bool
   }
   deriving (Show)
 
