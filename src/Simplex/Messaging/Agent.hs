@@ -1184,11 +1184,11 @@ pickServer = \case
 getNextSMPServer :: AgentMonad m => AgentClient -> [SMPServer] -> m SMPServer
 getNextSMPServer c usedSrvs = do
   srvs <- readTVarIO $ smpServers c
-  case L.nonEmpty $ deleteFirstsBy different (L.toList srvs) usedSrvs of
+  case L.nonEmpty $ deleteFirstsBy sameAddr (L.toList srvs) usedSrvs of
     Just srvs' -> pickServer srvs'
     _ -> pickServer srvs
   where
-    different (SMPServer host port _) (SMPServer host' port' _) = host /= host' || port /= port'
+    sameAddr (SMPServer host port _) (SMPServer host' port' _) = host == host' && port == port'
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
