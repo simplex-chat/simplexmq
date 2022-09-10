@@ -712,7 +712,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
           tryError action >>= \case
             Left e
               | temporaryAgentError e || e == BROKER HOST -> retryCommand loop
-              | otherwise -> notify $ ERR e
+              | otherwise -> notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
             Right () -> withStore' c (`deleteCommand` cmdId)
         retryCommand loop = do
           -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
