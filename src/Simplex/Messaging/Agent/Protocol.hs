@@ -40,9 +40,13 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     ACommand (..),
+    ACommandTag (..),
+    aCommandTag,
     ACmd (..),
+    ACmdTag (..),
     AParty (..),
     SAParty (..),
+    APartyI (..),
     MsgHash,
     MsgMeta (..),
     ConnectionStats (..),
@@ -292,6 +296,40 @@ data ACommandTag (p :: AParty) where
   OK_ :: ACommandTag Agent
   ERR_ :: ACommandTag Agent
   SUSPENDED_ :: ACommandTag Agent
+
+deriving instance Show (ACommandTag p)
+
+aCommandTag :: ACommand p -> ACommandTag p
+aCommandTag = \case
+  NEW {} -> NEW_
+  INV _ -> INV_
+  JOIN {} -> JOIN_
+  CONF {} -> CONF_
+  LET {} -> LET_
+  REQ {} -> REQ_
+  ACPT {} -> ACPT_
+  RJCT _ -> RJCT_
+  INFO _ -> INFO_
+  CON -> CON_
+  SUB -> SUB_
+  END -> END_
+  CONNECT {} -> CONNECT_
+  DISCONNECT {} -> DISCONNECT_
+  DOWN {} -> DOWN_
+  UP {} -> UP_
+  SEND {} -> SEND_
+  MID _ -> MID_
+  SENT _ -> SENT_
+  MERR {} -> MERR_
+  MSG {} -> MSG_
+  ACK _ -> ACK_
+  OFF -> OFF_
+  DEL -> DEL_
+  CHK -> CHK_
+  STAT _ -> STAT_
+  OK -> OK_
+  ERR _ -> ERR_
+  SUSPENDED -> SUSPENDED_
 
 data ConnectionStats = ConnectionStats
   { rcvServers :: [SMPServer],
@@ -1048,40 +1086,40 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient cmd ->
         ACmd SClient <$> case cmd of
-          NEW_ -> _ (NEW <$> strP_ <*> strP)
-          JOIN_ -> _ (JOIN <$> strP_ <*> strP_ <*> binaryP)
-          LET_ -> _ (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
-          ACPT_ -> _ (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
-          RJCT_ -> _ (RJCT <$> A.takeByteString)
+          NEW_ -> s (NEW <$> strP_ <*> strP)
+          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> binaryP)
+          LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
+          ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
+          RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
-          SEND_ -> _ (SEND <$> smpP <* A.space <*> binaryP)
-          ACK_ -> _ (ACK <$> A.decimal)
+          SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
+          ACK_ -> s (ACK <$> A.decimal)
           OFF_ -> pure OFF
           DEL_ -> pure DEL
           CHK_ -> pure CHK
       ACmdTag SAgent cmd ->
         ACmd SAgent <$> case cmd of
-          INV_ -> _ (INV <$> strP)
-          CONF_ -> _ (CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> binaryP)
-          REQ_ -> _ (REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> binaryP)
-          INFO_ -> _ (INFO <$> binaryP)
+          INV_ -> s (INV <$> strP)
+          CONF_ -> s (CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> binaryP)
+          REQ_ -> s (REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> binaryP)
+          INFO_ -> s (INFO <$> binaryP)
           CON_ -> pure CON
           END_ -> pure END
-          CONNECT_ -> _ (CONNECT <$> strP_ <*> strP)
-          DISCONNECT_ -> _ (DISCONNECT <$> strP_ <*> strP)
-          DOWN_ -> _ (DOWN <$> strP_ <*> connections)
-          UP_ -> _ (UP <$> strP_ <*> connections)
-          MID_ -> _ (MID <$> A.decimal)
-          SENT_ -> _ (SENT <$> A.decimal)
-          MERR_ -> _ (MERR <$> A.decimal <* A.space <*> strP)
-          MSG_ -> _ (MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> binaryP)
-          STAT_ -> _ (STAT <$> strP)
+          CONNECT_ -> s (CONNECT <$> strP_ <*> strP)
+          DISCONNECT_ -> s (DISCONNECT <$> strP_ <*> strP)
+          DOWN_ -> s (DOWN <$> strP_ <*> connections)
+          UP_ -> s (UP <$> strP_ <*> connections)
+          MID_ -> s (MID <$> A.decimal)
+          SENT_ -> s (SENT <$> A.decimal)
+          MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
+          MSG_ -> s (MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> binaryP)
+          STAT_ -> s (STAT <$> strP)
           OK_ -> pure OK
-          ERR_ -> _ (ERR <$> strP)
+          ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
   where
-    _ :: Parser a -> Parser a
-    _ p = A.space *> p
+    s :: Parser a -> Parser a
+    s p = A.space *> p
     connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
     msgMetaP = do

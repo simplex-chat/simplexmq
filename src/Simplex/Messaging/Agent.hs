@@ -83,7 +83,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
-import Data.Composition ((.:), (.:.))
+import Data.Composition ((.:), (.:.), (.::))
 import Data.Functor (($>))
 import Data.List (deleteFirstsBy)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -146,20 +146,20 @@ resumeAgentClient c = atomically $ writeTVar (active c) True
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command) asynchronously, synchronous response is new connection id
-createConnectionAsync :: forall m c. (AgentErrorMonad m, ConnectionModeI c) => AgentClient -> Bool -> SConnectionMode c -> m ConnId
-createConnectionAsync c enableNtfs cMode = withAgentEnv c $ newConnAsync c enableNtfs cMode
+createConnectionAsync :: forall m c. (AgentErrorMonad m, ConnectionModeI c) => AgentClient -> ACorrId -> Bool -> SConnectionMode c -> m ConnId
+createConnectionAsync c corrId enableNtfs cMode = withAgentEnv c $ newConnAsync c corrId enableNtfs cMode
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
-joinConnectionAsync :: AgentErrorMonad m => AgentClient -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnectionAsync c enableNtfs = withAgentEnv c .: joinConnAsync c enableNtfs
+joinConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
+joinConnectionAsync c corrId enableNtfs = withAgentEnv c .: joinConnAsync c corrId enableNtfs
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
-allowConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnectionAsync c = withAgentEnv c .:. allowConnectionAsync' c
+allowConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
-ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
-ackMessageAsync c = withAgentEnv c .: ackMessageAsync' c
+ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
+ackMessageAsync c = withAgentEnv c .:. ackMessageAsync' c
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
@@ -315,17 +315,17 @@ processCommand c (connId, cmd) = case cmd of
   DEL -> deleteConnection' c connId $> (connId, OK)
   CHK -> (connId,) . STAT <$> getConnectionServers' c connId
 
-newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> Bool -> SConnectionMode c -> m ConnId
-newConnAsync c enableNtfs cMode = do
+newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> ACorrId -> Bool -> SConnectionMode c -> m ConnId
+newConnAsync c corrId enableNtfs cMode = do
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId <- withStore c $ \db -> createNewConn db g cData cMode
-  enqueueCommand c connId Nothing $ NEW enableNtfs (ACM cMode)
+  enqueueCommand c corrId connId Nothing $ NEW enableNtfs (ACM cMode)
   pure connId
 
-joinConnAsync :: AgentMonad m => AgentClient -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnAsync c enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ agentVRange _) _) cInfo = do
+joinConnAsync :: AgentMonad m => AgentClient -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
+joinConnAsync c corrId enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ agentVRange _) _) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   case agentVRange `compatibleVersion` aVRange of
     Just (Compatible connAgentVersion) -> do
@@ -333,21 +333,21 @@ joinConnAsync c enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ agentVRang
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
       connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-      enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
+      enqueueCommand c corrId connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
       pure connId
     _ -> throwError $ AGENT A_VERSION
-joinConnAsync _c _enableNtfs (CRContactUri _) _cInfo =
+joinConnAsync _c _corrId _enableNtfs (CRContactUri _) _cInfo =
   throwError $ CMD PROHIBITED
 
-allowConnectionAsync' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnectionAsync' c connId confId ownConnInfo =
+allowConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnectionAsync' c corrId connId confId ownConnInfo =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ RcvQueue {server}) ->
-      enqueueCommand c connId (Just server) $ LET confId ownConnInfo
+      enqueueCommand c corrId connId (Just server) $ LET confId ownConnInfo
     _ -> throwError $ CMD PROHIBITED
 
-ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
-ackMessageAsync' c connId msgId =
+ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
+ackMessageAsync' c corrId connId msgId =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> enqueueAck rq
     SomeConn _ (RcvConnection _ rq) -> enqueueAck rq
@@ -357,7 +357,7 @@ ackMessageAsync' c connId msgId =
   where
     enqueueAck :: RcvQueue -> m ()
     enqueueAck RcvQueue {server} = do
-      enqueueCommand c connId (Just server) $ ACK msgId
+      enqueueCommand c corrId connId (Just server) $ ACK msgId
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId asyncMode enableNtfs cMode =
@@ -638,10 +638,10 @@ sendMessage' c connId msgFlags msg =
 
 -- / async command processing v v v
 
-enqueueCommand :: forall m. AgentMonad m => AgentClient -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
-enqueueCommand c connId server aCommand = do
+enqueueCommand :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
+enqueueCommand c corrId connId server aCommand = do
   resumeSrvCmds c server
-  commandId <- withStore c $ \db -> runExceptT . liftIO $ createCommand db connId server aCommand
+  commandId <- withStore' c $ \db -> createCommand db corrId connId server aCommand
   queuePendingCommands c server [commandId]
 
 resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
@@ -688,16 +688,16 @@ runCommandProcessing c@AgentClient {subQ} server = do
     cmdId <- atomically $ readTQueue cq
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
-      Left (e :: E.SomeException) -> notify "" $ ERR (INTERNAL $ show e)
-      Right (connId, ACmd _ cmd) -> processCmd ri connId cmdId cmd
+      Left (e :: E.SomeException) -> notify "" "" $ ERR (INTERNAL $ show e)
+      Right (corrId, connId, ACmd _ cmd) -> processCmd ri corrId connId cmdId cmd
   where
-    processCmd :: RetryInterval -> ConnId -> AsyncCmdId -> ACommand p -> m ()
-    processCmd ri connId cmdId = \case
+    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> ACommand p -> m ()
+    processCmd ri corrId connId cmdId = \case
       NEW enableNtfs (ACM cMode) -> do
         usedSrvs <- newTVarIO ([] :: [SMPServer])
         tryCommand . withNextSrv usedSrvs [] $ \srv -> do
           (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
-          notify connId $ INV (ACR cMode cReq)
+          notify corrId connId $ INV (ACR cMode cReq)
       JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress} :| _} _)) connInfo -> do
         let initUsed = [smpServer (queueAddress :: SMPQueueAddress)]
         usedSrvs <- newTVarIO initUsed
@@ -705,13 +705,13 @@ runCommandProcessing c@AgentClient {subQ} server = do
           void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
       LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo
       ACK msgId -> tryCommand $ ackMessage' c connId msgId
-      cmd -> notify connId $ ERR $ INTERNAL $ "unsupported async command " <> show cmd
+      cmd -> notify corrId connId $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       where
         tryCommand action = withRetryInterval ri $ \loop ->
           tryError action >>= \case
             Left e
               | temporaryAgentError e || e == BROKER HOST -> retryCommand loop
-              | otherwise -> notify connId $ ERR e
+              | otherwise -> notify corrId connId $ ERR e
             Right () -> withStore' c (`deleteCommand` cmdId)
         retryCommand loop = do
           -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
@@ -727,8 +727,8 @@ runCommandProcessing c@AgentClient {subQ} server = do
         let used' = if length used + 1 >= L.length srvs then initUsed else srv : used
         writeTVar usedSrvs used'
       action srv
-    notify :: ConnId -> ACommand 'Agent -> m ()
-    notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
+    notify :: ACorrId -> ConnId -> ACommand 'Agent -> m ()
+    notify corrId connId cmd = atomically $ writeTBQueue subQ (corrId, connId, cmd)
 -- ^ ^ ^ async command processing /
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
