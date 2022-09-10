@@ -695,19 +695,18 @@ updateRatchet db connId rc skipped = do
         forM_ (M.assocs mks) $ \(msgN, mk) ->
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
-createCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> ACommand 'Client -> IO AsyncCmdId
-createCommand db connId (Just (SMPServer host port _)) command = do
+createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> ACommand 'Client -> IO AsyncCmdId
+createCommand db corrId connId srv cmd = do
   DB.execute
     db
-    "INSERT INTO commands (host, port, conn_id, command) VALUES (?, ?, ?, ?)"
-    (host, port, connId, serializeCommand command)
+    "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command) VALUES (?,?,?,?,?,?)"
+    (host_, port_, corrId, connId, aCommandTag cmd, cmd)
   insertedRowId db
-createCommand db connId Nothing command = do
-  DB.execute
-    db
-    "INSERT INTO commands (conn_id, command) VALUES (?, ?)"
-    (connId, command)
-  insertedRowId db
+  where
+    (host_, port_) =
+      case srv of
+        Just (SMPServer host port _) -> (Just host, Just port)
+        _ -> (Nothing, Nothing)
 
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
@@ -728,16 +727,13 @@ getPendingCommands db connId = do
   where
     srvCmdId (host, port, keyHash, cmdId) = (SMPServer <$> host <*> port <*> keyHash, cmdId)
 
-getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACmd))
+getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ACorrId, ConnId, ACmd))
 getPendingCommand db msgId = do
-  firstRow pendingCmd SECmdNotFound $
+  firstRow id SECmdNotFound $
     DB.query
       db
-      "SELECT conn_id, command FROM commands WHERE command_id = ?"
+      "SELECT corr_id, conn_id, command FROM commands WHERE command_id = ?"
       (Only msgId)
-  where
-    pendingCmd :: (ConnId, ACmd) -> (ConnId, ACmd)
-    pendingCmd (connId, commandStr) = (connId, commandStr)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =
@@ -1108,6 +1104,10 @@ instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ e
 instance ToField (ACommand p) where toField = toField . serializeCommand
 
 instance FromField ACmd where fromField = blobFieldParser dbCommandP
+
+instance APartyI p => ToField (ACommandTag p) where toField = toField . smpEncode
+
+instance FromField ACmdTag where fromField = blobFieldParser smpP
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
