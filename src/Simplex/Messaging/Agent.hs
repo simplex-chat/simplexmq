@@ -391,8 +391,12 @@ newConnSrv c connId asyncMode enableNtfs cMode srv = do
       withStore c $ \db -> createRcvConn db g cData rq cMode
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConn c connId asyncMode enableNtfs connReq cInfo =
-  getSMPServer c >>= joinConnSrv c connId asyncMode enableNtfs connReq cInfo
+joinConn c connId asyncMode enableNtfs cReq cInfo = do
+  srv <- case cReq of
+    CRInvitationUri ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress} :| _} _ ->
+      getNextSMPServer c [smpServer (queueAddress :: SMPQueueAddress)]
+    _ -> getSMPServer c
+  joinConnSrv c connId asyncMode enableNtfs cReq cInfo srv
 
 joinConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> SMPServer -> m ConnId
 joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo srv = do
@@ -684,44 +688,47 @@ runCommandProcessing c@AgentClient {subQ} server = do
     cmdId <- atomically $ readTQueue cq
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
-      Left (e :: E.SomeException) ->
-        notify "" $ ERR (INTERNAL $ show e)
-      Right (connId, ACmd _ cmd) -> do
+      Left (e :: E.SomeException) -> notify "" $ ERR (INTERNAL $ show e)
+      Right (connId, ACmd _ cmd) -> processCmd ri connId cmdId cmd
+  where
+    processCmd :: RetryInterval -> ConnId -> AsyncCmdId -> ACommand p -> m ()
+    processCmd ri connId cmdId = \case
+      NEW enableNtfs (ACM cMode) -> do
         usedSrvs <- newTVarIO ([] :: [SMPServer])
-        withRetryInterval ri $ \loop -> do
-          resp <- tryError $ case cmd of
-            NEW enableNtfs (ACM cMode) ->
-              withNextSrv usedSrvs $ \srv -> do
-                (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
-                notify connId $ INV (ACR cMode cReq)
-            JOIN enableNtfs (ACR _ cReq) connInfo ->
-              withNextSrv usedSrvs $ \srv ->
-                void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
-            LET confId ownCInfo -> allowConnection' c connId confId ownCInfo
-            ACK msgId -> ackMessage' c connId msgId
-            _ -> notify connId $ ERR $ INTERNAL $ "unsupported async command " <> show cmd
-          case resp of
+        tryCommand . withNextSrv usedSrvs [] $ \srv -> do
+          (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
+          notify connId $ INV (ACR cMode cReq)
+      JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress} :| _} _)) connInfo -> do
+        let initUsed = [smpServer (queueAddress :: SMPQueueAddress)]
+        usedSrvs <- newTVarIO initUsed
+        tryCommand . withNextSrv usedSrvs initUsed $ \srv ->
+          void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
+      LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo
+      ACK msgId -> tryCommand $ ackMessage' c connId msgId
+      cmd -> notify connId $ ERR $ INTERNAL $ "unsupported async command " <> show cmd
+      where
+        tryCommand action = withRetryInterval ri $ \loop ->
+          tryError action >>= \case
             Left e
               | temporaryAgentError e || e == BROKER HOST -> retryCommand loop
               | otherwise -> notify connId $ ERR e
             Right () -> withStore' c (`deleteCommand` cmdId)
-  where
-    withNextSrv :: TVar [SMPServer] -> (SMPServer -> m ()) -> m ()
-    withNextSrv usedSrvs action = do
+        retryCommand loop = do
+          -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
+          atomically $ endAgentOperation c AOSndNetwork
+          atomically $ beginAgentOperation c AOSndNetwork
+          loop
+    withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServer -> m ()) -> m ()
+    withNextSrv usedSrvs initUsed action = do
       used <- readTVarIO usedSrvs
       srv <- getNextSMPServer c used
       atomically $ do
         srvs <- readTVar $ smpServers c
-        let used' = if length used + 1 >= L.length srvs then [] else srv : used
+        let used' = if length used + 1 >= L.length srvs then initUsed else srv : used
         writeTVar usedSrvs used'
       action srv
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
-    retryCommand loop = do
-      -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
-      atomically $ endAgentOperation c AOSndNetwork
-      atomically $ beginAgentOperation c AOSndNetwork
-      loop
 -- ^ ^ ^ async command processing /
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
@@ -1184,11 +1191,11 @@ pickServer = \case
 getNextSMPServer :: AgentMonad m => AgentClient -> [SMPServer] -> m SMPServer
 getNextSMPServer c usedSrvs = do
   srvs <- readTVarIO $ smpServers c
-  case L.nonEmpty $ deleteFirstsBy different (L.toList srvs) usedSrvs of
+  case L.nonEmpty $ deleteFirstsBy sameAddr (L.toList srvs) usedSrvs of
     Just srvs' -> pickServer srvs'
     _ -> pickServer srvs
   where
-    different (SMPServer host port _) (SMPServer host' port' _) = host /= host' || port /= port'
+    sameAddr (SMPServer host port _) (SMPServer host' port' _) = host == host' && port == port'
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
