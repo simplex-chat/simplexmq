@@ -194,3 +194,15 @@ CREATE TABLE ntf_subscriptions(
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
+CREATE TABLE commands(
+  command_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  host TEXT,
+  port TEXT,
+  corr_id BLOB NOT NULL,
+  command_tag BLOB NOT NULL,
+  command BLOB NOT NULL,
+  agent_version INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY(host, port) REFERENCES servers
+  ON DELETE RESTRICT ON UPDATE CASCADE
+);
