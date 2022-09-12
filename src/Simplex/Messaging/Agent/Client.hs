@@ -272,6 +272,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
           qs <- RQ.getDelSrvQueues srv $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
           cs <- RQ.getConns (activeSubs c)
+          -- TODO deduplicate conns
           let conns = map (connId :: RcvQueue -> ConnId) qs \\ S.toList cs
           pure (qs, conns)
 
@@ -302,13 +303,15 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
         resubscribe :: [RcvQueue] -> m ()
         resubscribe qs = do
           cs <- atomically . RQ.getConns $ activeSubs c
-          (client_, (errs, oks)) <- second partitionEithers <$> subscribeQueues c srv qs
-          let conns = map ((connId :: RcvQueue -> ConnId) . fst) oks \\ S.toList cs
+          (client_, rs) <- subscribeQueues c srv qs
+          let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
           liftIO $ do
             mapM_ (notifySub "" . hostEvent CONNECT) client_
+            -- TODO deduplicate okConns
+            let conns = okConns \\ S.toList cs
             unless (null conns) $ notifySub "" $ UP srv conns
           let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
-          liftIO $ mapM_ (\(RcvQueue {connId}, e) -> notifySub connId $ ERR e) finalErrs
+          liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
           mapM_ (throwError . snd) $ listToMaybe tempErrs
 
     notifySub :: ConnId -> ACommand 'Agent -> IO ()
@@ -543,7 +546,7 @@ temporaryAgentError = \case
   _ -> False
 
 -- | subscribe multiple queues - all passed queues should be on the same server
-subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> [RcvQueue] -> m (Maybe SMPClient, [Either (RcvQueue, AgentErrorType) (RcvQueue, ())])
+subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> [RcvQueue] -> m (Maybe SMPClient, [(RcvQueue, Either AgentErrorType ())])
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue qs
   forM_ qs_ $ \rq@RcvQueue {connId, server = _server} -> atomically $ do
@@ -554,19 +557,19 @@ subscribeQueues c srv qs = do
     Just qs' -> do
       smp_ <- tryError (getSMPServerClient c srv)
       (eitherToMaybe smp_,) . (errs <>) <$> case smp_ of
-        Left e -> pure $ map (Left . (,e)) qs_
         Right smp -> do
           logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
           let qs2 = L.map queueCreds qs'
-          rs' :: [(RcvQueue, Either ProtocolClientError ())] <-
-            liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
-          forM_ rs' $ \(rq, r) -> liftIO $ processSubResult c rq r
-          pure $ map (\(rq, r) -> bimap ((rq,) . protocolClientError SMP) ((rq,)) r) rs'
+          liftIO $ do
+            rs <- zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
+            mapM_ (uncurry $ processSubResult c) rs
+            pure $ map (second . first $ protocolClientError SMP) rs
+        Left e -> pure $ map (,Left e) qs_
     _ -> pure $ (Nothing, errs)
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
-      pure $ if prohibited || srv /= server then Left $ Left (rq, CMD PROHIBITED) else Right rq
+      pure $ if prohibited || srv /= server then Left $ (rq, Left $ CMD PROHIBITED) else Right rq
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()

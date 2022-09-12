@@ -557,16 +557,15 @@ subscribeConnections' c connIds = do
       _ -> Left $ INTERNAL "unexpected queue status"
     addRcvQueue :: Map SMPServer [RcvQueue] -> RcvQueue -> Map SMPServer [RcvQueue]
     addRcvQueue m rq@RcvQueue {server} = M.alter (Just . maybe [rq] (rq :)) server m
-    subscribe :: (SMPServer, [RcvQueue]) -> m [Either (RcvQueue, AgentErrorType) (RcvQueue, ())]
+    subscribe :: (SMPServer, [RcvQueue]) -> m [(RcvQueue, Either AgentErrorType ())]
     subscribe (srv, qs) = snd <$> subscribeQueues c srv qs
-    connResults :: [Either (RcvQueue, AgentErrorType) (RcvQueue, ())] -> Map ConnId (Either AgentErrorType ())
+    connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
     connResults = foldl' addRes M.empty
       where
-        addRes rs = \case
-          Right (RcvQueue {connId}, _) -> M.insert connId (Right ()) rs
-          Left (RcvQueue {connId}, e) -> case M.lookup connId rs of
-            Just (Right ()) -> rs
-            _ -> M.insert connId (Left e) rs
+        addRes rs (RcvQueue {connId}, r) =
+          case M.lookup connId rs of
+            Just (Right _) -> rs -- if any queue succeeded, connection considered succeeded. TODO active queues only?
+            _ -> M.insert connId r rs
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> m ()
     sendNtfCreate ns rcvRs =
       forM_ (M.assocs rcvRs) $ \case
