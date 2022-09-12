@@ -37,7 +37,8 @@ import Simplex.Messaging.Version
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data RcvQueue = RcvQueue
-  { server :: SMPServer,
+  { connId :: ConnId,
+    server :: SMPServer,
     -- | recipient queue ID
     rcvId :: SMP.RecipientId,
     -- | key used by the recipient to sign transmissions
@@ -52,6 +53,10 @@ data RcvQueue = RcvQueue
     sndId :: Maybe SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
+    -- | database queue ID, can be Nothing for old queues
+    dbRcvQueueId :: Maybe Int64,
+    -- | True for a primary queue of the connection
+    rcvPrimary :: Bool,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -72,7 +77,8 @@ data ClientNtfCreds = ClientNtfCreds
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
-  { server :: SMPServer,
+  { connId :: ConnId,
+    server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
     -- | key pair used by the sender to sign transmissions
@@ -84,6 +90,10 @@ data SndQueue = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
+    -- | database queue ID, can be Nothing for old queues
+    dbSndQueueId :: Maybe Int64,
+    -- | True for a primary queue of the connection
+    sndPrimary :: Bool,
     -- | SMP client version
     smpClientVersion :: Version
   }

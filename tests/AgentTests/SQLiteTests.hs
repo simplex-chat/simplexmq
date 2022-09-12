@@ -153,7 +153,8 @@ testDhSecret = "01234567890123456789012345678901"
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
-    { server = SMPServer "smp.simplex.im" "5223" testKeyHash,
+    { connId = "conn1",
+      server = SMPServer "smp.simplex.im" "5223" testKeyHash,
       rcvId = "1234",
       rcvPrivateKey = testPrivateSignKey,
       rcvDhSecret = testDhSecret,
@@ -161,6 +162,8 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = Just "2345",
       status = New,
+      dbRcvQueueId = Just 1,
+      rcvPrimary = True,
       smpClientVersion = 1,
       clientNtfCreds = Nothing
     }
@@ -168,13 +171,16 @@ rcvQueue1 =
 sndQueue1 :: SndQueue
 sndQueue1 =
   SndQueue
-    { server = SMPServer "smp.simplex.im" "5223" testKeyHash,
+    { connId = "conn1",
+      server = SMPServer "smp.simplex.im" "5223" testKeyHash,
       sndId = "3456",
       sndPublicKey = Nothing,
       sndPrivateKey = testPrivateSignKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
+      dbSndQueueId = Just 1,
+      sndPrimary = True,
       smpClientVersion = 1
     }
 
@@ -197,11 +203,11 @@ testCreateRcvConnRandomId =
     g <- newTVarIO =<< drgNew
     Right connId <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
     getConn db connId
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rcvQueue1))
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rcvQueue1 {connId}))
     upgradeRcvConnToDuplex db connId sndQueue1
       `shouldReturn` Right ()
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 {connId} sndQueue1 {connId}))
 
 testCreateRcvConnDuplicate :: SpecWith SQLiteStore
 testCreateRcvConnDuplicate =
@@ -230,11 +236,11 @@ testCreateSndConnRandomID =
     g <- newTVarIO =<< drgNew
     Right connId <- createSndConn db g cData1 {connId = ""} sndQueue1
     getConn db connId
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sndQueue1))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sndQueue1 {connId}))
     upgradeSndConnToDuplex db connId rcvQueue1
       `shouldReturn` Right ()
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 {connId} sndQueue1 {connId}))
 
 testCreateSndConnDuplicate :: SpecWith SQLiteStore
 testCreateSndConnDuplicate =
@@ -301,13 +307,16 @@ testUpgradeRcvConnToDuplex =
     _ <- createSndConn db g cData1 sndQueue1
     let anotherSndQueue =
           SndQueue
-            { server = SMPServer "smp.simplex.im" "5223" testKeyHash,
+            { connId = "conn1",
+              server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
               sndPublicKey = Nothing,
               sndPrivateKey = testPrivateSignKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
+              dbSndQueueId = Just 1,
+              sndPrimary = True,
               smpClientVersion = 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
@@ -323,7 +332,8 @@ testUpgradeSndConnToDuplex =
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     let anotherRcvQueue =
           RcvQueue
-            { server = SMPServer "smp.simplex.im" "5223" testKeyHash,
+            { connId = "conn1",
+              server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               rcvId = "3456",
               rcvPrivateKey = testPrivateSignKey,
               rcvDhSecret = testDhSecret,
@@ -331,6 +341,8 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = Just "4567",
               status = New,
+              dbRcvQueueId = Just 1,
+              rcvPrimary = True,
               smpClientVersion = 1,
               clientNtfCreds = Nothing
             }

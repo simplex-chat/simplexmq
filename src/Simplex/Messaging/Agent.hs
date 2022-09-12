@@ -85,7 +85,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.), (.::))
 import Data.Functor (($>))
-import Data.List (deleteFirstsBy)
+import Data.List (deleteFirstsBy, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -366,9 +366,10 @@ newConn c connId asyncMode enableNtfs cMode =
 newConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> SMPServer -> m (ConnId, ConnectionRequestUri c)
 newConnSrv c connId asyncMode enableNtfs cMode srv = do
   clientVRange <- asks $ smpClientVRange . config
-  (rq, qUri) <- newRcvQueue c srv clientVRange
-  connId' <- setUpConn asyncMode rq
-  addSubscription c rq connId'
+  (_rq, qUri) <- newRcvQueue c "" srv clientVRange
+  connId' <- setUpConn asyncMode _rq
+  let rq = (_rq :: RcvQueue) {connId = connId'}
+  addSubscription c rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId', NSCCreate)
@@ -410,11 +411,12 @@ joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ age
       (pk1, pk2, e2eSndParams) <- liftIO . CR.generateE2EParams $ version e2eRcvParams
       (_, rcDHRs) <- liftIO C.generateKeyPair'
       let rc = CR.initSndRatchet rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
-      sq <- newSndQueue qInfo
+      _sq <- newSndQueue "" qInfo
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
-      connId' <- setUpConn asyncMode cData sq rc
-      let cData' = (cData :: ConnData) {connId = connId'}
+      connId' <- setUpConn asyncMode cData _sq rc
+      let sq = (_sq :: SndQueue) {connId = connId'}
+          cData' = (cData :: ConnData) {connId = connId'}
       tryError (confirmQueue aVersion c cData' sq srv cInfo $ Just e2eSndParams) >>= \case
         Right _ -> do
           unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
@@ -452,9 +454,9 @@ joinConnSrv _c _connId True _enableNtfs (CRContactUri _) _cInfo _srv = do
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServer -> m SMPQueueInfo
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} srv = do
-  (rq, qUri) <- newRcvQueue c srv $ versionToRange smpClientVersion
+  (rq, qUri) <- newRcvQueue c connId srv $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
-  addSubscription c rq connId
+  addSubscription c rq
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
@@ -519,7 +521,7 @@ subscribeConnection' c connId =
   where
     subscribe :: RcvQueue -> m ()
     subscribe rq = do
-      subscribeQueue c rq connId
+      subscribeQueue c rq
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
@@ -530,14 +532,14 @@ subscribeConnections' c connIds = do
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-      srvRcvQs :: Map SMPServer (Map ConnId RcvQueue) = M.foldlWithKey' addRcvQueue M.empty rcvQs
+      srvRcvQs :: Map SMPServer [RcvQueue] = M.foldl' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
   mapM_ (resumeConnCmds c) $ M.keys cs
-  rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
+  rcvRs <- connResults . concat <$> mapConcurrently subscribe (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
-  let rs = M.unions $ errs' : subRs : rcvRs
+  let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
   notifyResultError rs
   pure rs
   where
@@ -553,13 +555,21 @@ subscribeConnections' c connIds = do
       Confirmed -> Right ()
       Active -> Left $ CONN SIMPLEX
       _ -> Left $ INTERNAL "unexpected queue status"
-    addRcvQueue :: Map SMPServer (Map ConnId RcvQueue) -> ConnId -> RcvQueue -> Map SMPServer (Map ConnId RcvQueue)
-    addRcvQueue m connId rq@RcvQueue {server} = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
-    subscribe :: (SMPServer, Map ConnId RcvQueue) -> m (Map ConnId (Either AgentErrorType ()))
+    addRcvQueue :: Map SMPServer [RcvQueue] -> RcvQueue -> Map SMPServer [RcvQueue]
+    addRcvQueue m rq@RcvQueue {server} = M.alter (Just . maybe [rq] (rq :)) server m
+    subscribe :: (SMPServer, [RcvQueue]) -> m [Either (RcvQueue, AgentErrorType) (RcvQueue, ())]
     subscribe (srv, qs) = snd <$> subscribeQueues c srv qs
-    sendNtfCreate :: NtfSupervisor -> [Map ConnId (Either AgentErrorType ())] -> m ()
+    connResults :: [Either (RcvQueue, AgentErrorType) (RcvQueue, ())] -> Map ConnId (Either AgentErrorType ())
+    connResults = foldl' addRes M.empty
+      where
+        addRes rs = \case
+          Right (RcvQueue {connId}, _) -> M.insert connId (Right ()) rs
+          Left (RcvQueue {connId}, e) -> case M.lookup connId rs of
+            Just (Right ()) -> rs
+            _ -> M.insert connId (Left e) rs
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> m ()
     sendNtfCreate ns rcvRs =
-      forM_ (concatMap M.assocs rcvRs) $ \case
+      forM_ (M.assocs rcvRs) $ \case
         (connId, Right _) -> atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
         _ -> pure ()
     sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
@@ -1437,7 +1447,7 @@ connectReplyQueues c cData@ConnData {connId} ownConnInfo (qInfo :| _) = do
   case qInfo `proveCompatible` clientVRange of
     Nothing -> throwError $ AGENT A_VERSION
     Just qInfo' -> do
-      sq <- newSndQueue qInfo'
+      sq <- newSndQueue connId qInfo'
       withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
       enqueueConfirmation c cData sq ownConnInfo Nothing
 
@@ -1496,28 +1506,32 @@ agentRatchetDecrypt db connId encAgentMsg = do
   liftIO $ updateRatchet db connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
 
-newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> m SndQueue
-newSndQueue qInfo =
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => ConnId -> Compatible SMPQueueInfo -> m SndQueue
+newSndQueue connId qInfo =
   asks (cmdSignAlg . config) >>= \case
-    C.SignAlg a -> newSndQueue_ a qInfo
+    C.SignAlg a -> newSndQueue_ a connId qInfo
 
 newSndQueue_ ::
   (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m) =>
   C.SAlgorithm a ->
+  ConnId ->
   Compatible SMPQueueInfo ->
   m SndQueue
-newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
+newSndQueue_ a connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
   -- this function assumes clientVersion is compatible - it was tested before
   (sndPublicKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   pure
     SndQueue
-      { server = smpServer,
+      { connId,
+        server = smpServer,
         sndId = senderId,
         sndPublicKey = Just sndPublicKey,
         sndPrivateKey,
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
         e2ePubKey = Just e2ePubKey,
         status = New,
+        dbSndQueueId = Nothing,
+        sndPrimary = True,
         smpClientVersion
       }

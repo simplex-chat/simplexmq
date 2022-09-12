@@ -21,7 +21,8 @@ CREATE TABLE connections(
   smp_agent_version INTEGER NOT NULL DEFAULT 1
   ,
   duplex_handshake INTEGER NULL DEFAULT 0,
-  enable_ntfs INTEGER
+  enable_ntfs INTEGER,
+  conn_status TEXT
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -41,6 +42,8 @@ CREATE TABLE rcv_queues(
   ntf_private_key BLOB,
   ntf_id BLOB,
   rcv_ntf_dh_secret BLOB,
+  rcv_queue_id INTEGER NULL,
+  rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -58,6 +61,8 @@ CREATE TABLE snd_queues(
   smp_client_version INTEGER NOT NULL DEFAULT 1,
   snd_public_key BLOB,
   e2e_pub_key BLOB,
+  snd_queue_id INTEGER NULL,
+  snd_primary INTEGER CHECK(snd_primary NOT NULL),
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -193,6 +198,30 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE snd_message_deliveries(
+  conn_id BLOB NOT NULL,
+  host TEXT NOT NULL,
+  port TEXT NOT NULL,
+  snd_id BLOB NOT NULL,
+  internal_id INTEGER NOT NULL,
+  internal_snd_id INTEGER NOT NULL,
+  PRIMARY KEY(conn_id, host, port, snd_id, internal_snd_id),
+  FOREIGN KEY(conn_id, internal_snd_id) REFERENCES snd_messages,
+  FOREIGN KEY(conn_id, internal_id) REFERENCES messages,
+  FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE rcv_message_deliveries(
+  conn_id BLOB NOT NULL,
+  host TEXT NOT NULL,
+  port TEXT NOT NULL,
+  rcv_id BLOB NOT NULL,
+  internal_id INTEGER NOT NULL,
+  internal_rcv_id INTEGER NOT NULL,
+  PRIMARY KEY(conn_id, host, port, rcv_id, internal_rcv_id),
+  FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages,
+  FOREIGN KEY(conn_id, internal_id) REFERENCES messages,
+  FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE commands(
   command_id INTEGER PRIMARY KEY,
