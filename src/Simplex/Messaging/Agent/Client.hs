@@ -403,11 +403,14 @@ closeAgentClient c = liftIO $ do
   cancelActions $ reconnections c
   cancelActions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
+  cancelActions $ asyncCmdProcesses c
   atomically . RQ.clear $ activeSubs c
   atomically . RQ.clear $ pendingSubs c
   clear subscrConns
   clear connMsgsQueued
   clear smpQueueMsgQueues
+  clear connCmdsQueued
+  clear asyncCmdQueues
   clear getMsgLocks
   where
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
