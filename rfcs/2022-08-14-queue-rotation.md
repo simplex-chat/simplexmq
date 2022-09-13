@@ -2,7 +2,7 @@
 
 ## Problem
 
-1. Long term usage of the queue allows the servers to analyse long term traffic patterns.
+1. Long term usage of the queue allows the servers to analyze long term traffic patterns.
 
 2. If the user changes the configured SMP server(s), the previously created contacts do not migrate to the new server(s).
 
