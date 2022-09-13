@@ -38,7 +38,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setRcvQueueStatus,
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
-    getRcvQueue,
+    getPrimaryRcvQueue,
     setRcvQueueNtfCreds,
     -- Confirmations
     createConfirmation,
@@ -116,10 +116,12 @@ import Data.Char (toLower)
 import Data.Function (on)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find, foldl', groupBy)
+import Data.List (find, foldl', groupBy, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -396,9 +398,9 @@ setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
-getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
-getRcvQueue db connId =
-  maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
+getPrimaryRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
+getPrimaryRcvQueue db connId =
+  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId_ db connId
 
 setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
 setRcvQueueNtfCreds db connId clientNtfCreds =
@@ -587,7 +589,7 @@ createSndMsg db connId sndMsgData = do
 
 getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
 getPendingMsgData db connId msgId = do
-  rq_ <- getRcvQueueByConnId_ db connId
+  rq_ <- L.head <$$> getRcvQueuesByConnId_ db connId
   (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
   where
     getMsgData_ =
@@ -1215,13 +1217,13 @@ getConn dbConn connId =
   getConnData dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
     Just (connData, cMode) -> do
-      rQ <- getRcvQueueByConnId_ dbConn connId
-      sQ <- getSndQueueByConnId_ dbConn connId
+      rQ <- getRcvQueuesByConnId_ dbConn connId
+      sQ <- getSndQueuesByConnId_ dbConn connId
       pure $ case (rQ, sQ, cMode) of
-        (Just rcvQ, Just sndQ, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection connData rcvQ sndQ)
-        (Just rcvQ, Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rcvQ)
-        (Nothing, Just sndQ, CMInvitation) -> Right $ SomeConn SCSnd (SndConnection connData sndQ)
-        (Just rcvQ, Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection connData rcvQ)
+        (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection connData rqs sqs)
+        (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rq)
+        (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection connData sq)
+        (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection connData rq)
         (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection connData)
         _ -> Left SEConnNotFound
 
@@ -1233,9 +1235,10 @@ getConnData dbConn connId' =
     connData [(connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake}, cMode)
     connData _ = Nothing
 
-getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
-getRcvQueueByConnId_ dbConn connId =
-  listToMaybe . map rcvQueue
+-- | returns all connection queues, the first queue is the primary one
+getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
+getRcvQueuesByConnId_ dbConn connId =
+  L.nonEmpty . sortBy primaryFirst . map rcvQueue
     <$> DB.query
       dbConn
       [sql|
@@ -1255,10 +1258,12 @@ getRcvQueueByConnId_ dbConn connId =
             (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
        in RcvQueue {connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbRcvQueueId, rcvPrimary, smpClientVersion, clientNtfCreds}
+    primaryFirst RcvQueue {rcvPrimary = p} RcvQueue {rcvPrimary = p'} = compare (Down p) (Down p')
 
-getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
-getSndQueueByConnId_ dbConn connId =
-  sndQueue
+-- | returns all connection queues, the first queue is the primary one
+getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
+getSndQueuesByConnId_ dbConn connId =
+  L.nonEmpty . sortBy primaryFirst . map sndQueue
     <$> DB.query
       dbConn
       [sql|
@@ -1269,10 +1274,10 @@ getSndQueueByConnId_ dbConn connId =
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, smpClientVersion)] =
+    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, smpClientVersion)) =
       let server = SMPServer host port keyHash
-       in Just SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbSndQueueId, sndPrimary, smpClientVersion}
-    sndQueue _ = Nothing
+       in SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbSndQueueId, sndPrimary, smpClientVersion}
+    primaryFirst SndQueue {sndPrimary = p} SndQueue {sndPrimary = p'} = compare (Down p) (Down p')
 
 -- * updateRcvIds helpers
 

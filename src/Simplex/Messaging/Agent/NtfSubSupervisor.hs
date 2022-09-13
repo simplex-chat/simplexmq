@@ -73,7 +73,7 @@ processNtfSub c (connId, cmd) = do
     NSCCreate -> do
       (a, RcvQueue {server = smpServer, clientNtfCreds}) <- withStore c $ \db -> runExceptT $ do
         a <- liftIO $ getNtfSubscription db connId
-        q <- ExceptT $ getRcvQueue db connId
+        q <- ExceptT $ getPrimaryRcvQueue db connId
         pure (a, q)
       logInfo $ "processNtfSub, NSCCreate - a = " <> tshow a
       case a of
@@ -125,7 +125,7 @@ processNtfSub c (connId, cmd) = do
         (Just (NtfSubscription {ntfServer}, _)) -> addNtfNTFWorker ntfServer
         _ -> pure () -- err "NSCDelete - no subscription"
     NSCSmpDelete -> do
-      withStore' c (`getRcvQueue` connId) >>= \case
+      withStore' c (`getPrimaryRcvQueue` connId) >>= \case
         Right rq@RcvQueue {server = smpServer} -> do
           logInfo $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
           ts <- liftIO getCurrentTime
@@ -185,7 +185,7 @@ runNtfWorker c srv doWork = do
           NSACreate ->
             getNtfToken >>= \case
               Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
-                RcvQueue {clientNtfCreds} <- withStore c (`getRcvQueue` connId)
+                RcvQueue {clientNtfCreds} <- withStore c (`getPrimaryRcvQueue` connId)
                 case clientNtfCreds of
                   Just ClientNtfCreds {ntfPrivateKey, notifierId} -> do
                     nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) ntfPrivateKey
@@ -260,7 +260,7 @@ runNtfSMPWorker c srv doWork = do
           NSASmpKey ->
             getNtfToken >>= \case
               Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
-                rq <- withStore c (`getRcvQueue` connId)
+                rq <- withStore c (`getPrimaryRcvQueue` connId)
                 C.SignAlg a <- asks (cmdSignAlg . config)
                 (ntfPublicKey, ntfPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
                 (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
@@ -275,7 +275,7 @@ runNtfSMPWorker c srv doWork = do
           NSASmpDelete -> do
             rq_ <- withStore' c $ \db -> do
               setRcvQueueNtfCreds db connId Nothing
-              getRcvQueue db connId
+              getPrimaryRcvQueue db connId
             forM_ rq_ $ \rq -> disableQueueNotifications c rq
             withStore' c $ \db -> deleteNtfSubscription db connId
 

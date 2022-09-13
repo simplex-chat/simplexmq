@@ -2,6 +2,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -195,19 +196,21 @@ testCreateRcvConn =
     upgradeRcvConnToDuplex db "conn1" sndQueue1
       `shouldReturn` Right ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
 
 testCreateRcvConnRandomId :: SpecWith SQLiteStore
 testCreateRcvConnRandomId =
   it "should create RcvConnection and add SndQueue with random ID" . withStoreTransaction $ \db -> do
     g <- newTVarIO =<< drgNew
     Right connId <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
+    let rq' = (rcvQueue1 :: RcvQueue) {connId}
+        sq' = (sndQueue1 :: SndQueue) {connId}
     getConn db connId
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rcvQueue1 {connId}))
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rq'))
     upgradeRcvConnToDuplex db connId sndQueue1
       `shouldReturn` Right ()
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 {connId} sndQueue1 {connId}))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
 
 testCreateRcvConnDuplicate :: SpecWith SQLiteStore
 testCreateRcvConnDuplicate =
@@ -228,19 +231,21 @@ testCreateSndConn =
     upgradeSndConnToDuplex db "conn1" rcvQueue1
       `shouldReturn` Right ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
 
 testCreateSndConnRandomID :: SpecWith SQLiteStore
 testCreateSndConnRandomID =
   it "should create SndConnection and add RcvQueue with random ID" . withStoreTransaction $ \db -> do
     g <- newTVarIO =<< drgNew
     Right connId <- createSndConn db g cData1 {connId = ""} sndQueue1
+    let rq' = (rcvQueue1 :: RcvQueue) {connId}
+        sq' = (sndQueue1 :: SndQueue) {connId}
     getConn db connId
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sndQueue1 {connId}))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq'))
     upgradeSndConnToDuplex db connId rcvQueue1
       `shouldReturn` Right ()
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 {connId} sndQueue1 {connId}))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
 
 testCreateSndConnDuplicate :: SpecWith SQLiteStore
 testCreateSndConnDuplicate =
@@ -293,12 +298,12 @@ testDeleteDuplexConn =
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
     deleteConn db "conn1"
       `shouldReturn` ()
     -- TODO check queues are deleted as well
     getConn db "conn1"
-      `shouldReturn` Left (SEConnNotFound)
+      `shouldReturn` Left SEConnNotFound
 
 testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
 testUpgradeRcvConnToDuplex =
@@ -383,15 +388,17 @@ testSetQueueStatusDuplex =
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
     setRcvQueueStatus db rcvQueue1 Secured
       `shouldReturn` ()
+    let rq' = (rcvQueue1 :: RcvQueue) {status = Secured}
+        sq' = (sndQueue1 :: SndQueue) {status = Confirmed}
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sndQueue1]))
     setSndQueueStatus db sndQueue1 Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq']))
 
 hw :: ByteString
 hw = encodeUtf8 "Hello world!"
