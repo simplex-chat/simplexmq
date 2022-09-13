@@ -92,13 +92,13 @@ import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
-import SimpleX.Messaging.Agent.TRcvQueues (TRcvQueues)
-import qualified SimpleX.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
+import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues)
+import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C

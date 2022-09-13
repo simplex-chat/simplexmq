@@ -1,6 +1,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module SimpleX.Messaging.Agent.TRcvQueues where
+module Simplex.Messaging.Agent.TRcvQueues where
 
 import Control.Concurrent.STM
 import qualified Data.Map.Strict as M
