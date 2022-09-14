@@ -52,6 +52,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
@@ -81,6 +82,7 @@ library
       Simplex.Messaging.Server.Stats
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.TMap
+      Simplex.Messaging.TMap2
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Client
       Simplex.Messaging.Transport.HTTP2
