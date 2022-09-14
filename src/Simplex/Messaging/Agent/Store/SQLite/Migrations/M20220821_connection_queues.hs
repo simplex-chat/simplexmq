@@ -11,10 +11,12 @@ m20220821_connection_queues =
 ALTER TABLE rcv_queues ADD COLUMN rcv_queue_id INTEGER NULL;
 ALTER TABLE rcv_queues ADD COLUMN rcv_primary INTEGER CHECK (rcv_primary NOT NULL);
 UPDATE rcv_queues SET rcv_primary = 1;
+CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(rcv_queue_id);
 
 ALTER TABLE snd_queues ADD COLUMN snd_queue_id INTEGER NULL;
 ALTER TABLE snd_queues ADD COLUMN snd_primary INTEGER CHECK (snd_primary NOT NULL);
 UPDATE snd_queues SET snd_primary = 1;
+CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(snd_queue_id);
 
 CREATE TABLE snd_message_deliveries (
   conn_id BLOB NOT NULL,
