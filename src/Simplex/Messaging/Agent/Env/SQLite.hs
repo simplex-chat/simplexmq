@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
+    createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
   )
@@ -65,6 +66,7 @@ data AgentConfig = AgentConfig
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
+    dbKey :: String,
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
@@ -108,6 +110,7 @@ defaultAgentConfig =
       connIdBytes = 12,
       tbqSize = 64,
       dbFile = "smp-agent.db",
+      dbKey = "",
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
@@ -139,13 +142,16 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
+newSMPAgentEnv config@AgentConfig {dbFile, dbKey, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore dbFile Migrations.app yesToMigrations
+  store <- liftIO $ createAgentStore dbFile dbKey yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+
+createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
+createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),

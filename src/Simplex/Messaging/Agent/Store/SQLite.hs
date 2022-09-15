@@ -22,6 +22,8 @@ module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
     createSQLiteStore,
     connectSQLiteStore,
+    closeSQLiteStore,
+    sqlString,
 
     -- * Queues and connections
     createNewConn,
@@ -152,7 +154,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (bracket)
+import UnliftIO.Exception (bracket, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -160,27 +162,18 @@ import UnliftIO.STM
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
+    dbEncrypted :: TVar Bool,
     dbConnection :: TMVar DB.Connection,
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> [Migration] -> Bool -> IO SQLiteStore
-createSQLiteStore dbFilePath migrations yesToMigrations = do
+createSQLiteStore :: FilePath -> String -> [Migration] -> Bool -> IO SQLiteStore
+createSQLiteStore dbFilePath dbKey migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
-  st <- connectSQLiteStore dbFilePath
-  checkThreadsafe st
-  migrateSchema st migrations yesToMigrations
+  st <- connectSQLiteStore dbFilePath dbKey
+  migrateSchema st migrations yesToMigrations `onException` closeSQLiteStore st
   pure st
-
-checkThreadsafe :: SQLiteStore -> IO ()
-checkThreadsafe st = withConnection st $ \db -> do
-  compileOptions <- DB.query_ db "pragma COMPILE_OPTIONS;" :: IO [[Text]]
-  let threadsafeOption = find (T.isPrefixOf "THREADSAFE=") (concat compileOptions)
-  case threadsafeOption of
-    Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
-    Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
-    _ -> return ()
 
 migrateSchema :: SQLiteStore -> [Migration] -> Bool -> IO ()
 migrateSchema st migrations yesToMigrations = withConnection st $ \db -> do
@@ -204,24 +197,38 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> IO SQLiteStore
-connectSQLiteStore dbFilePath = do
+connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
+connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConnection <- newTMVarIO =<< connectDB dbFilePath
-  pure SQLiteStore {dbFilePath, dbConnection, dbNew}
+  dbConnection <- newTMVarIO =<< connectDB dbFilePath dbKey
+  dbEncrypted <- newTVarIO . not $ null dbKey
+  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew}
 
-connectDB :: FilePath -> IO DB.Connection
-connectDB path = do
-  dbConn <- DB.open path
-  SQLite3.exec (DB.connectionHandle dbConn) . fromQuery $
-    [sql|
-      PRAGMA foreign_keys = ON;
-      -- PRAGMA trusted_schema = OFF;
-      PRAGMA secure_delete = ON;
-      PRAGMA auto_vacuum = FULL;
-    |]
-  -- _printPragmas dbConn path
-  pure dbConn
+connectDB :: FilePath -> String -> IO DB.Connection
+connectDB path key = do
+  db <- DB.open path
+  prepare db `onException` DB.close db
+  -- _printPragmas db path
+  pure db
+  where
+    prepare db = do
+      let exec = SQLite3.exec $ DB.connectionHandle db
+      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
+      exec . fromQuery $
+        [sql|
+          PRAGMA foreign_keys = ON;
+          -- PRAGMA trusted_schema = OFF;
+          PRAGMA secure_delete = ON;
+          PRAGMA auto_vacuum = FULL;
+        |]
+
+closeSQLiteStore :: SQLiteStore -> IO ()
+closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
+
+sqlString :: String -> Text
+sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
+  where
+    quote = "'"
 
 -- _printPragmas :: DB.Connection -> FilePath -> IO ()
 -- _printPragmas db path = do
