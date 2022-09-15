@@ -252,6 +252,7 @@ data ACommand (p :: AParty) where
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
+  ADDQ :: SMPServer -> Bool -> ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
   CHK :: ACommand Client
@@ -289,6 +290,7 @@ data ACommandTag (p :: AParty) where
   MERR_ :: ACommandTag Agent
   MSG_ :: ACommandTag Agent
   ACK_ :: ACommandTag Client
+  ADDQ_ :: ACommandTag Client
   OFF_ :: ACommandTag Client
   DEL_ :: ACommandTag Client
   CHK_ :: ACommandTag Client
@@ -325,6 +327,7 @@ aCommandTag = \case
   MERR {} -> MERR_
   MSG {} -> MSG_
   ACK _ -> ACK_
+  ADDQ {} -> ADDQ_
   OFF -> OFF_
   DEL -> DEL_
   CHK -> CHK_
@@ -560,9 +563,9 @@ agentMessageType = \case
     REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
     QADD _ -> AM_QADD_
-    QKEY {} -> AM_QKEY_
-    QUSE {} -> AM_QUSE_
-    QDEL {} -> AM_QDEL_
+    QKEY _ -> AM_QKEY_
+    QUSE _ -> AM_QUSE_
+    QDEL _ -> AM_QDEL_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -621,24 +624,25 @@ data AMessage
   | -- | agent envelope for the client message
     A_MSG MsgBody
   | -- add queue to connection
-    QADD SMPQueueInfo
-  | -- key to secure the added queue and agree e2e encryption key
-    QKEY SMPQueueInfo SndPublicVerifyKey
-  | -- inform that the queue is ready to use
-    QUSE SMPServer SMP.SenderId Bool
-  | -- inform that the queue will be deleted
-    QDEL SMPServer SMP.SenderId
+    QADD (L.NonEmpty SMPQueueUri)
+  | -- key to secure the added queues and agree e2e encryption key
+    QKEY (L.NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
+  | -- inform that the queues are ready to use
+    QUSE (L.NonEmpty (SMPServer, SMP.SenderId, Bool))
+  | -- inform that the queues will be deleted
+    QDEL (L.NonEmpty (SMPServer, SMP.SenderId))
   deriving (Show)
 
+-- '\1' added to the encodings to allow future extension to multiple queues, without extending the type now
 instance Encoding AMessage where
   smpEncode = \case
     HELLO -> smpEncode HELLO_
     REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
     A_MSG body -> smpEncode (A_MSG_, Tail body)
-    QADD qInfo -> smpEncode (QADD_, qInfo)
-    QKEY qInfo sKey -> smpEncode (QKEY_, qInfo, sKey)
-    QUSE srv sndId primary -> smpEncode (QUSE_, srv, sndId, primary)
-    QDEL srv sndId -> smpEncode (QDEL_, srv, sndId)
+    QADD qs -> smpEncode (QADD_, qs)
+    QKEY qs -> smpEncode (QKEY_, qs)
+    QUSE qs -> smpEncode (QUSE_, qs)
+    QDEL qs -> smpEncode (QDEL_, qs)
   smpP =
     smpP
       >>= \case
@@ -646,9 +650,9 @@ instance Encoding AMessage where
         REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
         QADD_ -> QADD <$> smpP
-        QKEY_ -> QKEY <$> smpP <*> smpP
-        QUSE_ -> QUSE <$> smpP <*> smpP <*> smpP
-        QDEL_ -> QDEL <$> smpP <*> smpP
+        QKEY_ -> QKEY <$> smpP
+        QUSE_ -> QUSE <$> smpP
+        QDEL_ -> QDEL <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
@@ -810,6 +814,13 @@ instance StrEncoding SMPQueueUri where
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
         hs_ <- queryParam_ "srv" query
         pure (vr, maybe [] thList_ hs_, dhKey)
+
+instance Encoding SMPQueueUri where
+  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}) =
+    smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+  smpP = do
+    (clientVRange, smpServer, senderId, dhPublicKey) <- smpP
+    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
@@ -1066,9 +1077,9 @@ networkCommandP = commandP A.takeByteString
 dbCommandP :: Parser ACmd
 dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
 
-instance Encoding ACmdTag where
-  smpEncode (ACmdTag _ cmd) = smpEncode cmd
-  smpP =
+instance StrEncoding ACmdTag where
+  strEncode (ACmdTag _ cmd) = strEncode cmd
+  strP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure $ ACmdTag SClient NEW_
       "INV" -> pure $ ACmdTag SAgent INV_
@@ -1101,8 +1112,8 @@ instance Encoding ACmdTag where
       "SUSPENDED" -> pure $ ACmdTag SAgent SUSPENDED_
       _ -> fail "bad ACmdTag"
 
-instance APartyI p => Encoding (ACommandTag p) where
-  smpEncode = \case
+instance APartyI p => StrEncoding (ACommandTag p) where
+  strEncode = \case
     NEW_ -> "NEW"
     INV_ -> "INV"
     JOIN_ -> "JOIN"
@@ -1125,6 +1136,7 @@ instance APartyI p => Encoding (ACommandTag p) where
     MERR_ -> "MERR"
     MSG_ -> "MSG"
     ACK_ -> "ACK"
+    ADDQ_ -> "ADDQ"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
     CHK_ -> "CHK"
@@ -1132,7 +1144,7 @@ instance APartyI p => Encoding (ACommandTag p) where
     OK_ -> "OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
-  smpP = (\(ACmdTag _ t) -> checkParty t) <$?> smpP
+  strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
 checkParty x = case testEquality (sAParty @p) (sAParty @p') of
@@ -1142,7 +1154,7 @@ checkParty x = case testEquality (sAParty @p) (sAParty @p') of
 -- | SMP agent command and response parser
 commandP :: Parser ByteString -> Parser ACmd
 commandP binaryP =
-  smpP
+  strP
     >>= \case
       ACmdTag SClient cmd ->
         ACmd SClient <$> case cmd of
@@ -1154,6 +1166,7 @@ commandP binaryP =
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
           ACK_ -> s (ACK <$> A.decimal)
+          ADDQ_ -> s (ADDQ <$> strP_ <*> strP_)
           OFF_ -> pure OFF
           DEL_ -> pure DEL
           CHK_ -> pure CHK
@@ -1196,36 +1209,39 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode -> B.unwords ["NEW", strEncode ntfs, strEncode cMode]
-  INV cReq -> "INV " <> strEncode cReq
-  JOIN ntfs cReq cInfo -> B.unwords ["JOIN", strEncode ntfs, strEncode cReq, serializeBinary cInfo]
-  CONF confId srvs cInfo -> B.unwords ["CONF", confId, strEncodeList srvs, serializeBinary cInfo]
-  LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
-  REQ invId srvs cInfo -> B.unwords ["REQ", invId, strEncode srvs, serializeBinary cInfo]
-  ACPT invId cInfo -> B.unwords ["ACPT", invId, serializeBinary cInfo]
-  RJCT invId -> "RJCT " <> invId
-  INFO cInfo -> "INFO " <> serializeBinary cInfo
-  SUB -> "SUB"
-  END -> "END"
-  CONNECT p h -> B.unwords ["CONNECT", strEncode p, strEncode h]
-  DISCONNECT p h -> B.unwords ["DISCONNECT", strEncode p, strEncode h]
-  DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
-  UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
-  SEND msgFlags msgBody -> "SEND " <> smpEncode msgFlags <> " " <> serializeBinary msgBody
-  MID mId -> "MID " <> bshow mId
-  SENT mId -> "SENT " <> bshow mId
-  MERR mId e -> B.unwords ["MERR", bshow mId, strEncode e]
-  MSG msgMeta msgFlags msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
-  ACK mId -> "ACK " <> bshow mId
-  OFF -> "OFF"
-  DEL -> "DEL"
-  CHK -> "CHK"
-  STAT srvs -> "STAT " <> strEncode srvs
-  CON -> "CON"
-  ERR e -> "ERR " <> strEncode e
-  OK -> "OK"
-  SUSPENDED -> "SUSPENDED"
+  NEW ntfs cMode -> s (NEW_, ntfs, cMode)
+  INV cReq -> s (INV_, cReq)
+  JOIN ntfs cReq cInfo -> s (JOIN_, ntfs, cReq, Str $ serializeBinary cInfo)
+  CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
+  LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
+  REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
+  ACPT invId cInfo -> B.unwords [s ACPT_, invId, serializeBinary cInfo]
+  RJCT invId -> B.unwords [s RJCT_, invId]
+  INFO cInfo -> B.unwords [s INFO_, serializeBinary cInfo]
+  SUB -> s SUB_
+  END -> s END_
+  CONNECT p h -> s (CONNECT_, p, h)
+  DISCONNECT p h -> s (DISCONNECT_, p, h)
+  DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
+  UP srv conns -> B.unwords [s UP_, s srv, connections conns]
+  SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
+  MID mId -> s (MID_, Str $ bshow mId)
+  SENT mId -> s (SENT_, Str $ bshow mId)
+  MERR mId e -> s (MERR_, Str $ bshow mId, e)
+  MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
+  ACK mId -> s (ACK_, Str $ bshow mId)
+  ADDQ srv primary -> s (ADDQ_, srv, primary)
+  OFF -> s OFF_
+  DEL -> s DEL_
+  CHK -> s CHK_
+  STAT srvs -> s (STAT_, srvs)
+  CON -> s CON_
+  ERR e -> s (ERR_, e)
+  OK -> s OK_
+  SUSPENDED -> s SUSPENDED_
   where
+    s :: StrEncoding a => a -> ByteString
+    s = strEncode
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
     connections :: [ConnId] -> ByteString

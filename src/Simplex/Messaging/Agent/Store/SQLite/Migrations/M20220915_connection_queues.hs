@@ -1,12 +1,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220821_connection_queues where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20220821_connection_queues :: Query
-m20220821_connection_queues =
+m20220915_connection_queues :: Query
+m20220915_connection_queues =
   [sql|
 ALTER TABLE rcv_queues ADD COLUMN rcv_queue_id INTEGER NULL;
 ALTER TABLE rcv_queues ADD COLUMN rcv_primary INTEGER CHECK (rcv_primary NOT NULL);

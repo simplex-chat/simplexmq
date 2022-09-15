@@ -162,6 +162,10 @@ allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
 ackMessageAsync c = withAgentEnv c .:. ackMessageAsync' c
 
+-- | Add connection to the new receive queue
+addConnectionRcvQueueAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> Bool -> m ()
+addConnectionRcvQueueAsync c = withAgentEnv c .:. addConnectionRcvQueueAsync' c
+
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 createConnection c enableNtfs cMode = withAgentEnv c $ newConn c "" False enableNtfs cMode
@@ -312,6 +316,7 @@ processCommand c (connId, cmd) = case cmd of
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId msgFlags msgBody
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
+  ADDQ {} -> pure (connId, OK)
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
   CHK -> (connId,) . STAT <$> getConnectionServers' c connId
@@ -359,6 +364,17 @@ ackMessageAsync' c corrId connId msgId =
     enqueueAck :: RcvQueue -> m ()
     enqueueAck RcvQueue {server} = do
       enqueueCommand c corrId connId (Just server) $ ACK msgId
+
+-- | Add connection to the new receive queue
+addConnectionRcvQueueAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Bool -> m ()
+addConnectionRcvQueueAsync' c corrId connId primary =
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection _ rqs@(RcvQueue {server} :| _) sqs) -> do
+      -- try to get the server that is different from all queues, or at least from the primary rcv queue
+      srv <- getNextSMPServer c $ map rcvServer (L.toList rqs) ++ map sndServer (L.toList sqs)
+      srv' <- if srv == server then getNextSMPServer c [server] else pure srv
+      enqueueCommand c corrId connId Nothing $ ADDQ srv' primary
+    _ -> throwError $ CMD PROHIBITED
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId asyncMode enableNtfs cMode =
@@ -641,15 +657,12 @@ getNotificationMessage' c nonce encNtfInfo = do
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage' c connId msgFlags msg =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData _ (sq :| sqs)) -> do
-      msgId <- enqueueMsg cData sq
-      mapM_ (enqueueSavedMessage c cData msgId) sqs
-      pure msgId
-    SomeConn _ (SndConnection cData sq) -> enqueueMsg cData sq
+    SomeConn _ (DuplexConnection cData _ sqs) -> enqueueMsgs cData sqs
+    SomeConn _ (SndConnection cData sq) -> enqueueMsgs cData [sq]
     _ -> throwError $ CONN SIMPLEX
   where
-    enqueueMsg :: ConnData -> SndQueue -> m AgentMsgId
-    enqueueMsg cData sq = enqueueMessage c cData sq msgFlags $ A_MSG msg
+    enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
+    enqueueMsgs cData sqs = enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
 -- / async command processing v v v
 
@@ -721,6 +734,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
           notify OK
       LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
       ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
+      ADDQ srv primary -> tryCommand $ addConnectionRcvQueue' c connId srv primary >> notify OK
       cmd -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       where
         tryCommand action = withRetryInterval ri $ \loop ->
@@ -745,6 +759,12 @@ runCommandProcessing c@AgentClient {subQ} server = do
         writeTVar usedSrvs used'
       action srv
 -- ^ ^ ^ async command processing /
+
+enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
+enqueueMessages c cData (sq :| sqs) msgFlags aMessage = do
+  msgId <- enqueueMessage c cData sq msgFlags aMessage
+  mapM_ (enqueueSavedMessage c cData msgId) sqs
+  pure msgId
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
 enqueueMessage c cData@ConnData {connId, connAgentVersion} sq msgFlags aMessage = do
@@ -927,6 +947,17 @@ ackMessage' c connId msgId = do
         e -> throwError e
       withStore' c $ \db -> deleteMsg db connId mId
 
+addConnectionRcvQueue' :: AgentMonad m => AgentClient -> ConnId -> SMPServer -> Bool -> m ()
+addConnectionRcvQueue' c connId srv primary = do
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection cData _ sqs) -> do
+      clientVRange <- asks $ smpClientVRange . config
+      (rq, qUri) <- newRcvQueue c connId srv clientVRange
+      withStore c $ \db -> addConnRcvQueue db connId rq
+      addSubscription c rq
+      void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [qUri]
+    _ -> throwError $ CMD PROHIBITED
+
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 suspendConnection' c connId =
@@ -960,13 +991,11 @@ getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
   where
     connServers :: SomeConn -> ConnectionStats
     connServers = \case
-      SomeConn _ (RcvConnection _ rq) -> ConnectionStats {rcvServers = [rcvSrv rq], sndServers = []}
-      SomeConn _ (SndConnection _ sq) -> ConnectionStats {rcvServers = [], sndServers = [sndSrv sq]}
-      SomeConn _ (DuplexConnection _ rqs sqs) -> ConnectionStats {rcvServers = map rcvSrv $ L.toList rqs, sndServers = map sndSrv $ L.toList sqs}
-      SomeConn _ (ContactConnection _ rq) -> ConnectionStats {rcvServers = [rcvSrv rq], sndServers = []}
+      SomeConn _ (RcvConnection _ rq) -> ConnectionStats {rcvServers = [rcvServer rq], sndServers = []}
+      SomeConn _ (SndConnection _ sq) -> ConnectionStats {rcvServers = [], sndServers = [sndServer sq]}
+      SomeConn _ (DuplexConnection _ rqs sqs) -> ConnectionStats {rcvServers = map rcvServer $ L.toList rqs, sndServers = map sndServer $ L.toList sqs}
+      SomeConn _ (ContactConnection _ rq) -> ConnectionStats {rcvServers = [rcvServer rq], sndServers = []}
       SomeConn _ (NewConnection _) -> ConnectionStats {rcvServers = [], sndServers = []}
-    rcvSrv RcvQueue {server} = server
-    sndSrv SndQueue {server} = server
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()

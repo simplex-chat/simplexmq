@@ -37,6 +37,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteConn,
     upgradeRcvConnToDuplex,
     upgradeSndConnToDuplex,
+    addConnRcvQueue,
     setRcvQueueStatus,
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
@@ -118,7 +119,7 @@ import Data.Char (toLower)
 import Data.Function (on)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find, foldl', groupBy, sortBy)
+import Data.List (foldl', groupBy, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -283,17 +284,14 @@ createNewConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandsh
     DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?, ?, ?, ?, ?)" (connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
 
 updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
-updateNewConnRcv db connId rq@RcvQueue {server} =
+updateNewConnRcv db connId rq =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn _ RcvConnection {}) -> updateConn -- to allow retries
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
   where
     updateConn :: IO (Either StoreError ())
-    updateConn = do
-      upsertServer_ db server
-      insertRcvQueue_ db connId rq
-      pure $ Right ()
+    updateConn = addConnRcvQueue_ db connId rq $> Right ()
 
 updateNewConnSnd :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError ())
 updateNewConnSnd db connId sq@SndQueue {server} =
@@ -353,14 +351,23 @@ upgradeRcvConnToDuplex db connId sq@SndQueue {server} =
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
-upgradeSndConnToDuplex db connId rq@RcvQueue {server} =
+upgradeSndConnToDuplex db connId rq =
   getConn db connId >>= \case
-    Right (SomeConn _ SndConnection {}) -> do
-      upsertServer_ db server
-      insertRcvQueue_ db connId rq
-      pure $ Right ()
+    Right (SomeConn _ SndConnection {}) -> addConnRcvQueue_ db connId rq $> Right ()
     Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
     _ -> pure $ Left SEConnNotFound
+
+addConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
+addConnRcvQueue db connId rq =
+  getConn db connId >>= \case
+    Right (SomeConn _ SndConnection {}) -> addConnRcvQueue_ db connId rq $> Right ()
+    Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    _ -> pure $ Left SEConnNotFound
+
+addConnRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO ()
+addConnRcvQueue_ db connId rq@RcvQueue {server} = do
+  upsertServer_ db server
+  insertRcvQueue_ db connId rq
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
 setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
@@ -1114,9 +1121,9 @@ instance ToField (ACommand p) where toField = toField . serializeCommand
 
 instance FromField ACmd where fromField = blobFieldParser dbCommandP
 
-instance APartyI p => ToField (ACommandTag p) where toField = toField . smpEncode
+instance APartyI p => ToField (ACommandTag p) where toField = toField . strEncode
 
-instance FromField ACmdTag where fromField = blobFieldParser smpP
+instance FromField ACmdTag where fromField = blobFieldParser strP
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x

@@ -52,8 +52,8 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220821_connection_queues
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent

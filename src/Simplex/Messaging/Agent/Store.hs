@@ -4,6 +4,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -100,6 +101,12 @@ data SndQueue = SndQueue
   }
   deriving (Eq, Show)
 
+rcvServer :: RcvQueue -> SMPServer
+rcvServer RcvQueue {server} = server
+
+sndServer :: SndQueue -> SMPServer
+sndServer SndQueue {server} = server
+
 -- * Connection types
 
 -- | Type of a connection.
@@ -169,6 +176,28 @@ data ConnData = ConnData
     duplexHandshake :: Maybe Bool -- added in agent protocol v2
   }
   deriving (Eq, Show)
+
+-- data ConnectionAction
+--   = CACreateRcvQueue
+
+-- data RcvQueueAction
+--   | CASecureRcvQueue
+--   | CASuspendRcvQueue
+--   | CADeleteRcvQueue
+--   deriving (Eq, Show)
+
+-- instance TextEncoding RcvQueueAction where
+--   textEncode = \case
+--     RQACreateNextQueue -> "create"
+--     RQASecureNextQueue -> "secure"
+--     RQASuspendCurrQueue -> "suspend"
+--     RQADeleteCurrQueue -> "delete"
+--   textDecode = \case
+--     "create" -> Just RQACreateNextQueue
+--     "secure" -> Just RQASecureNextQueue
+--     "suspend" -> Just RQASuspendCurrQueue
+--     "delete" -> Just RQADeleteCurrQueue
+--     _ -> Nothing
 
 -- * Confirmation types
 
