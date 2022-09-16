@@ -55,7 +55,7 @@ runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
     cmd@(connId, _) <- atomically . readTBQueue $ ntfSubQ ns
-    handleError connId . agentOperationBracket c AONtfNetwork $
+    handleError connId $
       runExceptT (processNtfSub c cmd) >>= \case
         Left e -> notifyErr connId e
         Right _ -> return ()
@@ -67,7 +67,7 @@ runNtfSupervisor c = do
     notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
-processNtfSub c (connId, cmd) = do
+processNtfSub c (connId, cmd) = agentOperationBracket c AONtfNetwork waitUntilActive $ do
   logInfo $ "processNtfSub - connId = " <> tshow connId <> " - cmd = " <> tshow cmd
   case cmd of
     NSCCreate -> do
@@ -162,7 +162,7 @@ runNtfWorker c srv doWork = do
   delay <- asks $ ntfWorkerDelay . config
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AONtfNetwork runNtfOperation
+    agentOperationBracket c AONtfNetwork throwWhenInactive runNtfOperation
     threadDelay delay
   where
     runNtfOperation :: m ()
@@ -238,7 +238,7 @@ runNtfSMPWorker c srv doWork = do
   delay <- asks $ ntfSMPWorkerDelay . config
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AONtfNetwork runNtfSMPOperation
+    agentOperationBracket c AONtfNetwork throwWhenInactive runNtfSMPOperation
     threadDelay delay
   where
     runNtfSMPOperation = do

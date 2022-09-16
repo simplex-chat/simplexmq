@@ -58,6 +58,8 @@ module Simplex.Messaging.Agent.Client
     AgentState (..),
     agentOperations,
     agentOperationBracket,
+    waitUntilActive,
+    throwWhenInactive,
     beginAgentOperation,
     endAgentOperation,
     suspendSendingAndDatabase,
@@ -416,6 +418,12 @@ closeAgentClient c = liftIO $ do
   where
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
+
+waitUntilActive :: MonadIO m => AgentClient -> m ()
+waitUntilActive c = atomically $ unlessM (readTVar $ active c) retry
+
+throwWhenInactive :: AgentMonad m => AgentClient -> m ()
+throwWhenInactive c = unlessM (readTVarIO $ active c) . throwError $ INTERNAL "agent closed"
 
 closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
@@ -805,10 +813,10 @@ beginAgentOperation c op = do
   -- unsafeIOToSTM $ putStrLn $ "beginOperation! " <> show op <> " " <> show (opsInProgress s + 1)
   writeTVar opVar $! s {opsInProgress = opsInProgress s + 1}
 
-agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> m a -> m a
-agentOperationBracket c op action =
+agentOperationBracket :: AgentMonad m => AgentClient -> AgentOperation -> (AgentClient -> m ()) -> m a -> m a
+agentOperationBracket c op check action =
   E.bracket
-    (atomically $ beginAgentOperation c op)
+    (check c >> atomically (beginAgentOperation c op))
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
 
@@ -818,7 +826,7 @@ withStore' c action = withStore c $ fmap Right . action
 withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
 withStore c action = do
   st <- asks store
-  liftEitherError storeError . agentOperationBracket c AODatabase $
+  agentOperationBracket c AODatabase (\_ -> pure ()) . liftEitherError storeError $
     withTransaction st action `E.catch` handleInternal
   where
     handleInternal :: E.SomeException -> IO (Either StoreError a)
