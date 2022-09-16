@@ -305,6 +305,7 @@ retryOnError c name loop done e = do
   where
     retryLoop = do
       atomically $ endAgentOperation c AONtfNetwork
+      atomically $ throwWhenInactive c
       atomically $ beginAgentOperation c AONtfNetwork
       loop
 

@@ -438,7 +438,7 @@ closeProtocolServerClients c clientsSel =
         _ -> pure ()
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
-cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel >> atomically (writeTVar as mempty)
+cancelActions as = readTVarIO as >>= mapM_ (forkIO . uninterruptibleCancel) >> atomically (writeTVar as mempty)
 
 withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
 withAgentLock AgentClient {lock} =
@@ -817,7 +817,7 @@ beginAgentOperation c op = do
 agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> STM ()) -> m a -> m a
 agentOperationBracket c op check action =
   E.bracket
-    (atomically $ check c >> beginAgentOperation c op)
+    (atomically (check c) >> atomically (beginAgentOperation c op))
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
 
