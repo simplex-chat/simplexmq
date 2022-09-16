@@ -654,11 +654,10 @@ resumeConnCmds :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resumeConnCmds c connId =
   unlessM connQueued $
     withStore' c (`getPendingCommands` connId)
-      >>= mapM_ (uncurry enqueueSrvCmds)
+      >>= mapM_ (uncurry enqueueConnCmds)
   where
-    enqueueSrvCmds srv cmdIds = unlessM (cmdProcessExists c srv) $ do
-      a <- async (runCommandProcessing c srv)
-      atomically (TM.insert srv a $ asyncCmdProcesses c)
+    enqueueConnCmds srv cmdIds = do
+      resumeSrvCmds c srv
       queuePendingCommands c srv cmdIds
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
 
