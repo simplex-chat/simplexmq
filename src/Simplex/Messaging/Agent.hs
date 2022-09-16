@@ -717,9 +717,8 @@ runCommandProcessing c@AgentClient {subQ} server = do
         retryCommand loop = do
           -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
           atomically $ endAgentOperation c AOSndNetwork
-          atomically $ do
-            throwWhenInactive c
-            beginAgentOperation c AOSndNetwork
+          atomically $ throwWhenInactive c
+          atomically $ beginAgentOperation c AOSndNetwork
           loop
         notify cmd = atomically $ writeTBQueue subQ (corrId, connId, cmd)
     withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServer -> m ()) -> m ()
@@ -794,9 +793,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     atomically $ endAgentOperation c AOSndNetwork
     atomically $ throwWhenInactive c
     msgId <- atomically $ readTQueue mq
-    atomically $ do
-      beginAgentOperation c AOSndNetwork
-      endAgentOperation c AOMsgDelivery
+    atomically $ beginAgentOperation c AOSndNetwork
+    atomically $ endAgentOperation c AOMsgDelivery
     let mId = unId msgId
     E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left (e :: E.SomeException) ->
@@ -887,9 +885,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     retrySending loop = do
       -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
       atomically $ endAgentOperation c AOSndNetwork
-      atomically $ do
-        throwWhenInactive c
-        beginAgentOperation c AOSndNetwork
+      atomically $ throwWhenInactive c
+      atomically $ beginAgentOperation c AOSndNetwork
       loop
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
