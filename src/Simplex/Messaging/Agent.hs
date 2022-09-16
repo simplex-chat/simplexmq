@@ -684,7 +684,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
   ri <- asks $ messageRetryInterval . config -- different retry interval?
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
-    throwWhenInactive c
+    atomically $ throwWhenInactive c
     cmdId <- atomically $ readTQueue cq
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
@@ -717,8 +717,9 @@ runCommandProcessing c@AgentClient {subQ} server = do
         retryCommand loop = do
           -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
           atomically $ endAgentOperation c AOSndNetwork
-          throwWhenInactive c
-          atomically $ beginAgentOperation c AOSndNetwork
+          atomically $ do
+            throwWhenInactive c
+            beginAgentOperation c AOSndNetwork
           loop
         notify cmd = atomically $ writeTBQueue subQ (corrId, connId, cmd)
     withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServer -> m ()) -> m ()
@@ -791,7 +792,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
-    throwWhenInactive c
+    atomically $ throwWhenInactive c
     msgId <- atomically $ readTQueue mq
     atomically $ do
       beginAgentOperation c AOSndNetwork
@@ -886,8 +887,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     retrySending loop = do
       -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
       atomically $ endAgentOperation c AOSndNetwork
-      throwWhenInactive c
-      atomically $ beginAgentOperation c AOSndNetwork
+      atomically $ do
+        throwWhenInactive c
+        beginAgentOperation c AOSndNetwork
       loop
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
@@ -1203,9 +1205,10 @@ getNextSMPServer c usedSrvs = do
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
-  withAgentLock c (runExceptT $ agentOperationBracket c AORcvNetwork waitUntilActive $ processSMPTransmission c t) >>= \case
-    Left e -> liftIO $ print e
-    Right _ -> return ()
+  agentOperationBracket c AORcvNetwork waitUntilActive $
+    withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
+      Left e -> liftIO $ print e
+      Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cmd) =
