@@ -58,6 +58,8 @@ module Simplex.Messaging.Agent.Client
     AgentState (..),
     agentOperations,
     agentOperationBracket,
+    waitUntilActive,
+    throwWhenInactive,
     beginAgentOperation,
     endAgentOperation,
     suspendSendingAndDatabase,
@@ -72,7 +74,8 @@ where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
-import Control.Concurrent.STM (retry, stateTVar)
+import Control.Concurrent.STM (retry, stateTVar, throwSTM)
+import Control.Exception (AsyncException (..))
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -416,6 +419,12 @@ closeAgentClient c = liftIO $ do
   where
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
+
+waitUntilActive :: AgentClient -> STM ()
+waitUntilActive c = unlessM (readTVar $ active c) retry
+
+throwWhenInactive :: AgentClient -> STM ()
+throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
 
 closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
@@ -805,10 +814,10 @@ beginAgentOperation c op = do
   -- unsafeIOToSTM $ putStrLn $ "beginOperation! " <> show op <> " " <> show (opsInProgress s + 1)
   writeTVar opVar $! s {opsInProgress = opsInProgress s + 1}
 
-agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> m a -> m a
-agentOperationBracket c op action =
+agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> STM ()) -> m a -> m a
+agentOperationBracket c op check action =
   E.bracket
-    (atomically $ beginAgentOperation c op)
+    (atomically $ check c >> beginAgentOperation c op)
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
 
@@ -818,7 +827,7 @@ withStore' c action = withStore c $ fmap Right . action
 withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
 withStore c action = do
   st <- asks store
-  liftEitherError storeError . agentOperationBracket c AODatabase $
+  liftEitherError storeError . agentOperationBracket c AODatabase (\_ -> pure ()) $
     withTransaction st action `E.catch` handleInternal
   where
     handleInternal :: E.SomeException -> IO (Either StoreError a)
