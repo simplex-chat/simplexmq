@@ -3,13 +3,16 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
 
 import Control.Exception (Exception)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -18,6 +21,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -31,6 +35,7 @@ import Simplex.Messaging.Protocol
     SndPrivateSignKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Util ((<$?>))
 import Simplex.Messaging.Version
 
 -- * Queue types
@@ -158,6 +163,30 @@ data ConnData = ConnData
     duplexHandshake :: Maybe Bool -- added in agent protocol v2
   }
   deriving (Eq, Show)
+
+data AgentCommand = AClientCommand (ACommand 'Client)
+
+instance StrEncoding AgentCommand where
+  strEncode = \case
+    AClientCommand cmd -> "AGENT " <> serializeCommand cmd
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "AGENT" -> AClientCommand <$> (A.space *> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP))
+      _ -> fail "bad AgentCommand"
+
+data AgentCommandTag = AClientCommandTag (ACommandTag 'Client)
+
+instance StrEncoding AgentCommandTag where
+  strEncode = \case
+    AClientCommandTag t -> "AGENT " <> strEncode t
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "AGENT" -> AClientCommandTag <$> (A.space *> strP)
+      _ -> fail "bad AgentCommandTag"
+
+agentCommandTag :: AgentCommand -> AgentCommandTag
+agentCommandTag = \case
+  AClientCommand cmd -> AClientCommandTag $ aCommandTag cmd
 
 -- * Confirmation types
 

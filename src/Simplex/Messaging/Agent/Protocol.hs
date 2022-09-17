@@ -105,6 +105,7 @@ module Simplex.Messaging.Agent.Protocol
     agentMessageType,
     extraSMPServerHosts,
     updateSMPServerHosts,
+    checkParty,
 
     -- * TCP transport functions
     tPut,
@@ -222,7 +223,7 @@ instance APartyI Agent where sAParty = SAgent
 
 instance APartyI Client where sAParty = SClient
 
-data ACmd = forall p. ACmd (SAParty p) (ACommand p)
+data ACmd = forall p. APartyI p => ACmd (SAParty p) (ACommand p)
 
 deriving instance Show ACmd
 
@@ -1008,9 +1009,9 @@ networkCommandP = commandP A.takeByteString
 dbCommandP :: Parser ACmd
 dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
 
-instance Encoding ACmdTag where
-  smpEncode (ACmdTag _ cmd) = smpEncode cmd
-  smpP =
+instance StrEncoding ACmdTag where
+  strEncode (ACmdTag _ cmd) = strEncode cmd
+  strP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure $ ACmdTag SClient NEW_
       "INV" -> pure $ ACmdTag SAgent INV_
@@ -1043,8 +1044,8 @@ instance Encoding ACmdTag where
       "SUSPENDED" -> pure $ ACmdTag SAgent SUSPENDED_
       _ -> fail "bad ACmdTag"
 
-instance APartyI p => Encoding (ACommandTag p) where
-  smpEncode = \case
+instance APartyI p => StrEncoding (ACommandTag p) where
+  strEncode = \case
     NEW_ -> "NEW"
     INV_ -> "INV"
     JOIN_ -> "JOIN"
@@ -1074,7 +1075,7 @@ instance APartyI p => Encoding (ACommandTag p) where
     OK_ -> "OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
-  smpP = (\(ACmdTag _ t) -> checkParty t) <$?> smpP
+  strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
 checkParty x = case testEquality (sAParty @p) (sAParty @p') of
@@ -1084,7 +1085,7 @@ checkParty x = case testEquality (sAParty @p) (sAParty @p') of
 -- | SMP agent command and response parser
 commandP :: Parser ByteString -> Parser ACmd
 commandP binaryP =
-  smpP
+  strP
     >>= \case
       ACmdTag SClient cmd ->
         ACmd SClient <$> case cmd of
