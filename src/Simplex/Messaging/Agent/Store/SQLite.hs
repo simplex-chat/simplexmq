@@ -24,7 +24,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     closeSQLiteStore,
     sqlString,
-    exexSql,
+    exexSQL,
 
     -- * Queues and connections
     createNewConn,
@@ -241,8 +241,8 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 --   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
 --   print $ path <> " auto_vacuum: " <> show auto_vacuum
 
-exexSql :: DB.Connection -> Text -> IO [Text]
-exexSql db query = do
+exexSQL :: DB.Connection -> Text -> IO [Text]
+exexSQL db query = do
   rs <- newTVarIO []
   SQLite3.execWithCallback (DB.connectionHandle db) query (addRow rs)
   reverse <$> readTVarIO rs
