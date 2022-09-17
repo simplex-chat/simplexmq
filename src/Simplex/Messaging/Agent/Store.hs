@@ -168,20 +168,20 @@ data AgentCommand = AClientCommand (ACommand 'Client)
 
 instance StrEncoding AgentCommand where
   strEncode = \case
-    AClientCommand cmd -> "AGENT " <> serializeCommand cmd
+    AClientCommand cmd -> "CLIENT " <> serializeCommand cmd
   strP =
     A.takeTill (== ' ') >>= \case
-      "AGENT" -> AClientCommand <$> (A.space *> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP))
+      "CLIENT" -> AClientCommand <$> (A.space *> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP))
       _ -> fail "bad AgentCommand"
 
 data AgentCommandTag = AClientCommandTag (ACommandTag 'Client)
 
 instance StrEncoding AgentCommandTag where
   strEncode = \case
-    AClientCommandTag t -> "AGENT " <> strEncode t
+    AClientCommandTag t -> "CLIENT " <> strEncode t
   strP =
     A.takeTill (== ' ') >>= \case
-      "AGENT" -> AClientCommandTag <$> (A.space *> strP)
+      "CLIENT" -> AClientCommandTag <$> (A.space *> strP)
       _ -> fail "bad AgentCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
