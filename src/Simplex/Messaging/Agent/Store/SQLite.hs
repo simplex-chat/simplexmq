@@ -714,7 +714,7 @@ updateRatchet db connId rc skipped = do
         forM_ (M.assocs mks) $ \(msgN, mk) ->
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
-createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO AsyncCmdId
+createCommand :: AgentCmdTypeI t => DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand t -> IO AsyncCmdId
 createCommand db corrId connId srv cmd = do
   DB.execute
     db
@@ -746,7 +746,7 @@ getPendingCommands db connId = do
   where
     srvCmdId (host, port, keyHash, cmdId) = (SMPServer <$> host <*> port <*> keyHash, cmdId)
 
-getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ACorrId, ConnId, AgentCommand))
+getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ACorrId, ConnId, AgentCmd))
 getPendingCommand db msgId = do
   firstRow id SECmdNotFound $
     DB.query
@@ -1120,9 +1120,9 @@ instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField AgentCommand where toField = toField . strEncode
+instance AgentCmdTypeI t => ToField (AgentCommand t) where toField = toField . strEncode
 
-instance FromField AgentCommand where fromField = blobFieldParser strP
+instance FromField AgentCmd where fromField = blobFieldParser strP
 
 instance ToField AgentCommandTag where toField = toField . strEncode
 

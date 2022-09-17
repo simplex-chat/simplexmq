@@ -6,7 +6,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
@@ -164,29 +166,107 @@ data ConnData = ConnData
   }
   deriving (Eq, Show)
 
-data AgentCommand = AClientCommand (ACommand 'Client)
+data AgentCmdType = ACClient | ACInternal
 
-instance StrEncoding AgentCommand where
+data SAgentCmdType :: AgentCmdType -> Type where
+  SACClient :: SAgentCmdType 'ACClient
+  SACInternal :: SAgentCmdType 'ACInternal
+
+instance TestEquality SAgentCmdType where
+  testEquality SACClient SACClient = Just Refl
+  testEquality SACInternal SACInternal = Just Refl
+  testEquality _ _ = Nothing
+
+class AgentCmdTypeI (t :: AgentCmdType) where sAgentCmdType :: SAgentCmdType t
+
+instance AgentCmdTypeI 'ACClient where sAgentCmdType = SACClient
+
+instance AgentCmdTypeI 'ACInternal where sAgentCmdType = SACInternal
+
+instance StrEncoding AgentCmdType where
   strEncode = \case
-    AClientCommand cmd -> "CLIENT " <> serializeCommand cmd
+    ACClient -> "CLIENT"
+    ACInternal -> "INTERNAL"
   strP =
     A.takeTill (== ' ') >>= \case
-      "CLIENT" -> AClientCommand <$> (A.space *> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP))
-      _ -> fail "bad AgentCommand"
+      "CLIENT" -> pure ACClient
+      "INTERNAL" -> pure ACInternal
+      _ -> fail "bad AgentCmdType"
 
-data AgentCommandTag = AClientCommandTag (ACommandTag 'Client)
+data AgentCommand (t :: AgentCmdType) where
+  AClientCommand :: ACommand 'Client -> AgentCommand 'ACClient
+  AInternalCommand :: InternalCommand -> AgentCommand 'ACInternal
+
+data AgentCmd = forall t. AgentCmdTypeI t => AgentCmd (SAgentCmdType t) (AgentCommand t)
+
+instance AgentCmdTypeI t => StrEncoding (AgentCommand t) where
+  strEncode = \case
+    AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand cmd)
+    AInternalCommand cmd -> strEncode (ACInternal, cmd)
+  strP = (\(AgentCmd _ cmd) -> checkAgentCmdType cmd) <$?> strP
+
+instance StrEncoding AgentCmd where
+  strEncode (AgentCmd _ cmd) = strEncode cmd
+  strP =
+    strP_ >>= \case
+      ACClient -> AgentCmd SACClient . AClientCommand <$> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP)
+      ACInternal -> AgentCmd SACInternal . AInternalCommand <$> strP
+
+checkAgentCmdType :: forall f t t'. (AgentCmdTypeI t, AgentCmdTypeI t') => f t' -> Either String (f t)
+checkAgentCmdType x = case testEquality (sAgentCmdType @t) (sAgentCmdType @t') of
+  Just Refl -> Right x
+  Nothing -> Left "bad AgentCmdType"
+
+data AgentCommandTag
+  = AClientCommandTag (ACommandTag 'Client)
+  | AInternalCommandTag InternalCommandTag
 
 instance StrEncoding AgentCommandTag where
   strEncode = \case
-    AClientCommandTag t -> "CLIENT " <> strEncode t
+    AClientCommandTag t -> strEncode (ACClient, t)
+    AInternalCommandTag t -> strEncode (ACInternal, t)
+  strP =
+    strP_ >>= \case
+      ACClient -> AClientCommandTag <$> strP
+      ACInternal -> AInternalCommandTag <$> strP
+
+data InternalCommand
+  = ICAck SMP.RecipientId MsgId
+  | ICAckDel SMP.RecipientId MsgId InternalId
+
+data InternalCommandTag
+  = ICAck_
+  | ICAckDel_
+  deriving (Show)
+
+instance StrEncoding InternalCommand where
+  strEncode = \case
+    ICAck rcvId' srvMsgId -> strEncode (ICAck_, rcvId', srvMsgId)
+    ICAckDel rcvId' srvMsgId msgId' -> strEncode (ICAckDel_, rcvId', srvMsgId, msgId')
+  strP =
+    strP_ >>= \case
+      ICAck_ -> ICAck <$> strP_ <*> strP
+      ICAckDel_ -> ICAckDel <$> strP_ <*> strP_ <*> strP
+
+instance StrEncoding InternalCommandTag where
+  strEncode = \case
+    ICAck_ -> "ACK"
+    ICAckDel_ -> "ACK_DEL"
   strP =
     A.takeTill (== ' ') >>= \case
-      "CLIENT" -> AClientCommandTag <$> (A.space *> strP)
-      _ -> fail "bad AgentCommandTag"
+      "ACK" -> pure ICAck_
+      "ACK_DEL" -> pure ICAckDel_
+      _ -> fail "bad InternalCommandTag"
 
-agentCommandTag :: AgentCommand -> AgentCommandTag
+agentCommandTag :: AgentCommand t -> AgentCommandTag
 agentCommandTag = \case
   AClientCommand cmd -> AClientCommandTag $ aCommandTag cmd
+  AInternalCommand cmd -> AInternalCommandTag $ internalCmdTag cmd
+
+internalCmdTag :: InternalCommand -> InternalCommandTag
+internalCmdTag = \case
+  ICAck {} -> ICAck_
+  ICAckDel {} -> ICAckDel_
 
 -- * Confirmation types
 
@@ -301,6 +381,10 @@ data MsgBase = MsgBase
   deriving (Eq, Show)
 
 newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
+
+instance StrEncoding InternalId where
+  strEncode = strEncode . unId
+  strP = InternalId <$> strP
 
 type InternalTs = UTCTime
 
