@@ -71,6 +71,7 @@ module Simplex.Messaging.Agent
     toggleConnectionNtfs,
     activateAgent,
     suspendAgent,
+    execAgentStoreSQL,
     logConnection,
   )
 where
@@ -91,6 +92,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
@@ -272,6 +274,9 @@ activateAgent c = withAgentEnv c $ activateAgent' c
 -- | Suspend operations with max delay to deliver pending messages
 suspendAgent :: AgentErrorMonad m => AgentClient -> Int -> m ()
 suspendAgent c = withAgentEnv c . suspendAgent' c
+
+execAgentStoreSQL :: AgentErrorMonad m => AgentClient -> Text -> m [Text]
+execAgentStoreSQL c = withAgentEnv c . execAgentStoreSQL' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -1179,6 +1184,9 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
     atomically . whenSuspending c $ do
       -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
       suspendSendingAndDatabase c
+
+execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
+execAgentStoreSQL' c sql = withStore' c (`exexSQL` sql)
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = readTVarIO (smpServers c) >>= pickServer
