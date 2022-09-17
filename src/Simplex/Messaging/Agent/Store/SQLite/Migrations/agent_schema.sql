@@ -199,6 +199,20 @@ CREATE TABLE ntf_subscriptions(
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
+CREATE TABLE commands(
+  command_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  host TEXT,
+  port TEXT,
+  corr_id BLOB NOT NULL,
+  command_tag BLOB NOT NULL,
+  command BLOB NOT NULL,
+  agent_version INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY(host, port) REFERENCES servers
+  ON DELETE RESTRICT ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(rcv_queue_id);
+CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(snd_queue_id);
 CREATE TABLE snd_message_deliveries(
   conn_id BLOB NOT NULL,
   host TEXT NOT NULL,
@@ -223,15 +237,3 @@ CREATE TABLE rcv_message_deliveries(
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
-CREATE TABLE commands(
-  command_id INTEGER PRIMARY KEY,
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  host TEXT,
-  port TEXT,
-  corr_id BLOB NOT NULL,
-  command_tag BLOB NOT NULL,
-  command BLOB NOT NULL,
-  agent_version INTEGER NOT NULL DEFAULT 1,
-  FOREIGN KEY(host, port) REFERENCES servers
-  ON DELETE RESTRICT ON UPDATE CASCADE
-);

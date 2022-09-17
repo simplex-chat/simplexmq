@@ -105,6 +105,7 @@ module Simplex.Messaging.Agent.Protocol
     agentMessageType,
     extraSMPServerHosts,
     updateSMPServerHosts,
+    checkParty,
 
     -- * TCP transport functions
     tPut,
@@ -222,7 +223,7 @@ instance APartyI Agent where sAParty = SAgent
 
 instance APartyI Client where sAParty = SClient
 
-data ACmd = forall p. ACmd (SAParty p) (ACommand p)
+data ACmd = forall p. APartyI p => ACmd (SAParty p) (ACommand p)
 
 deriving instance Show ACmd
 

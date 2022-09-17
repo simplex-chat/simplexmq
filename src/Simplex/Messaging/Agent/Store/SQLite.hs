@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     closeSQLiteStore,
     sqlString,
+    exexSQL,
 
     -- * Queues and connections
     createNewConn,
@@ -242,6 +243,17 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 --   print $ path <> " secure_delete: " <> show secure_delete
 --   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
 --   print $ path <> " auto_vacuum: " <> show auto_vacuum
+
+exexSQL :: DB.Connection -> Text -> IO [Text]
+exexSQL db query = do
+  rs <- newTVarIO []
+  SQLite3.execWithCallback (DB.connectionHandle db) query (addRow rs)
+  reverse <$> readTVarIO rs
+  where
+    addRow rs _count names values = atomically . modifyTVar' rs $ \case
+      [] -> [showValues values, T.intercalate "|" names]
+      rs' -> showValues values : rs'
+    showValues = T.intercalate "|" . map (fromMaybe "")
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
@@ -711,12 +723,12 @@ updateRatchet db connId rc skipped = do
         forM_ (M.assocs mks) $ \(msgN, mk) ->
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
-createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> ACommand 'Client -> IO AsyncCmdId
+createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO AsyncCmdId
 createCommand db corrId connId srv cmd = do
   DB.execute
     db
     "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command) VALUES (?,?,?,?,?,?)"
-    (host_, port_, corrId, connId, aCommandTag cmd, cmd)
+    (host_, port_, corrId, connId, agentCommandTag cmd, cmd)
   insertedRowId db
   where
     (host_, port_) =
@@ -743,7 +755,7 @@ getPendingCommands db connId = do
   where
     srvCmdId (host, port, keyHash, cmdId) = (SMPServer <$> host <*> port <*> keyHash, cmdId)
 
-getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ACorrId, ConnId, ACmd))
+getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ACorrId, ConnId, AgentCommand))
 getPendingCommand db msgId = do
   firstRow id SECmdNotFound $
     DB.query
@@ -1117,13 +1129,13 @@ instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField (ACommand p) where toField = toField . serializeCommand
+instance ToField AgentCommand where toField = toField . strEncode
 
-instance FromField ACmd where fromField = blobFieldParser dbCommandP
+instance FromField AgentCommand where fromField = blobFieldParser strP
 
-instance APartyI p => ToField (ACommandTag p) where toField = toField . strEncode
+instance ToField AgentCommandTag where toField = toField . strEncode
 
-instance FromField ACmdTag where fromField = blobFieldParser strP
+instance FromField AgentCommandTag where fromField = blobFieldParser strP
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x

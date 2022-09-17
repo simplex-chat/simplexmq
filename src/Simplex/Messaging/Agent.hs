@@ -71,6 +71,7 @@ module Simplex.Messaging.Agent
     toggleConnectionNtfs,
     activateAgent,
     suspendAgent,
+    execAgentStoreSQL,
     logConnection,
   )
 where
@@ -92,6 +93,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
@@ -277,6 +279,9 @@ activateAgent c = withAgentEnv c $ activateAgent' c
 -- | Suspend operations with max delay to deliver pending messages
 suspendAgent :: AgentErrorMonad m => AgentClient -> Int -> m ()
 suspendAgent c = withAgentEnv c . suspendAgent' c
+
+execAgentStoreSQL :: AgentErrorMonad m => AgentClient -> Text -> m [Text]
+execAgentStoreSQL c = withAgentEnv c . execAgentStoreSQL' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -669,7 +674,7 @@ sendMessage' c connId msgFlags msg =
 enqueueCommand :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
 enqueueCommand c corrId connId server aCommand = do
   resumeSrvCmds c server
-  commandId <- withStore' c $ \db -> createCommand db corrId connId server aCommand
+  commandId <- withStore' c $ \db -> createCommand db corrId connId server $ AClientCommand aCommand
   queuePendingCommands c server [commandId]
 
 resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
@@ -682,11 +687,10 @@ resumeConnCmds :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resumeConnCmds c connId =
   unlessM connQueued $
     withStore' c (`getPendingCommands` connId)
-      >>= mapM_ (uncurry enqueueSrvCmds)
+      >>= mapM_ (uncurry enqueueConnCmds)
   where
-    enqueueSrvCmds srv cmdIds = unlessM (cmdProcessExists c srv) $ do
-      a <- async (runCommandProcessing c srv)
-      atomically (TM.insert srv a $ asyncCmdProcesses c)
+    enqueueConnCmds srv cmdIds = do
+      resumeSrvCmds c srv
       queuePendingCommands c srv cmdIds
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
 
@@ -713,13 +717,14 @@ runCommandProcessing c@AgentClient {subQ} server = do
   ri <- asks $ messageRetryInterval . config -- different retry interval?
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
+    atomically $ throwWhenInactive c
     cmdId <- atomically $ readTQueue cq
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", ERR . INTERNAL $ show e)
-      Right (corrId, connId, ACmd _ cmd) -> processCmd ri corrId connId cmdId cmd
+      Right (corrId, connId, AClientCommand cmd) -> processCmd ri corrId connId cmdId cmd
   where
-    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> ACommand p -> m ()
+    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> ACommand 'Client -> m ()
     processCmd ri corrId connId cmdId = \case
       NEW enableNtfs (ACM cMode) -> do
         usedSrvs <- newTVarIO ([] :: [SMPServer])
@@ -746,6 +751,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
         retryCommand loop = do
           -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
           atomically $ endAgentOperation c AOSndNetwork
+          atomically $ throwWhenInactive c
           atomically $ beginAgentOperation c AOSndNetwork
           loop
         notify cmd = atomically $ writeTBQueue subQ (corrId, connId, cmd)
@@ -828,10 +834,10 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
+    atomically $ throwWhenInactive c
     msgId <- atomically $ readTQueue mq
-    atomically $ do
-      beginAgentOperation c AOSndNetwork
-      endAgentOperation c AOMsgDelivery
+    atomically $ beginAgentOperation c AOSndNetwork
+    atomically $ endAgentOperation c AOMsgDelivery
     let mId = unId msgId
     E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left (e :: E.SomeException) ->
@@ -926,6 +932,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     retrySending loop = do
       -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
       atomically $ endAgentOperation c AOSndNetwork
+      atomically $ throwWhenInactive c
       atomically $ beginAgentOperation c AOSndNetwork
       loop
 
@@ -1231,6 +1238,9 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
       -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
       suspendSendingAndDatabase c
 
+execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
+execAgentStoreSQL' c sql = withStore' c (`exexSQL` sql)
+
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = readTVarIO (smpServers c) >>= pickServer
 
@@ -1253,7 +1263,7 @@ getNextSMPServer c usedSrvs = do
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
-  agentOperationBracket c AORcvNetwork $
+  agentOperationBracket c AORcvNetwork waitUntilActive $
     withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
       Left e -> liftIO $ print e
       Right _ -> return ()
