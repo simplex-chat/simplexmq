@@ -641,7 +641,7 @@ sendMessage' c connId msgFlags msg =
 enqueueCommand :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
 enqueueCommand c corrId connId server aCommand = do
   resumeSrvCmds c server
-  commandId <- withStore' c $ \db -> createCommand db corrId connId server aCommand
+  commandId <- withStore' c $ \db -> createCommand db corrId connId server $ AClientCommand aCommand
   queuePendingCommands c server [commandId]
 
 resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
@@ -689,9 +689,9 @@ runCommandProcessing c@AgentClient {subQ} server = do
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", ERR . INTERNAL $ show e)
-      Right (corrId, connId, ACmd _ cmd) -> processCmd ri corrId connId cmdId cmd
+      Right (corrId, connId, AClientCommand cmd) -> processCmd ri corrId connId cmdId cmd
   where
-    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> ACommand p -> m ()
+    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> ACommand 'Client -> m ()
     processCmd ri corrId connId cmdId = \case
       NEW enableNtfs (ACM cMode) -> do
         usedSrvs <- newTVarIO ([] :: [SMPServer])
