@@ -241,8 +241,8 @@ data InternalCommandTag
 
 instance StrEncoding InternalCommand where
   strEncode = \case
-    ICAck rcvId' srvMsgId -> strEncode (ICAck_, rcvId', srvMsgId)
-    ICAckDel rcvId' srvMsgId msgId' -> strEncode (ICAckDel_, rcvId', srvMsgId, msgId')
+    ICAck rId srvMsgId -> strEncode (ICAck_, rId, srvMsgId)
+    ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
   strP =
     strP_ >>= \case
       ICAck_ -> ICAck <$> strP_ <*> strP
