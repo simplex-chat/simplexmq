@@ -5,4 +5,5 @@
 tests/tmp
 dist-newstyle/
 
-src/tor
+cabal.project.local
+cabal.project.local~
