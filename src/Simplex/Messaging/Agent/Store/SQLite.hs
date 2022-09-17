@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     closeSQLiteStore,
     sqlString,
+    exexSql,
 
     -- * Queues and connections
     createNewConn,
@@ -118,7 +119,7 @@ import Data.Char (toLower)
 import Data.Function (on)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find, foldl', groupBy)
+import Data.List (foldl', groupBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -239,6 +240,17 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 --   print $ path <> " secure_delete: " <> show secure_delete
 --   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
 --   print $ path <> " auto_vacuum: " <> show auto_vacuum
+
+exexSql :: DB.Connection -> Text -> IO [Text]
+exexSql db query = do
+  rs <- newTVarIO []
+  SQLite3.execWithCallback (DB.connectionHandle db) query (addRow rs)
+  reverse <$> readTVarIO rs
+  where
+    addRow rs _count names values = atomically . modifyTVar' rs $ \case
+      [] -> [showValues values, T.intercalate "|" names]
+      rs' -> showValues values : rs'
+    showValues = T.intercalate "|" . map (fromMaybe "")
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
