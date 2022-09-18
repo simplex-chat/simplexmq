@@ -6,7 +6,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
@@ -164,29 +166,81 @@ data ConnData = ConnData
   }
   deriving (Eq, Show)
 
-data AgentCommand = AClientCommand (ACommand 'Client)
+data AgentCmdType = ACClient | ACInternal
+
+instance StrEncoding AgentCmdType where
+  strEncode = \case
+    ACClient -> "CLIENT"
+    ACInternal -> "INTERNAL"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "CLIENT" -> pure ACClient
+      "INTERNAL" -> pure ACInternal
+      _ -> fail "bad AgentCmdType"
+
+data AgentCommand
+  = AClientCommand (ACommand 'Client)
+  | AInternalCommand InternalCommand
 
 instance StrEncoding AgentCommand where
   strEncode = \case
-    AClientCommand cmd -> "CLIENT " <> serializeCommand cmd
+    AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand cmd)
+    AInternalCommand cmd -> strEncode (ACInternal, cmd)
   strP =
-    A.takeTill (== ' ') >>= \case
-      "CLIENT" -> AClientCommand <$> (A.space *> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP))
-      _ -> fail "bad AgentCommand"
+    strP_ >>= \case
+      ACClient -> AClientCommand <$> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP)
+      ACInternal -> AInternalCommand <$> strP
 
-data AgentCommandTag = AClientCommandTag (ACommandTag 'Client)
+data AgentCommandTag
+  = AClientCommandTag (ACommandTag 'Client)
+  | AInternalCommandTag InternalCommandTag
 
 instance StrEncoding AgentCommandTag where
   strEncode = \case
-    AClientCommandTag t -> "CLIENT " <> strEncode t
+    AClientCommandTag t -> strEncode (ACClient, t)
+    AInternalCommandTag t -> strEncode (ACInternal, t)
+  strP =
+    strP_ >>= \case
+      ACClient -> AClientCommandTag <$> strP
+      ACInternal -> AInternalCommandTag <$> strP
+
+data InternalCommand
+  = ICAck SMP.RecipientId MsgId
+  | ICAckDel SMP.RecipientId MsgId InternalId
+
+data InternalCommandTag
+  = ICAck_
+  | ICAckDel_
+  deriving (Show)
+
+instance StrEncoding InternalCommand where
+  strEncode = \case
+    ICAck rId srvMsgId -> strEncode (ICAck_, rId, srvMsgId)
+    ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
+  strP =
+    strP_ >>= \case
+      ICAck_ -> ICAck <$> strP_ <*> strP
+      ICAckDel_ -> ICAckDel <$> strP_ <*> strP_ <*> strP
+
+instance StrEncoding InternalCommandTag where
+  strEncode = \case
+    ICAck_ -> "ACK"
+    ICAckDel_ -> "ACK_DEL"
   strP =
     A.takeTill (== ' ') >>= \case
-      "CLIENT" -> AClientCommandTag <$> (A.space *> strP)
-      _ -> fail "bad AgentCommandTag"
+      "ACK" -> pure ICAck_
+      "ACK_DEL" -> pure ICAckDel_
+      _ -> fail "bad InternalCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
 agentCommandTag = \case
   AClientCommand cmd -> AClientCommandTag $ aCommandTag cmd
+  AInternalCommand cmd -> AInternalCommandTag $ internalCmdTag cmd
+
+internalCmdTag :: InternalCommand -> InternalCommandTag
+internalCmdTag = \case
+  ICAck {} -> ICAck_
+  ICAckDel {} -> ICAckDel_
 
 -- * Confirmation types
 
@@ -301,6 +355,10 @@ data MsgBase = MsgBase
   deriving (Eq, Show)
 
 newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
+
+instance StrEncoding InternalId where
+  strEncode = strEncode . unId
+  strP = InternalId <$> strP
 
 type InternalTs = UTCTime
 
