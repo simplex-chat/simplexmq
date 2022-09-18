@@ -643,7 +643,7 @@ sendMessage' c connId msgFlags msg =
 
 -- / async command processing v v v
 
-enqueueCommand :: (AgentMonad m, AgentCmdTypeI t) => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand t -> m ()
+enqueueCommand :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> m ()
 enqueueCommand c corrId connId server aCommand = do
   resumeSrvCmds c server
   commandId <- withStore' c $ \db -> createCommand db corrId connId server aCommand
@@ -694,9 +694,9 @@ runCommandProcessing c@AgentClient {subQ} server = do
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", ERR . INTERNAL $ show e)
-      Right (corrId, connId, AgentCmd _ cmd) -> processCmd ri corrId connId cmdId cmd
+      Right (corrId, connId, cmd) -> processCmd ri corrId connId cmdId cmd
   where
-    processCmd :: forall t. RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> AgentCommand t -> m ()
+    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> AgentCommand -> m ()
     processCmd ri corrId connId cmdId = \case
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) -> do
@@ -724,7 +724,6 @@ runCommandProcessing c@AgentClient {subQ} server = do
             rq <- withStore c (`getRcvQueue` connId)
             ackQueueMessage c rq srvMsgId
       where
-        tryCommand :: m () -> m ()
         tryCommand action = withRetryInterval ri $ \loop ->
           tryError action >>= \case
             Left e

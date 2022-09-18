@@ -168,21 +168,6 @@ data ConnData = ConnData
 
 data AgentCmdType = ACClient | ACInternal
 
-data SAgentCmdType :: AgentCmdType -> Type where
-  SACClient :: SAgentCmdType 'ACClient
-  SACInternal :: SAgentCmdType 'ACInternal
-
-instance TestEquality SAgentCmdType where
-  testEquality SACClient SACClient = Just Refl
-  testEquality SACInternal SACInternal = Just Refl
-  testEquality _ _ = Nothing
-
-class AgentCmdTypeI (t :: AgentCmdType) where sAgentCmdType :: SAgentCmdType t
-
-instance AgentCmdTypeI 'ACClient where sAgentCmdType = SACClient
-
-instance AgentCmdTypeI 'ACInternal where sAgentCmdType = SACInternal
-
 instance StrEncoding AgentCmdType where
   strEncode = \case
     ACClient -> "CLIENT"
@@ -193,29 +178,18 @@ instance StrEncoding AgentCmdType where
       "INTERNAL" -> pure ACInternal
       _ -> fail "bad AgentCmdType"
 
-data AgentCommand (t :: AgentCmdType) where
-  AClientCommand :: ACommand 'Client -> AgentCommand 'ACClient
-  AInternalCommand :: InternalCommand -> AgentCommand 'ACInternal
+data AgentCommand
+  = AClientCommand (ACommand 'Client)
+  | AInternalCommand InternalCommand
 
-data AgentCmd = forall t. AgentCmdTypeI t => AgentCmd (SAgentCmdType t) (AgentCommand t)
-
-instance AgentCmdTypeI t => StrEncoding (AgentCommand t) where
+instance StrEncoding AgentCommand where
   strEncode = \case
     AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand cmd)
     AInternalCommand cmd -> strEncode (ACInternal, cmd)
-  strP = (\(AgentCmd _ cmd) -> checkAgentCmdType cmd) <$?> strP
-
-instance StrEncoding AgentCmd where
-  strEncode (AgentCmd _ cmd) = strEncode cmd
   strP =
     strP_ >>= \case
-      ACClient -> AgentCmd SACClient . AClientCommand <$> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP)
-      ACInternal -> AgentCmd SACInternal . AInternalCommand <$> strP
-
-checkAgentCmdType :: forall f t t'. (AgentCmdTypeI t, AgentCmdTypeI t') => f t' -> Either String (f t)
-checkAgentCmdType x = case testEquality (sAgentCmdType @t) (sAgentCmdType @t') of
-  Just Refl -> Right x
-  Nothing -> Left "bad AgentCmdType"
+      ACClient -> AClientCommand <$> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP)
+      ACInternal -> AInternalCommand <$> strP
 
 data AgentCommandTag
   = AClientCommandTag (ACommandTag 'Client)
@@ -258,7 +232,7 @@ instance StrEncoding InternalCommandTag where
       "ACK_DEL" -> pure ICAckDel_
       _ -> fail "bad InternalCommandTag"
 
-agentCommandTag :: AgentCommand t -> AgentCommandTag
+agentCommandTag :: AgentCommand -> AgentCommandTag
 agentCommandTag = \case
   AClientCommand cmd -> AClientCommandTag $ aCommandTag cmd
   AInternalCommand cmd -> AInternalCommandTag $ internalCmdTag cmd
