@@ -108,6 +108,8 @@ You can run your SMP server as a Linux process, optionally using a service manag
 
 - Run `smp-server start` to start SMP server, or you can configure a service manager to run it as a service.
 
+- Optionally, `smp-server` can be setup for having an onion address in `tor` network. See: [`scripts/tor`](./scripts/tor/). In this case, the server address can have both public and onion hostname pointing to the same server, to allow two people connect when only one of them is using Tor. The server address would be: `smp://<fingerprint>@<public_hostname>,<onion_hostname>`
+
 See [this section](#smp-server) for more information. Run `smp-server -h` and `smp-server init -h` for explanation of commands and options.
 
 <img alt="Docker" src="./img/docker.svg" align="right" width="200">

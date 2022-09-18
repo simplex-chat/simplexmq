@@ -119,6 +119,7 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Function (on)
 import Data.Functor (($>))
+import Data.IORef
 import Data.Int (Int64)
 import Data.List (foldl', groupBy, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -246,11 +247,11 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 
 exexSQL :: DB.Connection -> Text -> IO [Text]
 exexSQL db query = do
-  rs <- newTVarIO []
+  rs <- newIORef []
   SQLite3.execWithCallback (DB.connectionHandle db) query (addRow rs)
-  reverse <$> readTVarIO rs
+  reverse <$> readIORef rs
   where
-    addRow rs _count names values = atomically . modifyTVar' rs $ \case
+    addRow rs _count names values = modifyIORef' rs $ \case
       [] -> [showValues values, T.intercalate "|" names]
       rs' -> showValues values : rs'
     showValues = T.intercalate "|" . map (fromMaybe "")

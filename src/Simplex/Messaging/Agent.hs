@@ -332,7 +332,7 @@ newConnAsync c corrId enableNtfs cMode = do
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId <- withStore c $ \db -> createNewConn db g cData cMode
-  enqueueCommand c corrId connId Nothing $ NEW enableNtfs (ACM cMode)
+  enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode)
   pure connId
 
 joinConnAsync :: AgentMonad m => AgentClient -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
@@ -344,7 +344,7 @@ joinConnAsync c corrId enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ age
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
       connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-      enqueueCommand c corrId connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
+      enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
       pure connId
     _ -> throwError $ AGENT A_VERSION
 joinConnAsync _c _corrId _enableNtfs (CRContactUri _) _cInfo =
@@ -354,7 +354,7 @@ allowConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Con
 allowConnectionAsync' c corrId connId confId ownConnInfo =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ RcvQueue {server}) ->
-      enqueueCommand c corrId connId (Just server) $ LET confId ownConnInfo
+      enqueueCommand c corrId connId (Just server) $ AClientCommand $ LET confId ownConnInfo
     _ -> throwError $ CMD PROHIBITED
 
 ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
@@ -368,7 +368,7 @@ ackMessageAsync' c corrId connId msgId =
   where
     enqueueAck :: RcvQueue -> m ()
     enqueueAck RcvQueue {server} = do
-      enqueueCommand c corrId connId (Just server) $ ACK msgId
+      enqueueCommand c corrId connId (Just server) $ AClientCommand $ ACK msgId
 
 -- | Add connection to the new receive queue
 addConnectionRcvQueueAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Bool -> m ()
@@ -378,7 +378,7 @@ addConnectionRcvQueueAsync' c corrId connId primary =
       -- try to get the server that is different from all queues, or at least from the primary rcv queue
       srv <- getNextSMPServer c $ map rcvServer (L.toList rqs) ++ map sndServer (L.toList sqs)
       srv' <- if srv == server then getNextSMPServer c [server] else pure srv
-      enqueueCommand c corrId connId Nothing $ ADDQ srv' primary
+      enqueueCommand c corrId connId Nothing $ AClientCommand $ ADDQ srv' primary
     _ -> throwError $ CMD PROHIBITED
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
@@ -671,10 +671,10 @@ sendMessage' c connId msgFlags msg =
 
 -- / async command processing v v v
 
-enqueueCommand :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
+enqueueCommand :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> m ()
 enqueueCommand c corrId connId server aCommand = do
   resumeSrvCmds c server
-  commandId <- withStore' c $ \db -> createCommand db corrId connId server $ AClientCommand aCommand
+  commandId <- withStore' c $ \db -> createCommand db corrId connId server aCommand
   queuePendingCommands c server [commandId]
 
 resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
@@ -722,25 +722,36 @@ runCommandProcessing c@AgentClient {subQ} server = do
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", ERR . INTERNAL $ show e)
-      Right (corrId, connId, AClientCommand cmd) -> processCmd ri corrId connId cmdId cmd
+      Right (corrId, connId, cmd) -> processCmd ri corrId connId cmdId cmd
   where
-    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> ACommand 'Client -> m ()
+    processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> AgentCommand -> m ()
     processCmd ri corrId connId cmdId = \case
-      NEW enableNtfs (ACM cMode) -> do
-        usedSrvs <- newTVarIO ([] :: [SMPServer])
-        tryCommand . withNextSrv usedSrvs [] $ \srv -> do
-          (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
-          notify $ INV (ACR cMode cReq)
-      JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress} :| _} _)) connInfo -> do
-        let initUsed = [smpServer (queueAddress :: SMPQueueAddress)]
-        usedSrvs <- newTVarIO initUsed
-        tryCommand . withNextSrv usedSrvs initUsed $ \srv -> do
-          void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
-          notify OK
-      LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
-      ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
-      ADDQ srv primary -> tryCommand $ addConnectionRcvQueue' c connId srv primary >> notify OK
-      cmd -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
+      AClientCommand cmd -> case cmd of
+        NEW enableNtfs (ACM cMode) -> do
+          usedSrvs <- newTVarIO ([] :: [SMPServer])
+          tryCommand . withNextSrv usedSrvs [] $ \srv -> do
+            (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
+            notify $ INV (ACR cMode cReq)
+        JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress} :| _} _)) connInfo -> do
+          let initUsed = [smpServer (queueAddress :: SMPQueueAddress)]
+          usedSrvs <- newTVarIO initUsed
+          tryCommand . withNextSrv usedSrvs initUsed $ \srv -> do
+            void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
+            notify OK
+        LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
+        ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
+        ADDQ srv primary -> tryCommand $ addConnectionRcvQueue' c connId srv primary >> notify OK
+        _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
+      AInternalCommand cmd -> case server of
+        Just _srv -> case cmd of
+          ICAckDel _rId srvMsgId msgId -> tryCommand $ ack _rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
+          ICAck _rId srvMsgId -> tryCommand $ ack _rId srvMsgId
+        _ -> notify $ ERR $ INTERNAL $ "command requires server " <> show (internalCmdTag cmd)
+        where
+          ack _rId srvMsgId = do
+            -- TODO get particular queue
+            rq <- withStore c (`getPrimaryRcvQueue` connId)
+            ackQueueMessage c rq srvMsgId
       where
         tryCommand action = withRetryInterval ri $ \loop ->
           tryError action >>= \case
@@ -949,10 +960,14 @@ ackMessage' c connId msgId = do
     ack rq = do
       let mId = InternalId msgId
       srvMsgId <- withStore c $ \db -> setMsgUserAck db connId mId
-      sendAck c rq srvMsgId `catchError` \case
-        SMP SMP.NO_MSG -> pure ()
-        e -> throwError e
+      ackQueueMessage c rq srvMsgId
       withStore' c $ \db -> deleteMsg db connId mId
+
+ackQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> SMP.MsgId -> m ()
+ackQueueMessage c rq srvMsgId =
+  sendAck c rq srvMsgId `catchError` \case
+    SMP SMP.NO_MSG -> pure ()
+    e -> throwError e
 
 addConnectionRcvQueue' :: AgentMonad m => AgentClient -> ConnId -> SMPServer -> Bool -> m ()
 addConnectionRcvQueue' c connId srv primary = do
@@ -1301,8 +1316,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                 (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) ->
                   tryError agentClientMsg >>= \case
                     Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
-                      HELLO -> helloMsg >> ack >> withStore' c (\db -> deleteMsg db connId msgId)
-                      REPLY cReq -> replyMsg cReq >> ack >> withStore' c (\db -> deleteMsg db connId msgId)
+                      HELLO -> helloMsg >> ackDel msgId
+                      REPLY cReq -> replyMsg cReq >> ackDel msgId
                       -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                       A_MSG body -> do
                         logServer "<--" c srv rId "MSG <MSG>"
@@ -1315,9 +1330,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                     Left e@(AGENT A_DUPLICATE) -> do
                       withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                         Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
-                          | userAck -> do
-                            ack
-                            withStore' c $ \db -> deleteMsg db connId internalId
+                          | userAck -> ackDel internalId
                           | otherwise -> do
                             liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
                               AgentMessage _ (A_MSG body) -> do
@@ -1348,10 +1361,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             _ -> prohibited >> ack
           where
             ack :: m ()
-            ack =
-              sendAck c rq srvMsgId `catchError` \case
-                SMP SMP.NO_MSG -> pure ()
-                e -> throwError e
+            ack = enqueueCmd $ ICAck rId srvMsgId
+            ackDel :: InternalId -> m ()
+            ackDel = enqueueCmd . ICAckDel rId srvMsgId
+            enqueueCmd :: InternalCommand -> m ()
+            enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand
             handleNotifyAck :: m () -> m ()
             handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
         SMP.END ->
