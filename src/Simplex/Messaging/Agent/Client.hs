@@ -162,7 +162,7 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
-    connMsgsQueued :: TMap ConnId Bool,
+    pendingMsgsQueued :: TMap (SMPServer, SMP.SenderId) Bool,
     smpQueueMsgQueues :: TMap (SMPServer, SMP.SenderId) (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap (SMPServer, SMP.SenderId) (Async ()),
     connCmdsQueued :: TMap ConnId Bool,
@@ -216,7 +216,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
-  connMsgsQueued <- TM.empty
+  pendingMsgsQueued <- TM.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
   connCmdsQueued <- TM.empty
@@ -233,7 +233,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentStore :: AgentClient -> SQLiteStore
 agentStore AgentClient {agentEnv = Env {store}} = store
@@ -413,7 +413,7 @@ closeAgentClient c = liftIO $ do
   atomically . RQ.clear $ activeSubs c
   atomically . RQ.clear $ pendingSubs c
   clear subscrConns
-  clear connMsgsQueued
+  clear pendingMsgsQueued
   clear smpQueueMsgQueues
   clear connCmdsQueued
   clear asyncCmdQueues
@@ -514,10 +514,12 @@ newRcvQueue_ a c connId srv vRange = do
             rcvDhSecret = C.dh' rcvPublicDhKey privDhKey,
             e2ePrivKey,
             e2eDhSecret = Nothing,
-            sndId = Just sndId,
+            sndId,
             status = New,
             dbRcvQueueId = Nothing,
             rcvPrimary = True,
+            nextRcvPrimary = False,
+            dbReplaceRcvQueueId = Nothing,
             smpClientVersion = maxVersion vRange,
             clientNtfCreds = Nothing
           }

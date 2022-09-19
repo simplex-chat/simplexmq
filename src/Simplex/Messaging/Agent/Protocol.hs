@@ -50,6 +50,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgHash,
     MsgMeta (..),
     ConnectionStats (..),
+    SwitchPhase (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
@@ -247,13 +248,13 @@ data ACommand (p :: AParty) where
   DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent
   UP :: SMPServer -> [ConnId] -> ACommand Agent
+  SWITCH :: SwitchPhase -> ConnectionStats -> ACommand Agent
   SEND :: MsgFlags -> MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
-  ADDQ :: SMPServer -> Bool -> ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
   CHK :: ACommand Client
@@ -285,13 +286,13 @@ data ACommandTag (p :: AParty) where
   DISCONNECT_ :: ACommandTag Agent
   DOWN_ :: ACommandTag Agent
   UP_ :: ACommandTag Agent
+  SWITCH_ :: ACommandTag Agent
   SEND_ :: ACommandTag Client
   MID_ :: ACommandTag Agent
   SENT_ :: ACommandTag Agent
   MERR_ :: ACommandTag Agent
   MSG_ :: ACommandTag Agent
   ACK_ :: ACommandTag Client
-  ADDQ_ :: ACommandTag Client
   OFF_ :: ACommandTag Client
   DEL_ :: ACommandTag Client
   CHK_ :: ACommandTag Client
@@ -322,13 +323,13 @@ aCommandTag = \case
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
   UP {} -> UP_
+  SWITCH {} -> SWITCH_
   SEND {} -> SEND_
   MID _ -> MID_
   SENT _ -> SENT_
   MERR {} -> MERR_
   MSG {} -> MSG_
   ACK _ -> ACK_
-  ADDQ {} -> ADDQ_
   OFF -> OFF_
   DEL -> DEL_
   CHK -> CHK_
@@ -336,6 +337,19 @@ aCommandTag = \case
   OK -> OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
+
+data SwitchPhase = SPStarted | SPCompleted
+  deriving (Eq, Show)
+
+instance StrEncoding SwitchPhase where
+  strEncode = \case
+    SPStarted -> "started"
+    SPCompleted -> "completed"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "started" -> pure SPStarted
+      "completed" -> pure SPCompleted
+      _ -> fail "bad SwitchPhase"
 
 data ConnectionStats = ConnectionStats
   { rcvServers :: [SMPServer],
@@ -520,7 +534,9 @@ data AgentMessageType
   | AM_QADD_
   | AM_QKEY_
   | AM_QUSE_
+  | AM_QTEST_
   | AM_QDEL_
+  | AM_QEND_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -533,7 +549,9 @@ instance Encoding AgentMessageType where
     AM_QADD_ -> "QA"
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
+    AM_QTEST_ -> "QT"
     AM_QDEL_ -> "QD"
+    AM_QEND_ -> "QE"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -546,7 +564,9 @@ instance Encoding AgentMessageType where
           'A' -> pure AM_QADD_
           'K' -> pure AM_QKEY_
           'U' -> pure AM_QUSE_
+          'T' -> pure AM_QTEST_
           'D' -> pure AM_QDEL_
+          'E' -> pure AM_QEND_
           _ -> fail "bad AgentMessageType"
       _ -> fail "bad AgentMessageType"
 
@@ -566,7 +586,9 @@ agentMessageType = \case
     QADD _ -> AM_QADD_
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
+    QTEST _ -> AM_QTEST_
     QDEL _ -> AM_QDEL_
+    QEND _ -> AM_QEND_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -588,7 +610,9 @@ data AMsgType
   | QADD_
   | QKEY_
   | QUSE_
+  | QTEST_
   | QDEL_
+  | QEND_
   deriving (Eq)
 
 instance Encoding AMsgType where
@@ -599,7 +623,9 @@ instance Encoding AMsgType where
     QADD_ -> "QA"
     QKEY_ -> "QK"
     QUSE_ -> "QU"
+    QTEST_ -> "QT"
     QDEL_ -> "QD"
+    QEND_ -> "QE"
   smpP =
     A.anyChar >>= \case
       'H' -> pure HELLO_
@@ -610,7 +636,9 @@ instance Encoding AMsgType where
           'A' -> pure QADD_
           'K' -> pure QKEY_
           'U' -> pure QUSE_
+          'T' -> pure QTEST_
           'D' -> pure QDEL_
+          'E' -> pure QEND_
           _ -> fail "bad AMsgType"
       _ -> fail "bad AMsgType"
 
@@ -624,14 +652,18 @@ data AMessage
     REPLY (L.NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- add queue to connection
+  | -- add queue to connection (sent by recipient)
     QADD (L.NonEmpty SMPQueueUri)
-  | -- key to secure the added queues and agree e2e encryption key
+  | -- key to secure the added queues and agree e2e encryption key (sent by sender)
     QKEY (L.NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
-  | -- inform that the queues are ready to use
+  | -- inform that the queues are ready to use (sent by recipient)
     QUSE (L.NonEmpty (SMPServer, SMP.SenderId, Bool))
-  | -- inform that the queues will be deleted
+  | -- sent by the sender to test new queues
+    QTEST (L.NonEmpty (SMPServer, SMP.SenderId))
+  | -- inform that the queues will be deleted (sent recipient once message received via the new queue)
     QDEL (L.NonEmpty (SMPServer, SMP.SenderId))
+  | -- sent by sender to confirm that no more messages will be sent to the queue
+    QEND (L.NonEmpty (SMPServer, SMP.SenderId))
   deriving (Show)
 
 -- '\1' added to the encodings to allow future extension to multiple queues, without extending the type now
@@ -643,7 +675,9 @@ instance Encoding AMessage where
     QADD qs -> smpEncode (QADD_, qs)
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
+    QTEST qs -> smpEncode (QTEST_, qs)
     QDEL qs -> smpEncode (QDEL_, qs)
+    QEND qs -> smpEncode (QEND_, qs)
   smpP =
     smpP
       >>= \case
@@ -653,7 +687,9 @@ instance Encoding AMessage where
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
+        QTEST_-> QTEST <$> smpP
         QDEL_ -> QDEL <$> smpP
+        QEND_ -> QEND <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
@@ -1098,6 +1134,7 @@ instance StrEncoding ACmdTag where
       "DISCONNECT" -> pure $ ACmdTag SAgent DISCONNECT_
       "DOWN" -> pure $ ACmdTag SAgent DOWN_
       "UP" -> pure $ ACmdTag SAgent UP_
+      "SWITCH" -> pure $ ACmdTag SAgent SWITCH_
       "SEND" -> pure $ ACmdTag SClient SEND_
       "MID" -> pure $ ACmdTag SAgent MID_
       "SENT" -> pure $ ACmdTag SAgent SENT_
@@ -1131,13 +1168,13 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     DISCONNECT_ -> "DISCONNECT"
     DOWN_ -> "DOWN"
     UP_ -> "UP"
+    SWITCH_ -> "SWITCH"
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
     MERR_ -> "MERR"
     MSG_ -> "MSG"
     ACK_ -> "ACK"
-    ADDQ_ -> "ADDQ"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
     CHK_ -> "CHK"
@@ -1167,7 +1204,6 @@ commandP binaryP =
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
           ACK_ -> s (ACK <$> A.decimal)
-          ADDQ_ -> s (ADDQ <$> strP_ <*> strP_)
           OFF_ -> pure OFF
           DEL_ -> pure DEL
           CHK_ -> pure CHK
@@ -1183,6 +1219,7 @@ commandP binaryP =
           DISCONNECT_ -> s (DISCONNECT <$> strP_ <*> strP)
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
+          SWITCH_ -> s (SWITCH <$> strP_ <*> strP)
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
@@ -1225,13 +1262,13 @@ serializeCommand = \case
   DISCONNECT p h -> s (DISCONNECT_, p, h)
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
+  SWITCH phase srvs -> s (SWITCH_, phase, srvs)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   ACK mId -> s (ACK_, Str $ bshow mId)
-  ADDQ srv primary -> s (ADDQ_, srv, primary)
   OFF -> s OFF_
   DEL -> s DEL_
   CHK -> s CHK_

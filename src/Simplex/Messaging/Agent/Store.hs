@@ -59,13 +59,17 @@ data RcvQueue = RcvQueue
     -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
     e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
-    sndId :: Maybe SMP.SenderId,
+    sndId :: SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID, can be Nothing for old queues
     dbRcvQueueId :: Maybe Int64,
     -- | True for a primary queue of the connection
     rcvPrimary :: Bool,
+    -- | True for the next primary queue
+    nextRcvPrimary :: Bool,
+    -- | database queue ID to replace, Nothing if this queue is not replacing another, internal Nothing can be for old queues
+    dbReplaceRcvQueueId :: Maybe (Maybe Int64),
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -103,6 +107,9 @@ data SndQueue = SndQueue
     dbSndQueueId :: Maybe Int64,
     -- | True for a primary queue of the connection
     sndPrimary :: Bool,
+    -- TODO add active. or is it status?
+    -- TODO add replace_db_snd_queue_id
+
     -- | SMP client version
     smpClientVersion :: Version
   }
@@ -234,6 +241,7 @@ instance StrEncoding AgentCommand where
 data AgentCommandTag
   = AClientCommandTag (ACommandTag 'Client)
   | AInternalCommandTag InternalCommandTag
+  deriving (Show)
 
 instance StrEncoding AgentCommandTag where
   strEncode = \case
@@ -247,29 +255,47 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
+  | ICQSwitch
+  | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICQDelete SMP.RecipientId
 
 data InternalCommandTag
   = ICAck_
   | ICAckDel_
+  | ICQSwitch_
+  | ICQSecure_
+  | ICQDelete_
   deriving (Show)
 
 instance StrEncoding InternalCommand where
   strEncode = \case
     ICAck rId srvMsgId -> strEncode (ICAck_, rId, srvMsgId)
     ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
+    ICQSwitch -> strEncode ICQSwitch_
+    ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
+    ICQDelete rId -> strEncode (ICQDelete_, rId)
   strP =
     strP_ >>= \case
       ICAck_ -> ICAck <$> strP_ <*> strP
       ICAckDel_ -> ICAckDel <$> strP_ <*> strP_ <*> strP
+      ICQSwitch_ -> pure ICQSwitch
+      ICQSecure_ -> ICQSecure <$> strP_ <*> strP
+      ICQDelete_ -> ICQDelete <$> strP
 
 instance StrEncoding InternalCommandTag where
   strEncode = \case
     ICAck_ -> "ACK"
     ICAckDel_ -> "ACK_DEL"
+    ICQSwitch_ -> "QSWITCH"
+    ICQSecure_ -> "QSECURE"
+    ICQDelete_ -> "QDELETE"
   strP =
     A.takeTill (== ' ') >>= \case
       "ACK" -> pure ICAck_
       "ACK_DEL" -> pure ICAckDel_
+      "QSWITCH" -> pure ICQSwitch_
+      "QSECURE" -> pure ICQSecure_
+      "QDELETE" -> pure ICQDelete_
       _ -> fail "bad InternalCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
@@ -281,6 +307,9 @@ internalCmdTag :: InternalCommand -> InternalCommandTag
 internalCmdTag = \case
   ICAck {} -> ICAck_
   ICAckDel {} -> ICAckDel_
+  ICQSwitch -> ICQSwitch_
+  ICQSecure {} -> ICQSecure_
+  ICQDelete _ -> ICQDelete_
 
 -- * Confirmation types
 

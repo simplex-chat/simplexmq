@@ -21,8 +21,7 @@ CREATE TABLE connections(
   smp_agent_version INTEGER NOT NULL DEFAULT 1
   ,
   duplex_handshake INTEGER NULL DEFAULT 0,
-  enable_ntfs INTEGER,
-  conn_status TEXT
+  enable_ntfs INTEGER
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -44,6 +43,9 @@ CREATE TABLE rcv_queues(
   rcv_ntf_dh_secret BLOB,
   rcv_queue_id INTEGER NULL,
   rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
+  next_rcv_primary INTEGER CHECK(next_rcv_primary NOT NULL),
+  replace_rcv_queue INTEGER CHECK(replace_rcv_queue NOT NULL),
+  replace_rcv_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -94,6 +96,7 @@ CREATE TABLE rcv_messages(
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
   user_ack INTEGER NULL DEFAULT 0,
+  rcv_queue_id INTEGER NULL,
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -214,26 +217,14 @@ CREATE TABLE commands(
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(snd_queue_id);
 CREATE TABLE snd_message_deliveries(
-  conn_id BLOB NOT NULL,
-  host TEXT NOT NULL,
-  port TEXT NOT NULL,
-  snd_id BLOB NOT NULL,
+  snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  snd_queue_id INTEGER NULL,
   internal_id INTEGER NOT NULL,
-  internal_snd_id INTEGER NOT NULL,
-  PRIMARY KEY(conn_id, host, port, snd_id, internal_snd_id),
-  FOREIGN KEY(conn_id, internal_snd_id) REFERENCES snd_messages,
-  FOREIGN KEY(conn_id, internal_id) REFERENCES messages,
-  FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE rcv_message_deliveries(
-  conn_id BLOB NOT NULL,
-  host TEXT NOT NULL,
-  port TEXT NOT NULL,
-  rcv_id BLOB NOT NULL,
-  internal_id INTEGER NOT NULL,
-  internal_rcv_id INTEGER NOT NULL,
-  PRIMARY KEY(conn_id, host, port, rcv_id, internal_rcv_id),
-  FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages,
-  FOREIGN KEY(conn_id, internal_id) REFERENCES messages,
-  FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
-) WITHOUT ROWID;
+  FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE sqlite_sequence(name,seq);
+CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
+  conn_id,
+  snd_queue_id
+);

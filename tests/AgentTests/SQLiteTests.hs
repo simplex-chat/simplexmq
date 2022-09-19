@@ -115,7 +115,7 @@ testConcurrentWrites =
     runTest st connId = replicateM_ 100 . withTransaction st $ \db -> do
       (internalId, internalRcvId, _, _) <- updateRcvIds db connId
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
-      createRcvMsg db connId rcvMsgData
+      createRcvMsg db connId rcvQueue1 rcvMsgData
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe =
@@ -161,10 +161,12 @@ rcvQueue1 =
       rcvDhSecret = testDhSecret,
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
-      sndId = Just "2345",
+      sndId = "2345",
       status = New,
       dbRcvQueueId = Just 1,
       rcvPrimary = True,
+      nextRcvPrimary = False,
+      dbReplaceRcvQueueId = Nothing,
       smpClientVersion = 1,
       clientNtfCreds = Nothing
     }
@@ -194,7 +196,7 @@ testCreateRcvConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
     upgradeRcvConnToDuplex db "conn1" sndQueue1
-      `shouldReturn` Right ()
+      `shouldReturn` Right 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
 
@@ -208,7 +210,7 @@ testCreateRcvConnRandomId =
     getConn db connId
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rq'))
     upgradeRcvConnToDuplex db connId sndQueue1
-      `shouldReturn` Right ()
+      `shouldReturn` Right 1
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
 
@@ -229,7 +231,7 @@ testCreateSndConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1))
     upgradeSndConnToDuplex db "conn1" rcvQueue1
-      `shouldReturn` Right ()
+      `shouldReturn` Right 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
 
@@ -243,7 +245,7 @@ testCreateSndConnRandomID =
     getConn db connId
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq'))
     upgradeSndConnToDuplex db connId rcvQueue1
-      `shouldReturn` Right ()
+      `shouldReturn` Right 1
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
 
@@ -344,10 +346,12 @@ testUpgradeSndConnToDuplex =
               rcvDhSecret = testDhSecret,
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
-              sndId = Just "4567",
+              sndId = "4567",
               status = New,
               dbRcvQueueId = Just 1,
               rcvPrimary = True,
+              nextRcvPrimary = False,
+              dbReplaceRcvQueueId = Nothing,
               smpClientVersion = 1,
               clientNtfCreds = Nothing
             }
@@ -424,12 +428,12 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
       externalPrevSndHash = "hash_from_sender"
     }
 
-testCreateRcvMsg_ :: DB.Connection -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvMsgData -> Expectation
-testCreateRcvMsg_ db expectedPrevSndId expectedPrevHash connId rcvMsgData@RcvMsgData {..} = do
+testCreateRcvMsg_ :: DB.Connection -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvQueue -> RcvMsgData -> Expectation
+testCreateRcvMsg_ db expectedPrevSndId expectedPrevHash connId rq rcvMsgData@RcvMsgData {..} = do
   let MsgMeta {recipient = (internalId, _)} = msgMeta
   updateRcvIds db connId
     `shouldReturn` (InternalId internalId, internalRcvId, expectedPrevSndId, expectedPrevHash)
-  createRcvMsg db connId rcvMsgData
+  createRcvMsg db connId rq rcvMsgData
     `shouldReturn` ()
 
 testCreateRcvMsg :: SpecWith SQLiteStore
@@ -440,8 +444,8 @@ testCreateRcvMsg =
     _ <- withTransaction st $ \db -> do
       createRcvConn db g cData1 rcvQueue1 SCMInvitation
     withTransaction st $ \db -> do
-      testCreateRcvMsg_ db 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
-      testCreateRcvMsg_ db 1 "hash_dummy" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
+      testCreateRcvMsg_ db 0 "" connId rcvQueue1 $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
+      testCreateRcvMsg_ db 1 "hash_dummy" connId rcvQueue1 $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
 
 mkSndMsgData :: InternalId -> InternalSndId -> MsgHash -> SndMsgData
 mkSndMsgData internalId internalSndId internalHash =
@@ -483,9 +487,9 @@ testCreateRcvAndSndMsgs =
       createRcvConn db g cData1 rcvQueue1 SCMInvitation
     withTransaction st $ \db -> do
       _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
-      testCreateRcvMsg_ db 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
-      testCreateRcvMsg_ db 1 "rcv_hash_1" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
+      testCreateRcvMsg_ db 0 "" connId rcvQueue1 $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
+      testCreateRcvMsg_ db 1 "rcv_hash_1" connId rcvQueue1 $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
       testCreateSndMsg_ db "" connId $ mkSndMsgData (InternalId 3) (InternalSndId 1) "snd_hash_1"
-      testCreateRcvMsg_ db 2 "rcv_hash_2" connId $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
+      testCreateRcvMsg_ db 2 "rcv_hash_2" connId rcvQueue1 $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
       testCreateSndMsg_ db "snd_hash_1" connId $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
