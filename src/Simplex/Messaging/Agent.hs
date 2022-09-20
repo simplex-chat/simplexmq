@@ -718,7 +718,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
               RcvConnection cData rq -> do
                 secure rq senderKey
                 mapM_ (connectReplyQueues c cData ownConnInfo) (L.nonEmpty $ smpReplyQueues senderConf)
-              _ -> notify $ ERR $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
+              _ -> throwError $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
           ICDuplexSecure _rId senderKey -> tryCommand $ do
             SomeConn _ conn <- withStore c (`getConn` connId)
             case conn of
@@ -726,8 +726,8 @@ runCommandProcessing c@AgentClient {subQ} server = do
                 secure rq senderKey
                 when (duplexHandshake cData == Just True) . void $
                   enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
-              _ -> notify $ ERR $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
-        _ -> notify $ ERR $ INTERNAL $ "command requires server " <> show (internalCmdTag cmd)
+              _ -> throwError $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
+        _ -> throwError $ INTERNAL $ "command requires server " <> show (internalCmdTag cmd)
         where
           ack _rId srvMsgId = do
             -- TODO get particular queue
