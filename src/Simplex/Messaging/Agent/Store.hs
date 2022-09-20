@@ -255,6 +255,8 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
+  | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICQSwitch
   | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICQDelete SMP.RecipientId
@@ -262,6 +264,8 @@ data InternalCommand
 data InternalCommandTag
   = ICAck_
   | ICAckDel_
+  | ICAllowSecure_
+  | ICDuplexSecure_
   | ICQSwitch_
   | ICQSecure_
   | ICQDelete_
@@ -271,6 +275,8 @@ instance StrEncoding InternalCommand where
   strEncode = \case
     ICAck rId srvMsgId -> strEncode (ICAck_, rId, srvMsgId)
     ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
+    ICAllowSecure rId sndKey -> strEncode (ICAllowSecure_, rId, sndKey)
+    ICDuplexSecure rId sndKey -> strEncode (ICDuplexSecure_, rId, sndKey)
     ICQSwitch -> strEncode ICQSwitch_
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
@@ -278,6 +284,8 @@ instance StrEncoding InternalCommand where
     strP_ >>= \case
       ICAck_ -> ICAck <$> strP_ <*> strP
       ICAckDel_ -> ICAckDel <$> strP_ <*> strP_ <*> strP
+      ICAllowSecure_ -> ICAllowSecure <$> strP_ <*> strP
+      ICDuplexSecure_ -> ICDuplexSecure <$> strP_ <*> strP
       ICQSwitch_ -> pure ICQSwitch
       ICQSecure_ -> ICQSecure <$> strP_ <*> strP
       ICQDelete_ -> ICQDelete <$> strP
@@ -286,6 +294,8 @@ instance StrEncoding InternalCommandTag where
   strEncode = \case
     ICAck_ -> "ACK"
     ICAckDel_ -> "ACK_DEL"
+    ICAllowSecure_ -> "ALLOW_SECURE"
+    ICDuplexSecure_ -> "DUPLEX_SECURE"
     ICQSwitch_ -> "QSWITCH"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
@@ -293,6 +303,8 @@ instance StrEncoding InternalCommandTag where
     A.takeTill (== ' ') >>= \case
       "ACK" -> pure ICAck_
       "ACK_DEL" -> pure ICAckDel_
+      "ALLOW_SECURE" -> pure ICAllowSecure_
+      "DUPLEX_SECURE" -> pure ICDuplexSecure_
       "QSWITCH" -> pure ICQSwitch_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
@@ -307,6 +319,8 @@ internalCmdTag :: InternalCommand -> InternalCommandTag
 internalCmdTag = \case
   ICAck {} -> ICAck_
   ICAckDel {} -> ICAckDel_
+  ICAllowSecure {} -> ICAllowSecure_
+  ICDuplexSecure {} -> ICDuplexSecure_
   ICQSwitch -> ICQSwitch_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
