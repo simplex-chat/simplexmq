@@ -207,29 +207,41 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
+  | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
 
 data InternalCommandTag
   = ICAck_
   | ICAckDel_
+  | ICAllowSecure_
+  | ICDuplexSecure_
   deriving (Show)
 
 instance StrEncoding InternalCommand where
   strEncode = \case
     ICAck rId srvMsgId -> strEncode (ICAck_, rId, srvMsgId)
     ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
+    ICAllowSecure rId sndKey -> strEncode (ICAllowSecure_, rId, sndKey)
+    ICDuplexSecure rId sndKey -> strEncode (ICDuplexSecure_, rId, sndKey)
   strP =
     strP_ >>= \case
       ICAck_ -> ICAck <$> strP_ <*> strP
       ICAckDel_ -> ICAckDel <$> strP_ <*> strP_ <*> strP
+      ICAllowSecure_ -> ICAllowSecure <$> strP_ <*> strP
+      ICDuplexSecure_ -> ICDuplexSecure <$> strP_ <*> strP
 
 instance StrEncoding InternalCommandTag where
   strEncode = \case
     ICAck_ -> "ACK"
     ICAckDel_ -> "ACK_DEL"
+    ICAllowSecure_ -> "ALLOW_SECURE"
+    ICDuplexSecure_ -> "DUPLEX_SECURE"
   strP =
     A.takeTill (== ' ') >>= \case
       "ACK" -> pure ICAck_
       "ACK_DEL" -> pure ICAckDel_
+      "ALLOW_SECURE" -> pure ICAllowSecure_
+      "DUPLEX_SECURE" -> pure ICDuplexSecure_
       _ -> fail "bad InternalCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
@@ -241,6 +253,8 @@ internalCmdTag :: InternalCommand -> InternalCommandTag
 internalCmdTag = \case
   ICAck {} -> ICAck_
   ICAckDel {} -> ICAckDel_
+  ICAllowSecure {} -> ICAllowSecure_
+  ICDuplexSecure {} -> ICDuplexSecure_
 
 -- * Confirmation types
 
