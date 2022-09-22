@@ -15,7 +15,7 @@ data QueueRec = QueueRec
     senderId :: SenderId,
     senderKey :: Maybe SndPublicVerifyKey,
     notifier :: Maybe NtfCreds,
-    status :: QueueStatus
+    status :: ServerQueueStatus
   }
   deriving (Eq, Show)
 
@@ -32,7 +32,7 @@ instance StrEncoding NtfCreds where
     (notifierId, notifierKey, rcvNtfDhSecret) <- strP
     pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
 
-data QueueStatus = QueueActive | QueueOff deriving (Eq, Show)
+data ServerQueueStatus = QueueActive | QueueOff deriving (Eq, Show)
 
 class MonadQueueStore s m where
   addQueue :: s -> QueueRec -> m (Either ErrorType ())
