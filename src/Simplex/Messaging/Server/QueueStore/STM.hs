@@ -58,8 +58,10 @@ instance MonadQueueStore QueueStore STM where
   secureQueue QueueStore {queues} rId sKey =
     withQueue rId queues $ \qVar ->
       readTVar qVar >>= \q -> case senderKey q of
-        Just _ -> pure Nothing
-        _ -> writeTVar qVar q {senderKey = Just sKey} $> Just q
+        Just k -> pure $ if sKey == k then Just q else Nothing
+        _ ->
+          let q' = q {senderKey = Just sKey}
+          in writeTVar qVar q' $> Just q'
 
   addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> STM (Either ErrorType QueueRec)
   addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do
