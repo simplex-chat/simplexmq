@@ -48,14 +48,14 @@ agentTestPort2 = "5011"
 agentTestPort3 :: ServiceName
 agentTestPort3 = "5012"
 
-testDB :: String
-testDB = "tests/tmp/smp-agent.test.protocol.db"
+testDB :: AgentDatabase
+testDB = AgentDBFile {dbFile = "tests/tmp/smp-agent.test.protocol.db", dbKey = ""}
 
-testDB2 :: String
-testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
+testDB2 :: AgentDatabase
+testDB2 = AgentDBFile {dbFile = "tests/tmp/smp-agent2.test.protocol.db", dbKey = ""}
 
-testDB3 :: String
-testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
+testDB3 :: AgentDatabase
+testDB3 = AgentDBFile {dbFile = "tests/tmp/smp-agent3.test.protocol.db", dbKey = ""}
 
 smpAgentTest :: forall c. Transport c => TProxy c -> ARawTransmission -> IO ARawTransmission
 smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
@@ -83,10 +83,10 @@ runSmpAgentServerTest test =
 smpAgentServerTest :: Transport c => ((ThreadId, ThreadId) -> c -> IO ()) -> Expectation
 smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
-runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => [(ServiceName, ServiceName, String)] -> ([c] -> m a) -> m a
+runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => [(ServiceName, ServiceName, AgentDatabase)] -> ([c] -> m a) -> m a
 runSmpAgentTestN agents test = withSmpServer t $ run agents []
   where
-    run :: [(ServiceName, ServiceName, String)] -> [c] -> m a
+    run :: [(ServiceName, ServiceName, AgentDatabase)] -> [c] -> m a
     run [] hs = test hs
     run (a@(p, _, _) : as) hs = withSmpAgentOn t a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
     t = transport @c
@@ -99,7 +99,7 @@ runSmpAgentTestN_1 nClients test = withSmpServer t . withSmpAgent t $ run nClien
     run n hs = testSMPAgentClient $ \h -> run (n - 1) (h : hs)
     t = transport @c
 
-smpAgentTestN :: Transport c => [(ServiceName, ServiceName, String)] -> ([c] -> IO ()) -> Expectation
+smpAgentTestN :: Transport c => [(ServiceName, ServiceName, AgentDatabase)] -> ([c] -> IO ()) -> Expectation
 smpAgentTestN agents test' = runSmpAgentTestN agents test' `shouldReturn` ()
 
 smpAgentTestN_1 :: Transport c => Int -> ([c] -> IO ()) -> Expectation
@@ -187,7 +187,7 @@ agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
       tbqSize = 4,
-      dbFile = testDB,
+      database = testDB,
       smpCfg =
         defaultClientConfig
           { qSize = 1,
@@ -207,18 +207,18 @@ agentCfg =
       certificateFile = "tests/fixtures/server.crt"
     }
 
-withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = agentCfg {tcpPort = port', dbFile = db'}
+  let cfg' = agentCfg {tcpPort = port', database = db'}
       initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
-withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
+withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile (dbFile db')
 
-withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m a -> m a
+withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> m a -> m a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const
 
 withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
