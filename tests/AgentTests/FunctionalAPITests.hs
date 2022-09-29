@@ -603,6 +603,8 @@ testAsyncCommands = do
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessageAsync alice "7" bobId $ baseId + 4
     ("7", _, OK) <- get alice
+    deleteConnectionAsync alice "8" bobId
+    ("8", _, OK) <- get alice
     pure ()
   pure ()
   where
