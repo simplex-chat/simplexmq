@@ -7,6 +7,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -69,7 +70,7 @@ data AgentDatabase
 
 databaseFile :: AgentDatabase -> FilePath
 databaseFile = \case
-  AgentDB (SQLiteStore {dbFilePath}) -> dbFilePath
+  AgentDB SQLiteStore {dbFilePath} -> dbFilePath
   AgentDBFile {dbFile} -> dbFile
 
 data AgentConfig = AgentConfig

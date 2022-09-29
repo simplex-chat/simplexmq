@@ -10,6 +10,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- |
@@ -105,7 +106,7 @@ data ProtocolClient msg = ProtocolClient
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
-    sndQ :: TBQueue (NonEmpty (SentRawTransmission)),
+    sndQ :: TBQueue (NonEmpty SentRawTransmission),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }

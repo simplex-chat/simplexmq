@@ -13,6 +13,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -735,7 +736,7 @@ instance StrEncoding SMPQueueUri where
     where
       query = strEncode . QSP QEscape
       queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
-      srvParam = [("srv", strEncode $ TransportHosts_ hs) | length hs > 0]
+      srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'

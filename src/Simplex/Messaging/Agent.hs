@@ -76,7 +76,7 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Concurrent.STM (flushTBQueue, stateTVar)
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -885,7 +885,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                       -- If initiating party were to send CON to the user without waiting for reply HELLO (to reduce handshake time),
                       -- it would lead to the non-deterministic internal ID of the first sent message, at to some other race conditions,
                       -- because it can be sent before HELLO is received
-                      -- With `status == Aclive` condition, CON is sent here only by the accepting party, that previously received HELLO
+                      -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ notify CON
                     -- Party joining connection sends REPLY after HELLO in v1,
                     -- it is an error to send REPLY in duplexHandshake mode (v2),
@@ -1167,7 +1167,7 @@ sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- atomically $ getSubscriptions c
   forM_ connIds $ \connId -> do
-    withStore' c (\db -> getConnData db connId) >>= \case
+    withStore' c (`getConnData` connId) >>= \case
       Just (ConnData {enableNtfs}, _) ->
         when enableNtfs . atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
       _ ->
@@ -1211,7 +1211,7 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
       suspendSendingAndDatabase c
 
 execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
-execAgentStoreSQL' c sql = withStore' c (`exexSQL` sql)
+execAgentStoreSQL' c sql = withStore' c (`execSQL` sql)
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = readTVarIO (smpServers c) >>= pickServer
@@ -1370,7 +1370,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             New -> case (conn, e2eEncryption) of
               -- party initiating connection
               (RcvConnection {}, Just e2eSndParams) -> do
-                (pk1, rcDHRs) <- withStore c $ (`getRatchetX3dhKeys` connId)
+                (pk1, rcDHRs) <- withStore c (`getRatchetX3dhKeys` connId)
                 let rc = CR.initRcvRatchet rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
                 (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt rc M.empty encConnInfo
                 case (agentMsgBody_, skipped) of

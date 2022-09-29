@@ -265,7 +265,7 @@ subscribeQueue ca srv sub = do
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =
-  strEncode host <> (B.pack $ if null port then "" else ':' : port)
+  strEncode host <> B.pack (if null port then "" else ':' : port)
 
 smpSubscribe :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT ProtocolClientError IO ()
 smpSubscribe smp ((party, queueId), privKey) = subscribe_ smp privKey queueId
