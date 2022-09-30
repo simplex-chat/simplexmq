@@ -429,7 +429,7 @@ testActiveClientNotDisconnected t = do
   where
     keepSubscribing :: AgentClient -> ConnId -> SystemTime -> ExceptT AgentErrorType IO ()
     keepSubscribing alice connId ts = do
-      ts' <- liftIO $ getSystemTime
+      ts' <- liftIO getSystemTime
       if milliseconds ts' - milliseconds ts < 2200
         then do
           -- keep sending SUB for 2.2 seconds
@@ -603,7 +603,9 @@ testAsyncCommands = do
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessageAsync alice "7" bobId $ baseId + 4
     ("7", _, OK) <- get alice
-    pure ()
+    deleteConnectionAsync alice "8" bobId
+    ("8", _, OK) <- get alice
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
   pure ()
   where
     baseId = 3
