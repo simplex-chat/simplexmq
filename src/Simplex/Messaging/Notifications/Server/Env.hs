@@ -3,7 +3,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Notifications.Server.Env where
 

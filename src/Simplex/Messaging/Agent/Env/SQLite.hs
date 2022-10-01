@@ -7,7 +7,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
