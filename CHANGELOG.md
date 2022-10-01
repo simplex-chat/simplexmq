@@ -1,3 +1,15 @@
+# 3.3.0
+
+SMP server:
+
+- allow repeated KEY command with the same key (to avoid failures on retries)
+
+SMP agent:
+
+- enable/disable connection notifications
+- asynchronous commands that retry on network error
+- use SQLCipher
+
 # 3.2.0
 
 SMP agent:
