@@ -69,7 +69,7 @@ data AgentDatabase
 
 databaseFile :: AgentDatabase -> FilePath
 databaseFile = \case
-  AgentDB (SQLiteStore {dbFilePath}) -> dbFilePath
+  AgentDB SQLiteStore {dbFilePath} -> dbFilePath
   AgentDBFile {dbFile} -> dbFile
 
 data AgentConfig = AgentConfig

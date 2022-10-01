@@ -927,7 +927,7 @@ instance ProtocolEncoding Cmd where
     CT SSender tag ->
       Cmd SSender <$> case tag of
         SEND_
-          | v == 1 -> SEND <$> pure noMsgFlags <*> (unTail <$> _smpP)
+          | v == 1 -> SEND noMsgFlags <$> (unTail <$> _smpP)
           | otherwise -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
@@ -1049,7 +1049,7 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> NonEmpty (SentRawTransmission) -> IO (NonEmpty (Either TransportError ()))
+tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO (NonEmpty (Either TransportError ()))
 tPut th trs
   | batch th = tPutBatch [] $ L.map tEncode trs
   | otherwise = forM trs $ tPutBlock th . tEncode

@@ -567,7 +567,7 @@ subscribeQueues c srv qs = do
             liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
           forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
           pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
-    _ -> pure $ (Nothing, M.fromList errs)
+    _ -> pure (Nothing, M.fromList errs)
   where
     checkQueue rq@(connId, RcvQueue {rcvId, server}) = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
