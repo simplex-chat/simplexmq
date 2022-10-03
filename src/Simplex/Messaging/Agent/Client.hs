@@ -17,7 +17,7 @@
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     newAgentClient,
-    withAgentLock,
+    withConnLock,
     closeAgentClient,
     closeProtocolServerClients,
     newRcvQueue,
@@ -85,6 +85,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
+import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -175,11 +176,14 @@ data AgentClient = AgentClient
     databaseOp :: TVar AgentOpState,
     agentState :: TVar AgentState,
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
+    -- locks to prevent concurrent operations with connection
+    connLocks :: TMap ConnId (TMVar ()),
+    -- locks to prevent concurrent reconnections to SMP servers
+    reconnectLocks :: TMap SMPServer (TMVar ()),
     reconnections :: TVar [Async ()],
     asyncClients :: TVar [Async ()],
     clientId :: Int,
-    agentEnv :: Env,
-    lock :: TMVar ()
+    agentEnv :: Env
   }
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
@@ -229,11 +233,12 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   databaseOp <- newTVar $ AgentOpState False 0
   agentState <- newTVar ASActive
   getMsgLocks <- TM.empty
+  connLocks <- TM.empty
+  reconnectLocks <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
-  lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, connLocks, reconnectLocks, reconnections, asyncClients, clientId, agentEnv}
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
@@ -300,7 +305,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
 
     reconnectClient :: m ()
     reconnectClient =
-      withAgentLock c $
+      withLock_ (reconnectLocks c) srv $
         atomically (TM2.lookup1 srv (pendingSubs c) >>= mapM readTVar)
           >>= mapM_ resubscribe
       where
@@ -440,11 +445,19 @@ closeProtocolServerClients c clientsSel =
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ (forkIO . uninterruptibleCancel) >> atomically (writeTVar as mempty)
 
-withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
-withAgentLock AgentClient {lock} =
-  E.bracket_
-    (void . atomically $ takeTMVar lock)
-    (atomically $ putTMVar lock ())
+withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> m a -> m a
+withConnLock _ "" = id
+withConnLock AgentClient {connLocks} connId = withLock_ connLocks connId
+
+withLock_ :: (Ord k, MonadUnliftIO m) => TMap k (TMVar ()) -> k -> m a -> m a
+withLock_ locks connId =
+  E.bracket
+    (atomically $ getLock >>= \l -> takeTMVar l $> l)
+    (atomically . (`putTMVar` ()))
+    . const
+  where
+    getLock = TM.lookup connId locks >>= maybe newLock pure
+    newLock = newTMVar () >>= \l -> TM.insert connId l locks $> l
 
 withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> (ProtocolClient msg -> m a) -> m a
 withClient_ c srv action = (getProtocolServerClient c srv >>= action) `catchError` logServerError
