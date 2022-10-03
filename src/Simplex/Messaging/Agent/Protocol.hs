@@ -86,6 +86,7 @@ module Simplex.Messaging.Agent.Protocol
     InvitationId,
     MsgIntegrity (..),
     MsgErrorType (..),
+    DBMsgErrorType (..),
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
@@ -871,6 +872,15 @@ instance ToJSON MsgErrorType where
 
 instance FromJSON MsgErrorType where
   parseJSON = J.genericParseJSON $ sumTypeJSON fstToLower
+
+newtype DBMsgErrorType = DBME MsgErrorType
+
+instance FromJSON DBMsgErrorType where
+  parseJSON v = DBME <$> J.genericParseJSON (singleFieldJSON fstToLower) v
+
+instance ToJSON DBMsgErrorType where
+  toJSON (DBME v) = J.genericToJSON (singleFieldJSON fstToLower) v
+  toEncoding (DBME v) = J.genericToEncoding (singleFieldJSON fstToLower) v
 
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
