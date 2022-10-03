@@ -42,6 +42,7 @@ module Simplex.Messaging.Agent
     joinConnectionAsync,
     allowConnectionAsync,
     ackMessageAsync,
+    deleteConnectionAsync,
     createConnection,
     joinConnection,
     allowConnection,
@@ -164,6 +165,10 @@ allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
 ackMessageAsync c = withAgentEnv c .:. ackMessageAsync' c
+
+-- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
+deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ()
+deleteConnectionAsync c = withAgentEnv c .: deleteConnectionAsync' c
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
@@ -367,8 +372,24 @@ ackMessageAsync' c corrId connId msgId =
     SomeConn _ (NewConnection _) -> throwError $ CMD PROHIBITED
   where
     enqueueAck :: RcvQueue -> m ()
-    enqueueAck RcvQueue {server} = do
+    enqueueAck RcvQueue {server} =
       enqueueCommand c corrId connId (Just server) $ AClientCommand $ ACK msgId
+
+deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
+deleteConnectionAsync' c@AgentClient {subQ} corrId connId =
+  withStore c (`getConn` connId) >>= \case
+    -- TODO delete all queues
+    SomeConn _ (DuplexConnection _ (rq :| _) _) -> enqueueDelete rq
+    SomeConn _ (RcvConnection _ rq) -> enqueueDelete rq
+    SomeConn _ (ContactConnection _ rq) -> enqueueDelete rq
+    SomeConn _ (SndConnection _ _) -> withStore' c (`deleteConn` connId) >> notifyDeleted
+    SomeConn _ (NewConnection _) -> withStore' c (`deleteConn` connId) >> notifyDeleted
+  where
+    enqueueDelete :: RcvQueue -> m ()
+    enqueueDelete RcvQueue {server} =
+      enqueueCommand c corrId connId (Just server) $ AClientCommand DEL
+    notifyDeleted :: m ()
+    notifyDeleted = atomically $ writeTBQueue subQ (corrId, connId, OK)
 
 -- | Add connection to the new receive queue
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
@@ -730,6 +751,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             notify OK
         LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
+        DEL -> tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
         ICAckDel _rId srvMsgId msgId -> withServer $ \_ -> tryCommand $ ack _rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
@@ -964,7 +986,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                       -- If initiating party were to send CON to the user without waiting for reply HELLO (to reduce handshake time),
                       -- it would lead to the non-deterministic internal ID of the first sent message, at to some other race conditions,
                       -- because it can be sent before HELLO is received
-                      -- With `status == Aclive` condition, CON is sent here only by the accepting party, that previously received HELLO
+                      -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ notify CON
                     -- Party joining connection sends REPLY after HELLO in v1,
                     -- it is an error to send REPLY in duplexHandshake mode (v2),
@@ -1257,7 +1279,7 @@ sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- atomically $ getSubscriptions c
   forM_ connIds $ \connId -> do
-    withStore' c (\db -> getConnData db connId) >>= \case
+    withStore' c (`getConnData` connId) >>= \case
       Just (ConnData {enableNtfs}, _) ->
         when enableNtfs . atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
       _ ->
@@ -1301,7 +1323,7 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
       suspendSendingAndDatabase c
 
 execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
-execAgentStoreSQL' c sql = withStore' c (`exexSQL` sql)
+execAgentStoreSQL' c sql = withStore' c (`execSQL` sql)
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = readTVarIO (smpServers c) >>= pickServer
@@ -1482,7 +1504,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             New -> case (conn, e2eEncryption) of
               -- party initiating connection
               (RcvConnection {}, Just e2eSndParams) -> do
-                (pk1, rcDHRs) <- withStore c $ (`getRatchetX3dhKeys` connId)
+                (pk1, rcDHRs) <- withStore c (`getRatchetX3dhKeys` connId)
                 let rc = CR.initRcvRatchet rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
                 (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt rc M.empty encConnInfo
                 case (agentMsgBody_, skipped) of

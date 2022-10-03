@@ -387,7 +387,7 @@ instance StrEncoding DeviceToken where
   strP = DeviceToken <$> strP <* A.space <*> hexStringP
     where
       hexStringP =
-        A.takeWhile (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) >>= \s ->
+        A.takeWhile (\c -> A.isDigit c || (c >= 'a' && c <= 'f')) >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where

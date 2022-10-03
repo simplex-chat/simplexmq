@@ -8,7 +8,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -429,7 +428,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
-          withLog (`logDeleteQueue` queueId)
+          withLog (`logSuspendQueue` queueId)
           okResp <$> atomically (suspendQueue st queueId)
 
         subscribeQueue :: QueueRec -> RecipientId -> m (Transmission BrokerMsg)

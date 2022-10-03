@@ -25,7 +25,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     closeSQLiteStore,
     sqlString,
-    exexSQL,
+    execSQL,
 
     -- * Queues and connections
     createNewConn,
@@ -254,15 +254,17 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 --   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
 --   print $ path <> " auto_vacuum: " <> show auto_vacuum
 
-exexSQL :: DB.Connection -> Text -> IO [Text]
-exexSQL db query = do
+execSQL :: DB.Connection -> Text -> IO [Text]
+execSQL db query = do
   rs <- newIORef []
-  SQLite3.execWithCallback (DB.connectionHandle db) query (addRow rs)
+  SQLite3.execWithCallback (DB.connectionHandle db) query (addSQLResultRow rs)
   reverse <$> readIORef rs
+
+addSQLResultRow :: IORef [Text] -> SQLite3.ColumnIndex -> [Text] -> [Maybe Text] -> IO ()
+addSQLResultRow rs _count names values = modifyIORef' rs $ \case
+  [] -> [showValues values, T.intercalate "|" names]
+  rs' -> showValues values : rs'
   where
-    addRow rs _count names values = modifyIORef' rs $ \case
-      [] -> [showValues values, T.intercalate "|" names]
-      rs' -> showValues values : rs'
     showValues = T.intercalate "|" . map (fromMaybe "")
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)

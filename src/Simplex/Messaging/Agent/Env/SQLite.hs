@@ -3,6 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
@@ -12,6 +13,8 @@
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
     AgentConfig (..),
+    AgentDatabase (..),
+    databaseFile,
     InitialAgentServers (..),
     NetworkConfig (..),
     defaultAgentConfig,
@@ -60,13 +63,21 @@ data InitialAgentServers = InitialAgentServers
     netCfg :: NetworkConfig
   }
 
+data AgentDatabase
+  = AgentDB SQLiteStore
+  | AgentDBFile {dbFile :: FilePath, dbKey :: String}
+
+databaseFile :: AgentDatabase -> FilePath
+databaseFile = \case
+  AgentDB SQLiteStore {dbFilePath} -> dbFilePath
+  AgentDBFile {dbFile} -> dbFile
+
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    dbFile :: FilePath,
-    dbKey :: String,
+    database :: AgentDatabase,
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
@@ -109,8 +120,7 @@ defaultAgentConfig =
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
-      dbFile = "smp-agent.db",
-      dbKey = "",
+      database = AgentDBFile {dbFile = "smp-agent.db", dbKey = ""},
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
@@ -142,9 +152,11 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {dbFile, dbKey, yesToMigrations} = do
+newSMPAgentEnv config@AgentConfig {database, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createAgentStore dbFile dbKey yesToMigrations
+  store <- case database of
+    AgentDB st -> pure st
+    AgentDBFile {dbFile, dbKey} -> liftIO $ createAgentStore dbFile dbKey yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config

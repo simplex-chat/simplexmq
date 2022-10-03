@@ -22,6 +22,7 @@ import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
+import Simplex.Messaging.Agent.Env.SQLite (AgentDatabase, databaseFile)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
@@ -330,8 +331,8 @@ testServerConnectionAfterError t _ = do
 
   withAgent1 $ \bob -> do
     withAgent2 $ \alice -> do
-      bob #: ("1", "alice", "SUB") #> ("1", "alice", ERR (BROKER NETWORK))
-      alice #: ("1", "bob", "SUB") #> ("1", "bob", ERR (BROKER NETWORK))
+      bob #: ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER e)) -> e == NETWORK || e == TIMEOUT
+      alice #: ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER e)) -> e == NETWORK || e == TIMEOUT
       withServer $ do
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
@@ -343,14 +344,14 @@ testServerConnectionAfterError t _ = do
         bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
 
   removeFile testStoreLogFile
-  removeFile testDB
-  removeFile testDB2
+  removeFile $ databaseFile testDB
+  removeFile $ databaseFile testDB2
   where
     server = SMPServer "localhost" testPort2 testKeyHash
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent1 = withAgent agentTestPort testDB
     withAgent2 = withAgent agentTestPort2 testDB2
-    withAgent :: String -> String -> (c -> IO a) -> IO a
+    withAgent :: String -> AgentDatabase -> (c -> IO a) -> IO a
     withAgent agentPort agentDB = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) (pure ()) . const . testSMPAgentClientOn agentPort
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
@@ -383,7 +384,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
-  removeFile testDB
+  removeFile $ databaseFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort

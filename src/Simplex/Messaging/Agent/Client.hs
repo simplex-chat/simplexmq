@@ -52,7 +52,7 @@ module Simplex.Messaging.Agent.Client
     logServer,
     removeSubscription,
     hasActiveSubscription,
-    agentStore,
+    agentClientStore,
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
@@ -235,8 +235,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   lock <- newTMVar ()
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
-agentStore :: AgentClient -> SQLiteStore
-agentStore AgentClient {agentEnv = Env {store}} = store
+agentClientStore :: AgentClient -> SQLiteStore
+agentClientStore AgentClient {agentEnv = Env {store}} = store
 
 class ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtoServer msg -> m (ProtocolClient msg)
@@ -568,15 +568,24 @@ subscribeQueues c srv qs = do
     Just qs' -> do
       smp_ <- tryError (getSMPServerClient c srv)
       (eitherToMaybe smp_,) . (errs <>) <$> case smp_ of
+        Left e -> pure $ map (,Left e) qs_
         Right smp -> do
           logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
+-- <<<<<<< HEAD
           let qs2 = L.map queueCreds qs'
           liftIO $ do
             rs <- zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
             mapM_ (uncurry $ processSubResult c) rs
             pure $ map (second . first $ protocolClientError SMP) rs
-        Left e -> pure $ map (,Left e) qs_
     _ -> pure $ (Nothing, errs)
+-- =======
+--           let qs2 = L.map (queueCreds . snd) qs'
+--           rs' :: [((ConnId, RcvQueue), Either ProtocolClientError ())] <-
+--             zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
+--           forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
+--           pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
+--     _ -> pure (Nothing, M.fromList errs)
+-- >>>>>>> master
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
