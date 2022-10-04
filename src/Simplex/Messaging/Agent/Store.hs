@@ -405,7 +405,7 @@ data StoreError
     -- and in case it does not match use this error.
     SEBadQueueStatus
   | -- | connection does not have associated double-ratchet state
-    SERatchetNotFound
+    SERatchetNotFound String
   | -- | connection does not have associated x3dh keys
     SEX3dhKeysNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.

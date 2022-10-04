@@ -690,11 +690,11 @@ createRatchet db connId rc =
     |]
     [":conn_id" := connId, ":ratchet_state" := rc]
 
-getRatchet :: DB.Connection -> ConnId -> IO (Either StoreError RatchetX448)
-getRatchet db connId =
-  firstRow' ratchet SERatchetNotFound $ DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
+getRatchet :: DB.Connection -> ConnId -> String -> IO (Either StoreError RatchetX448)
+getRatchet db connId s =
+  firstRow' ratchet (SERatchetNotFound s) $ DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
   where
-    ratchet = maybe (Left SERatchetNotFound) Right . fromOnly
+    ratchet = maybe (Left $ SERatchetNotFound s) Right . fromOnly
 
 getSkippedMsgKeys :: DB.Connection -> ConnId -> IO SkippedMsgKeys
 getSkippedMsgKeys db connId =

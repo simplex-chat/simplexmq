@@ -1528,7 +1528,7 @@ enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eE
 -- encoded AgentMessage -> encoded EncAgentMessage
 agentRatchetEncrypt :: DB.Connection -> ConnId -> ByteString -> Int -> ExceptT StoreError IO ByteString
 agentRatchetEncrypt db connId msg paddedLen = do
-  rc <- ExceptT $ getRatchet db connId
+  rc <- ExceptT $ getRatchet db connId "encrypt"
   (encMsg, rc') <- liftE (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
   pure encMsg
@@ -1536,7 +1536,7 @@ agentRatchetEncrypt db connId msg paddedLen = do
 -- encoded EncAgentMessage -> encoded AgentMessage
 agentRatchetDecrypt :: DB.Connection -> ConnId -> ByteString -> ExceptT StoreError IO ByteString
 agentRatchetDecrypt db connId encAgentMsg = do
-  rc <- ExceptT $ getRatchet db connId
+  rc <- ExceptT $ getRatchet db connId "decrypt"
   skipped <- liftIO $ getSkippedMsgKeys db connId
   (agentMsgBody_, rc', skippedDiff) <- liftE (SEAgentError . cryptoError) $ CR.rcDecrypt rc skipped encAgentMsg
   liftIO $ updateRatchet db connId rc' skippedDiff
