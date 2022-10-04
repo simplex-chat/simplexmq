@@ -726,7 +726,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
         DEL -> tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case server of
-        Just _srv -> case cmd of
+        Just _srv -> withConnLock c connId $ case cmd of
           ICAckDel _rId srvMsgId msgId -> tryCommand $ ack _rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
           ICAck _rId srvMsgId -> tryCommand $ ack _rId srvMsgId
           ICAllowSecure _rId senderKey -> tryCommand $ do
