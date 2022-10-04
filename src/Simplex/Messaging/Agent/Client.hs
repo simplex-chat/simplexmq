@@ -84,7 +84,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -311,9 +311,10 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
       where
         resubscribe :: Map ConnId RcvQueue -> m ()
         resubscribe qs = do
+          connected <- maybe False isRight <$> atomically (TM.lookup srv smpClients $>>= tryReadTMVar)
           (client_, (errs, oks)) <- second (M.mapEither id) <$> subscribeQueues c srv qs
           liftIO $ do
-            mapM_ (notifySub "" . hostEvent CONNECT) client_
+            unless connected $ mapM_ (notifySub "" . hostEvent CONNECT) client_
             unless (M.null oks) $ do
               notifySub "" . UP srv $ M.keys oks
           let (tempErrs, finalErrs) = M.partition temporaryAgentError errs
