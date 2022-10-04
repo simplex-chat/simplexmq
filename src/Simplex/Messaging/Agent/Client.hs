@@ -850,6 +850,7 @@ withStore c action = do
 storeError :: StoreError -> AgentErrorType
 storeError = \case
   SEConnNotFound -> CONN NOT_FOUND
+  SERatchetNotFound -> CONN NOT_FOUND
   SEConnDuplicate -> CONN DUPLICATE
   SEBadConnType CRcv -> CONN SIMPLEX
   SEBadConnType CSnd -> CONN SIMPLEX
