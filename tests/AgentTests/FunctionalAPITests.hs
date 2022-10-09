@@ -489,7 +489,9 @@ testSuspendingAgentCompleteSending t = do
     get b =##> \case ("", c, SENT 6) -> c == aId; ("", "", UP {}) -> True; _ -> False
     ("", "", SUSPENDED) <- get b
 
-    ("", "", UP {}) <- get a
+    r <- get a
+    liftIO $ print r
+    ("", "", UP {}) <- pure r
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 5
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False

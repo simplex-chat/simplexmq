@@ -17,7 +17,7 @@
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     newAgentClient,
-    withAgentLock,
+    withConnLock,
     closeAgentClient,
     closeProtocolServerClients,
     newRcvQueue,
@@ -84,7 +84,8 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (isRight, partitionEithers)
+import Data.Functor (($>))
 import Data.List (partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -175,11 +176,14 @@ data AgentClient = AgentClient
     databaseOp :: TVar AgentOpState,
     agentState :: TVar AgentState,
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
+    -- locks to prevent concurrent operations with connection
+    connLocks :: TMap ConnId (TMVar ()),
+    -- locks to prevent concurrent reconnections to SMP servers
+    reconnectLocks :: TMap SMPServer (TMVar ()),
     reconnections :: TVar [Async ()],
     asyncClients :: TVar [Async ()],
     clientId :: Int,
-    agentEnv :: Env,
-    lock :: TMVar ()
+    agentEnv :: Env
   }
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
@@ -229,11 +233,12 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   databaseOp <- newTVar $ AgentOpState False 0
   agentState <- newTVar ASActive
   getMsgLocks <- TM.empty
+  connLocks <- TM.empty
+  reconnectLocks <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
-  lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, connLocks, reconnectLocks, reconnections, asyncClients, clientId, agentEnv}
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
@@ -300,16 +305,17 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
 
     reconnectClient :: m ()
     reconnectClient =
-      withAgentLock c $
+      withLock_ (reconnectLocks c) srv $
         atomically (RQ.getSrvQueues srv $ pendingSubs c) >>= resubscribe
       where
         resubscribe :: [RcvQueue] -> m ()
         resubscribe qs = do
+          connected <- maybe False isRight <$> atomically (TM.lookup srv smpClients $>>= tryReadTMVar)
           cs <- atomically . RQ.getConns $ activeSubs c
           (client_, rs) <- subscribeQueues c srv qs
           let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
           liftIO $ do
-            mapM_ (notifySub "" . hostEvent CONNECT) client_
+            unless connected $ mapM_ (notifySub "" . hostEvent CONNECT) client_
             -- TODO deduplicate okConns
             let conns = okConns \\ S.toList cs
             unless (null conns) $ notifySub "" $ UP srv conns
@@ -442,11 +448,19 @@ closeProtocolServerClients c clientsSel =
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ (forkIO . uninterruptibleCancel) >> atomically (writeTVar as mempty)
 
-withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
-withAgentLock AgentClient {lock} =
-  E.bracket_
-    (void . atomically $ takeTMVar lock)
-    (atomically $ putTMVar lock ())
+withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> m a -> m a
+withConnLock _ "" = id
+withConnLock AgentClient {connLocks} connId = withLock_ connLocks connId
+
+withLock_ :: (Ord k, MonadUnliftIO m) => TMap k (TMVar ()) -> k -> m a -> m a
+withLock_ locks connId =
+  E.bracket
+    (atomically $ getLock >>= \l -> takeTMVar l $> l)
+    (atomically . (`putTMVar` ()))
+    . const
+  where
+    getLock = TM.lookup connId locks >>= maybe newLock pure
+    newLock = newTMVar () >>= \l -> TM.insert connId l locks $> l
 
 withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> (ProtocolClient msg -> m a) -> m a
 withClient_ c srv action = (getProtocolServerClient c srv >>= action) `catchError` logServerError
@@ -571,25 +585,16 @@ subscribeQueues c srv qs = do
         Left e -> pure $ map (,Left e) qs_
         Right smp -> do
           logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
--- <<<<<<< HEAD
           let qs2 = L.map queueCreds qs'
           liftIO $ do
             rs <- zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
             mapM_ (uncurry $ processSubResult c) rs
             pure $ map (second . first $ protocolClientError SMP) rs
-    _ -> pure $ (Nothing, errs)
--- =======
---           let qs2 = L.map (queueCreds . snd) qs'
---           rs' :: [((ConnId, RcvQueue), Either ProtocolClientError ())] <-
---             zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
---           forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
---           pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
---     _ -> pure (Nothing, M.fromList errs)
--- >>>>>>> master
+    _ -> pure (Nothing, errs)
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
-      pure $ if prohibited || srv /= server then Left $ (rq, Left $ CMD PROHIBITED) else Right rq
+      pure $ if prohibited || srv /= server then Left (rq, Left $ CMD PROHIBITED) else Right rq
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
@@ -854,6 +859,7 @@ withStore c action = do
 storeError :: StoreError -> AgentErrorType
 storeError = \case
   SEConnNotFound -> CONN NOT_FOUND
+  SERatchetNotFound -> CONN NOT_FOUND
   SEConnDuplicate -> CONN DUPLICATE
   SEBadConnType CRcv -> CONN SIMPLEX
   SEBadConnType CSnd -> CONN SIMPLEX
