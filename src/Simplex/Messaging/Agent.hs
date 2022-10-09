@@ -726,10 +726,10 @@ runCommandProcessing c@AgentClient {subQ} server = do
         DEL -> tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case server of
-        Just _srv -> withConnLock c connId $ case cmd of
-          ICAckDel _rId srvMsgId msgId -> tryCommand $ ack _rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
-          ICAck _rId srvMsgId -> tryCommand $ ack _rId srvMsgId
-          ICAllowSecure _rId senderKey -> tryCommand $ do
+        Just _srv -> case cmd of
+          ICAckDel _rId srvMsgId msgId -> tryWithLock $ ack _rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
+          ICAck _rId srvMsgId -> tryWithLock $ ack _rId srvMsgId
+          ICAllowSecure _rId senderKey -> tryWithLock $ do
             (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
               withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
             case conn of
@@ -737,7 +737,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
                 secure rq senderKey
                 mapM_ (connectReplyQueues c cData ownConnInfo) (L.nonEmpty $ smpReplyQueues senderConf)
               _ -> throwError $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
-          ICDuplexSecure _rId senderKey -> tryCommand $ do
+          ICDuplexSecure _rId senderKey -> tryWithLock $ do
             SomeConn _ conn <- withStore c (`getConn` connId)
             case conn of
               DuplexConnection cData rq sq -> do
@@ -762,6 +762,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
               | temporaryAgentError e || e == BROKER HOST -> retrySndOp c loop
               | otherwise -> notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
             Right () -> withStore' c (`deleteCommand` cmdId)
+        tryWithLock = tryCommand . withConnLock c connId
         notify cmd = atomically $ writeTBQueue subQ (corrId, connId, cmd)
     withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServer -> m ()) -> m ()
     withNextSrv usedSrvs initUsed action = do
