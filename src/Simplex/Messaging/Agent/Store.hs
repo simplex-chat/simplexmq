@@ -63,11 +63,14 @@ data RcvQueue = RcvQueue
     status :: QueueStatus,
     -- | database queue ID, can be Nothing for old queues
     dbRcvQueueId :: Maybe Int64,
+    -- TODO *** possibly, simplify the next three fields into one (and one DB field can be removed)
+    -- using: data PrimaryQueue = PQNotPrimary | PQCurrent | PQNext Int64
+
     -- | True for a primary queue of the connection
     rcvPrimary :: Bool,
     -- | True for the next primary queue
     nextRcvPrimary :: Bool,
-    -- | database queue ID to replace, Nothing if this queue is not replacing another, internal Nothing can be for old queues
+    -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
     dbReplaceRcvQueueId :: Maybe (Maybe Int64),
     -- | SMP client version
     smpClientVersion :: Version,
@@ -104,11 +107,15 @@ data SndQueue = SndQueue
     status :: QueueStatus,
     -- | database queue ID, can be Nothing for old queues
     dbSndQueueId :: Maybe Int64,
+    -- TODO *** possibly, simplify the next three fields into one (and one DB field can be removed)
+    -- using: data PrimaryQueue = PQNotPrimary | PQCurrent | PQNext Int64
+
     -- | True for a primary queue of the connection
     sndPrimary :: Bool,
-    -- TODO add active. or is it status?
-    -- TODO add replace_db_snd_queue_id
-
+    -- | True for the next primary queue
+    nextSndPrimary :: Bool,
+    -- TODO *** add replace_db_snd_queue_id
+    dbReplaceSndQueueId :: Maybe (Maybe Int64),
     -- | SMP client version
     smpClientVersion :: Version
   }

@@ -30,6 +30,14 @@ CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues (snd_queue_id);
 ALTER TABLE snd_queues ADD COLUMN snd_primary INTEGER CHECK (snd_primary NOT NULL);
 UPDATE snd_queues SET snd_primary = 1;
 
+ALTER TABLE snd_queues ADD COLUMN next_snd_primary INTEGER CHECK (next_snd_primary NOT NULL);
+UPDATE snd_queues SET next_snd_primary = 0;
+
+ALTER TABLE snd_queues ADD COLUMN replace_snd_queue INTEGER CHECK (replace_snd_queue NOT NULL);
+UPDATE snd_queues SET replace_snd_queue = 0;
+
+ALTER TABLE snd_queues ADD COLUMN replace_snd_queue_id INTEGER NULL;
+
 -- messages
 CREATE TABLE snd_message_deliveries (
   snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -65,6 +65,9 @@ CREATE TABLE snd_queues(
   e2e_pub_key BLOB,
   snd_queue_id INTEGER NULL,
   snd_primary INTEGER CHECK(snd_primary NOT NULL),
+  next_snd_primary INTEGER CHECK(next_snd_primary NOT NULL),
+  replace_snd_queue INTEGER CHECK(replace_snd_queue NOT NULL),
+  replace_snd_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE

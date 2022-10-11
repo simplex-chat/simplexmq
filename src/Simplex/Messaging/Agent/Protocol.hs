@@ -57,6 +57,7 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
+    SndQAddr,
     SMPServer,
     pattern SMPServer,
     SrvLoc (..),
@@ -652,19 +653,21 @@ data AMessage
     REPLY (L.NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- add queue to connection (sent by recipient)
-    QADD (L.NonEmpty SMPQueueUri)
+  | -- add queue to connection (sent by recipient), with optional address of the replaced queue
+    QADD (L.NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
     QKEY (L.NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
   | -- inform that the queues are ready to use (sent by recipient)
-    QUSE (L.NonEmpty (SMPServer, SMP.SenderId, Bool))
+    QUSE (L.NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues
-    QTEST (L.NonEmpty (SMPServer, SMP.SenderId))
+    QTEST (L.NonEmpty SndQAddr)
   | -- inform that the queues will be deleted (sent recipient once message received via the new queue)
-    QDEL (L.NonEmpty (SMPServer, SMP.SenderId))
+    QDEL (L.NonEmpty SndQAddr)
   | -- sent by sender to confirm that no more messages will be sent to the queue
-    QEND (L.NonEmpty (SMPServer, SMP.SenderId))
+    QEND (L.NonEmpty SndQAddr)
   deriving (Show)
+
+type SndQAddr = (SMPServer, SMP.SenderId)
 
 -- '\1' added to the encodings to allow future extension to multiple queues, without extending the type now
 instance Encoding AMessage where
@@ -687,7 +690,7 @@ instance Encoding AMessage where
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
-        QTEST_-> QTEST <$> smpP
+        QTEST_ -> QTEST <$> smpP
         QDEL_ -> QDEL <$> smpP
         QEND_ -> QEND <$> smpP
 

@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSndMsgDelivery,
     getPendingMsgData,
     getPendingMsgs,
+    deletePendingMsgs,
     setMsgUserAck,
     getLastMsg,
     deleteMsg,
@@ -680,11 +681,15 @@ getPendingMsgData db connId msgId = do
       let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
        in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
 
--- TODO should return messages for a particular queue based on deliveries table
+-- TODO *** should return messages for a particular queue based on deliveries table
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
 getPendingMsgs db connId SndQueue {dbSndQueueId} =
   map fromOnly
     <$> DB.query db ("SELECT internal_id FROM snd_message_deliveries " <> whereSndQueue) (connId, dbSndQueueId, dbSndQueueId)
+
+deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
+deletePendingMsgs db connId SndQueue {dbSndQueueId} =
+  DB.execute db ("DELETE FROM snd_message_deliveries " <> whereSndQueue) (connId, dbSndQueueId, dbSndQueueId)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
@@ -1277,7 +1282,7 @@ insertRcvQueue_ db connId' RcvQueue {..} = do
       INSERT INTO rcv_queues
         (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, rcv_queue_id, rcv_primary, next_rcv_primary, replace_rcv_queue, replace_rcv_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId') :. (rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, qId, rcvPrimary, nextRcvPrimary, replaceRcvQueue, replaceRcvQueueId_, smpClientVersion))
+    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, rcvPrimary, nextRcvPrimary, replaceRcvQueue, replaceRcvQueueId_, smpClientVersion))
   pure qId
   where
     (replaceRcvQueue, replaceRcvQueueId_) = case dbReplaceRcvQueueId of
@@ -1293,10 +1298,14 @@ insertSndQueue_ db connId' SndQueue {..} = do
     db
     [sql|
       INSERT INTO snd_queues
-        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, next_snd_primary, replace_snd_queue, replace_snd_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    (host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, qId, sndPrimary, smpClientVersion)
+    ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, sndPrimary, nextSndPrimary, replaceSndQueue, replaceSndQueueId_, smpClientVersion))
   pure qId
+  where
+    (replaceSndQueue, replaceSndQueueId_) = case dbReplaceSndQueueId of
+      Just qId_ -> (True, qId_)
+      _ -> (False, Nothing)
 
 newQueueId_ :: [Only (Maybe Int64)] -> Int64
 newQueueId_ [] = 1
@@ -1372,16 +1381,17 @@ getSndQueuesByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.snd_queue_id, q.snd_primary, q.smp_client_version
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.snd_queue_id, q.snd_primary, q.next_snd_primary, q.replace_snd_queue, q.replace_snd_queue_id, q.smp_client_version
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, smpClientVersion)) =
+    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, nextSndPrimary, replaceSndQueue, replaceSndQueueId_, smpClientVersion)) =
       let server = SMPServer host port keyHash
-       in SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbSndQueueId, sndPrimary, smpClientVersion}
+          dbReplaceSndQueueId = if replaceSndQueue then Just replaceSndQueueId_ else Nothing
+       in SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbSndQueueId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion}
     primaryFirst SndQueue {sndPrimary = p} SndQueue {sndPrimary = p'} = compare (Down p) (Down p')
 
 -- * updateRcvIds helpers

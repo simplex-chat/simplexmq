@@ -419,7 +419,7 @@ newConnSrv c connId asyncMode enableNtfs cMode srv = do
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
   where
     setUpConn True rq = do
-      withStore c $ \db -> updateNewConnRcv db connId rq
+      void . withStore c $ \db -> updateNewConnRcv db connId rq
       pure connId
     setUpConn False rq = do
       g <- asks idsDrg
@@ -464,7 +464,7 @@ joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ age
       where
         setUpConn True _ sq rc =
           withStore c $ \db -> runExceptT $ do
-            ExceptT $ updateNewConnSnd db connId sq
+            void . ExceptT $ updateNewConnSnd db connId sq
             liftIO $ createRatchet db connId rc
             pure connId
         setUpConn False cData sq rc = do
@@ -493,7 +493,7 @@ createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} srv
   (rq, qUri) <- newRcvQueue c connId srv $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq
-  withStore c $ \db -> upgradeSndConnToDuplex db connId rq
+  void . withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
@@ -773,30 +773,31 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             srv' <- if srv == server then getNextSMPServer c [server] else pure srv
             (_rq, qUri) <- newRcvQueue c connId srv' clientVRange
             let rq = _rq {rcvPrimary = False, nextRcvPrimary = True, dbReplaceRcvQueueId = Just dbRcvQueueId}
-            withStore c $ \db -> addConnRcvQueue db connId rq
+            void . withStore c $ \db -> addConnRcvQueue db connId rq
             addSubscription c rq
-            void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [qUri]
+            -- TODO *** add replaced queue
+            void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Nothing)]
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameRQ srv rId) rqs of
               Just rq'@RcvQueue {server, sndId, status} -> when (status == Confirmed) $ do
                 secureQueue c rq' senderKey
                 withStore' c $ \db -> setRcvQueueStatus db rq' Secured
-                void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [(server, sndId, True)]
+                void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
               _ -> internalErr "queue address not found in connection"
         ICQDelete rId ->
-          withServer $ \srv -> tryWithLock . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
+          withServer $ \srv -> tryWithLock . withDuplexConn $ \(DuplexConnection _ rqs _) ->
             case find (sameRQ srv rId) rqs of
-              Just rq'@RcvQueue {server, sndId, status, rcvPrimary}
+              Just rq'@RcvQueue {rcvPrimary}
                 | rcvPrimary -> internalErr "cannot delete primary rcv queue"
                 | otherwise -> do
                   deleteQueue c rq'
                   withStore' c $ \db -> deleteConnRcvQueue db connId rq'
-              -- TODO notify user that switch completed
+              -- TODO *** notify user that switch completed
               _ -> internalErr "queue address not found in connection"
         where
           ack _rId srvMsgId = do
-            -- TODO get particular queue
+            -- TODO *** get particular queue
             rq <- withStore c (`getPrimaryRcvQueue` connId)
             ackQueueMessage c rq srvMsgId
           secure :: RcvQueue -> SMP.SndPublicVerifyKey -> m ()
@@ -907,6 +908,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     atomically $ throwWhenInactive c
+    atomically $ throwWhenNoDelivery c sq
     msgId <- atomically $ readTQueue mq
     atomically $ beginAgentOperation c AOSndNetwork
     atomically $ endAgentOperation c AOMsgDelivery
@@ -1353,7 +1355,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cmd) =
   withStore c (\db -> getRcvConn db srv rId) >>= \case
-    -- TODO get queue separately?
+    -- TODO *** get queue separately?
     SomeConn _ conn@(DuplexConnection cData rqs _) -> case find (sameRQ srv rId) rqs of
       Just rq -> processSMP conn cData rq
       _ -> atomically $ writeTBQueue subQ ("", "", ERR $ CONN NOT_FOUND)
@@ -1391,7 +1393,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       case find (\q -> dbRcvQueueId q == dbRcvId) rqs of
                         Just RcvQueue {server, sndId} ->
                           void . enqueueMessages c cData sqs SMP.noMsgFlags $ QDEL [(server, sndId)]
-                        _ -> pure () -- TODO this is an internal error - notify
+                        _ -> pure () -- TODO *** this is an internal error - notify
                     _ -> pure ()
                   tryError agentClientMsg >>= \case
                     Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
@@ -1569,12 +1571,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
               _ -> prohibited
 
         -- processed by queue sender
-        qAddMsg :: L.NonEmpty SMPQueueUri -> m ()
-        qAddMsg (qUri :| _) = case conn of
-          DuplexConnection _ rqs sqs -> do
+        qAddMsg :: L.NonEmpty (SMPQueueUri, Maybe SndQAddr) -> m ()
+        qAddMsg ((qUri, _addr) :| _) = case conn of
+          DuplexConnection _ rqs sqs@(sq :| sqs_) -> do
             clientVRange <- asks $ smpClientVRange . config
             case qUri `compatibleVersion` clientVRange of
-              -- TODO check this address does not already exist
+              -- TODO *** check this address does not already exist
+              -- TODO *** check that the replaced queue address does exist
               Just qInfo@(Compatible rqInfo) -> do
                 sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue connId qInfo
                 void . withStore c $ \db -> addConnSndQueue db connId sq'
@@ -1583,7 +1586,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                     let sqAddr = (queueAddress (rqInfo :: SMPQueueInfo)) {dhPublicKey}
                         sqInfo = (rqInfo :: SMPQueueInfo) {queueAddress = sqAddr}
                     void . enqueueMessages c cData sqs SMP.noMsgFlags $ QKEY [(sqInfo, sndPubKey)]
-                    let conn' = DuplexConnection cData rqs (sq' <| sqs)
+                    let conn' = DuplexConnection cData rqs (sq <| sq' :| sqs_)
                     notify . SWITCH SPStarted $ connectionStats conn'
                   _ -> throwError $ INTERNAL "absent sender keys"
               _ -> throwError $ AGENT A_VERSION
@@ -1607,31 +1610,37 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
 
         -- processed by queue sender
         -- mark queue as Secured and to start sending messages to it
-        qUseMsg :: L.NonEmpty (SMPServer, SMP.SenderId, Bool) -> m ()
-        qUseMsg ((smpServer, senderId, primary) :| _) = case conn of
+        qUseMsg :: L.NonEmpty ((SMPServer, SMP.SenderId), Bool) -> m ()
+        qUseMsg ((addr, primary) :| _) = case conn of
           DuplexConnection _ _ sqs -> do
-            case find (sameSQ smpServer senderId) sqs of
-              Just sq' -> do
+            case L.break (uncurry sameSQ addr) sqs of
+              (sqs1, sq' : sqs2) -> do
                 withStore' c $ \db -> do
                   setSndQueueStatus db sq' Secured
                   when primary $ setSndQueuePrimary db connId sq'
-                -- TODO replace queue in the list OR reload all send queues OR reload connection
-                void $ enqueueMessages c cData sqs SMP.noMsgFlags $ QTEST [(smpServer, senderId)]
+                let sq'' = (sq' :: SndQueue) {status = Secured}
+                    sqs' = case sqs1 of
+                      [] -> sq'' :| sqs2
+                      sq : sqs1' -> (sq :| sqs1') <> (sq'' :| sqs2)
+                void $ enqueueMessages c cData sqs' SMP.noMsgFlags $ QTEST [addr]
               _ -> throwError $ INTERNAL "queue address not found in connection"
           _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue sender
         -- remove snd queue from connection and enqueue QEND message
         qDelMsg :: L.NonEmpty (SMPServer, SMP.SenderId) -> m ()
-        qDelMsg ((smpServer, senderId) :| _) = case conn of
+        qDelMsg (addr :| _) = case conn of
           DuplexConnection _ _ sqs ->
-            case L.partition (sameSQ smpServer senderId) sqs of
+            case L.partition (uncurry sameSQ addr) sqs of
               ([], _) -> throwError $ INTERNAL "queue address not found in connection"
               (sq : _, sqs_) -> case L.nonEmpty sqs_ of
                 Just sqs' -> do
-                  withStore' c $ \db -> deleteConnSndQueue db connId sq
-                  -- TODO stop deliveries to send queue and remove scheduled deliveries from the table
-                  void $ enqueueMessages c cData sqs' SMP.noMsgFlags $ QEND [(smpServer, senderId)]
+                  -- remove the delivery from the map to stop the thread when the delivery loop is complete
+                  atomically $ TM.delete addr $ smpQueueMsgQueues c
+                  withStore' c $ \db -> do
+                    deletePendingMsgs db connId sq
+                    deleteConnSndQueue db connId sq
+                  void $ enqueueMessages c cData sqs' SMP.noMsgFlags $ QEND [addr]
                 _ -> throwError $ INTERNAL "QDEL received to the only queue in connection"
           _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
@@ -1766,5 +1775,8 @@ newSndQueue_ a connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress
         status = New,
         dbSndQueueId = Nothing,
         sndPrimary = True,
+        -- TODO *** change these two fields when it's a replacement for another queue
+        nextSndPrimary = False,
+        dbReplaceSndQueueId = Nothing,
         smpClientVersion
       }

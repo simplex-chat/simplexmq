@@ -60,6 +60,7 @@ module Simplex.Messaging.Agent.Client
     agentOperationBracket,
     waitUntilActive,
     throwWhenInactive,
+    throwWhenNoDelivery,
     beginAgentOperation,
     endAgentOperation,
     suspendSendingAndDatabase,
@@ -90,7 +91,7 @@ import Data.List (partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
@@ -163,9 +164,9 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
-    pendingMsgsQueued :: TMap (SMPServer, SMP.SenderId) Bool,
-    smpQueueMsgQueues :: TMap (SMPServer, SMP.SenderId) (TQueue InternalId),
-    smpQueueMsgDeliveries :: TMap (SMPServer, SMP.SenderId) (Async ()),
+    pendingMsgsQueued :: TMap SndQAddr Bool,
+    smpQueueMsgQueues :: TMap SndQAddr (TQueue InternalId),
+    smpQueueMsgDeliveries :: TMap SndQAddr (Async ()),
     connCmdsQueued :: TMap ConnId Bool,
     asyncCmdQueues :: TMap (Maybe SMPServer) (TQueue AsyncCmdId),
     asyncCmdProcesses :: TMap (Maybe SMPServer) (Async ()),
@@ -433,6 +434,14 @@ waitUntilActive c = unlessM (readTVar $ active c) retry
 
 throwWhenInactive :: AgentClient -> STM ()
 throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
+
+throwWhenNoDelivery :: AgentClient -> SndQueue -> STM ()
+throwWhenNoDelivery c SndQueue {server, sndId} =
+  unlessM (isJust <$> TM.lookup k (smpQueueMsgQueues c)) $ do
+    TM.delete k $ smpQueueMsgDeliveries c
+    throwSTM ThreadKilled
+  where
+    k = (server, sndId)
 
 closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =

@@ -184,6 +184,8 @@ sndQueue1 =
       status = New,
       dbSndQueueId = Just 1,
       sndPrimary = True,
+      nextSndPrimary = False,
+      dbReplaceSndQueueId = Nothing,
       smpClientVersion = 1
     }
 
@@ -324,6 +326,8 @@ testUpgradeRcvConnToDuplex =
               status = New,
               dbSndQueueId = Just 1,
               sndPrimary = True,
+              nextSndPrimary = False,
+              dbReplaceSndQueueId = Nothing,
               smpClientVersion = 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
