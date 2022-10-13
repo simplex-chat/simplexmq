@@ -119,6 +119,8 @@ functionalAPITests t = do
       withSmpServer t testAsyncCommands
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore t
+    it "should accept connection using async command" $
+      withSmpServer t testAcceptContactAsync
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -626,6 +628,49 @@ testAsyncCommandsRestore t = do
       ("1", _, INV _) <- get alice'
       pure ()
     pure ()
+
+testAcceptContactAsync :: IO ()
+testAcceptContactAsync = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    (_, qInfo) <- createConnection alice True SCMContact
+    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    ("", _, REQ invId _ "bob's connInfo") <- get alice
+    bobId <- acceptContactAsync alice "1" True invId "alice's connInfo"
+    ("1", bobId', OK) <- get alice
+    liftIO $ bobId' `shouldBe` bobId
+    ("", _, CONF confId _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, INFO "bob's connInfo")
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, CON)
+    -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    get alice ##> ("", bobId, SENT $ baseId + 2)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId $ baseId + 1
+    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    ackMessage bob aliceId $ baseId + 2
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 3)
+    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
+    get bob ##> ("", aliceId, SENT $ baseId + 4)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 3
+    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 4
+    suspendConnection alice bobId
+    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
+    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
+    deleteConnection alice bobId
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+  pure ()
+  where
+    baseId = 3
+    msgId = subtract baseId
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

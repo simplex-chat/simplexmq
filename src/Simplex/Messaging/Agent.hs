@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent
     createConnectionAsync,
     joinConnectionAsync,
     allowConnectionAsync,
+    acceptContactAsync,
     ackMessageAsync,
     deleteConnectionAsync,
     createConnection,
@@ -159,6 +160,10 @@ joinConnectionAsync c corrId enableNtfs = withAgentEnv c .: joinConnAsync c corr
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
 allowConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
+
+-- | Accept contact after REQ notification (ACPT command) asynchronously, synchronous response is new connection id
+acceptContactAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> Bool -> ConfirmationId -> ConnInfo -> m ConnId
+acceptContactAsync c corrId enableNtfs = withAgentEnv c .: acceptContactAsync' c corrId enableNtfs
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
@@ -351,6 +356,17 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ RcvQueue {server}) ->
       enqueueCommand c corrId connId (Just server) $ AClientCommand $ LET confId ownConnInfo
+    _ -> throwError $ CMD PROHIBITED
+
+acceptContactAsync' :: AgentMonad m => AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> m ConnId
+acceptContactAsync' c corrId enableNtfs invId ownConnInfo = do
+  Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
+  withStore c (`getConn` contactConnId) >>= \case
+    SomeConn _ ContactConnection {} -> do
+      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+      joinConnAsync c corrId enableNtfs connReq ownConnInfo `catchError` \err -> do
+        withStore' c (`unacceptInvitation` invId)
+        throwError err
     _ -> throwError $ CMD PROHIBITED
 
 ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
