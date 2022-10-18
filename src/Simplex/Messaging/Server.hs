@@ -43,6 +43,7 @@ import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Base64 (encode)
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.List (intercalate)
@@ -655,7 +656,7 @@ timed name sessId qId a = do
   r <- a
   t' <- liftIO getSystemTime
   let int = diff t t'
-  when (int > sec) . logDebug $ T.unwords [name, tshow sessId, tshow qId, tshow int]
+  when (int > sec) . logDebug $ T.unwords [name, tshow $ encode sessId, tshow $ encode qId, tshow int]
   pure r
   where
     diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral  (systemNanoseconds t' - systemNanoseconds t)
