@@ -26,7 +26,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  setLogLevel LogInfo
+  setLogLevel LogDebug
   withGlobalLogging logCfg . protocolServerCLI smpServerCLIConfig $ \cfg@ServerConfig {inactiveClientExpiration} -> do
     putStrLn $ case inactiveClientExpiration of
       Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
