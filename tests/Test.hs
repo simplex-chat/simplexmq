@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentTests)
+import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
 import CoreTests.VersionRangeTests
@@ -22,6 +23,7 @@ main = do
       describe "Encoding tests" encodingTests
       describe "Protocol error tests" protocolErrorTests
       describe "Version range" versionRangeTests
+      describe "Encryption tests" cryptoTests
     describe "SMP server via TLS" $ serverTests (transport @TLS)
     describe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "Notifications server" $ ntfServerTests (transport @TLS)
