@@ -691,6 +691,8 @@ data CryptoError
   | -- | message is larger that allowed padded length minus 2 (to prepend message length)
     -- (or required un-padded length is larger than the message length)
     CryptoLargeMsgError
+  | -- | padded message is shorted than 2 bytes
+    CrypteInvalidMsgError
   | -- | failure parsing message header
     CryptoHeaderError String
   | -- | no sending chain key in ratchet state
@@ -802,9 +804,12 @@ decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
   aead <- initAEAD @AES256 aesKey ivBytes
   liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
 
+maxMsgSize :: Int
+maxMsgSize = 2 ^ (16 :: Int) - 3
+
 pad :: ByteString -> Int -> Either CryptoError ByteString
 pad msg paddedLen
-  | padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+  | len <= maxMsgSize && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
   | otherwise = Left CryptoLargeMsgError
   where
     len = B.length msg
@@ -812,8 +817,8 @@ pad msg paddedLen
 
 unPad :: ByteString -> Either CryptoError ByteString
 unPad padded
-  | B.length rest >= len = Right $ B.take len rest
-  | otherwise = Left CryptoLargeMsgError
+  | B.length lenWrd == 2 && B.length rest >= len = Right $ B.take len rest
+  | otherwise = Left CrypteInvalidMsgError
   where
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
