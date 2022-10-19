@@ -20,7 +20,7 @@ cryptoTests = modifyMaxSuccess (const 10000) $ do
        in if paddedLen >= B.length b + 2
             then if B.length b < 2 ^ (16 :: Int) - 3
               then (fmap (T.unpack . decodeUtf8) . C.unPad =<< padded) == Right s
-              else padded == Left C.CrypteInvalidMsgError
+              else padded == Left C.CryptoInvalidMsgError
             else True
     it "pad should fail on large string" $ do
       C.pad "abc" 5 `shouldBe` Right "\000\003abc"

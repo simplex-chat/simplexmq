@@ -691,8 +691,8 @@ data CryptoError
   | -- | message is larger that allowed padded length minus 2 (to prepend message length)
     -- (or required un-padded length is larger than the message length)
     CryptoLargeMsgError
-  | -- | padded message is shorted than 2 bytes
-    CrypteInvalidMsgError
+  | -- | padded message is shorter than 2 bytes
+    CryptoInvalidMsgError
   | -- | failure parsing message header
     CryptoHeaderError String
   | -- | no sending chain key in ratchet state
@@ -818,7 +818,7 @@ pad msg paddedLen
 unPad :: ByteString -> Either CryptoError ByteString
 unPad padded
   | B.length lenWrd == 2 && B.length rest >= len = Right $ B.take len rest
-  | otherwise = Left CrypteInvalidMsgError
+  | otherwise = Left CryptoInvalidMsgError
   where
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
