@@ -804,12 +804,12 @@ decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
   aead <- initAEAD @AES256 aesKey ivBytes
   liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
 
-maxMsgSize :: Int
-maxMsgSize = 2 ^ (16 :: Int) - 3
+maxMsgLen :: Int
+maxMsgLen = 2 ^ (16 :: Int) - 3
 
 pad :: ByteString -> Int -> Either CryptoError ByteString
 pad msg paddedLen
-  | len <= maxMsgSize && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+  | len <= maxMsgLen && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
   | otherwise = Left CryptoLargeMsgError
   where
     len = B.length msg
