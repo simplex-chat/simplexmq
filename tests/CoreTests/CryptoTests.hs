@@ -27,8 +27,8 @@ cryptoTests = modifyMaxSuccess (const 10000) $ do
       C.pad "abc" 4 `shouldBe` Left C.CryptoLargeMsgError
     it "unpad should fail on invalid string" $ do
       C.unPad "\000\000" `shouldBe` Right ""
-      C.unPad "\000" `shouldBe` Left C.CrypteInvalidMsgError
-      C.unPad "" `shouldBe` Left C.CrypteInvalidMsgError
+      C.unPad "\000" `shouldBe` Left C.CryptoInvalidMsgError
+      C.unPad "" `shouldBe` Left C.CryptoInvalidMsgError
     it "unpad should fail on shorter string" $ do
       C.unPad "\000\003abc" `shouldBe` Right "abc"
-      C.unPad "\000\003ab" `shouldBe` Left C.CrypteInvalidMsgError
+      C.unPad "\000\003ab" `shouldBe` Left C.CryptoInvalidMsgError
