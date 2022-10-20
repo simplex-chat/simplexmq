@@ -110,6 +110,7 @@ x3dh v (sk1, rk1) dh1 dh2 dh3 =
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
     (hk, nhk, sk)
+      -- for backwards compatibility with clients using agent version before 3.4.0
       | v == 1 =
         let (hk', rest) = B.splitAt 32 dhs
          in uncurry (hk',,) $ B.splitAt 32 rest
