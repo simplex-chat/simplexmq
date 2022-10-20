@@ -66,25 +66,9 @@ agentCfgV1 = agentCfg {smpAgentVRange = mkVersionRange 1 1, smpClientVRange = mk
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $
-    it "should connect via one server using SMP agent clients" $
-      withSmpServer t testAgentClient
-  describe "Duplex connection between agent versions 1 and 2" $ do
-    it "should connect agent v1 to v1" $
-      withSmpServer t testAgentClientV1toV1
-    it "should connect agent v1 to v2" $
-      withSmpServer t testAgentClientV1toV2
-    it "should connect agent v2 to v1" $
-      withSmpServer t testAgentClientV2toV1
+    testMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
-    it "should connect via one server using SMP agent clients" $
-      withSmpServer t testAgentClientContact
-  describe "Duplex connection via contact address between agent versions 1 and 2" $ do
-    it "should connect agent v1 to v1" $
-      withSmpServer t testAgentClientContactV1toV1
-    it "should connect agent v1 to v2" $
-      withSmpServer t testAgentClientContactV1toV2
-    it "should connect agent v2 to v1" $
-      withSmpServer t testAgentClientContactV2toV1
+    testMatrix2 t runAgentClientContactTest
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -122,53 +106,18 @@ functionalAPITests t = do
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
 
-testAgentClient :: IO ()
-testAgentClient = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 3
+testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2 t runTest = do
+  it "v2" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
+  it "v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
+  it "v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
 
-testAgentClientV1toV1 :: IO ()
-testAgentClientV1toV1 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 4
-
-testAgentClientV1toV2 :: IO ()
-testAgentClientV1toV2 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 4
-
-testAgentClientV2toV1 :: IO ()
-testAgentClientV2toV1 = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 4
-
-testAgentClientContact :: IO ()
-testAgentClientContact = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 3
-
-testAgentClientContactV1toV1 :: IO ()
-testAgentClientContactV1toV1 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 4
-
-testAgentClientContactV1toV2 :: IO ()
-testAgentClientContactV1toV2 = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 4
-
-testAgentClientContactV2toV1 :: IO ()
-testAgentClientContactV2toV1 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 4
+runTestCfg2 :: AgentConfig -> AgentConfig -> AgentMsgId -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> IO ()
+runTestCfg2 aliceCfg bobCfg baseMsgId runTest = do
+  alice <- getSMPAgentClient aliceCfg initAgentServers
+  bob <- getSMPAgentClient bobCfg {database = testDB2} initAgentServers
+  runTest alice bob baseMsgId
 
 runAgentClientTest :: AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientTest alice bob baseId = do
