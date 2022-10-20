@@ -43,6 +43,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
@@ -93,6 +94,7 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    e2eEncryptVRange :: VersionRange,
     smpAgentVRange :: VersionRange,
     smpClientVRange :: VersionRange
   }
@@ -138,6 +140,7 @@ defaultAgentConfig =
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
+      e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
       smpClientVRange = supportedSMPClientVRange
     }

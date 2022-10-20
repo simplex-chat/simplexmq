@@ -62,7 +62,7 @@ testE2ERatchetParams :: E2ERatchetParamsUri 'C.X448
 testE2ERatchetParams = E2ERatchetParamsUri (mkVersionRange 1 1) testDhPubKey testDhPubKey
 
 testE2ERatchetParams12 :: E2ERatchetParamsUri 'C.X448
-testE2ERatchetParams12 = E2ERatchetParamsUri e2eEncryptVRange testDhPubKey testDhPubKey
+testE2ERatchetParams12 = E2ERatchetParamsUri supportedE2EEncryptVRange testDhPubKey testDhPubKey
 
 connectionRequest :: AConnectionRequestUri
 connectionRequest =

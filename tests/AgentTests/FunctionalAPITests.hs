@@ -58,17 +58,27 @@ pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 smpCfgV1 :: ProtocolClientConfig
-smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = mkVersionRange 1 1}
+smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = vr11}
 
 agentCfgV1 :: AgentConfig
-agentCfgV1 = agentCfg {smpAgentVRange = mkVersionRange 1 1, smpClientVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
+agentCfgV1 = agentCfg {smpAgentVRange = vr11, smpClientVRange = vr11, e2eEncryptVRange = vr11, smpCfg = smpCfgV1}
+
+agentCfgRatchetV1 :: AgentConfig
+agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = vr11}
+
+vr11 :: VersionRange
+vr11 = mkVersionRange 1 1
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $
     testMatrix2 t runAgentClientTest
+  describe "Establishing duplex connection v2, different Ratchet versions" $
+    testRatchetMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
     testMatrix2 t runAgentClientContactTest
+  describe "Establish duplex connection via contact address v2, different Ratchet versions" $
+    testRatchetMatrix2 t runAgentClientContactTest
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -112,6 +122,13 @@ testMatrix2 t runTest = do
   it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
   it "v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
   it "v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
+
+testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testRatchetMatrix2 t runTest = do
+  it "ratchet v2" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "ratchet v1" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfgRatchetV1 3 runTest
+  it "ratchets v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfg 3 runTest
+  it "ratchets v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetV1 3 runTest
 
 runTestCfg2 :: AgentConfig -> AgentConfig -> AgentMsgId -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> IO ()
 runTestCfg2 aliceCfg bobCfg baseMsgId runTest = do

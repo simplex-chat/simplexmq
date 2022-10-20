@@ -41,11 +41,11 @@ import Simplex.Messaging.Parsers (blobFieldDecoder, parseE, parseE')
 import Simplex.Messaging.Util (tryE)
 import Simplex.Messaging.Version
 
-e2eEncryptVersion :: Version
-e2eEncryptVersion = 2
+currentE2EEncryptVersion :: Version
+currentE2EEncryptVersion = 2
 
-e2eEncryptVRange :: VersionRange
-e2eEncryptVRange = mkVersionRange 1 e2eEncryptVersion
+supportedE2EEncryptVRange :: VersionRange
+supportedE2EEncryptVRange = mkVersionRange 1 currentE2EEncryptVersion
 
 data E2ERatchetParams (a :: Algorithm)
   = E2ERatchetParams Version (PublicKey a) (PublicKey a)
@@ -216,12 +216,12 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initSndRatchet rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initSndRatchet rcVersion rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs
    in Ratchet
-        { rcVersion = e2eEncryptVRange,
+        { rcVersion,
           rcAD = assocData,
           rcDHRs,
           rcRK,
@@ -239,10 +239,10 @@ initSndRatchet rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rc
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PrivateKey a -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initRcvRatchet rcVersion rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
   Ratchet
-    { rcVersion = e2eEncryptVRange,
+    { rcVersion,
       rcAD = assocData,
       rcDHRs,
       rcRK = ratchetKey,
