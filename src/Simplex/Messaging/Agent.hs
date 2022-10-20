@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent
     createConnectionAsync,
     joinConnectionAsync,
     allowConnectionAsync,
+    acceptContactAsync,
     ackMessageAsync,
     deleteConnectionAsync,
     createConnection,
@@ -161,6 +162,10 @@ joinConnectionAsync c corrId enableNtfs = withAgentEnv c .: joinConnAsync c corr
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
 allowConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
+
+-- | Accept contact after REQ notification (ACPT command) asynchronously, synchronous response is new connection id
+acceptContactAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> Bool -> ConfirmationId -> ConnInfo -> m ConnId
+acceptContactAsync c corrId enableNtfs = withAgentEnv c .: acceptContactAsync' c corrId enableNtfs
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
@@ -359,6 +364,17 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
       enqueueCommand c corrId connId (Just server) $ AClientCommand $ LET confId ownConnInfo
     _ -> throwError $ CMD PROHIBITED
 
+acceptContactAsync' :: AgentMonad m => AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> m ConnId
+acceptContactAsync' c corrId enableNtfs invId ownConnInfo = do
+  Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
+  withStore c (`getConn` contactConnId) >>= \case
+    SomeConn _ ContactConnection {} -> do
+      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+      joinConnAsync c corrId enableNtfs connReq ownConnInfo `catchError` \err -> do
+        withStore' c (`unacceptInvitation` invId)
+        throwError err
+    _ -> throwError $ CMD PROHIBITED
+
 ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
 ackMessageAsync' c corrId connId msgId =
   withStore c (`getConn` connId) >>= \case
@@ -401,29 +417,27 @@ newConn c connId asyncMode enableNtfs cMode =
 
 newConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> SMPServer -> m (ConnId, ConnectionRequestUri c)
 newConnSrv c connId asyncMode enableNtfs cMode srv = do
-  clientVRange <- asks $ smpClientVRange . config
-  (_rq, qUri) <- newRcvQueue c "" srv clientVRange
-  connId' <- setUpConn asyncMode _rq
+  AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
+  (_rq, qUri) <- newRcvQueue c "" srv smpClientVRange
+  connId' <- setUpConn asyncMode _rq $ maxVersion smpAgentVRange
   let rq = (_rq :: RcvQueue) {connId = connId'}
   addSubscription c rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId', NSCCreate)
-  aVRange <- asks $ smpAgentVRange . config
-  let crData = ConnReqUriData simplexChat aVRange [qUri]
+  let crData = ConnReqUriData simplexChat smpAgentVRange [qUri]
   case cMode of
     SCMContact -> pure (connId', CRContactUri crData)
     SCMInvitation -> do
-      (pk1, pk2, e2eRcvParams) <- liftIO $ CR.generateE2EParams CR.e2eEncryptVersion
+      (pk1, pk2, e2eRcvParams) <- liftIO . CR.generateE2EParams $ maxVersion e2eEncryptVRange
       withStore' c $ \db -> createRatchetX3dhKeys db connId' pk1 pk2
-      pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
+      pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange)
   where
-    setUpConn True rq = do
+    setUpConn True rq _ = do
       void . withStore c $ \db -> updateNewConnRcv db connId rq
       pure connId
-    setUpConn False rq = do
+    setUpConn False rq connAgentVersion = do
       g <- asks idsDrg
-      connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
       let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
       withStore c $ \db -> createRcvConn db g cData rq cMode
 
@@ -437,16 +451,15 @@ joinConn c connId asyncMode enableNtfs cReq cInfo = do
 
 joinConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> SMPServer -> m ConnId
 joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo srv = do
-  aVRange <- asks $ smpAgentVRange . config
-  clientVRange <- asks $ smpClientVRange . config
-  case ( qUri `compatibleVersion` clientVRange,
-         e2eRcvParamsUri `compatibleVersion` CR.e2eEncryptVRange,
-         agentVRange `compatibleVersion` aVRange
+  AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
+  case ( qUri `compatibleVersion` smpClientVRange,
+         e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange,
+         agentVRange `compatibleVersion` smpAgentVRange
        ) of
     (Just qInfo, Just (Compatible e2eRcvParams@(CR.E2ERatchetParams _ _ rcDHRr)), Just aVersion@(Compatible connAgentVersion)) -> do
       (pk1, pk2, e2eSndParams) <- liftIO . CR.generateE2EParams $ version e2eRcvParams
       (_, rcDHRs) <- liftIO C.generateKeyPair'
-      let rc = CR.initSndRatchet rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
+      let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
       _sq <- newSndQueue "" qInfo
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
@@ -1496,16 +1509,17 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         smpConfirmation :: C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> Version -> Version -> m ()
         smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
           logServer "<--" c srv rId "MSG <CONF>"
-          AgentConfig {smpAgentVRange, smpClientVRange} <- asks config
+          AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
           unless
             (agentVersion `isCompatible` smpAgentVRange && smpClientVersion `isCompatible` smpClientVRange)
             (throwError $ AGENT A_VERSION)
           case status of
             New -> case (conn, e2eEncryption) of
               -- party initiating connection
-              (RcvConnection {}, Just e2eSndParams) -> do
+              (RcvConnection {}, Just e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _)) -> do
+                unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
                 (pk1, rcDHRs) <- withStore c (`getRatchetX3dhKeys` connId)
-                let rc = CR.initRcvRatchet rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
+                let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
                 (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt rc M.empty encConnInfo
                 case (agentMsgBody_, skipped) of
                   (Right agentMsgBody, CR.SMDNoChange) ->
