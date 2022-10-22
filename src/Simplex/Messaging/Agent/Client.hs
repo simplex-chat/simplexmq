@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -56,6 +57,7 @@ module Simplex.Messaging.Agent.Client
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
+    AgentLocks (..),
     agentOperations,
     agentOperationBracket,
     waitUntilActive,
@@ -80,6 +82,8 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Data.Aeson (ToJSON)
+import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -96,7 +100,9 @@ import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
+import GHC.Generics (Generic)
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -177,9 +183,9 @@ data AgentClient = AgentClient
     agentState :: TVar AgentState,
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
-    connLocks :: TMap ConnId (TMVar ()),
+    connLocks :: TMap ConnId Lock,
     -- locks to prevent concurrent reconnections to SMP servers
-    reconnectLocks :: TMap SMPServer (TMVar ()),
+    reconnectLocks :: TMap SMPServer Lock,
     reconnections :: TVar [Async ()],
     asyncClients :: TVar [Async ()],
     clientId :: Int,
@@ -204,6 +210,11 @@ data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 
 data AgentState = ASActive | ASSuspending | ASSuspended
   deriving (Eq, Show)
+
+data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String}
+  deriving (Show, Generic)
+
+instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
 
 newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
 newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
@@ -305,7 +316,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
 
     reconnectClient :: m ()
     reconnectClient =
-      withLock_ (reconnectLocks c) srv $
+      withLockMap_ (reconnectLocks c) srv "reconnect" $
         atomically (TM2.lookup1 srv (pendingSubs c) >>= mapM readTVar)
           >>= mapM_ resubscribe
       where
@@ -446,19 +457,14 @@ closeProtocolServerClients c clientsSel =
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ (forkIO . uninterruptibleCancel) >> atomically (writeTVar as mempty)
 
-withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> m a -> m a
-withConnLock _ "" = id
-withConnLock AgentClient {connLocks} connId = withLock_ connLocks connId
+withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
+withConnLock _ "" _ = id
+withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
 
-withLock_ :: (Ord k, MonadUnliftIO m) => TMap k (TMVar ()) -> k -> m a -> m a
-withLock_ locks connId =
-  E.bracket
-    (atomically $ getLock >>= \l -> takeTMVar l $> l)
-    (atomically . (`putTMVar` ()))
-    . const
+withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
+withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
   where
-    getLock = TM.lookup connId locks >>= maybe newLock pure
-    newLock = newTMVar () >>= \l -> TM.insert connId l locks $> l
+    newLock = newEmptyTMVar >>= \l -> TM.insert key l locks $> l
 
 withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> (ProtocolClient msg -> m a) -> m a
 withClient_ c srv action = (getProtocolServerClient c srv >>= action) `catchError` logServerError
