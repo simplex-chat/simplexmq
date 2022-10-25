@@ -26,9 +26,9 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
@@ -115,6 +115,11 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
+  describe "Queue rotation" $ do
+    it "should switch delivery to the new queue with one server" $
+      testSwitchConnection t initAgentServers
+    it "should switch delivery to the new queue with 2 servers" $
+      testSwitchConnection t initAgentServers2
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
@@ -637,6 +642,23 @@ testAcceptContactAsync = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testSwitchConnection :: ATransport -> InitialAgentServers -> IO ()
+testSwitchConnection t servers = do
+  a <- getSMPAgentClient agentCfg servers
+  b <- getSMPAgentClient agentCfg {database = testDB2} servers
+  Right () <- withSmpServer t . withSmpServerOn t testPort2 . runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    switchConnection a bId
+    (_, aId', SWITCH SPStarted _) <- get b
+    liftIO $ aId' `shouldBe` aId
+    (_, _, ERR (AGENT A_DUPLICATE)) <- get a
+    (_, bId', SWITCH SPCompleted _) <- get a
+    liftIO $ bId' `shouldBe` bId
+  -- liftIO $ threadDelay 3000000
+  -- exchangeGreetingsMsgId 13 a bId b aId
+  pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

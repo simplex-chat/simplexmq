@@ -63,9 +63,6 @@ data RcvQueue = RcvQueue
     status :: QueueStatus,
     -- | database queue ID, can be Nothing for old queues
     dbRcvQueueId :: Maybe Int64,
-    -- TODO *** possibly, simplify the next three fields into one (and one DB field can be removed)
-    -- using: data PrimaryQueue = PQNotPrimary | PQCurrent | PQNext Int64
-
     -- | True for a primary queue of the connection
     rcvPrimary :: Bool,
     -- | True for the next primary queue
@@ -107,14 +104,11 @@ data SndQueue = SndQueue
     status :: QueueStatus,
     -- | database queue ID, can be Nothing for old queues
     dbSndQueueId :: Maybe Int64,
-    -- TODO *** possibly, simplify the next three fields into one (and one DB field can be removed)
-    -- using: data PrimaryQueue = PQNotPrimary | PQCurrent | PQNext Int64
-
     -- | True for a primary queue of the connection
     sndPrimary :: Bool,
     -- | True for the next primary queue
     nextSndPrimary :: Bool,
-    -- TODO *** add replace_db_snd_queue_id
+    -- | ID of the queue this one is replacing
     dbReplaceSndQueueId :: Maybe (Maybe Int64),
     -- | SMP client version
     smpClientVersion :: Version
@@ -197,28 +191,6 @@ data ConnData = ConnData
   }
   deriving (Eq, Show)
 
--- data ConnectionAction
---   = CACreateRcvQueue
-
--- data RcvQueueAction
---   | CASecureRcvQueue
---   | CASuspendRcvQueue
---   | CADeleteRcvQueue
---   deriving (Eq, Show)
-
--- instance TextEncoding RcvQueueAction where
---   textEncode = \case
---     RQACreateNextQueue -> "create"
---     RQASecureNextQueue -> "secure"
---     RQASuspendCurrQueue -> "suspend"
---     RQADeleteCurrQueue -> "delete"
---   textDecode = \case
---     "create" -> Just RQACreateNextQueue
---     "secure" -> Just RQASecureNextQueue
---     "suspend" -> Just RQASuspendCurrQueue
---     "delete" -> Just RQADeleteCurrQueue
---     _ -> Nothing
-
 data AgentCmdType = ACClient | ACInternal
 
 instance StrEncoding AgentCmdType where
@@ -287,14 +259,14 @@ instance StrEncoding InternalCommand where
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
   strP =
-    strP_ >>= \case
-      ICAck_ -> ICAck <$> strP_ <*> strP
-      ICAckDel_ -> ICAckDel <$> strP_ <*> strP_ <*> strP
-      ICAllowSecure_ -> ICAllowSecure <$> strP_ <*> strP
-      ICDuplexSecure_ -> ICDuplexSecure <$> strP_ <*> strP
+    strP >>= \case
+      ICAck_ -> ICAck <$> _strP <*> _strP
+      ICAckDel_ -> ICAckDel <$> _strP <*> _strP <*> _strP
+      ICAllowSecure_ -> ICAllowSecure <$> _strP <*> _strP
+      ICDuplexSecure_ -> ICDuplexSecure <$> _strP <*> _strP
       ICQSwitch_ -> pure ICQSwitch
-      ICQSecure_ -> ICQSecure <$> strP_ <*> strP
-      ICQDelete_ -> ICQDelete <$> strP
+      ICQSecure_ -> ICQSecure <$> _strP <*> _strP
+      ICQDelete_ -> ICQDelete <$> _strP
 
 instance StrEncoding InternalCommandTag where
   strEncode = \case

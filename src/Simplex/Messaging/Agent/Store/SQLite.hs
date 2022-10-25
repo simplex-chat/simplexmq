@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteConnRcvQueue,
     deleteConnSndQueue,
     getPrimaryRcvQueue,
+    getRcvQueue,
     setRcvQueueNtfCreds,
     -- Confirmations
     createConfirmation,
@@ -472,6 +473,11 @@ getPrimaryRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getPrimaryRcvQueue db connId =
   maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId_ db connId
 
+getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
+getRcvQueue db connId (SMPServer host port _) rcvId =
+  firstRow (toRcvQueue connId) SEConnNotFound $
+    DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ?") (connId, host, port, rcvId)
+
 setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
 setRcvQueueNtfCreds db connId clientNtfCreds =
   DB.execute
@@ -681,7 +687,6 @@ getPendingMsgData db connId msgId = do
       let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
        in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
 
--- TODO *** should return messages for a particular queue based on deliveries table
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
 getPendingMsgs db connId SndQueue {dbSndQueueId} =
   map fromOnly
