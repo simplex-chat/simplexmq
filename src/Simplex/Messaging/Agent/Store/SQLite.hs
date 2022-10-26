@@ -455,16 +455,16 @@ setRcvQueuePrimary db connId RcvQueue {dbRcvQueueId = qId} = do
   DB.execute db "UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ? WHERE conn_id = ?" (False, False, connId)
   DB.execute
     db
-    ("UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ?, replace_rcv_queue = ?, replace_rcv_queue_id = ?" <> whereRcvQueue)
-    (True, False, False, Nothing :: Maybe Int64, connId, qId, qId)
+    ("UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ?, replace_rcv_queue_id = ?" <> whereRcvQueue)
+    (True, False, Nothing :: Maybe Int64, connId, qId, qId)
 
 setSndQueuePrimary :: DB.Connection -> ConnId -> SndQueue -> IO ()
 setSndQueuePrimary db connId SndQueue {dbSndQueueId = qId} = do
   DB.execute db "UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ? WHERE conn_id = ?" (False, False, connId)
   DB.execute
     db
-    ("UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ?, replace_snd_queue = ?, replace_snd_queue_id = ? " <> whereSndQueue)
-    (True, False, False, Nothing :: Maybe Int64, connId, qId, qId)
+    ("UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ?, replace_snd_queue_id = ? " <> whereSndQueue)
+    (True, False, Nothing :: Maybe Int64, connId, qId, qId)
 
 deleteConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 deleteConnRcvQueue db connId RcvQueue {dbRcvQueueId = qId} =
@@ -1286,41 +1286,33 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO Int64
 insertRcvQueue_ db connId' RcvQueue {..} = do
-  qId <- newQueueId_ <$> DB.query_ db "SELECT rcv_queue_id FROM rcv_queues ORDER BY rcv_queue_id DESC LIMIT 1"
+  qId <- newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')
   DB.execute
     db
     [sql|
       INSERT INTO rcv_queues
-        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, rcv_queue_id, rcv_primary, next_rcv_primary, replace_rcv_queue, replace_rcv_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, rcv_queue_id, rcv_primary, next_rcv_primary, replace_rcv_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, rcvPrimary, nextRcvPrimary, replaceRcvQueue, replaceRcvQueueId_, smpClientVersion))
+    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, rcvPrimary, nextRcvPrimary, dbReplaceRcvQueueId, smpClientVersion))
   pure qId
-  where
-    (replaceRcvQueue, replaceRcvQueueId_) = case dbReplaceRcvQueueId of
-      Just qId_ -> (True, qId_)
-      _ -> (False, Nothing)
 
 -- * createSndConn helpers
 
 insertSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO Int64
 insertSndQueue_ db connId' SndQueue {..} = do
-  qId <- newQueueId_ <$> DB.query_ db "SELECT snd_queue_id FROM snd_queues ORDER BY snd_queue_id DESC LIMIT 1"
+  qId <- newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')
   DB.execute
     db
     [sql|
       INSERT INTO snd_queues
-        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, next_snd_primary, replace_snd_queue, replace_snd_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, next_snd_primary, replace_snd_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, sndPrimary, nextSndPrimary, replaceSndQueue, replaceSndQueueId_, smpClientVersion))
+    ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion))
   pure qId
-  where
-    (replaceSndQueue, replaceSndQueueId_) = case dbReplaceSndQueueId of
-      Just qId_ -> (True, qId_)
-      _ -> (False, Nothing)
 
-newQueueId_ :: [Only (Maybe Int64)] -> Int64
+newQueueId_ :: [Only Int64] -> Int64
 newQueueId_ [] = 1
-newQueueId_ (Only maxId_ : _) = maybe 1 (+ 1) maxId_
+newQueueId_ (Only maxId : _) = maxId + 1
 
 -- * getConn helpers
 
@@ -1359,7 +1351,8 @@ rcvQueueQuery :: Query
 rcvQueueQuery =
   [sql|
     SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status, q.rcv_queue_id, q.rcv_primary, q.next_rcv_primary, q.replace_rcv_queue, q.replace_rcv_queue_id, q.smp_client_version,
+      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+      q.rcv_queue_id, q.rcv_primary, q.next_rcv_primary, q.replace_rcv_queue_id, q.smp_client_version,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
     FROM rcv_queues q
     INNER JOIN servers s ON q.host = s.host AND q.port = s.port
@@ -1368,16 +1361,15 @@ rcvQueueQuery =
 toRcvQueue ::
   ConnId ->
   (C.KeyHash, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateSignKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
-    :. (Maybe Int64, Bool, Bool, Bool, Maybe Int64, Maybe Version)
+    :. (Int64, Bool, Bool, Maybe Int64, Maybe Version)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbRcvQueueId, rcvPrimary, nextRcvPrimary, replaceRcvQueue, replaceRcvQueueId_, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbRcvQueueId, rcvPrimary, nextRcvPrimary, dbReplaceRcvQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe 1 smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-      dbReplaceRcvQueueId = if replaceRcvQueue then Just replaceRcvQueueId_ else Nothing
    in RcvQueue {connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbRcvQueueId, rcvPrimary, nextRcvPrimary, dbReplaceRcvQueueId, smpClientVersion, clientNtfCreds}
 
 getRcvQueueById_ :: DB.Connection -> ConnId -> Maybe Int64 -> IO (Either StoreError RcvQueue)
@@ -1392,16 +1384,15 @@ getSndQueuesByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.snd_queue_id, q.snd_primary, q.next_snd_primary, q.replace_snd_queue, q.replace_snd_queue_id, q.smp_client_version
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.snd_queue_id, q.snd_primary, q.next_snd_primary, q.replace_snd_queue_id, q.smp_client_version
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, nextSndPrimary, replaceSndQueue, replaceSndQueueId_, smpClientVersion)) =
+    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion)) =
       let server = SMPServer host port keyHash
-          dbReplaceSndQueueId = if replaceSndQueue then Just replaceSndQueueId_ else Nothing
        in SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbSndQueueId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion}
     primaryFirst SndQueue {sndPrimary = p} SndQueue {sndPrimary = p'} = compare (Down p) (Down p')
 

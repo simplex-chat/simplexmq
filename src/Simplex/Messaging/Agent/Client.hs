@@ -547,7 +547,7 @@ newRcvQueue_ a c connId srv vRange = do
             e2eDhSecret = Nothing,
             sndId,
             status = New,
-            dbRcvQueueId = Nothing,
+            dbRcvQueueId = 0,
             rcvPrimary = True,
             nextRcvPrimary = False,
             dbReplaceRcvQueueId = Nothing,

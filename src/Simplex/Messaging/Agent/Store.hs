@@ -61,14 +61,14 @@ data RcvQueue = RcvQueue
     sndId :: SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
-    -- | database queue ID, can be Nothing for old queues
-    dbRcvQueueId :: Maybe Int64,
+    -- | database queue ID (within connection), can be Nothing for old queues
+    dbRcvQueueId :: Int64,
     -- | True for a primary queue of the connection
     rcvPrimary :: Bool,
     -- | True for the next primary queue
     nextRcvPrimary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
-    dbReplaceRcvQueueId :: Maybe (Maybe Int64),
+    dbReplaceRcvQueueId :: Maybe Int64,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -102,14 +102,14 @@ data SndQueue = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
-    -- | database queue ID, can be Nothing for old queues
-    dbSndQueueId :: Maybe Int64,
+    -- | database queue ID (within connection), can be Nothing for old queues
+    dbSndQueueId :: Int64,
     -- | True for a primary queue of the connection
     sndPrimary :: Bool,
     -- | True for the next primary queue
     nextSndPrimary :: Bool,
     -- | ID of the queue this one is replacing
-    dbReplaceSndQueueId :: Maybe (Maybe Int64),
+    dbReplaceSndQueueId :: Maybe Int64,
     -- | SMP client version
     smpClientVersion :: Version
   }

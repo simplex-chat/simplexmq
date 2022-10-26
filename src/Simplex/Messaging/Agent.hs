@@ -1732,8 +1732,8 @@ connectReplyQueues c cData@ConnData {connId} ownConnInfo (qInfo :| _) = do
     Nothing -> throwError $ AGENT A_VERSION
     Just qInfo' -> do
       sq <- newSndQueue connId qInfo'
-      dbSndId <- withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
-      enqueueConfirmation c cData sq {dbSndQueueId = Just dbSndId} ownConnInfo Nothing
+      dbSndQueueId <- withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
+      enqueueConfirmation c cData sq {dbSndQueueId} ownConnInfo Nothing
 
 confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServer -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
 confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption = do
@@ -1815,7 +1815,7 @@ newSndQueue_ a connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
         e2ePubKey = Just e2ePubKey,
         status = New,
-        dbSndQueueId = Nothing,
+        dbSndQueueId = 0,
         sndPrimary = True,
         nextSndPrimary = False,
         dbReplaceSndQueueId = Nothing,
