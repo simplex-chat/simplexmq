@@ -1648,14 +1648,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         -- processed by queue sender
         -- mark queue as Secured and to start sending messages to it
         qUseMsg :: NonEmpty ((SMPServer, SMP.SenderId), Bool) -> Connection 'CDuplex -> m ()
-        qUseMsg ((addr, primary') :| _) (DuplexConnection _ _ sqs) =
+        qUseMsg ((addr, primary) :| _) (DuplexConnection _ _ sqs) =
           case removeQ addr sqs of
             Just (sq', sqs') -> do
               logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
               withStore' c $ \db -> do
                 setSndQueueStatus db sq' Secured
-                when primary' $ setSndQueuePrimary db connId sq'
-              let sq'' = (sq' :: SndQueue) {status = Secured}
+                when primary $ setSndQueuePrimary db connId sq'
+              let sq'' = (sq' :: SndQueue) {status = Secured, primary}
               void $ enqueueMessages c cData (sq'' :| sqs') SMP.noMsgFlags $ QTEST [addr]
             _ -> throwError $ INTERNAL "QUSE: queue address not found in connection"
 
