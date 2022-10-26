@@ -444,36 +444,30 @@ setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
-whereRcvQueue :: Query
-whereRcvQueue = " WHERE conn_id = ? AND (rcv_queue_id = ? OR (rcv_queue_id IS NULL AND ? IS NULL))"
-
-whereSndQueue :: Query
-whereSndQueue = " WHERE conn_id = ? AND (snd_queue_id = ? OR (snd_queue_id IS NULL AND ? IS NULL))"
-
 setRcvQueuePrimary :: DB.Connection -> ConnId -> RcvQueue -> IO ()
-setRcvQueuePrimary db connId RcvQueue {dbQueueId = qId} = do
+setRcvQueuePrimary db connId RcvQueue {dbQueueId} = do
   DB.execute db "UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ? WHERE conn_id = ?" (False, False, connId)
   DB.execute
     db
-    ("UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ?, replace_rcv_queue_id = ?" <> whereRcvQueue)
-    (True, False, Nothing :: Maybe Int64, connId, qId, qId)
+    "UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ?, replace_rcv_queue_id = ? WHERE conn_id = ? AND rcv_queue_id = ?"
+    (True, False, Nothing :: Maybe Int64, connId, dbQueueId)
 
 setSndQueuePrimary :: DB.Connection -> ConnId -> SndQueue -> IO ()
-setSndQueuePrimary db connId SndQueue {dbQueueId = qId} = do
+setSndQueuePrimary db connId SndQueue {dbQueueId} = do
   DB.execute db "UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ? WHERE conn_id = ?" (False, False, connId)
   DB.execute
     db
-    ("UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ?, replace_snd_queue_id = ? " <> whereSndQueue)
-    (True, False, Nothing :: Maybe Int64, connId, qId, qId)
+    "UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ?, replace_snd_queue_id = ? WHERE conn_id = ? AND snd_queue_id = ?"
+    (True, False, Nothing :: Maybe Int64, connId, dbQueueId)
 
 deleteConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO ()
-deleteConnRcvQueue db connId RcvQueue {dbQueueId = qId} =
-  DB.execute db ("DELETE FROM rcv_queues " <> whereRcvQueue) (connId, qId, qId)
+deleteConnRcvQueue db connId RcvQueue {dbQueueId} =
+  DB.execute db "DELETE FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
 
 deleteConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO ()
-deleteConnSndQueue db connId SndQueue {dbQueueId = qId} = do
-  DB.execute db ("DELETE FROM snd_queues " <> whereSndQueue) (connId, qId, qId)
-  DB.execute db ("DELETE FROM snd_message_deliveries " <> whereSndQueue) (connId, qId, qId)
+deleteConnSndQueue db connId SndQueue {dbQueueId} = do
+  DB.execute db "DELETE FROM snd_queues WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
+  DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
 
 getPrimaryRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getPrimaryRcvQueue db connId =
@@ -696,11 +690,11 @@ getPendingMsgData db connId msgId = do
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
 getPendingMsgs db connId SndQueue {dbQueueId} =
   map fromOnly
-    <$> DB.query db ("SELECT internal_id FROM snd_message_deliveries " <> whereSndQueue) (connId, dbQueueId, dbQueueId)
+    <$> DB.query db "SELECT internal_id FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
 
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deletePendingMsgs db connId SndQueue {dbQueueId} =
-  DB.execute db ("DELETE FROM snd_message_deliveries " <> whereSndQueue) (connId, dbQueueId, dbQueueId)
+  DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
@@ -739,8 +733,8 @@ deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO 
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId = do
   DB.execute
     db
-    ("DELETE FROM snd_message_deliveries " <> whereSndQueue <> " AND internal_id = ?")
-    (connId, dbQueueId, dbQueueId, msgId)
+    "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
+    (connId, dbQueueId, msgId)
   (Only (cnt :: Int) : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
   when (cnt == 0) $ deleteMsg db connId msgId
 
@@ -1375,7 +1369,7 @@ toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2eP
 getRcvQueueById_ :: DB.Connection -> ConnId -> Maybe Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById_ db connId dbRcvId =
   firstRow (toRcvQueue connId) SEConnNotFound $
-    DB.query db (rcvQueueQuery <> whereRcvQueue) (connId, dbRcvId, dbRcvId)
+    DB.query db (rcvQueueQuery <> " WHERE conn_id = ? AND rcv_queue_id = ?") (connId, dbRcvId)
 
 -- | returns all connection queues, the first queue is the primary one
 getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
