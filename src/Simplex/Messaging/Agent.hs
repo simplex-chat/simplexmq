@@ -806,7 +806,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           withServer $ \srv -> tryWithLock "ICQDelete" . withDuplexConn $ \(DuplexConnection cData rqs sqs) -> do
             case L.break (sameRQ srv rId) rqs of
               (_, []) -> internalErr "ICQDelete: queue address not found in connection"
-              (rqs1, rq'@RcvQueue {rcvPrimary} : rqs2) -> case L.nonEmpty (rqs1 <> rqs2) of
+              (rqs1, rq'@RcvQueue {rcvPrimary} : rqs2) -> case L.nonEmpty $ rqs1 <> rqs2 of
                 Just rqs'
                   | rcvPrimary -> internalErr "ICQDelete: cannot delete primary rcv queue"
                   | otherwise -> do
@@ -1441,7 +1441,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       -- any message in the new queue will mark it active and trigger deletion of the old queue
                       QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
                       QDEL qs -> qDelMsg qs >> ackDel msgId
-                      QEND qs -> qEndMsg qs
+                      QEND qs -> qEndMsg qs >> ackDel msgId
                     Right _ -> prohibited >> ack
                     Left e@(AGENT A_DUPLICATE) -> do
                       withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
@@ -1619,7 +1619,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                     void . withStore c $ \db -> addConnSndQueue db connId sq'
                     case (sndPublicKey, e2ePubKey) of
                       (Just sndPubKey, Just dhPublicKey) -> do
-                        logServer "<--" c srv rId "MSG <QADD>"
+                        logServer "<--" c srv rId $ "MSG <QADD> " <> logSecret senderId
                         let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = sqAddr {dhPublicKey}}
                         void . enqueueMessages c cData sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPubKey)]
                         let conn' = DuplexConnection cData rqs (sq <| sq' :| sqs_)
@@ -1637,7 +1637,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
             case find (\RcvQueue {server, sndId} -> server == smpServer && sndId == senderId) rqs of
               Just rq'@RcvQueue {rcvId, e2ePrivKey = dhPrivKey, smpClientVersion = cVer} -> do
-                logServer "<--" c srv rId "MSG <QKEY>"
+                logServer "<--" c srv rId $ "MSG <QKEY> " <> logSecret senderId
                 let dhSecret = C.dh' dhPublicKey dhPrivKey
                 withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
                 enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQSecure rcvId senderKey
@@ -1653,7 +1653,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
           DuplexConnection _ _ sqs -> do
             case L.break (uncurry sameSQ addr) sqs of
               (sqs1, sq' : sqs2) -> do
-                logServer "<--" c srv rId "MSG <QUSE>"
+                logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
                 withStore' c $ \db -> do
                   setSndQueueStatus db sq' Secured
                   when primary $ setSndQueuePrimary db connId sq'
@@ -1671,10 +1671,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         qDelMsg (addr :| _) = case conn of
           DuplexConnection _ _ sqs ->
             case L.partition (uncurry sameSQ addr) sqs of
-              ([], _) -> throwError $ INTERNAL "QDEL: queue address not found in connection"
+              ([], _) -> logServer "<--" c srv rId "MSG <QDEL>: queue not found (already deleted?)"
               (sq : _, sqs_) -> case L.nonEmpty sqs_ of
                 Just sqs' -> do
-                  logServer "<--" c srv rId "MSG <QDEL>"
+                  logServer "<--" c srv rId $ "MSG <QDEL> " <> logSecret (snd addr)
                   -- remove the delivery from the map to stop the thread when the delivery loop is complete
                   atomically $ TM.delete addr $ smpQueueMsgQueues c
                   withStore' c $ \db -> do
@@ -1691,7 +1691,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
           DuplexConnection _ rqs _ ->
             case find (\RcvQueue {server, sndId} -> server == smpServer && sndId == senderId) rqs of
               Just RcvQueue {rcvId} -> do
-                logServer "<--" c srv rId "MSG <QEND>"
+                logServer "<--" c srv rId $ "MSG <QEND> " <> logSecret senderId
                 enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQDelete rcvId
               _ -> throwError $ INTERNAL "QEND: queue address not found in connection"
           _ -> throwError $ INTERNAL "QEND: message can only be sent to duplex connection"

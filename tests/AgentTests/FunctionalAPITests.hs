@@ -656,8 +656,7 @@ testSwitchConnection t servers = do
     (_, _, ERR (AGENT A_DUPLICATE)) <- get a
     (_, bId', SWITCH SPCompleted _) <- get a
     liftIO $ bId' `shouldBe` bId
-  -- liftIO $ threadDelay 3000000
-  -- exchangeGreetingsMsgId 13 a bId b aId
+    exchangeGreetingsMsgId 12 a bId b aId
   pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()

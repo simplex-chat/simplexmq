@@ -452,13 +452,19 @@ whereSndQueue = " WHERE conn_id = ? AND (snd_queue_id = ? OR (snd_queue_id IS NU
 
 setRcvQueuePrimary :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 setRcvQueuePrimary db connId RcvQueue {dbRcvQueueId = qId} = do
-  DB.execute db "UPDATE rcv_queues SET rcv_primary = ? WHERE conn_id = ?" (False, connId)
-  DB.execute db ("UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ? " <> whereRcvQueue) (True, False, connId, qId, qId)
+  DB.execute db "UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ? WHERE conn_id = ?" (False, False, connId)
+  DB.execute
+    db
+    ("UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ?, replace_rcv_queue = ?, replace_rcv_queue_id = ?" <> whereRcvQueue)
+    (True, False, False, Nothing :: Maybe Int64, connId, qId, qId)
 
 setSndQueuePrimary :: DB.Connection -> ConnId -> SndQueue -> IO ()
 setSndQueuePrimary db connId SndQueue {dbSndQueueId = qId} = do
-  DB.execute db "UPDATE snd_queues SET snd_primary = ? WHERE conn_id = ?" (False, connId)
-  DB.execute db ("UPDATE snd_queues SET snd_primary = ? " <> whereSndQueue) (True, connId, qId, qId)
+  DB.execute db "UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ? WHERE conn_id = ?" (False, False, connId)
+  DB.execute
+    db
+    ("UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ?, replace_snd_queue = ?, replace_snd_queue_id = ? " <> whereSndQueue)
+    (True, False, False, Nothing :: Maybe Int64, connId, qId, qId)
 
 deleteConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 deleteConnRcvQueue db connId RcvQueue {dbRcvQueueId = qId} =

@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent.Client
     suspendQueue,
     deleteQueue,
     logServer,
+    logSecret,
     removeSubscription,
     hasActiveSubscription,
     agentClientStore,
