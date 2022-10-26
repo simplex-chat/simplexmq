@@ -351,6 +351,7 @@ test-suite smp-server-test
       AgentTests.NotificationTests
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
+      CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
       CoreTests.VersionRangeTests

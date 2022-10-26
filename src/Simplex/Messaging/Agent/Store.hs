@@ -18,7 +18,9 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -115,11 +117,29 @@ data SndQueue = SndQueue
   }
   deriving (Eq, Show)
 
-rcvServer :: RcvQueue -> SMPServer
-rcvServer RcvQueue {server} = server
+instance SMPQueue RcvQueue where
+  qServer RcvQueue {server} = server
+  {-# INLINE qServer #-}
+  qAddress RcvQueue {server, rcvId} = (server, rcvId)
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
 
-sndServer :: SndQueue -> SMPServer
-sndServer SndQueue {server} = server
+instance SMPQueue SndQueue where
+  qServer SndQueue {server} = server
+  {-# INLINE qServer #-}
+  qAddress SndQueue {server, sndId} = (server, sndId)
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
+
+findQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe q
+findQ = find . sameQueue
+
+removeQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe (q, [q])
+removeQ addr qs = case L.break (sameQueue addr) qs of
+  (_, []) -> Nothing
+  (qs1, q : qs2) -> Just (q, qs1 <> qs2)
 
 -- * Connection types
 

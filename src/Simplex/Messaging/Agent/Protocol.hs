@@ -61,6 +61,8 @@ module Simplex.Messaging.Agent.Protocol
     SMPServer,
     pattern SMPServer,
     SrvLoc (..),
+    SMPQueue (..),
+    sameQAddress,
     SMPQueueUri (..),
     SMPQueueInfo (..),
     SMPQueueAddress (..),
@@ -164,6 +166,7 @@ import Simplex.Messaging.Protocol
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
+    sameSrvAddr,
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -789,6 +792,11 @@ updateSMPServerHosts srv@ProtocolServer {host} = case host of
     _ -> srv
   _ -> srv
 
+class SMPQueue q where
+  qServer :: q -> SMPServer
+  qAddress :: q -> (SMPServer, SMP.QueueId)
+  sameQueue :: (SMPServer, SMP.QueueId) -> q -> Bool
+
 data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
@@ -828,6 +836,34 @@ data SMPQueueAddress = SMPQueueAddress
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
+
+instance SMPQueue SMPQueueUri where
+  qServer SMPQueueUri {queueAddress} = qServer queueAddress
+  {-# INLINE qServer #-}
+  qAddress SMPQueueUri {queueAddress} = qAddress queueAddress
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
+
+instance SMPQueue SMPQueueInfo where
+  qServer SMPQueueInfo {queueAddress} = qServer queueAddress
+  {-# INLINE qServer #-}
+  qAddress SMPQueueInfo {queueAddress} = qAddress queueAddress
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
+
+instance SMPQueue SMPQueueAddress where
+  qServer SMPQueueAddress {smpServer} = smpServer
+  {-# INLINE qServer #-}
+  qAddress SMPQueueAddress {smpServer, senderId} = (smpServer, senderId)
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
+
+sameQAddress :: (SMPServer, SMP.QueueId) -> (SMPServer, SMP.QueueId) -> Bool
+sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
+{-# INLINE sameQAddress #-}
 
 instance StrEncoding SMPQueueUri where
   strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
