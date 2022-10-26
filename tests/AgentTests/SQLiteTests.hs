@@ -163,10 +163,10 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = "2345",
       status = New,
-      dbRcvQueueId = 1,
-      rcvPrimary = True,
-      nextRcvPrimary = False,
-      dbReplaceRcvQueueId = Nothing,
+      dbQueueId = 1,
+      primary = True,
+      nextPrimary = False,
+      dbReplaceQueueId = Nothing,
       smpClientVersion = 1,
       clientNtfCreds = Nothing
     }
@@ -182,10 +182,10 @@ sndQueue1 =
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
-      dbSndQueueId = 1,
-      sndPrimary = True,
-      nextSndPrimary = False,
-      dbReplaceSndQueueId = Nothing,
+      dbQueueId = 1,
+      primary = True,
+      nextPrimary = False,
+      dbReplaceQueueId = Nothing,
       smpClientVersion = 1
     }
 
@@ -324,10 +324,10 @@ testUpgradeRcvConnToDuplex =
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
-              dbSndQueueId = 1,
-              sndPrimary = True,
-              nextSndPrimary = False,
-              dbReplaceSndQueueId = Nothing,
+              dbQueueId = 1,
+              primary = True,
+              nextPrimary = False,
+              dbReplaceQueueId = Nothing,
               smpClientVersion = 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
@@ -352,10 +352,10 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = "4567",
               status = New,
-              dbRcvQueueId = 1,
-              rcvPrimary = True,
-              nextRcvPrimary = False,
-              dbReplaceRcvQueueId = Nothing,
+              dbQueueId = 1,
+              primary = True,
+              nextPrimary = False,
+              dbReplaceQueueId = Nothing,
               smpClientVersion = 1,
               clientNtfCreds = Nothing
             }

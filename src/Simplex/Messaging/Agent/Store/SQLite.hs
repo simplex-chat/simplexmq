@@ -451,7 +451,7 @@ whereSndQueue :: Query
 whereSndQueue = " WHERE conn_id = ? AND (snd_queue_id = ? OR (snd_queue_id IS NULL AND ? IS NULL))"
 
 setRcvQueuePrimary :: DB.Connection -> ConnId -> RcvQueue -> IO ()
-setRcvQueuePrimary db connId RcvQueue {dbRcvQueueId = qId} = do
+setRcvQueuePrimary db connId RcvQueue {dbQueueId = qId} = do
   DB.execute db "UPDATE rcv_queues SET rcv_primary = ?, next_rcv_primary = ? WHERE conn_id = ?" (False, False, connId)
   DB.execute
     db
@@ -459,7 +459,7 @@ setRcvQueuePrimary db connId RcvQueue {dbRcvQueueId = qId} = do
     (True, False, Nothing :: Maybe Int64, connId, qId, qId)
 
 setSndQueuePrimary :: DB.Connection -> ConnId -> SndQueue -> IO ()
-setSndQueuePrimary db connId SndQueue {dbSndQueueId = qId} = do
+setSndQueuePrimary db connId SndQueue {dbQueueId = qId} = do
   DB.execute db "UPDATE snd_queues SET snd_primary = ?, next_snd_primary = ? WHERE conn_id = ?" (False, False, connId)
   DB.execute
     db
@@ -467,11 +467,11 @@ setSndQueuePrimary db connId SndQueue {dbSndQueueId = qId} = do
     (True, False, Nothing :: Maybe Int64, connId, qId, qId)
 
 deleteConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO ()
-deleteConnRcvQueue db connId RcvQueue {dbRcvQueueId = qId} =
+deleteConnRcvQueue db connId RcvQueue {dbQueueId = qId} =
   DB.execute db ("DELETE FROM rcv_queues " <> whereRcvQueue) (connId, qId, qId)
 
 deleteConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO ()
-deleteConnSndQueue db connId SndQueue {dbSndQueueId = qId} = do
+deleteConnSndQueue db connId SndQueue {dbQueueId = qId} = do
   DB.execute db ("DELETE FROM snd_queues " <> whereSndQueue) (connId, qId, qId)
   DB.execute db ("DELETE FROM snd_message_deliveries " <> whereSndQueue) (connId, qId, qId)
 
@@ -670,8 +670,8 @@ createSndMsg db connId sndMsgData = do
   updateHashSnd_ db connId sndMsgData
 
 createSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO ()
-createSndMsgDelivery db connId SndQueue {dbSndQueueId} msgId =
-  DB.execute db "INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id) VALUES (?, ?, ?)" (connId, dbSndQueueId, msgId)
+createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
+  DB.execute db "INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id) VALUES (?, ?, ?)" (connId, dbQueueId, msgId)
 
 getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
 getPendingMsgData db connId msgId = do
@@ -694,13 +694,13 @@ getPendingMsgData db connId msgId = do
        in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
 
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
-getPendingMsgs db connId SndQueue {dbSndQueueId} =
+getPendingMsgs db connId SndQueue {dbQueueId} =
   map fromOnly
-    <$> DB.query db ("SELECT internal_id FROM snd_message_deliveries " <> whereSndQueue) (connId, dbSndQueueId, dbSndQueueId)
+    <$> DB.query db ("SELECT internal_id FROM snd_message_deliveries " <> whereSndQueue) (connId, dbQueueId, dbQueueId)
 
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
-deletePendingMsgs db connId SndQueue {dbSndQueueId} =
-  DB.execute db ("DELETE FROM snd_message_deliveries " <> whereSndQueue) (connId, dbSndQueueId, dbSndQueueId)
+deletePendingMsgs db connId SndQueue {dbQueueId} =
+  DB.execute db ("DELETE FROM snd_message_deliveries " <> whereSndQueue) (connId, dbQueueId, dbQueueId)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
@@ -736,11 +736,11 @@ deleteMsg db connId msgId =
   DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
 
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO ()
-deleteSndMsgDelivery db connId SndQueue {dbSndQueueId} msgId = do
+deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId = do
   DB.execute
     db
     ("DELETE FROM snd_message_deliveries " <> whereSndQueue <> " AND internal_id = ?")
-    (connId, dbSndQueueId, dbSndQueueId, msgId)
+    (connId, dbQueueId, dbQueueId, msgId)
   (Only (cnt :: Int) : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
   when (cnt == 0) $ deleteMsg db connId msgId
 
@@ -1293,7 +1293,7 @@ insertRcvQueue_ db connId' RcvQueue {..} = do
       INSERT INTO rcv_queues
         (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, rcv_queue_id, rcv_primary, next_rcv_primary, replace_rcv_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, rcvPrimary, nextRcvPrimary, dbReplaceRcvQueueId, smpClientVersion))
+    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion))
   pure qId
 
 -- * createSndConn helpers
@@ -1307,7 +1307,7 @@ insertSndQueue_ db connId' SndQueue {..} = do
       INSERT INTO snd_queues
         (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, next_snd_primary, replace_snd_queue_id, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion))
+    ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion))
   pure qId
 
 newQueueId_ :: [Only Int64] -> Int64
@@ -1345,7 +1345,7 @@ getRcvQueuesByConnId_ db connId =
   L.nonEmpty . sortBy primaryFirst . map (toRcvQueue connId)
     <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
   where
-    primaryFirst RcvQueue {rcvPrimary = p} RcvQueue {rcvPrimary = p'} = compare (Down p) (Down p')
+    primaryFirst RcvQueue {primary = p} RcvQueue {primary = p'} = compare (Down p) (Down p')
 
 rcvQueueQuery :: Query
 rcvQueueQuery =
@@ -1364,13 +1364,13 @@ toRcvQueue ::
     :. (Int64, Bool, Bool, Maybe Int64, Maybe Version)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbRcvQueueId, rcvPrimary, nextRcvPrimary, dbReplaceRcvQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe 1 smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-   in RcvQueue {connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbRcvQueueId, rcvPrimary, nextRcvPrimary, dbReplaceRcvQueueId, smpClientVersion, clientNtfCreds}
+   in RcvQueue {connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion, clientNtfCreds}
 
 getRcvQueueById_ :: DB.Connection -> ConnId -> Maybe Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById_ db connId dbRcvId =
@@ -1391,10 +1391,10 @@ getSndQueuesByConnId_ dbConn connId =
       |]
       (Only connId)
   where
-    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbSndQueueId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion)) =
+    sndQueue ((keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbQueueId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion)) =
       let server = SMPServer host port keyHash
-       in SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbSndQueueId, sndPrimary, nextSndPrimary, dbReplaceSndQueueId, smpClientVersion}
-    primaryFirst SndQueue {sndPrimary = p} SndQueue {sndPrimary = p'} = compare (Down p) (Down p')
+       in SndQueue {connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion}
+    primaryFirst SndQueue {primary = p} SndQueue {primary = p'} = compare (Down p) (Down p')
 
 -- * updateRcvIds helpers
 
@@ -1449,7 +1449,7 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody,
     ]
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-insertRcvMsgDetails_ dbConn connId RcvQueue {dbRcvQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash} = do
+insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash} = do
   let MsgMeta {integrity, recipient, broker, sndMsgId} = msgMeta
   DB.executeNamed
     dbConn
@@ -1464,7 +1464,7 @@ insertRcvMsgDetails_ dbConn connId RcvQueue {dbRcvQueueId} RcvMsgData {msgMeta, 
          :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_id" := connId,
-      ":rcv_queue_id" := dbRcvQueueId,
+      ":rcv_queue_id" := dbQueueId,
       ":internal_rcv_id" := internalRcvId,
       ":internal_id" := fst recipient,
       ":external_snd_id" := sndMsgId,

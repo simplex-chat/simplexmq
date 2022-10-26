@@ -62,13 +62,13 @@ data RcvQueue = RcvQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection), can be Nothing for old queues
-    dbRcvQueueId :: Int64,
+    dbQueueId :: Int64,
     -- | True for a primary queue of the connection
-    rcvPrimary :: Bool,
+    primary :: Bool,
     -- | True for the next primary queue
-    nextRcvPrimary :: Bool,
+    nextPrimary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
-    dbReplaceRcvQueueId :: Maybe Int64,
+    dbReplaceQueueId :: Maybe Int64,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -103,13 +103,13 @@ data SndQueue = SndQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection), can be Nothing for old queues
-    dbSndQueueId :: Int64,
+    dbQueueId :: Int64,
     -- | True for a primary queue of the connection
-    sndPrimary :: Bool,
+    primary :: Bool,
     -- | True for the next primary queue
-    nextSndPrimary :: Bool,
+    nextPrimary :: Bool,
     -- | ID of the queue this one is replacing
-    dbReplaceSndQueueId :: Maybe Int64,
+    dbReplaceQueueId :: Maybe Int64,
     -- | SMP client version
     smpClientVersion :: Version
   }
