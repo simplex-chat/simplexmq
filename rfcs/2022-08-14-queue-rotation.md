@@ -20,13 +20,24 @@ The reason for this approach is that otherwise it's non-trivial to switch from o
 
 Additional agent messages required for the protocol:
 
-`ADD`: add the new queue address(es), the same format as `REPLY` message, encoded as `A`.
+    QADD_ -> "QA"
+    QKEY_ -> "QK"
+    QUSE_ -> "QU"
+    QTEST_ -> "QT"
+    QDEL_ -> "QD"
+    QEND_ -> "QE"
 
-`KEY`: pass sender's key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker), encoded as `K`.
+`QADD`: add the new queue address(es), the same format as `REPLY` message, encoded as `QA`.
 
-`USE`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `U`.
+`QKEY`: pass sender's key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker), encoded as `QK`.
 
-`DEL`: instruct the sender to stop using the previous queue, encoded as `X`
+`QUSE`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `QU`.
+
+`QTEST`: send test message to the new connection, encoded as `QT`. Any other message can be sent if available to continue rotation, the absence of this message is not an error.
+
+`QDEL`: instruct the sender to stop using the previous queue, encoded as `QD`
+
+`QEND`: notify the recipient that no messages will be sent to this queue, encoded as `QE`. The recipient will delete this queue.
 
 ### Protocol
 
@@ -38,12 +49,14 @@ participant S as Server that has A's send queue (B's receive queue)
 participant R' as Server that hosts the new A's receive queue
 
 A ->> R': create new queue
-A ->> S ->> B: ADD (R'): address of the new queue
-B ->> R ->> A: KEY (R'): sender's key for the new queue (to avoid the race of SMP confirmation for the initial exchange)
-A ->> R': secure queue
-A ->> S ->> B: USE (R'): instruction to use new queue
-B ->> R' ->> A: HELLO
-B ->> R,R' ->> A: send all new messages to both queues
-A ->> S: DEL (R): the previous queue deleted
+A ->> S ->> B: QADD (R'): snd address of the new queue(s)
+B ->> A(R) ->> A: QKEY (R'): sender's key for the new queue(s) (to avoid the race of SMP confirmation for the initial exchange)
+A ->> S(R'): secure new queue
+A ->> S ->> B: QUSE (R'): instruction to use new queue(s)
+B ->> A(R,R') ->> A: QTEST
+B ->> A(R,R') ->> A: send all new messages to both queues
+A ->> S ->> B: QDEL (R): instruction to delete the old queue
+B ->> A(R') -> A: QEND (R): notification that no messages will be sent to the new queue
 B ->> R' ->> A: send all new messages to the new queue only
+A ->> S(R): DEL: delete the previous queue
 ```
