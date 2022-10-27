@@ -650,12 +650,16 @@ testSwitchConnection t servers = do
   Right () <- withSmpServer t . withSmpServerOn t testPort2 . runExceptT $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    switchConnection a bId
-    (_, aId', SWITCH SPStarted _) <- get b
-    liftIO $ aId' `shouldBe` aId
+    switchConnectionAsync a "" bId
+    (_, bId1, SWITCH SPStarted _) <- get a
+    liftIO $ bId1 `shouldBe` bId
+    (_, aId1, SWITCH SPStarted _) <- get b
+    liftIO $ aId1 `shouldBe` aId
     (_, _, ERR (AGENT A_DUPLICATE)) <- get a
-    (_, bId', SWITCH SPCompleted _) <- get a
-    liftIO $ bId' `shouldBe` bId
+    (_, bId2, SWITCH SPCompleted _) <- get a
+    liftIO $ bId2 `shouldBe` bId
+    (_, aId2, SWITCH SPCompleted _) <- get b
+    liftIO $ aId2 `shouldBe` aId
     exchangeGreetingsMsgId 12 a bId b aId
   pure ()
 

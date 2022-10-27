@@ -259,6 +259,7 @@ data ACommand (p :: AParty) where
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
+  SWCH :: ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
   CHK :: ACommand Client
@@ -297,6 +298,7 @@ data ACommandTag (p :: AParty) where
   MERR_ :: ACommandTag Agent
   MSG_ :: ACommandTag Agent
   ACK_ :: ACommandTag Client
+  SWCH_ :: ACommandTag Client
   OFF_ :: ACommandTag Client
   DEL_ :: ACommandTag Client
   CHK_ :: ACommandTag Client
@@ -334,6 +336,7 @@ aCommandTag = \case
   MERR {} -> MERR_
   MSG {} -> MSG_
   ACK _ -> ACK_
+  SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
   CHK -> CHK_
@@ -1184,6 +1187,7 @@ instance StrEncoding ACmdTag where
       "MERR" -> pure $ ACmdTag SAgent MERR_
       "MSG" -> pure $ ACmdTag SAgent MSG_
       "ACK" -> pure $ ACmdTag SClient ACK_
+      "SWCH" -> pure $ ACmdTag SClient SWCH_
       "OFF" -> pure $ ACmdTag SClient OFF_
       "DEL" -> pure $ ACmdTag SClient DEL_
       "CHK" -> pure $ ACmdTag SClient CHK_
@@ -1218,6 +1222,7 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     MERR_ -> "MERR"
     MSG_ -> "MSG"
     ACK_ -> "ACK"
+    SWCH_ -> "SWCH"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
     CHK_ -> "CHK"
@@ -1247,6 +1252,7 @@ commandP binaryP =
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
           ACK_ -> s (ACK <$> A.decimal)
+          SWCH_ -> pure SWCH
           OFF_ -> pure OFF
           DEL_ -> pure DEL
           CHK_ -> pure CHK
@@ -1312,6 +1318,7 @@ serializeCommand = \case
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   ACK mId -> s (ACK_, Str $ bshow mId)
+  SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_
   CHK -> s CHK_

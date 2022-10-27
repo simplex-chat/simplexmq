@@ -255,7 +255,6 @@ data InternalCommand
   | ICAckDel SMP.RecipientId MsgId InternalId
   | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
-  | ICQSwitch
   | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICQDelete SMP.RecipientId
 
@@ -264,7 +263,6 @@ data InternalCommandTag
   | ICAckDel_
   | ICAllowSecure_
   | ICDuplexSecure_
-  | ICQSwitch_
   | ICQSecure_
   | ICQDelete_
   deriving (Show)
@@ -275,7 +273,6 @@ instance StrEncoding InternalCommand where
     ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
     ICAllowSecure rId sndKey -> strEncode (ICAllowSecure_, rId, sndKey)
     ICDuplexSecure rId sndKey -> strEncode (ICDuplexSecure_, rId, sndKey)
-    ICQSwitch -> strEncode ICQSwitch_
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
   strP =
@@ -284,7 +281,6 @@ instance StrEncoding InternalCommand where
       ICAckDel_ -> ICAckDel <$> _strP <*> _strP <*> _strP
       ICAllowSecure_ -> ICAllowSecure <$> _strP <*> _strP
       ICDuplexSecure_ -> ICDuplexSecure <$> _strP <*> _strP
-      ICQSwitch_ -> pure ICQSwitch
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
 
@@ -294,7 +290,6 @@ instance StrEncoding InternalCommandTag where
     ICAckDel_ -> "ACK_DEL"
     ICAllowSecure_ -> "ALLOW_SECURE"
     ICDuplexSecure_ -> "DUPLEX_SECURE"
-    ICQSwitch_ -> "QSWITCH"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
   strP =
@@ -303,7 +298,6 @@ instance StrEncoding InternalCommandTag where
       "ACK_DEL" -> pure ICAckDel_
       "ALLOW_SECURE" -> pure ICAllowSecure_
       "DUPLEX_SECURE" -> pure ICDuplexSecure_
-      "QSWITCH" -> pure ICQSwitch_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
       _ -> fail "bad InternalCommandTag"
@@ -319,7 +313,6 @@ internalCmdTag = \case
   ICAckDel {} -> ICAckDel_
   ICAllowSecure {} -> ICAllowSecure_
   ICDuplexSecure {} -> ICDuplexSecure_
-  ICQSwitch -> ICQSwitch_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
 

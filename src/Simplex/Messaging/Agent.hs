@@ -43,6 +43,7 @@ module Simplex.Messaging.Agent
     allowConnectionAsync,
     acceptContactAsync,
     ackMessageAsync,
+    switchConnectionAsync,
     deleteConnectionAsync,
     createConnection,
     joinConnection,
@@ -173,6 +174,10 @@ acceptContactAsync c corrId enableNtfs = withAgentEnv c .: acceptContactAsync' c
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
 ackMessageAsync c = withAgentEnv c .:. ackMessageAsync' c
 
+-- | Switch connection to the new receive queue
+switchConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ()
+switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
+
 -- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
 deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ()
 deleteConnectionAsync c = withAgentEnv c .: deleteConnectionAsync' c
@@ -227,7 +232,7 @@ ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage c = withAgentEnv c .: ackMessage' c
 
 -- | Switch connection to the new receive queue
-switchConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+switchConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection c = withAgentEnv c . switchConnection' c
 
 -- | Suspend SMP agent connection (OFF command)
@@ -334,6 +339,7 @@ processCommand c (connId, cmd) = case cmd of
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId msgFlags msgBody
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
+  SWCH -> switchConnection' c connId $> (connId, OK)
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
   CHK -> (connId,) . STAT <$> getConnectionServers' c connId
@@ -412,10 +418,10 @@ deleteConnectionAsync' c@AgentClient {subQ} corrId connId =
     notifyDeleted = atomically $ writeTBQueue subQ (corrId, connId, OK)
 
 -- | Add connection to the new receive queue
-switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
-switchConnection' c connId =
+switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
+switchConnectionAsync' c corrId connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ DuplexConnection {} -> enqueueCommand c "" connId Nothing $ AInternalCommand ICQSwitch
+    SomeConn _ DuplexConnection {} -> enqueueCommand c corrId connId Nothing $ AClientCommand SWCH
     _ -> throwError $ CMD PROHIBITED
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
@@ -768,6 +774,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             notify OK
         LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
+        SWCH -> tryCommand $ switchConnection' c connId >>= notify . SWITCH SPStarted
         DEL -> tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
@@ -785,17 +792,6 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           secure rq senderKey
           when (duplexHandshake cData == Just True) . void $
             enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
-        ICQSwitch -> do
-          clientVRange <- asks $ smpClientVRange . config
-          noServer . tryWithLock "ICQSwitch" . withDuplexConn $ \(DuplexConnection cData rqs@(RcvQueue {server, dbQueueId, sndId} :| _) sqs) -> do
-            -- try to get the server that is different from all queues, or at least from the primary rcv queue
-            srv <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
-            srv' <- if srv == server then getNextSMPServer c [server] else pure srv
-            (_rq, qUri) <- newRcvQueue c connId srv' clientVRange
-            let rq = (_rq :: RcvQueue) {primary = False, nextPrimary = True, dbReplaceQueueId = Just dbQueueId}
-            void . withStore c $ \db -> addConnRcvQueue db connId rq
-            addSubscription c rq
-            void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameQueue (srv, rId)) rqs of
@@ -1024,12 +1020,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 AM_QADD_ -> pure ()
                 AM_QKEY_ -> pure ()
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> do
+                AM_QTEST_ ->
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                 AM_QDEL_ -> pure ()
-                AM_QEND_ -> do
-                  -- TODO *** once QEND is sent notify user that the switch is complete
-                  pure ()
+                AM_QEND_ ->
+                  getConnectionServers' c connId >>= notify . SWITCH SPCompleted
               delMsg msgId
   where
     delMsg :: InternalId -> m ()
@@ -1064,6 +1059,23 @@ ackMessage' c connId msgId = withConnLock c connId "ackMessage" $ do
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
       ackQueueMessage c rq srvMsgId
       withStore' c $ \db -> deleteMsg db connId mId
+
+switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
+switchConnection' c connId = withConnLock c connId "switchConnection" $ do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  case conn of
+    DuplexConnection cData rqs@(rq@RcvQueue {server, dbQueueId, sndId} :| rqs_) sqs -> do
+      clientVRange <- asks $ smpClientVRange . config
+      -- try to get the server that is different from all queues, or at least from the primary rcv queue
+      srv <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
+      srv' <- if srv == server then getNextSMPServer c [server] else pure srv
+      (_rq, qUri) <- newRcvQueue c connId srv' clientVRange
+      let rq' = (_rq :: RcvQueue) {primary = False, nextPrimary = True, dbReplaceQueueId = Just dbQueueId}
+      void . withStore c $ \db -> addConnRcvQueue db connId rq'
+      addSubscription c rq'
+      void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
+      pure . connectionStats $ DuplexConnection cData (rq <| rq' :| rqs_) sqs
+    _ -> throwError $ CMD PROHIBITED
 
 ackQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> SMP.MsgId -> m ()
 ackQueueMessage c rq srvMsgId =
