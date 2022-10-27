@@ -1107,6 +1107,8 @@ data SMPAgentError
     A_ENCRYPTION
   | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
     A_DUPLICATE
+  | -- | error in the message to add/delete/etc queue in connection
+    A_QUEUE {queueErr :: String}
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance ToJSON SMPAgentError where
@@ -1122,6 +1124,7 @@ instance StrEncoding AgentErrorType where
       <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
       <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
       <|> "BROKER " *> (BROKER <$> parseRead1)
+      <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
   strEncode = \case
@@ -1132,6 +1135,7 @@ instance StrEncoding AgentErrorType where
     BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
     BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
     BROKER e -> "BROKER " <> bshow e
+    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
 
