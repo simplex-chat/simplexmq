@@ -675,7 +675,6 @@ data AMessage
 
 type SndQAddr = (SMPServer, SMP.SenderId)
 
--- '\1' added to the encodings to allow future extension to multiple queues, without extending the type now
 instance Encoding AMessage where
   smpEncode = \case
     HELLO -> smpEncode HELLO_
