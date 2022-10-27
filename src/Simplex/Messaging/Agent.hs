@@ -583,6 +583,8 @@ subscribeConnection' c connId =
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
       liftEither r
 
+type QSubResult = (RcvQueue, Either AgentErrorType ())
+
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
@@ -615,15 +617,24 @@ subscribeConnections' c connIds = do
       _ -> Left $ INTERNAL "unexpected queue status"
     addRcvQueue :: Map SMPServer [RcvQueue] -> RcvQueue -> Map SMPServer [RcvQueue]
     addRcvQueue m rq@RcvQueue {server} = M.alter (Just . maybe [rq] (rq :)) server m
-    subscribe :: (SMPServer, [RcvQueue]) -> m [(RcvQueue, Either AgentErrorType ())]
+    subscribe :: (SMPServer, [RcvQueue]) -> m [QSubResult]
     subscribe (srv, qs) = snd <$> subscribeQueues c srv qs
-    connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
-    connResults = foldl' addRes M.empty
+    connResults :: [QSubResult] -> Map ConnId (Either AgentErrorType ())
+    connResults = M.map result . foldl' addResults M.empty
       where
-        addRes rs (RcvQueue {connId}, r) =
-          case M.lookup connId rs of
-            Just (Right _) -> rs -- if any queue succeeded, connection considered succeeded. TODO active queues only?
-            _ -> M.insert connId r rs
+        -- collects results by connection ID
+        addResults :: Map ConnId [QSubResult] -> QSubResult -> Map ConnId [QSubResult]
+        addResults rss r@(RcvQueue {connId}, _) = M.alter (addRes r) connId rss
+        addRes :: QSubResult -> Maybe [QSubResult] -> Maybe [QSubResult]
+        addRes r = Just . maybe [r] (r :)
+        -- combines results for one connection, by using only Active queues (if there is at least one Active queue)
+        result :: [QSubResult] -> Either AgentErrorType ()
+        result rs = foldl' combineRes (Left $ INTERNAL "no queues in connection") . map snd $
+          case filter (\(RcvQueue {status}, _) -> status == Active) rs of
+            [] -> rs
+            rs' -> rs'
+        combineRes (Right ()) _ = Right ()
+        combineRes _ r' = r'
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> m ()
     sendNtfCreate ns rcvRs =
       forM_ (M.assocs rcvRs) $ \case
@@ -761,26 +772,26 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
     processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> AgentCommand -> m ()
     processCmd ri corrId connId cmdId command = case command of
       AClientCommand cmd -> case cmd of
-        NEW enableNtfs (ACM cMode) -> do
+        NEW enableNtfs (ACM cMode) -> noServer $ do
           usedSrvs <- newTVarIO ([] :: [SMPServer])
           tryCommand . withNextSrv usedSrvs [] $ \srv -> do
             (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
             notify $ INV (ACR cMode cReq)
-        JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) connInfo -> do
+        JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) connInfo -> noServer $ do
           let initUsed = [qServer q]
           usedSrvs <- newTVarIO initUsed
           tryCommand . withNextSrv usedSrvs initUsed $ \srv -> do
             void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
             notify OK
-        LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
-        ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
-        SWCH -> tryCommand $ switchConnection' c connId >>= notify . SWITCH SPStarted
-        DEL -> tryCommand $ deleteConnection' c connId >> notify OK
+        LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
+        ACK msgId -> withServer' . tryCommand $ ackMessage' c connId msgId >> notify OK
+        SWCH -> noServer $ tryCommand $ switchConnection' c connId >>= notify . SWITCH SPStarted
+        DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
         ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
-        ICAllowSecure _rId senderKey -> withServer $ \_ -> tryWithLock "ICAllowSecure" $ do
+        ICAllowSecure _rId senderKey -> withServer' . tryWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
           case conn of
@@ -788,7 +799,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
               secure rq senderKey
               mapM_ (connectReplyQueues c cData ownConnInfo) (L.nonEmpty $ smpReplyQueues senderConf)
             _ -> throwError $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
-        ICDuplexSecure _rId senderKey -> withServer $ \_ -> tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
+        ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
           when (duplexHandshake cData == Just True) . void $
             enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
@@ -824,6 +835,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         withServer a = case server_ of
           Just srv -> a srv
           _ -> internalErr "command requires server"
+        withServer' = withServer . const
         noServer a = case server_ of
           Nothing -> a
           _ -> internalErr "command requires no server"
