@@ -431,9 +431,9 @@ newConn c connId asyncMode enableNtfs cMode =
 newConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> SMPServer -> m (ConnId, ConnectionRequestUri c)
 newConnSrv c connId asyncMode enableNtfs cMode srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  (_rq, qUri) <- newRcvQueue c "" srv smpClientVRange
-  connId' <- setUpConn asyncMode _rq $ maxVersion smpAgentVRange
-  let rq = (_rq :: RcvQueue) {connId = connId'}
+  (q, qUri) <- newRcvQueue c "" srv smpClientVRange
+  connId' <- setUpConn asyncMode q $ maxVersion smpAgentVRange
+  let rq = (q :: RcvQueue) {connId = connId'}
   addSubscription c rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
@@ -473,11 +473,11 @@ joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ age
       (pk1, pk2, e2eSndParams) <- liftIO . CR.generateE2EParams $ version e2eRcvParams
       (_, rcDHRs) <- liftIO C.generateKeyPair'
       let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
-      _sq <- newSndQueue "" qInfo
+      q <- newSndQueue "" qInfo
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
-      connId' <- setUpConn asyncMode cData _sq rc
-      let sq = (_sq :: SndQueue) {connId = connId'}
+      connId' <- setUpConn asyncMode cData q rc
+      let sq = (q :: SndQueue) {connId = connId'}
           cData' = (cData :: ConnData) {connId = connId'}
       tryError (confirmQueue aVersion c cData' sq srv cInfo $ Just e2eSndParams) >>= \case
         Right _ -> do
@@ -1069,8 +1069,8 @@ switchConnection' c connId = withConnLock c connId "switchConnection" $ do
       -- try to get the server that is different from all queues, or at least from the primary rcv queue
       srv <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
       srv' <- if srv == server then getNextSMPServer c [server] else pure srv
-      (_rq, qUri) <- newRcvQueue c connId srv' clientVRange
-      let rq' = (_rq :: RcvQueue) {primary = False, nextPrimary = True, dbReplaceQueueId = Just dbQueueId}
+      (q, qUri) <- newRcvQueue c connId srv' clientVRange
+      let rq' = (q :: RcvQueue) {primary = False, nextPrimary = True, dbReplaceQueueId = Just dbQueueId}
       void . withStore c $ \db -> addConnRcvQueue db connId rq'
       addSubscription c rq'
       void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
