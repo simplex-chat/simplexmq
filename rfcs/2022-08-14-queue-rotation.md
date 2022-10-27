@@ -56,7 +56,7 @@ A ->> S ->> B: QUSE (R'): instruction to use new queue(s)
 B ->> A(R,R') ->> A: QTEST
 B ->> A(R,R') ->> A: send all new messages to both queues
 A ->> S ->> B: QDEL (R): instruction to delete the old queue
-B ->> A(R') -> A: QEND (R): notification that no messages will be sent to the new queue
+B ->> A(R') -> A: QEND (R): notification that no messages will be sent to the old queue
 B ->> R' ->> A: send all new messages to the new queue only
 A ->> S(R): DEL: delete the previous queue
 ```
