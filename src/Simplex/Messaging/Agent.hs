@@ -381,17 +381,20 @@ acceptContactAsync' c corrId enableNtfs invId ownConnInfo = do
     _ -> throwError $ CMD PROHIBITED
 
 ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
-ackMessageAsync' c corrId connId msgId =
-  withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rqs _) -> mapM_ enqueueAck rqs -- TODO only ack to the queue where the message was delivered
-    SomeConn _ (RcvConnection _ rq) -> enqueueAck rq
-    SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
-    SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
-    SomeConn _ (NewConnection _) -> throwError $ CMD PROHIBITED
+ackMessageAsync' c corrId connId msgId = do
+  SomeConn cType _ <- withStore c (`getConn` connId)
+  case cType of
+    SCDuplex -> enqueueAck
+    SCRcv -> enqueueAck
+    SCSnd -> throwError $ CONN SIMPLEX
+    SCContact -> throwError $ CMD PROHIBITED
+    SCNew -> throwError $ CMD PROHIBITED
   where
-    enqueueAck :: RcvQueue -> m ()
-    enqueueAck RcvQueue {server} =
-      enqueueCommand c corrId connId (Just server) $ AClientCommand $ ACK msgId
+    enqueueAck :: m ()
+    enqueueAck = do
+      let mId = InternalId msgId
+      (RcvQueue {server, rcvId}, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
+      enqueueCommand c corrId connId (Just server) . AInternalCommand $ ICAckDel rcvId srvMsgId mId
 
 deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
 deleteConnectionAsync' c@AgentClient {subQ} corrId connId =
@@ -765,6 +768,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             void $ joinConnSrv c connId True enableNtfs cReq connInfo srv
             notify OK
         LET confId ownCInfo -> tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
+        -- ACK is no longer sent here
         ACK msgId -> tryCommand $ ackMessage' c connId msgId >> notify OK
         DEL -> tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
