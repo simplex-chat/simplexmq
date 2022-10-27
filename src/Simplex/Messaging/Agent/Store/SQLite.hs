@@ -699,10 +699,10 @@ deletePendingMsgs db connId SndQueue {dbQueueId} =
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
   liftIO $ DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (True, connId, agentMsgId)
-  (dbRcvId_, srvMsgId) <-
+  (dbRcvId, srvMsgId) <-
     ExceptT . firstRow id SEMsgNotFound $
       DB.query db "SELECT rcv_queue_id, broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
-  rq <- ExceptT $ getRcvQueueById_ db connId dbRcvId_
+  rq <- ExceptT $ getRcvQueueById_ db connId dbRcvId
   pure (rq, srvMsgId)
 
 getLastMsg :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Maybe RcvMsg)
@@ -1366,7 +1366,7 @@ toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2eP
         _ -> Nothing
    in RcvQueue {connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, nextPrimary, dbReplaceQueueId, smpClientVersion, clientNtfCreds}
 
-getRcvQueueById_ :: DB.Connection -> ConnId -> Maybe Int64 -> IO (Either StoreError RcvQueue)
+getRcvQueueById_ :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById_ db connId dbRcvId =
   firstRow (toRcvQueue connId) SEConnNotFound $
     DB.query db (rcvQueueQuery <> " WHERE conn_id = ? AND rcv_queue_id = ?") (connId, dbRcvId)
