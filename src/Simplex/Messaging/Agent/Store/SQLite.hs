@@ -1314,24 +1314,22 @@ getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn dbConn connId =
   getConnData dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
-    Just (connData, cMode) -> do
+    Just (cData, cMode) -> do
       rQ <- getRcvQueuesByConnId_ dbConn connId
       sQ <- getSndQueuesByConnId_ dbConn connId
       pure $ case (rQ, sQ, cMode) of
-        (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection connData rqs sqs)
-        (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rq)
-        (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection connData sq)
-        (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection connData rq)
-        (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection connData)
+        (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
+        (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
+        (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
+        (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
+        (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
         _ -> Left SEConnNotFound
 
 getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData dbConn connId' =
-  connData
-    <$> DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
+  maybeFirstRow cData $ DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
   where
-    connData [(connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake}, cMode)
-    connData _ = Nothing
+    cData (connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake) = (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake}, cMode)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

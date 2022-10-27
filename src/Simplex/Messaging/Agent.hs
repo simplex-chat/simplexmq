@@ -598,7 +598,7 @@ subscribeConnections' c connIds = do
   rcvRs <- connResults . concat <$> mapConcurrently subscribe (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
+  when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs conns
   let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
   notifyResultError rs
   pure rs
@@ -635,10 +635,14 @@ subscribeConnections' c connIds = do
             rs' -> rs'
         combineRes (Right ()) _ = Right ()
         combineRes _ r' = r'
-    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> m ()
-    sendNtfCreate ns rcvRs =
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId (Either StoreError SomeConn) -> m ()
+    sendNtfCreate ns rcvRs conns =
       forM_ (M.assocs rcvRs) $ \case
-        (connId, Right _) -> atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
+        (connId, Right _) -> forM_ (M.lookup connId conns) $ \case
+          Right (SomeConn _ conn) -> do
+            let cmd = if enableNtfs $ connData conn then NSCCreate else NSCDelete
+            atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
+          _ -> pure ()
         _ -> pure ()
     sndQueue :: SomeConn -> Maybe (ConnData, NonEmpty SndQueue)
     sndQueue = \case
