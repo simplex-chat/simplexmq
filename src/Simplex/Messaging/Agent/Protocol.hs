@@ -345,16 +345,20 @@ aCommandTag = \case
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
 
-data SwitchPhase = SPStarted | SPCompleted
+data SwitchPhase = SPStarted | SPConfirmed | SPTested | SPCompleted
   deriving (Eq, Show)
 
 instance StrEncoding SwitchPhase where
   strEncode = \case
     SPStarted -> "started"
+    SPConfirmed -> "confirmed"
+    SPTested -> "tested"
     SPCompleted -> "completed"
   strP =
     A.takeTill (== ' ') >>= \case
       "started" -> pure SPStarted
+      "confirmed" -> pure SPConfirmed
+      "tested" -> pure SPTested
       "completed" -> pure SPCompleted
       _ -> fail "bad SwitchPhase"
 

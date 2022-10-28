@@ -141,6 +141,13 @@ removeQ addr qs = case L.break (sameQueue addr) qs of
   (_, []) -> Nothing
   (qs1, q : qs2) -> Just (q, qs1 <> qs2)
 
+sndAddress :: RcvQueue -> (SMPServer, SMP.SenderId)
+sndAddress RcvQueue {server, sndId} = (server, sndId)
+{-# INLINE sndAddress #-}
+
+findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
+findRQ sAddr = find $ sameQAddress sAddr . sndAddress
+
 -- * Connection types
 
 -- | Type of a connection.
