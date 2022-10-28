@@ -583,7 +583,7 @@ subscribeConnection' c connId =
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
       liftEither r
 
-type QSubResult = (RcvQueue, Either AgentErrorType ())
+type QSubResult = (QueueStatus, Either AgentErrorType ())
 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
@@ -617,24 +617,23 @@ subscribeConnections' c connIds = do
       _ -> Left $ INTERNAL "unexpected queue status"
     addRcvQueue :: Map SMPServer [RcvQueue] -> RcvQueue -> Map SMPServer [RcvQueue]
     addRcvQueue m rq@RcvQueue {server} = M.alter (Just . maybe [rq] (rq :)) server m
-    subscribe :: (SMPServer, [RcvQueue]) -> m [QSubResult]
+    subscribe :: (SMPServer, [RcvQueue]) -> m [(RcvQueue, Either AgentErrorType ())]
     subscribe (srv, qs) = snd <$> subscribeQueues c srv qs
-    connResults :: [QSubResult] -> Map ConnId (Either AgentErrorType ())
-    connResults = M.map result . foldl' addResults M.empty
+    connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
+    connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResults :: Map ConnId [QSubResult] -> QSubResult -> Map ConnId [QSubResult]
-        addResults rss r@(RcvQueue {connId}, _) = M.alter (addRes r) connId rss
-        addRes :: QSubResult -> Maybe [QSubResult] -> Maybe [QSubResult]
-        addRes r = Just . maybe [r] (r :)
-        -- combines results for one connection, by using only Active queues (if there is at least one Active queue)
-        result :: [QSubResult] -> Either AgentErrorType ()
-        result rs = foldl' combineRes (Left $ INTERNAL "no queues in connection") . map snd $
-          case filter (\(RcvQueue {status}, _) -> status == Active) rs of
-            [] -> rs
-            rs' -> rs'
-        combineRes (Right ()) _ = Right ()
-        combineRes _ r' = r'
+        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QSubResult
+        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
+        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
+        combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
+        combineRes r' _ = Just r'
+        order :: QSubResult -> Int
+        order (Active, Right _) = 1
+        order (Active, _) = 2
+        order (_, Right _) = 3
+        order _ = 4
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId (Either StoreError SomeConn) -> m ()
     sendNtfCreate ns rcvRs conns =
       forM_ (M.assocs rcvRs) $ \case
