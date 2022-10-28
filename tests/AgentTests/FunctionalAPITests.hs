@@ -121,8 +121,10 @@ functionalAPITests t = do
       withSmpServer t $ testSwitchConnection initAgentServers
     it "should switch delivery to the new queue (2 servers)" $
       withSmpServer t . withSmpServerOn t testPort2 $ testSwitchConnection initAgentServers2
-    it "should complete the rotation asynchronously (1 server)" $
+    it "should switch to new queue asynchronously (1 server)" $
       withSmpServer t $ testSwitchAsync initAgentServers
+    it "should switch to new queue asynchronously (2 servers)" $
+      withSmpServer t . withSmpServerOn t testPort2 $ testSwitchAsync initAgentServers2
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
