@@ -1033,7 +1033,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                       qInfo <- createReplyQueue c cData sq srv
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
                 AM_A_MSG_ -> notify $ SENT mId
-                AM_QADD_ -> liftIO (print "QADD sent") >> pure ()
+                AM_QADD_ -> pure ()
                 AM_QKEY_ -> pure ()
                 AM_QUSE_ -> pure ()
                 AM_QTEST_ ->
@@ -1664,7 +1664,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         qKeyMsg ((qInfo, senderKey) :| _) (DuplexConnection _ rqs _) = do
           clientVRange <- asks $ smpClientVRange . config
           unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
-          case find (\RcvQueue {server, sndId} -> sameSrvAddr server smpServer && sndId == senderId) rqs of
+          case findRQ (smpServer, senderId) rqs of
             Just rq'@RcvQueue {rcvId, e2ePrivKey = dhPrivKey, smpClientVersion = cVer, status = status'}
               | status' == New || status' == Confirmed -> do
                 logServer "<--" c srv rId $ "MSG <QKEY> " <> logSecret senderId
@@ -1714,8 +1714,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         -- received by party initiating switch
         -- TODO *** check that the received address matches expectations
         qEndMsg :: NonEmpty (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()
-        qEndMsg ((smpServer, senderId) :| _) (DuplexConnection _ rqs _) =
-          case find (\RcvQueue {server, sndId} -> sameSrvAddr server smpServer && sndId == senderId) rqs of
+        qEndMsg (addr@(smpServer, senderId) :| _) (DuplexConnection _ rqs _) =
+          case findRQ addr rqs of
             Just RcvQueue {rcvId} -> do
               logServer "<--" c srv rId $ "MSG <QEND> " <> logSecret senderId
               enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQDelete rcvId

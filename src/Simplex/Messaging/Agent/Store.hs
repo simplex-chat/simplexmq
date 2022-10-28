@@ -135,6 +135,7 @@ instance SMPQueue SndQueue where
 
 findQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe q
 findQ = find . sameQueue
+{-# INLINE findQ #-}
 
 removeQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe (q, [q])
 removeQ addr qs = case L.break (sameQueue addr) qs of
@@ -147,6 +148,7 @@ sndAddress RcvQueue {server, sndId} = (server, sndId)
 
 findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
 findRQ sAddr = find $ sameQAddress sAddr . sndAddress
+{-# INLINE findRQ #-}
 
 -- * Connection types
 
