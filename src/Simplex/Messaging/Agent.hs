@@ -564,7 +564,7 @@ subscribeConnection' c connId =
     case conn of
       SomeConn _ (DuplexConnection cData (rq :| rqs) sqs) -> do
         mapM_ (resumeMsgDelivery c cData) sqs
-        subscribe rq
+        subscribe cData rq
         mapM_ (\q -> subscribeQueue c q `catchError` \_ -> pure ()) rqs
       SomeConn _ (SndConnection cData sq) -> do
         resumeMsgDelivery c cData sq
@@ -572,16 +572,15 @@ subscribeConnection' c connId =
           Confirmed -> pure ()
           Active -> throwError $ CONN SIMPLEX
           _ -> throwError $ INTERNAL "unexpected queue status"
-      SomeConn _ (RcvConnection _ rq) -> subscribe rq
-      SomeConn _ (ContactConnection _ rq) -> subscribe rq
+      SomeConn _ (RcvConnection cData rq) -> subscribe cData rq
+      SomeConn _ (ContactConnection cData rq) -> subscribe cData rq
       SomeConn _ (NewConnection _) -> pure ()
   where
-    subscribe :: RcvQueue -> m ()
-    subscribe rq = do
-      r <- tryError $ subscribeQueue c rq
+    subscribe :: ConnData -> RcvQueue -> m ()
+    subscribe ConnData {enableNtfs} rq = do
+      subscribeQueue c rq
       ns <- asks ntfSupervisor
-      atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-      liftEither r
+      atomically $ sendNtfSubCommand ns (connId, if enableNtfs then NSCCreate else NSCDelete)
 
 type QSubResult = (QueueStatus, Either AgentErrorType ())
 
