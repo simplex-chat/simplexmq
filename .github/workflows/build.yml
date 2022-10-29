@@ -11,7 +11,14 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-20.04
+          - os: ubuntu-22.04
     steps:
       - name: Clone project
         uses: actions/checkout@v2
@@ -28,24 +35,27 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
+          key: ${{ matrix.os }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
 
       - name: Build
-        id: build_binary
         shell: bash
-        run: |
-          cabal build --enable-tests
-          mv $(cabal list-bin smp-server) smp-server-ubuntu-20_04-x86-64
-          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-20_04-x86-64
+        run: cabal build --enable-tests
 
       - name: Test
-        id: build_test
+        if: matrix.os == 'ubuntu-22.04'
         timeout-minutes: 30
         shell: bash
         run: cabal test --test-show-details=direct
 
+      - name: Prepare binary
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
+        shell: bash
+        run: |
+          mv $(cabal list-bin smp-server) smp-server-ubuntu-20_04-x86-64
+          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-20_04-x86-64
+
       - name: Build changelog
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
         id: build_changelog
         uses: mikepenz/release-changelog-builder-action@v1
         with:
@@ -56,19 +66,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract release candidate
-        if: startsWith(github.ref, 'refs/tags/v')
-        id: extract_release_candidate
-        shell: bash
-        run: |
-          if [[ ${GITHUB_REF} == *rc* ]]; then
-            echo "::set-output name=release_candidate::true"
-          else
-            echo "::set-output name=release_candidate::false"
-          fi
-
       - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
         uses: softprops/action-gh-release@v1
         with:
           body: |
@@ -76,7 +75,7 @@ jobs:
 
             Commits:
             ${{ steps.build_changelog.outputs.changelog }}
-          prerelease: ${{ steps.extract_release_candidate.outputs.release_candidate }}
+          prerelease: true
           files: |
             LICENSE
             smp-server-ubuntu-20_04-x86-64
