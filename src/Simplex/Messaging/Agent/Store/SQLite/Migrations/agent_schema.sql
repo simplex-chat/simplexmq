@@ -41,6 +41,10 @@ CREATE TABLE rcv_queues(
   ntf_private_key BLOB,
   ntf_id BLOB,
   rcv_ntf_dh_secret BLOB,
+  rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
+  rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
+  next_rcv_primary INTEGER CHECK(next_rcv_primary NOT NULL),
+  replace_rcv_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -58,6 +62,10 @@ CREATE TABLE snd_queues(
   smp_client_version INTEGER NOT NULL DEFAULT 1,
   snd_public_key BLOB,
   e2e_pub_key BLOB,
+  snd_queue_id INTEGER CHECK(snd_queue_id NOT NULL),
+  snd_primary INTEGER CHECK(snd_primary NOT NULL),
+  next_snd_primary INTEGER CHECK(next_snd_primary NOT NULL),
+  replace_snd_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -89,6 +97,7 @@ CREATE TABLE rcv_messages(
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
   user_ack INTEGER NULL DEFAULT 0,
+  rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -205,4 +214,18 @@ CREATE TABLE commands(
   agent_version INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
+CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
+CREATE TABLE snd_message_deliveries(
+  snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  snd_queue_id INTEGER NOT NULL,
+  internal_id INTEGER NOT NULL,
+  FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE sqlite_sequence(name,seq);
+CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
+  conn_id,
+  snd_queue_id
 );

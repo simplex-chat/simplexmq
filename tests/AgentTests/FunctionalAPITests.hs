@@ -21,14 +21,15 @@ import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
@@ -115,6 +116,15 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
+  describe "Queue rotation" $ do
+    it "should switch delivery to the new queue (1 server)" $
+      withSmpServer t $ testSwitchConnection initAgentServers
+    it "should switch delivery to the new queue (2 servers)" $
+      withSmpServer t . withSmpServerOn t testPort2 $ testSwitchConnection initAgentServers2
+    it "should switch to new queue asynchronously (1 server)" $
+      withSmpServer t $ testSwitchAsync initAgentServers
+    it "should switch to new queue asynchronously (2 servers)" $
+      withSmpServer t . withSmpServerOn t testPort2 $ testSwitchAsync initAgentServers2
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
@@ -637,6 +647,76 @@ testAcceptContactAsync = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testSwitchConnection :: InitialAgentServers -> IO ()
+testSwitchConnection servers = do
+  a <- getSMPAgentClient agentCfg servers
+  b <- getSMPAgentClient agentCfg {database = testDB2} servers
+  Right () <- runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    switchConnectionAsync a "" bId
+    phase a bId SPStarted
+    phase b aId SPStarted
+    phase a bId SPConfirmed
+    phase b aId SPConfirmed
+    phase a bId SPTested
+    phase b aId SPTested
+    phase b aId SPCompleted
+    phase a bId SPCompleted
+    exchangeGreetingsMsgId 12 a bId b aId
+  pure ()
+
+phase :: AgentClient -> ByteString -> SwitchPhase -> ExceptT AgentErrorType IO ()
+phase c connId p =
+  get c >>= \(_, connId', msg) -> do
+    liftIO $ connId `shouldBe` connId'
+    case msg of
+      SWITCH p' _ -> liftIO $ p `shouldBe` p'
+      ERR (AGENT A_DUPLICATE) -> phase c connId p
+      r -> do
+        liftIO . putStrLn $ "expected: " <> show p <> ", received: " <> show r
+        SWITCH _ _ <- pure r
+        pure ()
+
+testSwitchAsync :: InitialAgentServers -> IO ()
+testSwitchAsync servers = do
+  Right (aId, bId) <- withA $ \a -> withB $ \b -> runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    pure (aId, bId)
+  let phaseA = withA . phase' bId
+      phaseB = withB . phase' aId
+  Right () <- withA $ \a -> runExceptT $ do
+    subscribeConnection a bId
+    switchConnectionAsync a "" bId
+    phase a bId SPStarted
+    liftIO $ threadDelay 500000
+  phaseB SPStarted
+  phaseA SPConfirmed
+  phaseB SPConfirmed
+  phaseA SPTested
+  Right () <- withB $ \b -> runExceptT $ do
+    subscribeConnection b aId
+    phase b aId SPTested
+    phase b aId SPCompleted
+  phaseA SPCompleted
+  Right () <- withA $ \a -> withB $ \b -> runExceptT $ do
+    subscribeConnection a bId
+    subscribeConnection b aId
+    exchangeGreetingsMsgId 12 a bId b aId
+  pure ()
+  where
+    withAgent :: AgentConfig -> (AgentClient -> IO a) -> IO a
+    withAgent cfg' = bracket (getSMPAgentClient cfg' servers) disconnectAgentClient
+    phase' connId p c = do
+      Right () <- runExceptT $ do
+        subscribeConnection c connId
+        phase c connId p
+        liftIO $ threadDelay 500000
+      pure ()
+    withA = withAgent agentCfg
+    withB = withAgent agentCfg {database = testDB2, initialClientId = 1}
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

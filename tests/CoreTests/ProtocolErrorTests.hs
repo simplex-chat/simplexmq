@@ -1,9 +1,9 @@
 module CoreTests.ProtocolErrorTests where
 
 import Simplex.Messaging.Agent.Protocol (AgentErrorType)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType)
-import Simplex.Messaging.Encoding.String
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
