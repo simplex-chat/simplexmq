@@ -691,7 +691,7 @@ testSwitchAsync servers = do
     subscribeConnection a bId
     switchConnectionAsync a "" bId
     phase a bId SPStarted
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay 500000
   phaseB SPStarted
   phaseA SPConfirmed
   phaseB SPConfirmed
@@ -713,7 +713,7 @@ testSwitchAsync servers = do
       Right () <- runExceptT $ do
         subscribeConnection c connId
         phase c connId p
-        liftIO $ threadDelay 250000
+        liftIO $ threadDelay 500000
       pure ()
     withA = withAgent agentCfg
     withB = withAgent agentCfg {database = testDB2, initialClientId = 1}
