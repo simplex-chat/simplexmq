@@ -16,27 +16,33 @@ jobs:
       - name: Clone project
         uses: actions/checkout@v2
 
-      - name: Setup Stack
+      - name: Setup Haskell
         uses: haskell/actions/setup@v1
         with:
           ghc-version: "8.10.7"
-          enable-stack: true
-          stack-version: "latest"
+          cabal-version: "latest"
 
       - name: Cache dependencies
         uses: actions/cache@v2
         with:
-          path: ~/.stack
-          key: ${{ hashFiles('stack.yaml') }}
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
 
-      - name: Build & test
-        id: build_test
+      - name: Build
+        id: build_binary
         shell: bash
         run: |
-          stack build --test --force-dirty
-          install_root=$(stack path --local-install-root)
-          mv ${install_root}/bin/smp-server smp-server-ubuntu-20_04-x86-64
-          mv ${install_root}/bin/ntf-server ntf-server-ubuntu-20_04-x86-64
+          cabal build --enable-tests
+          mv $(cabal list-bin smp-server) smp-server-ubuntu-20_04-x86-64
+          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-20_04-x86-64
+
+      - name: Test
+        id: build_test
+        timeout-minutes: 10
+        shell: bash
+        run: cabal test --test-show-details=direct
 
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v')
