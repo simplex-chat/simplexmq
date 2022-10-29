@@ -116,7 +116,7 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
-  xdescribe "Queue rotation" $ do
+  describe "Queue rotation" $ do
     it "should switch delivery to the new queue (1 server)" $
       withSmpServer t $ testSwitchConnection initAgentServers
     it "should switch delivery to the new queue (2 servers)" $
