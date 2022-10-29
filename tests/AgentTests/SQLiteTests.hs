@@ -165,7 +165,6 @@ rcvQueue1 =
       status = New,
       dbQueueId = 1,
       primary = True,
-      nextPrimary = False,
       dbReplaceQueueId = Nothing,
       smpClientVersion = 1,
       clientNtfCreds = Nothing
@@ -184,7 +183,6 @@ sndQueue1 =
       status = New,
       dbQueueId = 1,
       primary = True,
-      nextPrimary = False,
       dbReplaceQueueId = Nothing,
       smpClientVersion = 1
     }
@@ -222,7 +220,7 @@ testCreateRcvConnDuplicate =
     g <- newTVarIO =<< drgNew
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     createRcvConn db g cData1 rcvQueue1 SCMInvitation
-      `shouldReturn` Left (SEConnDuplicate)
+      `shouldReturn` Left SEConnDuplicate
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn =
@@ -257,7 +255,7 @@ testCreateSndConnDuplicate =
     g <- newTVarIO =<< drgNew
     _ <- createSndConn db g cData1 sndQueue1
     createSndConn db g cData1 sndQueue1
-      `shouldReturn` Left (SEConnDuplicate)
+      `shouldReturn` Left SEConnDuplicate
 
 testGetRcvConn :: SpecWith SQLiteStore
 testGetRcvConn =
@@ -280,7 +278,7 @@ testDeleteRcvConn =
       `shouldReturn` ()
     -- TODO check queues are deleted as well
     getConn db "conn1"
-      `shouldReturn` Left (SEConnNotFound)
+      `shouldReturn` Left SEConnNotFound
 
 testDeleteSndConn :: SpecWith SQLiteStore
 testDeleteSndConn =
@@ -293,7 +291,7 @@ testDeleteSndConn =
       `shouldReturn` ()
     -- TODO check queues are deleted as well
     getConn db "conn1"
-      `shouldReturn` Left (SEConnNotFound)
+      `shouldReturn` Left SEConnNotFound
 
 testDeleteDuplexConn :: SpecWith SQLiteStore
 testDeleteDuplexConn =
@@ -326,7 +324,6 @@ testUpgradeRcvConnToDuplex =
               status = New,
               dbQueueId = 1,
               primary = True,
-              nextPrimary = False,
               dbReplaceQueueId = Nothing,
               smpClientVersion = 1
             }
@@ -354,7 +351,6 @@ testUpgradeSndConnToDuplex =
               status = New,
               dbQueueId = 1,
               primary = True,
-              nextPrimary = False,
               dbReplaceQueueId = Nothing,
               smpClientVersion = 1,
               clientNtfCreds = Nothing

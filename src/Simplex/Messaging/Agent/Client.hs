@@ -549,7 +549,6 @@ newRcvQueue_ a c connId srv vRange = do
             status = New,
             dbQueueId = 0,
             primary = True,
-            nextPrimary = False,
             dbReplaceQueueId = Nothing,
             smpClientVersion = maxVersion vRange,
             clientNtfCreds = Nothing

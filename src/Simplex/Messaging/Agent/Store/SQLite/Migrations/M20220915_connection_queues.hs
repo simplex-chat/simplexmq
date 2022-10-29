@@ -18,9 +18,6 @@ CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues (conn_id, rcv_queue_id);
 ALTER TABLE rcv_queues ADD COLUMN rcv_primary INTEGER CHECK (rcv_primary NOT NULL);
 UPDATE rcv_queues SET rcv_primary = 1;
 
-ALTER TABLE rcv_queues ADD COLUMN next_rcv_primary INTEGER CHECK (next_rcv_primary NOT NULL);
-UPDATE rcv_queues SET next_rcv_primary = 0;
-
 ALTER TABLE rcv_queues ADD COLUMN replace_rcv_queue_id INTEGER NULL;
 
 -- snd_queues
@@ -30,9 +27,6 @@ CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues (conn_id, snd_queue_id);
 
 ALTER TABLE snd_queues ADD COLUMN snd_primary INTEGER CHECK (snd_primary NOT NULL);
 UPDATE snd_queues SET snd_primary = 1;
-
-ALTER TABLE snd_queues ADD COLUMN next_snd_primary INTEGER CHECK (next_snd_primary NOT NULL);
-UPDATE snd_queues SET next_snd_primary = 0;
 
 ALTER TABLE snd_queues ADD COLUMN replace_snd_queue_id INTEGER NULL;
 
