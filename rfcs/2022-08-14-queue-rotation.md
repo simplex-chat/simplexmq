@@ -24,8 +24,6 @@ Additional agent messages required for the protocol:
     QKEY_ -> "QK"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
-    QDEL_ -> "QD"
-    QEND_ -> "QE"
 
 `QADD`: add the new queue address(es), the same format as `REPLY` message, encoded as `QA`.
 
@@ -33,11 +31,7 @@ Additional agent messages required for the protocol:
 
 `QUSE`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `QU`.
 
-`QTEST`: send test message to the new connection, encoded as `QT`. Any other message can be sent if available to continue rotation, the absence of this message is not an error.
-
-`QDEL`: instruct the sender to stop using the previous queue, encoded as `QD`
-
-`QEND`: notify the recipient that no messages will be sent to this queue, encoded as `QE`. The recipient will delete this queue.
+`QTEST`: send test message to the new connection, encoded as `QT`. Any other message can be sent if available to continue rotation, the absence of this message is not an error. Once this message is successfully sent the sender will stop using the old queue. Once this message (or any other message in the new queue is received, the recipient will stop using the old queue and delete it).
 
 ### Protocol
 
@@ -50,13 +44,10 @@ participant R' as Server that hosts the new A's receive queue
 
 A ->> R': create new queue
 A ->> S ->> B: QADD (R'): snd address of the new queue(s)
-B ->> A(R) ->> A: QKEY (R'): sender's key for the new queue(s) (to avoid the race of SMP confirmation for the initial exchange)
+B ->> S(R) ->> A: QKEY (R'): sender's key for the new queue(s) (to avoid the race of SMP confirmation for the initial exchange)
 A ->> S(R'): secure new queue
 A ->> S ->> B: QUSE (R'): instruction to use new queue(s)
-B ->> A(R,R') ->> A: QTEST
-B ->> A(R,R') ->> A: send all new messages to both queues
-A ->> S ->> B: QDEL (R): instruction to delete the old queue
-B ->> A(R') -> A: QEND (R): notification that no messages will be sent to the old queue
-B ->> R' ->> A: send all new messages to the new queue only
-A ->> S(R): DEL: delete the previous queue
+B ->> S(R') ->> A: QTEST
+A ->> S(R): DEL: delete the old queue
+B ->> S(R') ->> A: send all new messages to the new queue
 ```
