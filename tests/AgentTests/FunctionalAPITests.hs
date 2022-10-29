@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
@@ -116,7 +117,7 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
-  describe "Queue rotation" $ do
+  fdescribe "Queue rotation" $ do
     it "should switch delivery to the new queue (1 server)" $
       withSmpServer t $ testSwitchConnection initAgentServers
     it "should switch delivery to the new queue (2 servers)" $
@@ -651,7 +652,7 @@ testAcceptContactAsync = do
 testSwitchConnection :: InitialAgentServers -> IO ()
 testSwitchConnection servers = do
   a <- getSMPAgentClient agentCfg servers
-  b <- getSMPAgentClient agentCfg {database = testDB2} servers
+  b <- getSMPAgentClient agentCfg {database = testDB2, initialClientId = 1} servers
   Right () <- runExceptT $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
@@ -660,11 +661,9 @@ testSwitchConnection servers = do
     phase b aId SPStarted
     phase a bId SPConfirmed
     phase b aId SPConfirmed
-    phase a bId SPTested
-    phase b aId SPTested
     phase b aId SPCompleted
     phase a bId SPCompleted
-    exchangeGreetingsMsgId 12 a bId b aId
+    exchangeGreetingsMsgId 10 a bId b aId
   pure ()
 
 phase :: AgentClient -> ByteString -> SwitchPhase -> ExceptT AgentErrorType IO ()
@@ -685,35 +684,32 @@ testSwitchAsync servers = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
-  let phaseA = withA . phase' bId
-      phaseB = withB . phase' aId
-  Right () <- withA $ \a -> runExceptT $ do
-    subscribeConnection a bId
+  let withA' = session withA bId
+      withB' = session withB aId
+  withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId SPStarted
-    liftIO $ threadDelay 500000
-  phaseB SPStarted
-  phaseA SPConfirmed
-  phaseB SPConfirmed
-  phaseA SPTested
-  Right () <- withB $ \b -> runExceptT $ do
-    subscribeConnection b aId
-    phase b aId SPTested
+  withB' $ \b -> phase b aId SPStarted
+  withA' $ \a -> phase a bId SPConfirmed
+  withB' $ \b -> do
+    phase b aId SPConfirmed
     phase b aId SPCompleted
-  phaseA SPCompleted
+  withA' $ \a -> phase a bId SPCompleted
   Right () <- withA $ \a -> withB $ \b -> runExceptT $ do
     subscribeConnection a bId
     subscribeConnection b aId
-    exchangeGreetingsMsgId 12 a bId b aId
+    exchangeGreetingsMsgId 10 a bId b aId
   pure ()
   where
     withAgent :: AgentConfig -> (AgentClient -> IO a) -> IO a
     withAgent cfg' = bracket (getSMPAgentClient cfg' servers) disconnectAgentClient
-    phase' connId p c = do
-      Right () <- runExceptT $ do
+    session :: (forall a. (AgentClient -> IO a) -> IO a) -> ConnId -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
+    session withC connId a = do
+      Right () <- withC $ \c -> runExceptT $ do
         subscribeConnection c connId
-        phase c connId p
+        r <- a c
         liftIO $ threadDelay 500000
+        pure r
       pure ()
     withA = withAgent agentCfg
     withB = withAgent agentCfg {database = testDB2, initialClientId = 1}

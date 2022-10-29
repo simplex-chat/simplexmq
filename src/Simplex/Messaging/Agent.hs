@@ -957,7 +957,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
             _ -> sendAgentMessage c sq msgFlags msgBody
           case resp of
             Left e -> do
-              let err = if msgType == AM_CONN_INFO then ERR e else MERR mId e
+              let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
               case e of
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
@@ -978,14 +978,12 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         Just _ -> connError msgId NOT_AVAILABLE
                         -- party joining connection
                         _ -> connError msgId NOT_ACCEPTED
-                  AM_REPLY_ -> notifyDel msgId $ ERR e
-                  AM_A_MSG_ -> notifyDel msgId $ MERR mId e
-                  AM_QADD_ -> pure ()
-                  AM_QKEY_ -> pure ()
-                  AM_QUSE_ -> pure ()
-                  AM_QTEST_ -> pure ()
-                  AM_QDEL_ -> pure ()
-                  AM_QEND_ -> pure ()
+                  AM_REPLY_ -> notifyDel msgId err
+                  AM_A_MSG_ -> notifyDel msgId err
+                  AM_QADD_ -> qError msgId "QADD: AUTH"
+                  AM_QKEY_ -> qError msgId "QKEY: AUTH"
+                  AM_QUSE_ -> qError msgId "QUSE: AUTH"
+                  AM_QTEST_ -> qError msgId "QTEST: AUTH"
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -1034,11 +1032,30 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 AM_QADD_ -> pure ()
                 AM_QKEY_ -> pure ()
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ ->
+                AM_QTEST_ -> do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
-                AM_QDEL_ -> pure ()
-                AM_QEND_ ->
-                  getConnectionServers' c connId >>= notify . SWITCH SPCompleted
+                  SomeConn _ conn <- withStore c (`getConn` connId)
+                  case conn of
+                    DuplexConnection cData' rqs sqs -> do
+                      -- remove old snd queue from connection once QTEST is sent to the new queue
+                      case findQ (qAddress sq) sqs of
+                        -- this is the same queue where this loop delivers messages to but with updated state
+                        Just SndQueue {dbReplaceQueueId = Just replacedId, nextPrimary = True} ->
+                          case removeQP (\SndQueue {dbQueueId} -> dbQueueId == replacedId) sqs of
+                            Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
+                            Just (sq', sq'' : sqs') -> do
+                              -- remove the delivery from the map to stop the thread when the delivery loop is complete
+                              atomically $ TM.delete (qAddress sq') $ smpQueueMsgQueues c
+                              withStore' c $ \db -> do
+                                setSndQueuePrimary db connId sq'
+                                deletePendingMsgs db connId sq'
+                                deleteConnSndQueue db connId sq'
+                              let sqs'' = sq'' :| sqs'
+                                  conn' = DuplexConnection cData' rqs sqs''
+                              notify . SWITCH SPCompleted $ connectionStats conn'
+                            _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
+                        _ -> internalErr msgId "sent QTEST: queue not in connection, not replacing another queue or not nextPrimary"
+                    _ -> internalErr msgId "QTEST sent not in duplex connection"
               delMsg msgId
   where
     delMsg :: InternalId -> m ()
@@ -1048,6 +1065,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     notifyDel :: InternalId -> ACommand 'Agent -> m ()
     notifyDel msgId cmd = notify cmd >> delMsg msgId
     connError msgId = notifyDel msgId . ERR . CONN
+    qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
+    internalErr msgId = notifyDel msgId . ERR . INTERNAL
 
 retrySndOp :: AgentMonad m => AgentClient -> m () -> m ()
 retrySndOp c loop = do
@@ -1446,11 +1465,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                     unless (status == Active) $ setRcvQueueStatus db rq Active
                     when nextPrimary $ setRcvQueuePrimary db connId rq
                   case (conn, dbReplaceQueueId) of
-                    (DuplexConnection _ rqs sqs, Just dbRcvId) ->
+                    (DuplexConnection _ rqs _, Just dbRcvId) ->
                       case find (\RcvQueue {dbQueueId} -> dbQueueId == dbRcvId) rqs of
-                        Just RcvQueue {server, sndId} -> do
-                          void . enqueueMessages c cData sqs SMP.noMsgFlags $ QDEL [(server, sndId)]
-                          notify . SWITCH SPTested $ connectionStats conn
+                        Just RcvQueue {server, rcvId} -> do
+                          enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
                         _ -> throwError $ INTERNAL "replaced RcvQueue not found in connection"
                     _ -> pure ()
                   tryError agentClientMsg >>= \case
@@ -1467,8 +1485,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       -- no action needed for QTEST
                       -- any message in the new queue will mark it active and trigger deletion of the old queue
                       QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
-                      QDEL qs -> qDuplex "QDEL" $ qDelMsg qs
-                      QEND qs -> qDuplex "QEND" $ qEndMsg qs
                       where
                         qDuplex :: String -> (Connection 'CDuplex -> m ()) -> m ()
                         qDuplex name a = case conn of
@@ -1679,45 +1695,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         -- mark queue as Secured and to start sending messages to it
         qUseMsg :: NonEmpty ((SMPServer, SMP.SenderId), Bool) -> Connection 'CDuplex -> m ()
         qUseMsg ((addr, primary) :| _) (DuplexConnection _ _ sqs) =
-          case removeQ addr sqs of
-            Just (sq', sqs') -> do
+          case findQ addr sqs of
+            Just sq' -> do
               logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
-              withStore' c $ \db -> do
-                setSndQueueStatus db sq' Secured
-                when primary $ setSndQueuePrimary db connId sq'
+              withStore' c $ \db -> setSndQueueStatus db sq' Secured
               let sq'' = (sq' :: SndQueue) {status = Secured, primary}
-              void $ enqueueMessages c cData (sq'' :| sqs') SMP.noMsgFlags $ QTEST [addr]
+              void $ enqueueMessages c cData [sq''] SMP.noMsgFlags $ QTEST [addr]
               notify . SWITCH SPConfirmed $ connectionStats conn
             _ -> qError "QUSE: queue address not found in connection"
-
-        -- processed by queue sender
-        -- remove snd queue from connection and enqueue QEND message
-        qDelMsg :: NonEmpty (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()
-        qDelMsg (addr :| _) (DuplexConnection _ rqs sqs) =
-          case removeQ addr sqs of
-            Nothing -> logServer "<--" c srv rId "MSG <QDEL>: queue not found (already deleted?)"
-            Just (sq, sq' : sqs') -> do
-              logServer "<--" c srv rId $ "MSG <QDEL> " <> logSecret (snd addr)
-              -- remove the delivery from the map to stop the thread when the delivery loop is complete
-              atomically $ TM.delete addr $ smpQueueMsgQueues c
-              withStore' c $ \db -> do
-                deletePendingMsgs db connId sq
-                deleteConnSndQueue db connId sq
-              let sqs'' = sq' :| sqs'
-                  conn' = DuplexConnection cData rqs sqs''
-              void $ enqueueMessages c cData sqs'' SMP.noMsgFlags $ QEND [addr]
-              notify . SWITCH SPTested $ connectionStats conn'
-            _ -> qError "QDEL received to the only queue in connection"
-
-        -- received by party initiating switch
-        -- TODO *** check that the received address matches expectations
-        qEndMsg :: NonEmpty (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()
-        qEndMsg (addr@(smpServer, senderId) :| _) (DuplexConnection _ rqs _) =
-          case findRQ addr rqs of
-            Just RcvQueue {rcvId} -> do
-              logServer "<--" c srv rId $ "MSG <QEND> " <> logSecret senderId
-              enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQDelete rcvId
-            _ -> qError "QEND: queue address not found in connection"
 
         qError :: String -> m ()
         qError = throwError . AGENT . A_QUEUE

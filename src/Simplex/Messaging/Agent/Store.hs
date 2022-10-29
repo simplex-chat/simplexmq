@@ -138,7 +138,11 @@ findQ = find . sameQueue
 {-# INLINE findQ #-}
 
 removeQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe (q, [q])
-removeQ addr qs = case L.break (sameQueue addr) qs of
+removeQ = removeQP . sameQueue
+{-# INLINE removeQ #-}
+
+removeQP :: (q -> Bool) -> NonEmpty q -> Maybe (q, [q])
+removeQP p qs = case L.break p qs of
   (_, []) -> Nothing
   (qs1, q : qs2) -> Just (q, qs1 <> qs2)
 
