@@ -90,24 +90,36 @@ processNtfSub c (connId, cmd) = do
                 ts <- liftIO getCurrentTime
                 withStore' c $ \db -> createNtfSubscription db newSub (NtfSubSMPAction NSASmpKey) ts
                 addNtfSMPWorker smpServer
-        (Just (sub@NtfSubscription {ntfSubStatus, ntfServer = subNtfServer}, action_)) -> do
-          case action_ of
-            -- action was set to NULL after worker internal error
-            Nothing -> resetSubscription
-            Just (action, _)
-              -- subscription was marked for deletion / is being deleted
-              | isDeleteNtfSubAction action -> do
-                if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
-                  then resetSubscription
-                  else withNtfServer c $ \ntfServer -> do
-                    ts <- liftIO getCurrentTime
-                    withStore' c $ \db ->
-                      supervisorUpdateNtfSubscription db sub {ntfServer} (NtfSubNTFAction NSACreate) ts
-                    addNtfNTFWorker ntfServer
-              | otherwise -> case action of
-                NtfSubNTFAction _ -> addNtfNTFWorker subNtfServer
-                NtfSubSMPAction _ -> addNtfSMPWorker smpServer
+        (Just (sub@NtfSubscription {ntfSubStatus, ntfServer = subNtfServer, smpServer = smpServer', ntfQueueId}, action_)) -> do
+          case (clientNtfCreds, ntfQueueId) of
+            (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
+              | sameSrvAddr smpServer smpServer' && notifierId == ntfQueueId' -> create
+              | otherwise -> rotate
+            (Nothing, Nothing) -> create
+            _ -> rotate
           where
+            create :: m ()
+            create = case action_ of
+              -- action was set to NULL after worker internal error
+              Nothing -> resetSubscription
+              Just (action, _)
+                -- subscription was marked for deletion / is being deleted
+                | isDeleteNtfSubAction action -> do
+                  if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
+                    then resetSubscription
+                    else withNtfServer c $ \ntfServer -> do
+                      ts <- liftIO getCurrentTime
+                      withStore' c $ \db ->
+                        supervisorUpdateNtfSubscription db sub {ntfServer} (NtfSubNTFAction NSACreate) ts
+                      addNtfNTFWorker ntfServer
+                | otherwise -> case action of
+                  NtfSubNTFAction _ -> addNtfNTFWorker subNtfServer
+                  NtfSubSMPAction _ -> addNtfSMPWorker smpServer
+            rotate :: m ()
+            rotate = do
+              ts <- liftIO getCurrentTime
+              withStore' c $ \db -> supervisorUpdateNtfSubscription db sub (NtfSubNTFAction NSARotate) ts
+              addNtfNTFWorker subNtfServer
             resetSubscription :: m ()
             resetSubscription =
               withNtfServer c $ \ntfServer -> do
@@ -215,15 +227,24 @@ runNtfWorker c srv doWork = do
           NSADelete -> case ntfSubId of
             Just nSubId ->
               (getNtfToken >>= \tkn -> forM_ tkn $ agentNtfDeleteSubscription c nSubId)
-                `E.finally` carryOnWithDeletion
-            Nothing -> carryOnWithDeletion
+                `E.finally` continueDeletion
+            _ -> continueDeletion
             where
-              carryOnWithDeletion :: m ()
-              carryOnWithDeletion = do
+              continueDeletion = do
                 withStore' c $ \db ->
                   updateNtfSubscription db sub {ntfSubId = Nothing, ntfSubStatus = NASOff} (NtfSubSMPAction NSASmpDelete) ts
                 ns <- asks ntfSupervisor
                 atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
+          NSARotate -> case ntfSubId of
+            Just nSubId ->
+              (getNtfToken >>= \tkn -> forM_ tkn $ agentNtfDeleteSubscription c nSubId)
+                `E.finally` deleteCreate
+            _ -> deleteCreate
+            where
+              deleteCreate = do
+                withStore' c $ \db -> deleteNtfSubscription db connId
+                ns <- asks ntfSupervisor
+                atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
       where
         updateSubNextCheck ts toStatus = do
           checkInterval <- asks $ ntfSubCheckInterval . config

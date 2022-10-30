@@ -844,6 +844,9 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
                 | otherwise -> do
                   deleteQueue c rq'
                   withStore' c $ \db -> deleteConnRcvQueue db connId rq'
+                  when (enableNtfs cData) $ do
+                    ns <- asks ntfSupervisor
+                    atomically $ sendNtfSubCommand ns (connId, NSCCreate)
                   let conn' = DuplexConnection cData (rq'' :| rqs') sqs
                   notify $ SWITCH SPCompleted $ connectionStats conn'
               _ -> internalErr "ICQDelete: cannot delete the only queue in connection"
@@ -1719,7 +1722,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         -- processed by queue sender
         -- mark queue as Secured and to start sending messages to it
         qUseMsg :: NonEmpty ((SMPServer, SMP.SenderId), Bool) -> Connection 'CDuplex -> m ()
-        -- TODO *** change queue primary status if needed?
+        -- NOTE: does not yet support the change of the primary status during the rotation
         qUseMsg ((addr, _primary) :| _) (DuplexConnection _ _ sqs) =
           case findQ addr sqs of
             Just sq' -> do
