@@ -348,7 +348,7 @@ newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> 
 newConnAsync c corrId enableNtfs cMode = do
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-  let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+  let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing, deleted = False} -- connection mode is determined by the accepting agent
   connId <- withStore c $ \db -> createNewConn db g cData cMode
   enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode)
   pure connId
@@ -360,7 +360,7 @@ joinConnAsync c corrId enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ age
     Just (Compatible connAgentVersion) -> do
       g <- asks idsDrg
       let duplexHS = connAgentVersion /= 1
-          cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
+          cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, deleted = False}
       connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
       enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
       pure connId
@@ -402,20 +402,23 @@ ackMessageAsync' c corrId connId msgId = do
       enqueueCommand c corrId connId (Just server) . AClientCommand $ ACK msgId
 
 deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
-deleteConnectionAsync' c@AgentClient {subQ} corrId connId =
-  withStore c (`getConn` connId) >>= \case
-    -- TODO *** delete all queues
-    SomeConn _ (DuplexConnection _ (rq :| _) _) -> enqueueDelete rq
-    SomeConn _ (RcvConnection _ rq) -> enqueueDelete rq
-    SomeConn _ (ContactConnection _ rq) -> enqueueDelete rq
-    SomeConn _ (SndConnection _ _) -> withStore' c (`deleteConn` connId) >> notifyDeleted
-    SomeConn _ (NewConnection _) -> withStore' c (`deleteConn` connId) >> notifyDeleted
+deleteConnectionAsync' c@AgentClient {subQ} corrId connId = withConnLock c connId "deleteConnectionAsync" $ do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  case conn of
+    DuplexConnection _ (rq :| _) _ -> enqueueDelete rq
+    RcvConnection _ rq -> enqueueDelete rq
+    ContactConnection _ rq -> enqueueDelete rq
+    SndConnection _ _ -> delete
+    NewConnection _ -> delete
   where
     enqueueDelete :: RcvQueue -> m ()
-    enqueueDelete RcvQueue {server} =
-      enqueueCommand c corrId connId (Just server) $ AClientCommand DEL
-    notifyDeleted :: m ()
-    notifyDeleted = atomically $ writeTBQueue subQ (corrId, connId, OK)
+    enqueueDelete RcvQueue {server} = do
+      withStore' c $ \db -> setConnDeleted db connId
+      -- TODO *** notifications cannot be disabled if queue is deleted
+      disableConn c connId
+      enqueueCommand c corrId connId (Just server) $ AInternalCommand ICDeleteConn
+    delete :: m ()
+    delete = withStore' c (`deleteConn` connId) >> atomically (writeTBQueue subQ (corrId, connId, OK))
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
@@ -451,7 +454,7 @@ newConnSrv c connId asyncMode enableNtfs cMode srv = do
       pure connId
     setUpConn False rq connAgentVersion = do
       g <- asks idsDrg
-      let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+      let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, deleted = False} -- connection mode is determined by the accepting agent
       withStore c $ \db -> createRcvConn db g cData rq cMode
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
@@ -475,7 +478,7 @@ joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ age
       let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
       q <- newSndQueue "" qInfo
       let duplexHS = connAgentVersion /= 1
-          cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
+          cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, deleted = False}
       connId' <- setUpConn asyncMode cData q rc
       let sq = (q :: SndQueue) {connId = connId'}
           cData' = (cData :: ConnData) {connId = connId'}
@@ -805,6 +808,23 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           secure rq senderKey
           when (duplexHandshake cData == Just True) . void $
             enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
+        ICDeleteConn ->
+          withServer $ \srv -> tryWithLock "ICDeleteConn" $ do
+            SomeConn _ conn <- withStore c $ \db -> getAnyConn db connId True
+            case conn of
+              DuplexConnection _ (rq :| rqs) _ -> delete srv rq $ case rqs of
+                [] -> notify OK
+                RcvQueue {server = srv'} : _ -> enqueue srv'
+              RcvConnection _ rq -> delete srv rq $ notify OK
+              ContactConnection _ rq -> delete srv rq $ notify OK
+              _ -> internalErr "command requires connection with rcv queue"
+          where
+            delete :: SMPServer -> RcvQueue -> m () -> m ()
+            delete srv rq@RcvQueue {server} next
+              | sameSrvAddr srv server = deleteConnQueue c rq >> next
+              | otherwise = enqueue server
+            enqueue :: SMPServer -> m ()
+            enqueue srv = enqueueCommand c corrId connId (Just srv) $ AInternalCommand ICDeleteConn
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameQueue (srv, rId)) rqs of
@@ -1129,20 +1149,28 @@ suspendConnection' c connId = withConnLock c connId "suspendConnection" $ do
 -- | Delete SMP agent connection (DEL command) in Reader monad
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 deleteConnection' c connId = withConnLock c connId "deleteConnection" $ do
-  withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rqs _) -> mapM_ delete rqs
-    SomeConn _ (RcvConnection _ rq) -> delete rq
-    SomeConn _ (ContactConnection _ rq) -> delete rq
-    SomeConn _ (SndConnection _ _) -> withStore' c (`deleteConn` connId)
-    SomeConn _ (NewConnection _) -> withStore' c (`deleteConn` connId)
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  case conn of
+    DuplexConnection _ rqs _ -> mapM_ (deleteConnQueue c) rqs >> disableConn c connId >> deleteConn'
+    RcvConnection _ rq -> delete rq
+    ContactConnection _ rq -> delete rq
+    SndConnection _ _ -> deleteConn'
+    NewConnection _ -> deleteConn'
   where
     delete :: RcvQueue -> m ()
-    delete rq = do
-      deleteQueue c rq
-      atomically $ removeSubscription c connId
-      withStore' c (`deleteConn` connId)
-      ns <- asks ntfSupervisor
-      atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
+    delete rq = deleteConnQueue c rq >> disableConn c connId >> deleteConn'
+    deleteConn' = withStore' c (`deleteConn` connId)
+
+deleteConnQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+deleteConnQueue c rq@RcvQueue {connId} = do
+  deleteQueue c rq
+  withStore' c $ \db -> deleteConnRcvQueue db connId rq
+
+disableConn :: AgentMonad m => AgentClient -> ConnId -> m ()
+disableConn c connId = do
+  atomically $ removeSubscription c connId
+  ns <- asks ntfSupervisor
+  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
 
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = do

@@ -30,6 +30,10 @@ UPDATE snd_queues SET snd_primary = 1;
 
 ALTER TABLE snd_queues ADD COLUMN replace_snd_queue_id INTEGER NULL;
 
+-- connections
+ALTER TABLE connections ADD COLUMN deleted INTEGER DEFAULT 0 CHECK (deleted NOT NULL);
+UPDATE connections SET deleted = 0;
+
 -- messages
 CREATE TABLE snd_message_deliveries (
   snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,

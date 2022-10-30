@@ -140,7 +140,7 @@ testForeignKeysEnabled =
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 cData1 :: ConnData
-cData1 = ConnData {connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing}
+cData1 = ConnData {connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, deleted = False}
 
 testPrivateSignKey :: C.APrivateSignKey
 testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"

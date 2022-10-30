@@ -34,7 +34,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     createRcvConn,
     createSndConn,
     getConn,
+    getAnyConn,
     getConnData,
+    setConnDeleted,
     getRcvConn,
     deleteConn,
     upgradeRcvConnToDuplex,
@@ -1311,25 +1313,33 @@ newQueueId_ (Only maxId : _) = maxId + 1
 -- * getConn helpers
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConn dbConn connId =
+getConn db connId = getAnyConn db connId False
+
+getAnyConn :: DB.Connection -> ConnId -> Bool -> IO (Either StoreError SomeConn)
+getAnyConn dbConn connId deleted' =
   getConnData dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
-    Just (cData, cMode) -> do
-      rQ <- getRcvQueuesByConnId_ dbConn connId
-      sQ <- getSndQueuesByConnId_ dbConn connId
-      pure $ case (rQ, sQ, cMode) of
-        (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
-        (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
-        (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
-        (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
-        (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
-        _ -> Left SEConnNotFound
+    Just (cData@ConnData {deleted}, cMode)
+      | deleted /= deleted' -> pure $ Left SEConnNotFound
+      | otherwise -> do
+        rQ <- getRcvQueuesByConnId_ dbConn connId
+        sQ <- getSndQueuesByConnId_ dbConn connId
+        pure $ case (rQ, sQ, cMode) of
+          (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
+          (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
+          (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
+          (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
+          (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
+          _ -> Left SEConnNotFound
 
 getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData dbConn connId' =
-  maybeFirstRow cData $ DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
+  maybeFirstRow cData $ DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, deleted FROM connections WHERE conn_id = ?;" (Only connId')
   where
-    cData (connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake) = (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake}, cMode)
+    cData (connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, deleted) = (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, deleted}, cMode)
+
+setConnDeleted :: DB.Connection -> ConnId -> IO ()
+setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
