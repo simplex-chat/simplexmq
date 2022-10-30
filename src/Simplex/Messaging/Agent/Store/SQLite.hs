@@ -345,19 +345,12 @@ createSndConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandsh
     DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?, ?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertSndQueue_ db connId q
 
-getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError SomeConn)
-getRcvConn db ProtocolServer {host, port} rcvId =
-  DB.queryNamed
-    db
-    [sql|
-      SELECT q.conn_id
-      FROM rcv_queues q
-      WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
-    |]
-    [":host" := host, ":port" := port, ":rcv_id" := rcvId]
-    >>= \case
-      [Only connId] -> getConn db connId
-      _ -> pure $ Left SEConnNotFound
+getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))
+getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
+  rq@RcvQueue {connId} <-
+    ExceptT . firstRow toRcvQueue SEConnNotFound $
+      DB.query db (rcvQueueQuery <> " WHERE q.host = ? AND q.port = ? AND q.rcv_id = ?") (host, port, rcvId)
+  (rq,) <$> ExceptT (getConn db connId)
 
 deleteConn :: DB.Connection -> ConnId -> IO ()
 deleteConn db connId =
@@ -477,7 +470,7 @@ getPrimaryRcvQueue db connId =
 
 getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId (SMPServer host port _) rcvId =
-  firstRow (toRcvQueue connId) SEConnNotFound $
+  firstRow toRcvQueue SEConnNotFound $
     DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ?") (connId, host, port, rcvId)
 
 setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
@@ -1344,7 +1337,7 @@ setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHE
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
 getRcvQueuesByConnId_ db connId =
-  L.nonEmpty . sortBy primaryFirst . map (toRcvQueue connId)
+  L.nonEmpty . sortBy primaryFirst . map toRcvQueue
     <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
   where
     primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
@@ -1354,7 +1347,7 @@ getRcvQueuesByConnId_ db connId =
 rcvQueueQuery :: Query
 rcvQueueQuery =
   [sql|
-    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
+    SELECT s.key_hash, q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
       q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.smp_client_version,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
@@ -1363,12 +1356,11 @@ rcvQueueQuery =
   |]
 
 toRcvQueue ::
-  ConnId ->
-  (C.KeyHash, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateSignKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
+  (C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateSignKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
     :. (Int64, Bool, Maybe Int64, Maybe Version)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue ((keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe 1 smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
@@ -1378,7 +1370,7 @@ toRcvQueue connId ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2eP
 
 getRcvQueueById_ :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById_ db connId dbRcvId =
-  firstRow (toRcvQueue connId) SEConnNotFound $
+  firstRow toRcvQueue SEConnNotFound $
     DB.query db (rcvQueueQuery <> " WHERE conn_id = ? AND rcv_queue_id = ?") (connId, dbRcvId)
 
 -- | returns all connection queues, the first queue is the primary one

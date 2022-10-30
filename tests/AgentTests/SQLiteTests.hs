@@ -265,7 +265,7 @@ testGetRcvConn =
     g <- newTVarIO =<< drgNew
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getRcvConn db smpServer recipientId
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
+      `shouldReturn` Right (rcvQueue1, SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
