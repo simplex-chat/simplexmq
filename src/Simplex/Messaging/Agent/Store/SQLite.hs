@@ -101,8 +101,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Notification subscription persistence
     getNtfSubscription,
     createNtfSubscription,
-    supervisorUpdateNtfSubscription,
-    supervisorUpdateNtfSubAction,
+    supervisorUpdateNtfSub,
+    supervisorUpdateNtfAction,
     updateNtfSubscription,
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
@@ -944,9 +944,10 @@ getNtfSubscription db connId =
             _ -> Nothing
        in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}, action)
 
-createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
-createNtfSubscription db ntfSubscription action actionTs = do
+createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO ()
+createNtfSubscription db ntfSubscription action = do
   let NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
+  actionTs <- liftIO getCurrentTime
   DB.execute
     db
     [sql|
@@ -961,9 +962,9 @@ createNtfSubscription db ntfSubscription action actionTs = do
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
-supervisorUpdateNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
-supervisorUpdateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
-  updatedAt <- getCurrentTime
+supervisorUpdateNtfSub :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO ()
+supervisorUpdateNtfSub db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action = do
+  ts <- getCurrentTime
   DB.execute
     db
     [sql|
@@ -971,13 +972,13 @@ supervisorUpdateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServe
       SET smp_ntf_id = ?, ntf_host = ?, ntf_port = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
       WHERE conn_id = ?
     |]
-    ((ntfQueueId, ntfHost, ntfPort, ntfSubId) :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs, True, updatedAt, connId))
+    ((ntfQueueId, ntfHost, ntfPort, ntfSubId) :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ts, True, ts, connId))
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
-supervisorUpdateNtfSubAction :: DB.Connection -> ConnId -> NtfSubAction -> NtfActionTs -> IO ()
-supervisorUpdateNtfSubAction db connId action actionTs = do
-  updatedAt <- getCurrentTime
+supervisorUpdateNtfAction :: DB.Connection -> ConnId -> NtfSubAction -> IO ()
+supervisorUpdateNtfAction db connId action = do
+  ts <- getCurrentTime
   DB.execute
     db
     [sql|
@@ -985,7 +986,7 @@ supervisorUpdateNtfSubAction db connId action actionTs = do
       SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
       WHERE conn_id = ?
     |]
-    (ntfSubAction, ntfSubSMPAction, actionTs, True, updatedAt, connId)
+    (ntfSubAction, ntfSubSMPAction, ts, True, ts, connId)
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
