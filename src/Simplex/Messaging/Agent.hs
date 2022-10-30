@@ -414,7 +414,6 @@ deleteConnectionAsync' c@AgentClient {subQ} corrId connId = withConnLock c connI
     enqueueDelete :: RcvQueue -> m ()
     enqueueDelete RcvQueue {server} = do
       withStore' c $ \db -> setConnDeleted db connId
-      -- TODO *** notifications cannot be disabled if queue is deleted
       disableConn c connId
       enqueueCommand c corrId connId (Just server) $ AInternalCommand ICDeleteConn
     delete :: m ()
