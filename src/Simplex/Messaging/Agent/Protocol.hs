@@ -360,6 +360,13 @@ instance StrEncoding SwitchPhase where
       "completed" -> pure SPCompleted
       _ -> fail "bad SwitchPhase"
 
+instance ToJSON SwitchPhase where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON SwitchPhase where
+  parseJSON = strParseJSON "SwitchPhase"
+
 data ConnectionStats = ConnectionStats
   { rcvServers :: [SMPServer],
     sndServers :: [SMPServer]
