@@ -94,6 +94,12 @@ instance StrEncoding Word16 where
   strP = A.decimal
   {-# INLINE strP #-}
 
+instance StrEncoding String where
+  strEncode = smpEncode
+  {-# INLINE strEncode #-}
+  strP = strP
+  {-# INLINE strP #-}
+
 instance StrEncoding Char where
   strEncode = smpEncode
   {-# INLINE strEncode #-}

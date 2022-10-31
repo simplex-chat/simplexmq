@@ -75,6 +75,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionRequestUri (..),
     AConnectionRequestUri (..),
     ConnReqUriData (..),
+    CRAuxData,
     ConnReqScheme (..),
     simplexChat,
     AgentErrorType (..),
@@ -236,7 +237,7 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
-  NEW :: Bool -> AConnectionMode -> ACommand Client -- response INV
+  NEW :: Bool -> AConnectionMode -> Maybe CRAuxData -> ACommand Client -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent
   JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
@@ -685,13 +686,14 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
     CRContactUri crData -> crEncode "contact" crData Nothing
     where
       crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
-      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues} e2eParams =
+      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crAuxData} e2eParams =
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
           queryStr =
             strEncode . QSP QEscape $
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
+                <> maybe [] (\aux -> [("aux", strEncode aux)]) crAuxData
   strP = do
     ACR m cr <- strP
     case testEquality m $ sConnectionMode @m of
@@ -706,7 +708,8 @@ instance StrEncoding AConnectionRequestUri where
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
-    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues}
+    crAuxData <- queryParam_ "aux" query
+    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crAuxData}
     case crMode of
       CMInvitation -> do
         crE2eParams <- queryParam "e2e" query
@@ -902,9 +905,12 @@ deriving instance Show AConnectionRequestUri
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ConnReqScheme,
     crAgentVRange :: VersionRange,
-    crSmpQueues :: L.NonEmpty SMPQueueUri
+    crSmpQueues :: L.NonEmpty SMPQueueUri,
+    crAuxData :: Maybe CRAuxData
   }
   deriving (Eq, Show)
+
+type CRAuxData = String
 
 data ConnReqScheme = CRSSimplex | CRSAppServer SrvLoc
   deriving (Eq, Show)
@@ -1223,7 +1229,7 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient cmd ->
         ACmd SClient <$> case cmd of
-          NEW_ -> s (NEW <$> strP_ <*> strP)
+          NEW_ -> s (NEW <$> strP_ <*> strP <*> optional (A.space *> strP))
           JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
@@ -1275,7 +1281,9 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode -> s (NEW_, ntfs, cMode)
+  NEW ntfs cMode aux_ -> case aux_ of
+    Nothing -> s (NEW_, ntfs, cMode)
+    Just aux -> s (NEW_, ntfs, cMode, aux)
   INV cReq -> s (INV_, cReq)
   JOIN ntfs cReq cInfo -> s (JOIN_, ntfs, cReq, Str $ serializeBinary cInfo)
   CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
@@ -1359,7 +1367,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnId (_, connId, _) cmd = case cmd of
       -- NEW, JOIN and ACPT have optional connId
-      NEW _ _ -> Right cmd
+      NEW {} -> Right cmd
       JOIN {} -> Right cmd
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
