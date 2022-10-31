@@ -791,7 +791,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId -> withServer' . tryCommand $ ackMessage' c connId msgId >> notify OK
-        SWCH -> noServer $ tryCommand $ switchConnection' c connId >>= notify . SWITCH SPStarted
+        SWCH -> noServer $ tryCommand $ switchConnection' c connId >>= notify . SWITCH QDRcv SPStarted
         DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
@@ -847,7 +847,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
                   let conn' = DuplexConnection cData (rq'' :| rqs') sqs
-                  notify $ SWITCH SPCompleted $ connectionStats conn'
+                  notify $ SWITCH QDRcv SPCompleted $ connectionStats conn'
               _ -> internalErr "ICQDelete: cannot delete the only queue in connection"
         where
           ack srv rId srvMsgId = do
@@ -1076,7 +1076,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                                 deleteConnSndQueue db connId sq'
                               let sqs'' = sq'' :| sqs'
                                   conn' = DuplexConnection cData' rqs sqs''
-                              notify . SWITCH SPCompleted $ connectionStats conn'
+                              notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
                             _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
                         _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
@@ -1694,7 +1694,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = queueAddress {dhPublicKey}}
                       void . enqueueMessages c cData sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPubKey)]
                       let conn' = DuplexConnection cData rqs (sq <| sq' :| sqs_)
-                      notify . SWITCH SPStarted $ connectionStats conn'
+                      notify . SWITCH QDSnd SPStarted $ connectionStats conn'
                     _ -> qError "absent sender keys"
                 _ -> qError "QADD: replaced queue address is not found in connection"
             _ -> throwError $ AGENT A_VERSION
@@ -1711,7 +1711,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                 let dhSecret = C.dh' dhPublicKey dhPrivKey
                 withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
                 enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQSecure rcvId senderKey
-                notify . SWITCH SPConfirmed $ connectionStats conn
+                notify . SWITCH QDRcv SPConfirmed $ connectionStats conn
               | otherwise -> qError "QKEY: queue already secured"
             _ -> qError "QKEY: queue address not found in connection"
           where
@@ -1729,7 +1729,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
               let sq'' = (sq' :: SndQueue) {status = Secured}
               -- sending QTEST to the new queue only, the old one will be removed if sent successfully
               void $ enqueueMessages c cData [sq''] SMP.noMsgFlags $ QTEST [addr]
-              notify . SWITCH SPConfirmed $ connectionStats conn
+              notify . SWITCH QDSnd SPConfirmed $ connectionStats conn
             _ -> qError "QUSE: queue address not found in connection"
 
         qError :: String -> m ()
