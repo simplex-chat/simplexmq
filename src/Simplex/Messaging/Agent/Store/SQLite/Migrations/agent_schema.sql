@@ -21,7 +21,8 @@ CREATE TABLE connections(
   smp_agent_version INTEGER NOT NULL DEFAULT 1
   ,
   duplex_handshake INTEGER NULL DEFAULT 0,
-  enable_ntfs INTEGER
+  enable_ntfs INTEGER,
+  deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL)
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -43,7 +44,6 @@ CREATE TABLE rcv_queues(
   rcv_ntf_dh_secret BLOB,
   rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
   rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
-  next_rcv_primary INTEGER CHECK(next_rcv_primary NOT NULL),
   replace_rcv_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
@@ -64,7 +64,6 @@ CREATE TABLE snd_queues(
   e2e_pub_key BLOB,
   snd_queue_id INTEGER CHECK(snd_queue_id NOT NULL),
   snd_primary INTEGER CHECK(snd_primary NOT NULL),
-  next_snd_primary INTEGER CHECK(next_snd_primary NOT NULL),
   replace_snd_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers

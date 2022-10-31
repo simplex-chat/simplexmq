@@ -8,8 +8,7 @@
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
-
-import AgentTests.FunctionalAPITests (get, makeConnection, (##>), (=##>), pattern Msg)
+import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, makeConnection, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad.Except
 import qualified Data.Aeson as J
@@ -22,7 +21,7 @@ import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
 import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), databaseFile)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers, databaseFile)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -84,6 +83,10 @@ notificationTests t =
       it "should resume subscriptions after SMP server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNotificationsSMPRestart t apns
+    describe "should switch notifications to the new queue" $
+      testServerMatrix2 t $ \servers ->
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testSwitchNotifications servers apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -483,6 +486,28 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
     _ <- messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
     liftIO $ killThread threadId
+  pure ()
+
+testSwitchNotifications :: InitialAgentServers -> APNSMockServer -> IO ()
+testSwitchNotifications servers APNSMockServer {apnsQ} = do
+  a <- getSMPAgentClient agentCfg servers
+  b <- getSMPAgentClient agentCfg {database = testDB2, initialClientId = 1} servers
+  Right () <- runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    _ <- registerTestToken a "abcd" NMInstant apnsQ
+    liftIO $ threadDelay 250000
+    let testMessage msg = do
+          msgId <- sendMessage b aId (SMP.MsgFlags True) msg
+          get b ##> ("", aId, SENT msgId)
+          void $ messageNotification apnsQ
+          get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
+          ackMessage a bId msgId
+    testMessage "hello"
+    switchConnectionAsync a "" bId
+    switchComplete a bId b aId
+    liftIO $ threadDelay 500000
+    testMessage "hello again"
   pure ()
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)

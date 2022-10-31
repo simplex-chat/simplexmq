@@ -345,20 +345,18 @@ aCommandTag = \case
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
 
-data SwitchPhase = SPStarted | SPConfirmed | SPTested | SPCompleted
+data SwitchPhase = SPStarted | SPConfirmed | SPCompleted
   deriving (Eq, Show)
 
 instance StrEncoding SwitchPhase where
   strEncode = \case
     SPStarted -> "started"
     SPConfirmed -> "confirmed"
-    SPTested -> "tested"
     SPCompleted -> "completed"
   strP =
     A.takeTill (== ' ') >>= \case
       "started" -> pure SPStarted
       "confirmed" -> pure SPConfirmed
-      "tested" -> pure SPTested
       "completed" -> pure SPCompleted
       _ -> fail "bad SwitchPhase"
 
@@ -546,8 +544,6 @@ data AgentMessageType
   | AM_QKEY_
   | AM_QUSE_
   | AM_QTEST_
-  | AM_QDEL_
-  | AM_QEND_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -561,8 +557,6 @@ instance Encoding AgentMessageType where
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
-    AM_QDEL_ -> "QD"
-    AM_QEND_ -> "QE"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -576,8 +570,6 @@ instance Encoding AgentMessageType where
           'K' -> pure AM_QKEY_
           'U' -> pure AM_QUSE_
           'T' -> pure AM_QTEST_
-          'D' -> pure AM_QDEL_
-          'E' -> pure AM_QEND_
           _ -> fail "bad AgentMessageType"
       _ -> fail "bad AgentMessageType"
 
@@ -598,8 +590,6 @@ agentMessageType = \case
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
     QTEST _ -> AM_QTEST_
-    QDEL _ -> AM_QDEL_
-    QEND _ -> AM_QEND_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -622,8 +612,6 @@ data AMsgType
   | QKEY_
   | QUSE_
   | QTEST_
-  | QDEL_
-  | QEND_
   deriving (Eq)
 
 instance Encoding AMsgType where
@@ -635,8 +623,6 @@ instance Encoding AMsgType where
     QKEY_ -> "QK"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
-    QDEL_ -> "QD"
-    QEND_ -> "QE"
   smpP =
     A.anyChar >>= \case
       'H' -> pure HELLO_
@@ -648,8 +634,6 @@ instance Encoding AMsgType where
           'K' -> pure QKEY_
           'U' -> pure QUSE_
           'T' -> pure QTEST_
-          'D' -> pure QDEL_
-          'E' -> pure QEND_
           _ -> fail "bad AMsgType"
       _ -> fail "bad AMsgType"
 
@@ -669,12 +653,8 @@ data AMessage
     QKEY (L.NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
   | -- inform that the queues are ready to use (sent by recipient)
     QUSE (L.NonEmpty (SndQAddr, Bool))
-  | -- sent by the sender to test new queues
+  | -- sent by the sender to test new queues and to complete switching
     QTEST (L.NonEmpty SndQAddr)
-  | -- inform that the queues will be deleted (sent recipient once message received via the new queue)
-    QDEL (L.NonEmpty SndQAddr)
-  | -- sent by sender to confirm that no more messages will be sent to the queue
-    QEND (L.NonEmpty SndQAddr)
   deriving (Show)
 
 type SndQAddr = (SMPServer, SMP.SenderId)
@@ -688,8 +668,6 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
-    QDEL qs -> smpEncode (QDEL_, qs)
-    QEND qs -> smpEncode (QEND_, qs)
   smpP =
     smpP
       >>= \case
@@ -700,8 +678,6 @@ instance Encoding AMessage where
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
-        QDEL_ -> QDEL <$> smpP
-        QEND_ -> QEND <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
