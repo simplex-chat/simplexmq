@@ -557,7 +557,7 @@ testAsyncCommands = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    bobId <- createConnectionAsync alice "1" True SCMInvitation Nothing
+    bobId <- createConnectionAsync alice "1" True SCMInvitation
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob "2" True qInfo "bob's connInfo"
@@ -601,7 +601,7 @@ testAsyncCommands = do
 testAsyncCommandsRestore :: ATransport -> IO ()
 testAsyncCommandsRestore t = do
   alice <- getSMPAgentClient agentCfg initAgentServers
-  Right bobId <- runExceptT $ createConnectionAsync alice "1" True SCMInvitation Nothing
+  Right bobId <- runExceptT $ createConnectionAsync alice "1" True SCMInvitation
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disconnectAgentClient alice
   alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers

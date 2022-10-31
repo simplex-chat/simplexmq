@@ -32,7 +32,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, decodeUtf8With, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
@@ -94,12 +94,6 @@ instance StrEncoding Word16 where
   strP = A.decimal
   {-# INLINE strP #-}
 
-instance StrEncoding String where
-  strEncode = smpEncode
-  {-# INLINE strEncode #-}
-  strP = smpP
-  {-# INLINE strP #-}
-
 instance StrEncoding Char where
   strEncode = smpEncode
   {-# INLINE strEncode #-}
@@ -122,6 +116,14 @@ instance StrEncoding Int64 where
   strEncode = B.pack . show
   {-# INLINE strEncode #-}
   strP = A.decimal
+  {-# INLINE strP #-}
+
+instance StrEncoding Text where
+  strEncode = encodeUtf8
+  {-# INLINE strEncode #-}
+  strP = safeDecodeUtf8 <$> A.takeByteString
+    where
+      safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
   {-# INLINE strP #-}
 
 instance StrEncoding SystemTime where
