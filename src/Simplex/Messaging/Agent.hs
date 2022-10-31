@@ -1649,8 +1649,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
           logServer "<--" c srv rId "MSG <HELLO>"
           case status of
             Active -> prohibited
-            _ -> do
-              withStore' c $ \db -> setRcvQueueStatus db rq Active
+            _ ->
               case conn of
                 DuplexConnection _ _ (sq@SndQueue {status = sndStatus} :| _)
                   -- `sndStatus == Active` when HELLO was previously sent, and this is the reply HELLO
