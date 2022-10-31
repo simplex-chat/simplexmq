@@ -97,7 +97,7 @@ instance StrEncoding Word16 where
 instance StrEncoding String where
   strEncode = smpEncode
   {-# INLINE strEncode #-}
-  strP = strP
+  strP = smpP
   {-# INLINE strP #-}
 
 instance StrEncoding Char where

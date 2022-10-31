@@ -692,8 +692,8 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
           queryStr =
             strEncode . QSP QEscape $
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
-                <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
                 <> maybe [] (\aux -> [("aux", strEncode aux)]) crAuxData
+                <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
   strP = do
     ACR m cr <- strP
     case testEquality m $ sConnectionMode @m of
