@@ -81,7 +81,7 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Concurrent.STM (flushTBQueue, stateTVar)
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
