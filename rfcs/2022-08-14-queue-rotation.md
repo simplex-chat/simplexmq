@@ -31,7 +31,7 @@ Additional agent messages required for the protocol:
 
 `QUSE`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `QU`.
 
-`QTEST`: send test message to the new connection, encoded as `QT`. Any other message can be sent if available to continue rotation, the absence of this message is not an error. Once this message is successfully sent the sender will stop using the old queue. Once this message (or any other message in the new queue is received, the recipient will stop using the old queue and delete it).
+`QTEST`: send test message to the new connection, encoded as `QT`. Any other message can be sent if available to continue rotation, the absence of this message is not an error. Once this message is successfully sent the sender will stop using the old queue. Once this message (or any other message in the new queue) is received, the recipient will stop using the old queue and delete it.
 
 ### Protocol
 
