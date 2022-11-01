@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgMeta (..),
     ConnectionStats (..),
     SwitchPhase (..),
+    QueueDirection (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
@@ -252,7 +253,7 @@ data ACommand (p :: AParty) where
   DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent
   UP :: SMPServer -> [ConnId] -> ACommand Agent
-  SWITCH :: SwitchPhase -> ConnectionStats -> ACommand Agent
+  SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent
   SEND :: MsgFlags -> MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
@@ -344,6 +345,26 @@ aCommandTag = \case
   OK -> OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
+
+data QueueDirection = QDRcv | QDSnd
+  deriving (Eq, Show)
+
+instance StrEncoding QueueDirection where
+  strEncode = \case
+    QDRcv -> "rcv"
+    QDSnd -> "snd"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "rcv" -> pure QDRcv
+      "snd" -> pure QDSnd
+      _ -> fail "bad QueueDirection"
+
+instance ToJSON QueueDirection where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON QueueDirection where
+  parseJSON = strParseJSON "QueueDirection"
 
 data SwitchPhase = SPStarted | SPConfirmed | SPCompleted
   deriving (Eq, Show)
@@ -1254,7 +1275,7 @@ commandP binaryP =
           DISCONNECT_ -> s (DISCONNECT <$> strP_ <*> strP)
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
-          SWITCH_ -> s (SWITCH <$> strP_ <*> strP)
+          SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
@@ -1297,7 +1318,7 @@ serializeCommand = \case
   DISCONNECT p h -> s (DISCONNECT_, p, h)
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
-  SWITCH phase srvs -> s (SWITCH_, phase, srvs)
+  SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)

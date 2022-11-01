@@ -669,23 +669,25 @@ testSwitchConnection servers = do
 
 switchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
 switchComplete a bId b aId = do
-  phase a bId SPStarted
-  phase b aId SPStarted
-  phase a bId SPConfirmed
-  phase b aId SPConfirmed
-  phase b aId SPCompleted
-  phase a bId SPCompleted
+  phase a bId QDRcv SPStarted
+  phase b aId QDSnd SPStarted
+  phase a bId QDRcv SPConfirmed
+  phase b aId QDSnd SPConfirmed
+  phase b aId QDSnd SPCompleted
+  phase a bId QDRcv SPCompleted
 
-phase :: AgentClient -> ByteString -> SwitchPhase -> ExceptT AgentErrorType IO ()
-phase c connId p =
+phase :: AgentClient -> ByteString -> QueueDirection -> SwitchPhase -> ExceptT AgentErrorType IO ()
+phase c connId d p =
   get c >>= \(_, connId', msg) -> do
     liftIO $ connId `shouldBe` connId'
     case msg of
-      SWITCH p' _ -> liftIO $ p `shouldBe` p'
-      ERR (AGENT A_DUPLICATE) -> phase c connId p
+      SWITCH d' p' _ -> liftIO $ do
+        d `shouldBe` d'
+        p `shouldBe` p'
+      ERR (AGENT A_DUPLICATE) -> phase c connId d p
       r -> do
         liftIO . putStrLn $ "expected: " <> show p <> ", received: " <> show r
-        SWITCH _ _ <- pure r
+        SWITCH _ _ _ <- pure r
         pure ()
 
 testSwitchAsync :: InitialAgentServers -> IO ()
@@ -698,13 +700,13 @@ testSwitchAsync servers = do
       withB' = session withB aId
   withA' $ \a -> do
     switchConnectionAsync a "" bId
-    phase a bId SPStarted
-  withB' $ \b -> phase b aId SPStarted
-  withA' $ \a -> phase a bId SPConfirmed
+    phase a bId QDRcv SPStarted
+  withB' $ \b -> phase b aId QDSnd SPStarted
+  withA' $ \a -> phase a bId QDRcv SPConfirmed
   withB' $ \b -> do
-    phase b aId SPConfirmed
-    phase b aId SPCompleted
-  withA' $ \a -> phase a bId SPCompleted
+    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPCompleted
+  withA' $ \a -> phase a bId QDRcv SPCompleted
   Right () <- withA $ \a -> withB $ \b -> runExceptT $ do
     subscribeConnection a bId
     subscribeConnection b aId
@@ -733,7 +735,7 @@ testSwitchDelete servers = do
     exchangeGreetingsMsgId 4 a bId b aId
     disconnectAgentClient b
     switchConnectionAsync a "" bId
-    phase a bId SPStarted
+    phase a bId QDRcv SPStarted
     deleteConnectionAsync a "1" bId
     ("1", bId', OK) <- get a
     liftIO $ bId `shouldBe` bId'
