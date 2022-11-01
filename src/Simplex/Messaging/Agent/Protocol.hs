@@ -138,7 +138,7 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
@@ -694,7 +694,7 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
             strEncode . QSP QEscape $
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
-                <> maybe [] (\clientData -> [("data", strEncode clientData)]) crClientData
+                <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = do
     ACR m cr <- strP
     case testEquality m $ sConnectionMode @m of
@@ -709,7 +709,7 @@ instance StrEncoding AConnectionRequestUri where
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
-    crClientData <- queryParam_ "data" query
+    let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
     let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData}
     case crMode of
       CMInvitation -> do
@@ -912,14 +912,6 @@ data ConnReqUriData = ConnReqUriData
   deriving (Eq, Show)
 
 type CRClientData = Text
-
-instance StrEncoding Text where
-  strEncode = encodeUtf8
-  {-# INLINE strEncode #-}
-  strP = safeDecodeUtf8 <$> A.takeTill (\c -> c == ' ' || c == '\n')
-    where
-      safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
-  {-# INLINE strP #-}
 
 data ConnReqScheme = CRSSimplex | CRSAppServer SrvLoc
   deriving (Eq, Show)

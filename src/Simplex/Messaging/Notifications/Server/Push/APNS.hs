@@ -34,7 +34,6 @@ import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8With)
 import Data.Time.Clock.System
 import qualified Data.X509 as X
 import GHC.Generics (Generic)
@@ -49,6 +48,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
 import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2.Client
+import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.Environment (getEnv)
 import UnliftIO.STM
 
@@ -295,7 +295,6 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
     apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
-    safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
 
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
 apnsRequest c tkn ntf@APNSNotification {aps} = do
