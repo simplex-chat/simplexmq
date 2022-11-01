@@ -76,6 +76,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionRequestUri (..),
     AConnectionRequestUri (..),
     ConnReqUriData (..),
+    CRClientData,
     ConnReqScheme (..),
     simplexChat,
     AgentErrorType (..),
@@ -138,6 +139,7 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
@@ -713,13 +715,14 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
     CRContactUri crData -> crEncode "contact" crData Nothing
     where
       crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
-      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues} e2eParams =
+      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams =
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
           queryStr =
             strEncode . QSP QEscape $
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
+                <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = do
     ACR m cr <- strP
     case testEquality m $ sConnectionMode @m of
@@ -734,7 +737,8 @@ instance StrEncoding AConnectionRequestUri where
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
-    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues}
+    let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
+    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData}
     case crMode of
       CMInvitation -> do
         crE2eParams <- queryParam "e2e" query
@@ -930,9 +934,12 @@ deriving instance Show AConnectionRequestUri
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ConnReqScheme,
     crAgentVRange :: VersionRange,
-    crSmpQueues :: L.NonEmpty SMPQueueUri
+    crSmpQueues :: L.NonEmpty SMPQueueUri,
+    crClientData :: Maybe CRClientData
   }
   deriving (Eq, Show)
+
+type CRClientData = Text
 
 data ConnReqScheme = CRSSimplex | CRSAppServer SrvLoc
   deriving (Eq, Show)
@@ -1387,7 +1394,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnId (_, connId, _) cmd = case cmd of
       -- NEW, JOIN and ACPT have optional connId
-      NEW _ _ -> Right cmd
+      NEW {} -> Right cmd
       JOIN {} -> Right cmd
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
