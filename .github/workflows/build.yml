@@ -11,35 +11,51 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-18.04
+          - os: ubuntu-20.04
     steps:
       - name: Clone project
         uses: actions/checkout@v2
 
-      - name: Setup Stack
+      - name: Setup Haskell
         uses: haskell/actions/setup@v1
         with:
           ghc-version: "8.10.7"
-          enable-stack: true
-          stack-version: "latest"
+          cabal-version: "latest"
 
       - name: Cache dependencies
         uses: actions/cache@v2
         with:
-          path: ~/.stack
-          key: ${{ hashFiles('stack.yaml') }}
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ matrix.os }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
 
-      - name: Build & test
-        id: build_test
+      - name: Build
+        shell: bash
+        run: cabal build --enable-tests
+
+      - name: Test
+        if: matrix.os == 'ubuntu-18.04'
+        timeout-minutes: 30
+        shell: bash
+        run: cabal test --test-show-details=direct
+
+      - name: Prepare binaries
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
         shell: bash
         run: |
-          stack build --test --force-dirty
-          install_root=$(stack path --local-install-root)
-          mv ${install_root}/bin/smp-server smp-server-ubuntu-20_04-x86-64
-          mv ${install_root}/bin/ntf-server ntf-server-ubuntu-20_04-x86-64
+          mv $(cabal list-bin smp-server) smp-server-ubuntu-20_04-x86-64
+          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-20_04-x86-64
 
       - name: Build changelog
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
         id: build_changelog
         uses: mikepenz/release-changelog-builder-action@v1
         with:
@@ -50,19 +66,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract release candidate
-        if: startsWith(github.ref, 'refs/tags/v')
-        id: extract_release_candidate
-        shell: bash
-        run: |
-          if [[ ${GITHUB_REF} == *rc* ]]; then
-            echo "::set-output name=release_candidate::true"
-          else
-            echo "::set-output name=release_candidate::false"
-          fi
-
       - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
         uses: softprops/action-gh-release@v1
         with:
           body: |
@@ -70,7 +75,7 @@ jobs:
 
             Commits:
             ${{ steps.build_changelog.outputs.changelog }}
-          prerelease: ${{ steps.extract_release_candidate.outputs.release_candidate }}
+          prerelease: true
           files: |
             LICENSE
             smp-server-ubuntu-20_04-x86-64

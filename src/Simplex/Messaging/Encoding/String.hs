@@ -6,6 +6,7 @@ module Simplex.Messaging.Encoding.String
     StrEncoding (..),
     Str (..),
     strP_,
+    _strP,
     strToJSON,
     strToJEncoding,
     strParseJSON,
@@ -96,7 +97,7 @@ instance StrEncoding Word16 where
 instance StrEncoding Char where
   strEncode = smpEncode
   {-# INLINE strEncode #-}
-  strP = strP
+  strP = smpP
   {-# INLINE strP #-}
 
 instance StrEncoding Bool where
@@ -170,6 +171,9 @@ instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncodin
 
 strP_ :: StrEncoding a => Parser a
 strP_ = strP <* A.space
+
+_strP :: StrEncoding a => Parser a
+_strP = A.space *> strP
 
 strToJSON :: StrEncoding a => a -> J.Value
 strToJSON = J.String . decodeLatin1 . strEncode

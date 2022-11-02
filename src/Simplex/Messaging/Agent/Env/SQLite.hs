@@ -43,6 +43,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
@@ -93,8 +94,10 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    e2eEncryptVRange :: VersionRange,
     smpAgentVRange :: VersionRange,
-    smpClientVRange :: VersionRange
+    smpClientVRange :: VersionRange,
+    initialClientId :: Int
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -138,8 +141,10 @@ defaultAgentConfig =
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
+      e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
-      smpClientVRange = supportedSMPClientVRange
+      smpClientVRange = supportedSMPClientVRange,
+      initialClientId = 0
     }
 
 data Env = Env
@@ -152,12 +157,12 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {database, yesToMigrations} = do
+newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} = do
   idsDrg <- newTVarIO =<< drgNew
   store <- case database of
     AgentDB st -> pure st
     AgentDBFile {dbFile, dbKey} -> liftIO $ createAgentStore dbFile dbKey yesToMigrations
-  clientCounter <- newTVarIO 0
+  clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}

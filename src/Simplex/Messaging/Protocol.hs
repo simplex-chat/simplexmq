@@ -115,6 +115,7 @@ module Simplex.Messaging.Protocol
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
+    sameSrvAddr,
 
     -- * TCP transport functions
     tPut,
@@ -571,6 +572,10 @@ pattern NtfServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> Proto
 pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
+
+sameSrvAddr :: ProtocolServer p -> ProtocolServer p -> Bool
+sameSrvAddr ProtocolServer {host, port} ProtocolServer {host = h', port = p'} = host == h' && port == p'
+{-# INLINE sameSrvAddr #-}
 
 data ProtocolType = PSMP | PNTF
   deriving (Eq, Ord, Show)

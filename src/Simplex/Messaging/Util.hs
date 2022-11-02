@@ -12,6 +12,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8With)
 import UnliftIO.Async
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -92,3 +93,8 @@ catchAll_ a = catchAll a . const
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
 {-# INLINE eitherToMaybe #-}
+
+safeDecodeUtf8 :: ByteString -> Text
+safeDecodeUtf8 = decodeUtf8With onError
+  where
+    onError _ _ = Just '?'

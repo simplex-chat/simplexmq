@@ -37,6 +37,7 @@ library
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
+      Simplex.Messaging.Agent.Lock
       Simplex.Messaging.Agent.NtfSubSupervisor
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.QueryString
@@ -53,6 +54,8 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
+      Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
@@ -82,7 +85,6 @@ library
       Simplex.Messaging.Server.Stats
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.TMap
-      Simplex.Messaging.TMap2
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Client
       Simplex.Messaging.Transport.HTTP2
@@ -349,6 +351,7 @@ test-suite smp-server-test
       AgentTests.NotificationTests
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
+      CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
       CoreTests.VersionRangeTests

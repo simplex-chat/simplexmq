@@ -46,6 +46,9 @@ doubleRatchetTests = do
     it "should agree the same ratchet parameters" $ do
       testX3dh C.SX25519
       testX3dh C.SX448
+    it "should agree the same ratchet parameters with version 1" $ do
+      testX3dhV1 C.SX25519
+      testX3dhV1 C.SX448
 
 paddedMsgLen :: Int
 paddedMsgLen = 100
@@ -56,7 +59,7 @@ fullMsgLen = 1 + fullHeaderLen + C.authTagSize + paddedMsgLen
 testMessageHeader :: Expectation
 testMessageHeader = do
   (k, _) <- C.generateKeyPair' @X25519
-  let hdr = MsgHeader {msgMaxVersion = e2eEncryptVersion, msgDHRs = k, msgPN = 0, msgNs = 0}
+  let hdr = MsgHeader {msgMaxVersion = currentE2EEncryptVersion, msgDHRs = k, msgPN = 0, msgNs = 0}
   parseAll (smpP @(MsgHeader 'X25519)) (smpEncode hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
@@ -168,8 +171,16 @@ testEncodeDecode x = do
 
 testX3dh :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dh _ = do
-  (pkBob1, pkBob2, e2eBob) <- generateE2EParams @a e2eEncryptVersion
-  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams @a e2eEncryptVersion
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams @a currentE2EEncryptVersion
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams @a currentE2EEncryptVersion
+  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
+      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  paramsAlice `shouldBe` paramsBob
+
+testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testX3dhV1 _ = do
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams @a 1
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams @a 1
   let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
       paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
   paramsAlice `shouldBe` paramsBob
@@ -189,13 +200,13 @@ withRatchets test = do
 
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
 initRatchets = do
-  (pkBob1, pkBob2, e2eBob) <- generateE2EParams e2eEncryptVersion
-  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams e2eEncryptVersion
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams currentE2EEncryptVersion
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams currentE2EEncryptVersion
   let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
       paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
   (_, pkBob3) <- C.generateKeyPair'
-  let bob = initSndRatchet (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet pkAlice2 paramsAlice
+  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
   pure (alice, bob)
 
 encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))

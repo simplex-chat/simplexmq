@@ -5,11 +5,15 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
+    testServerMatrix2,
     makeConnection,
+    exchangeGreetingsMsgId,
+    switchComplete,
     get,
     (##>),
     (=##>),
@@ -21,14 +25,15 @@ import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
@@ -58,33 +63,27 @@ pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 smpCfgV1 :: ProtocolClientConfig
-smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = mkVersionRange 1 1}
+smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = vr11}
 
 agentCfgV1 :: AgentConfig
-agentCfgV1 = agentCfg {smpAgentVRange = mkVersionRange 1 1, smpClientVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
+agentCfgV1 = agentCfg {smpAgentVRange = vr11, smpClientVRange = vr11, e2eEncryptVRange = vr11, smpCfg = smpCfgV1}
+
+agentCfgRatchetV1 :: AgentConfig
+agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = vr11}
+
+vr11 :: VersionRange
+vr11 = mkVersionRange 1 1
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $
-    it "should connect via one server using SMP agent clients" $
-      withSmpServer t testAgentClient
-  describe "Duplex connection between agent versions 1 and 2" $ do
-    it "should connect agent v1 to v1" $
-      withSmpServer t testAgentClientV1toV1
-    it "should connect agent v1 to v2" $
-      withSmpServer t testAgentClientV1toV2
-    it "should connect agent v2 to v1" $
-      withSmpServer t testAgentClientV2toV1
+    testMatrix2 t runAgentClientTest
+  describe "Establishing duplex connection v2, different Ratchet versions" $
+    testRatchetMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
-    it "should connect via one server using SMP agent clients" $
-      withSmpServer t testAgentClientContact
-  describe "Duplex connection via contact address between agent versions 1 and 2" $ do
-    it "should connect agent v1 to v1" $
-      withSmpServer t testAgentClientContactV1toV1
-    it "should connect agent v1 to v2" $
-      withSmpServer t testAgentClientContactV1toV2
-    it "should connect agent v2 to v1" $
-      withSmpServer t testAgentClientContactV2toV1
+    testMatrix2 t runAgentClientContactTest
+  describe "Establish duplex connection via contact address v2, different Ratchet versions" $
+    testRatchetMatrix2 t runAgentClientContactTest
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -121,59 +120,43 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
+  describe "Queue rotation" $ do
+    describe "should switch delivery to the new queue" $
+      testServerMatrix2 t testSwitchConnection
+    describe "should switch to new queue asynchronously" $
+      testServerMatrix2 t testSwitchAsync
+    describe "should delete connection during rotation" $
+      testServerMatrix2 t testSwitchDelete
 
-testAgentClient :: IO ()
-testAgentClient = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 3
+testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2 t runTest = do
+  it "v2" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
+  it "v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
+  it "v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
 
-testAgentClientV1toV1 :: IO ()
-testAgentClientV1toV1 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 4
+testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testRatchetMatrix2 t runTest = do
+  it "ratchet v2" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "ratchet v1" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfgRatchetV1 3 runTest
+  it "ratchets v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfg 3 runTest
+  it "ratchets v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetV1 3 runTest
 
-testAgentClientV1toV2 :: IO ()
-testAgentClientV1toV2 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 4
+testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
+testServerMatrix2 t runTest = do
+  it "1 server" $ withSmpServer t $ runTest initAgentServers
+  it "2 servers" $ withSmpServer t . withSmpServerOn t testPort2 $ runTest initAgentServers2
 
-testAgentClientV2toV1 :: IO ()
-testAgentClientV2toV1 = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientTest alice bob 4
-
-testAgentClientContact :: IO ()
-testAgentClientContact = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 3
-
-testAgentClientContactV1toV1 :: IO ()
-testAgentClientContactV1toV1 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 4
-
-testAgentClientContactV1toV2 :: IO ()
-testAgentClientContactV1toV2 = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  bob <- getSMPAgentClient agentCfgV1 {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 4
-
-testAgentClientContactV2toV1 :: IO ()
-testAgentClientContactV2toV1 = do
-  alice <- getSMPAgentClient agentCfgV1 initAgentServers
-  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
-  runAgentClientContactTest alice bob 4
+runTestCfg2 :: AgentConfig -> AgentConfig -> AgentMsgId -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> IO ()
+runTestCfg2 aliceCfg bobCfg baseMsgId runTest = do
+  alice <- getSMPAgentClient aliceCfg initAgentServers
+  bob <- getSMPAgentClient bobCfg {database = testDB2} initAgentServers
+  runTest alice bob baseMsgId
 
 runAgentClientTest :: AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientTest alice bob baseId = do
   Right () <- runExceptT $ do
-    (bobId, qInfo) <- createConnection alice True SCMInvitation
+    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
     aliceId <- joinConnection bob True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
@@ -209,7 +192,7 @@ runAgentClientTest alice bob baseId = do
 runAgentClientContactTest :: AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientContactTest alice bob baseId = do
   Right () <- runExceptT $ do
-    (_, qInfo) <- createConnection alice True SCMContact
+    (_, qInfo) <- createConnection alice True SCMContact Nothing
     aliceId <- joinConnection bob True qInfo "bob's connInfo"
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContact alice True invId "alice's connInfo"
@@ -257,7 +240,7 @@ testAsyncInitiatingOffline = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (bobId, cReq) <- createConnection alice True SCMInvitation
+    (bobId, cReq) <- createConnection alice True SCMInvitation Nothing
     disconnectAgentClient alice
     aliceId <- joinConnection bob True cReq "bob's connInfo"
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
@@ -275,7 +258,7 @@ testAsyncJoiningOfflineBeforeActivation = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (bobId, qInfo) <- createConnection alice True SCMInvitation
+    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
     aliceId <- joinConnection bob True qInfo "bob's connInfo"
     disconnectAgentClient bob
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -293,7 +276,7 @@ testAsyncBothOffline = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (bobId, cReq) <- createConnection alice True SCMInvitation
+    (bobId, cReq) <- createConnection alice True SCMInvitation Nothing
     disconnectAgentClient alice
     aliceId <- joinConnection bob True cReq "bob's connInfo"
     disconnectAgentClient bob
@@ -315,7 +298,7 @@ testAsyncServerOffline t = do
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   -- create connection and shutdown the server
   Right (bobId, cReq) <- withSmpServerStoreLogOn t testPort $ \_ ->
-    runExceptT $ createConnection alice True SCMInvitation
+    runExceptT $ createConnection alice True SCMInvitation Nothing
   -- connection fails
   Left (BROKER NETWORK) <- runExceptT $ joinConnection bob True cReq "bob's connInfo"
   ("", "", DOWN srv conns) <- get alice
@@ -342,7 +325,7 @@ testAsyncHelloTimeout = do
   alice <- getSMPAgentClient agentCfgV1 initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2, helloTimeout = 1} initAgentServers
   Right () <- runExceptT $ do
-    (_, cReq) <- createConnection alice True SCMInvitation
+    (_, cReq) <- createConnection alice True SCMInvitation Nothing
     disconnectAgentClient alice
     aliceId <- joinConnection bob True cReq "bob's connInfo"
     get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
@@ -399,7 +382,7 @@ testDuplicateMessage t = do
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = do
-  (bobId, qInfo) <- createConnection alice True SCMInvitation
+  (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
   aliceId <- joinConnection bob True qInfo "bob's connInfo"
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
@@ -414,7 +397,7 @@ testInactiveClientDisconnected t = do
   withSmpServerConfigOn t cfg' testPort $ \_ -> do
     alice <- getSMPAgentClient agentCfg initAgentServers
     Right () <- runExceptT $ do
-      (connId, _cReq) <- createConnection alice True SCMInvitation
+      (connId, _cReq) <- createConnection alice True SCMInvitation Nothing
       get alice ##> ("", "", DOWN testSMPServer [connId])
     pure ()
 
@@ -425,7 +408,7 @@ testActiveClientNotDisconnected t = do
     alice <- getSMPAgentClient agentCfg initAgentServers
     ts <- getSystemTime
     Right () <- runExceptT $ do
-      (connId, _cReq) <- createConnection alice True SCMInvitation
+      (connId, _cReq) <- createConnection alice True SCMInvitation Nothing
       keepSubscribing alice connId ts
     pure ()
   where
@@ -634,7 +617,7 @@ testAcceptContactAsync = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (_, qInfo) <- createConnection alice True SCMContact
+    (_, qInfo) <- createConnection alice True SCMContact Nothing
     aliceId <- joinConnection bob True qInfo "bob's connInfo"
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContactAsync alice "1" True invId "alice's connInfo"
@@ -671,6 +654,92 @@ testAcceptContactAsync = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testSwitchConnection :: InitialAgentServers -> IO ()
+testSwitchConnection servers = do
+  a <- getSMPAgentClient agentCfg servers
+  b <- getSMPAgentClient agentCfg {database = testDB2, initialClientId = 1} servers
+  Right () <- runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    switchConnectionAsync a "" bId
+    switchComplete a bId b aId
+    exchangeGreetingsMsgId 10 a bId b aId
+  pure ()
+
+switchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
+switchComplete a bId b aId = do
+  phase a bId QDRcv SPStarted
+  phase b aId QDSnd SPStarted
+  phase a bId QDRcv SPConfirmed
+  phase b aId QDSnd SPConfirmed
+  phase b aId QDSnd SPCompleted
+  phase a bId QDRcv SPCompleted
+
+phase :: AgentClient -> ByteString -> QueueDirection -> SwitchPhase -> ExceptT AgentErrorType IO ()
+phase c connId d p =
+  get c >>= \(_, connId', msg) -> do
+    liftIO $ connId `shouldBe` connId'
+    case msg of
+      SWITCH d' p' _ -> liftIO $ do
+        d `shouldBe` d'
+        p `shouldBe` p'
+      ERR (AGENT A_DUPLICATE) -> phase c connId d p
+      r -> do
+        liftIO . putStrLn $ "expected: " <> show p <> ", received: " <> show r
+        SWITCH _ _ _ <- pure r
+        pure ()
+
+testSwitchAsync :: InitialAgentServers -> IO ()
+testSwitchAsync servers = do
+  Right (aId, bId) <- withA $ \a -> withB $ \b -> runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    pure (aId, bId)
+  let withA' = session withA bId
+      withB' = session withB aId
+  withA' $ \a -> do
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+  withB' $ \b -> phase b aId QDSnd SPStarted
+  withA' $ \a -> phase a bId QDRcv SPConfirmed
+  withB' $ \b -> do
+    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPCompleted
+  withA' $ \a -> phase a bId QDRcv SPCompleted
+  Right () <- withA $ \a -> withB $ \b -> runExceptT $ do
+    subscribeConnection a bId
+    subscribeConnection b aId
+    exchangeGreetingsMsgId 10 a bId b aId
+  pure ()
+  where
+    withAgent :: AgentConfig -> (AgentClient -> IO a) -> IO a
+    withAgent cfg' = bracket (getSMPAgentClient cfg' servers) disconnectAgentClient
+    session :: (forall a. (AgentClient -> IO a) -> IO a) -> ConnId -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
+    session withC connId a = do
+      Right () <- withC $ \c -> runExceptT $ do
+        subscribeConnection c connId
+        r <- a c
+        liftIO $ threadDelay 500000
+        pure r
+      pure ()
+    withA = withAgent agentCfg
+    withB = withAgent agentCfg {database = testDB2, initialClientId = 1}
+
+testSwitchDelete :: InitialAgentServers -> IO ()
+testSwitchDelete servers = do
+  a <- getSMPAgentClient agentCfg servers
+  b <- getSMPAgentClient agentCfg {database = testDB2, initialClientId = 1} servers
+  Right () <- runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    disconnectAgentClient b
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+    deleteConnectionAsync a "1" bId
+    ("1", bId', OK) <- get a
+    liftIO $ bId `shouldBe` bId'
+  pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
