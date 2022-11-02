@@ -567,7 +567,7 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
                 mapM_
                   ( \notifier -> do
                       writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg notifier
-                      unsafeIOToSTM . putStrLn $ "notification queued " <> show notifierId
+                      unsafeIOToSTM . putStrLn $ "notification queued NTF " <> show notifierId
                   )
                   =<< TM.lookup notifierId notifiers
 
