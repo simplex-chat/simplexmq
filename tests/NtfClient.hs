@@ -174,7 +174,7 @@ data APNSMockServer = APNSMockServer
 apnsMockServerConfig :: HTTP2ServerConfig
 apnsMockServerConfig =
   HTTP2ServerConfig
-    { qSize = 1,
+    { qSize = 10,
       http2Port = apnsTestPort,
       serverSupported = http2TLSParams,
       caCertificateFile = "tests/fixtures/ca.crt",
