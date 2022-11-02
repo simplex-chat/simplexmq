@@ -41,9 +41,9 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.Bifunctor (first)
+import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.ByteString.Base64 (encode)
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.List (intercalate)
@@ -56,6 +56,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
+import GHC.Conc (unsafeIOToSTM)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -563,7 +564,12 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =
               forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
-                mapM_ (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
+                mapM_
+                  ( \notifier -> do
+                      writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg notifier
+                      unsafeIOToSTM . putStrLn $ "notification queued " <> show notifierId
+                  )
+                  =<< TM.lookup notifierId notifiers
 
             writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
             writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
@@ -659,7 +665,7 @@ timed name sessId qId a = do
   when (int > sec) . logDebug $ T.unwords [name, tshow $ encode sessId, tshow $ encode qId, tshow int]
   pure r
   where
-    diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral  (systemNanoseconds t' - systemNanoseconds t)
+    diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral (systemNanoseconds t' - systemNanoseconds t)
     sec = 1000_000000
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
