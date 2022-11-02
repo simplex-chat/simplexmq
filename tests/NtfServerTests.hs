@@ -97,12 +97,14 @@ testNotificationSubscription (ATransport t) =
     withAPNSMockServer $ \APNSMockServer {apnsQ} ->
       smpTest2 t $ \rh sh ->
         ntfTest t $ \nh -> do
+          print 1
           -- create queue
           (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue rh sPub
           -- register and verify token
           RespNtf "1" "" (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", "", TNEW $ NewNtfTkn tkn tknPub dhPub)
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse = send} <-
             atomically $ readTBQueue apnsQ
+          print 2
           send APNSRespOk
           let dhSecret = C.dh' ntfDh dhPriv
               Right verification = ntfData .-> "verification"
@@ -113,13 +115,16 @@ testNotificationSubscription (ATransport t) =
           -- enable queue notifications
           (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- C.generateKeyPair'
           Resp "3" _ (NID nId rcvNtfSrvPubDhKey) <- signSendRecv rh rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
+          print 3
           let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
               q = SMPQueueNtf srv nId
               rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)
+          print 4
           -- send message
           threadDelay 50000
           Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
+          print 5
           -- receive notification
           APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
@@ -140,10 +145,12 @@ testNotificationSubscription (ATransport t) =
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
+          print 6
           pure ()
           -- replace token
           let tkn' = DeviceToken PPApnsTest "efgh"
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
+          print 7
           tId `shouldBe` tId'
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}, sendApnsResponse = send2} <-
             atomically $ readTBQueue apnsQ
@@ -153,8 +160,10 @@ testNotificationSubscription (ATransport t) =
               Right code2 = NtfRegCode <$> C.cbDecrypt dhSecret nonce2 verification2
           RespNtf "8" _ NROk <- signSendRecvNtf nh tknKey ("8", tId, TVFY code2)
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
+          print 8
           -- send message
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
+          print 9
           APNSMockRequest {notification = notification3, sendApnsResponse = send3} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
               Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
