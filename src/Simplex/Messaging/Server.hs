@@ -541,14 +541,12 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
                   ServerConfig {messageExpiration, msgQueueQuota} <- asks config
                   old <- liftIO $ mapM expireBeforeEpoch messageExpiration
                   ntfNonceDrg <- asks idsDrg
-                  resp@(_, _, sent) <- timed "send" sessionId queueId . atomically $ do
-                    q <- getMsgQueue ms (recipientId qr) msgQueueQuota
-                    mapM_ (deleteExpiredMsgs q) old
-                    ifM (isFull q) (pure $ err QUOTA) $ do
-                      when (notification msgFlags) $ trySendNotification msg ntfNonceDrg
-                      writeMsg q msg
-                      pure ok
+                  resp@(_, _, sent) <- timed "send" sessionId queueId $ do
+                    q <- atomically $ getMsgQueue ms (recipientId qr) msgQueueQuota
+                    atomically $ mapM_ (deleteExpiredMsgs q) old
+                    atomically $ ifM (isFull q) (pure $ err QUOTA) (writeMsg q msg $> ok)
                   when (sent == OK) $ do
+                    when (notification msgFlags) . atomically $ trySendNotification msg ntfNonceDrg
                     stats <- asks serverStats
                     atomically $ modifyTVar (msgSent stats) (+ 1)
                     atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
