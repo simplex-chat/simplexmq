@@ -56,7 +56,6 @@ import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId, threadDelay)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
-import GHC.Conc (unsafeIOToSTM)
 
 runNtfServer :: (MonadRandom m, MonadUnliftIO m) => NtfServerConfig -> m ()
 runNtfServer cfg = do
@@ -192,7 +191,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveSMP :: m ()
     receiveSMP = forever $ do
       (srv, _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
-      liftIO . putStrLn $ "notification received NTF " <> show ntfId
       let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
@@ -203,11 +201,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           atomically $ updatePeriodStats (activeSubs stats) ntfId
           atomically $
             findNtfSubscriptionToken st smpQueue
-              >>= mapM_
-                ( \tkn -> do
-                    writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta})
-                    unsafeIOToSTM . putStrLn $ "notification queued APNS " <> show ntfId
-                )
+              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
           incNtfStat ntfReceived
         SMP.END -> updateSubStatus smpQueue NSEnd
         _ -> pure ()

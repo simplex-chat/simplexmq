@@ -56,7 +56,6 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
-import GHC.Conc (unsafeIOToSTM)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -564,16 +563,11 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =
               forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
-                mapM_
-                  ( \notifier -> do
-                      writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg notifier
-                      unsafeIOToSTM . putStrLn $ "notification queued NTF " <> show notifierId
-                  )
-                  =<< TM.lookup notifierId notifiers
+                mapM_ (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
 
             writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
             writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              unlessM (isFullTBQueue sndQ) $ do
+              unlessM (isFullTBQueue q) $ do
                 (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg rcvNtfDhSecret ntfNonceDrg
                 writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
 
