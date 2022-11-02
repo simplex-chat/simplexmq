@@ -127,6 +127,7 @@ testNotificationSubscription (ATransport t) =
           print 5
           -- receive notification
           APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
+          print 5.1
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
@@ -135,12 +136,16 @@ testNotificationSubscription (ATransport t) =
                 parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
               Right nMsgMeta = C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta
+          print 5.2
           smpServer `shouldBe` srv
           notifierId `shouldBe` nId
           send' APNSRespOk
+          print 5.3
           -- receive message
           Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet1 rh
+          print 5.4
           Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
+          print 5.5
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"
