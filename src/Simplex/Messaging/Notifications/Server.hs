@@ -205,7 +205,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           incNtfStat ntfReceived
         SMP.END -> updateSubStatus smpQueue NSEnd
         _ -> pure ()
-      pure ()
 
     receiveAgent =
       forever $
