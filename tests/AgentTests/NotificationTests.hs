@@ -512,7 +512,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
-  1500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+  750000 `timeout` atomically (readTBQueue apnsQ) >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
