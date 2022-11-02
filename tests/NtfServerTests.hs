@@ -47,7 +47,7 @@ import UnliftIO.STM
 ntfServerTests :: ATransport -> Spec
 ntfServerTests t = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
-  describe "Notification subscriptions" $ testNotificationSubscription t
+  xdescribe "Notification subscriptions" $ testNotificationSubscription t
 
 ntfSyntaxTests :: ATransport -> Spec
 ntfSyntaxTests (ATransport t) = do
