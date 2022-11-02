@@ -192,6 +192,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveSMP :: m ()
     receiveSMP = forever $ do
       (srv, _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
+      liftIO . putStrLn $ "notification received NTF " <> show ntfId
       let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
@@ -210,7 +211,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           incNtfStat ntfReceived
         SMP.END -> updateSubStatus smpQueue NSEnd
         _ -> pure ()
-      pure ()
 
     receiveAgent =
       forever $
