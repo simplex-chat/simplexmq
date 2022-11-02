@@ -291,9 +291,9 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     void $ messageNotification apnsQ
     liftIO $ print 3
+    get alice ##> ("", bobId, CON)
     void $ messageNotification apnsQ
     liftIO $ print 4
-    get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
@@ -520,7 +520,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
-  3000000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+  1500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
