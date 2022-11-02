@@ -186,17 +186,17 @@ agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      tbqSize = 4,
+      tbqSize = 10,
       database = testDB,
       smpCfg =
         defaultClientConfig
-          { qSize = 1,
+          { qSize = 10,
             defaultTransport = (testPort, transport @TLS),
             networkConfig = defaultNetworkConfig {tcpTimeout = 500_000}
           },
       ntfCfg =
         defaultClientConfig
-          { qSize = 1,
+          { qSize = 10,
             defaultTransport = (ntfTestPort, transport @TLS)
           },
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
