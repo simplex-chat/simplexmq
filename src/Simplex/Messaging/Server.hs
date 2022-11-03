@@ -436,7 +436,7 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
         subscribeQueue qr rId = timed "subscribe" sessionId rId $ do
           atomically (TM.lookup rId subscriptions) >>= \case
             Nothing ->
-              atomically newSub >>= deliver
+              newSub >>= deliver
             Just sub ->
               readTVarIO sub >>= \case
                 Sub {subThread = ProhibitSub} ->
@@ -445,20 +445,20 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
                 s ->
                   atomically (tryTakeTMVar $ delivered s) >> deliver sub
           where
-            newSub :: STM (TVar Sub)
-            newSub = do
+            newSub :: m (TVar Sub)
+            newSub = timed "subscribe newSub" sessionId rId . atomically $ do
               writeTBQueue subscribedQ (rId, clnt)
               sub <- newTVar =<< newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
             deliver :: TVar Sub -> m (Transmission BrokerMsg)
             deliver sub = do
-              q <- getStoreMsgQueue rId
+              q <- getStoreMsgQueue "subscribe" rId
               msg_ <- atomically $ tryPeekMsg q
-              deliverMessage qr rId sub q msg_
+              deliverMessage "subscribe" qr rId sub q msg_
 
         getMessage :: QueueRec -> m (Transmission BrokerMsg)
-        getMessage qr =
+        getMessage qr = timed "getMessage" sessionId queueId $ do
           atomically (TM.lookup queueId subscriptions) >>= \case
             Nothing ->
               atomically newSub >>= getMessage_
@@ -478,7 +478,7 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
               pure s
             getMessage_ :: Sub -> m (Transmission BrokerMsg)
             getMessage_ s = do
-              q <- getStoreMsgQueue queueId
+              q <- getStoreMsgQueue "getMessage" queueId
               atomically $
                 tryPeekMsg q >>= \case
                   Just msg ->
@@ -503,7 +503,7 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
             Just sub ->
               atomically (getDelivered sub) >>= \case
                 Just s -> do
-                  q <- getStoreMsgQueue queueId
+                  q <- getStoreMsgQueue "ack" queueId
                   case s of
                     Sub {subThread = ProhibitSub} -> do
                       msgDeleted <- atomically $ tryDelMsg q msgId
@@ -512,7 +512,7 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
                     _ -> do
                       (msgDeleted, msg_) <- atomically $ tryDelPeekMsg q msgId
                       when msgDeleted updateStats
-                      deliverMessage qr queueId sub q msg_
+                      deliverMessage "ack" qr queueId sub q msg_
                 _ -> pure $ err NO_MSG
           where
             getDelivered :: TVar Sub -> STM (Maybe Sub)
@@ -576,8 +576,8 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
-        deliverMessage :: QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
-        deliverMessage qr rId sub q msg_ = timed "deliver" sessionId rId $ do
+        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
+        deliverMessage name qr rId sub q msg_ = timed (name <> " deliver") sessionId rId $ do
           readTVarIO sub >>= \case
             s@Sub {subThread = NoSub} ->
               case msg_ of
@@ -617,8 +617,8 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s Message {msgId} = tryPutTMVar (delivered s) msgId
 
-        getStoreMsgQueue :: RecipientId -> m MsgQueue
-        getStoreMsgQueue rId = do
+        getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
+        getStoreMsgQueue name rId = timed (name <> " getMsgQueue") sessionId rId $ do
           ms <- asks msgStore
           quota <- asks $ msgQueueQuota . config
           atomically $ getMsgQueue ms rId quota
