@@ -87,7 +87,7 @@ import UnliftIO.STM
 -- | Runs an SMP server using passed configuration.
 --
 -- See a full server here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs
-runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
+runSMPServer :: ServerConfig -> IO ()
 runSMPServer cfg = do
   started <- newEmptyTMVarIO
   runSMPServerBlocking started cfg
@@ -96,10 +96,12 @@ runSMPServer cfg = do
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
+runSMPServerBlocking :: TMVar Bool -> ServerConfig -> IO ()
 runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started)
 
-smpServer :: forall m. (MonadUnliftIO m, MonadReader Env m) => TMVar Bool -> m ()
+type M a = ReaderT Env IO a
+
+smpServer :: TMVar Bool -> M ()
 smpServer started = do
   s <- asks server
   cfg@ServerConfig {transports} <- asks config
@@ -112,7 +114,7 @@ smpServer started = do
     )
     `finally` (withLog closeStoreLog >> saveServerMessages >> saveServerStats)
   where
-    runServer :: (ServiceName, ATransport) -> m ()
+    runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       runTransportServer started tcpPort serverParams (runClient t)
@@ -123,12 +125,12 @@ smpServer started = do
       (Server -> TBQueue (QueueId, Client)) ->
       (Server -> TMap QueueId Client) ->
       (Client -> TMap QueueId s) ->
-      (s -> m ()) ->
-      m ()
+      (s -> IO ()) ->
+      M ()
     serverThread s subQ subs clientSubs unsub = forever $ do
       atomically updateSubscribers
         $>>= endPreviousSubscriptions
-        >>= mapM_ unsub
+        >>= liftIO . mapM_ unsub
       where
         updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
@@ -140,17 +142,17 @@ smpServer started = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
           TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
-        endPreviousSubscriptions :: (QueueId, Client) -> m (Maybe s)
+        endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           void . forkIO . atomically $
             writeTBQueue (sndQ c) [(CorrId "", qId, END)]
           atomically $ TM.lookupDelete qId (clientSubs c)
 
-    expireMessagesThread_ :: ServerConfig -> [m ()]
+    expireMessagesThread_ :: ServerConfig -> [M ()]
     expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]
     expireMessagesThread_ _ = []
 
-    expireMessages :: ExpirationConfig -> m ()
+    expireMessages :: ExpirationConfig -> M ()
     expireMessages expCfg = do
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
@@ -163,12 +165,12 @@ smpServer started = do
           atomically (getMsgQueue ms rId quota)
             >>= atomically . (`deleteExpiredMsgs` old)
 
-    serverStatsThread_ :: ServerConfig -> [m ()]
+    serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
-    logServerStats :: Int -> Int -> FilePath -> m ()
+    logServerStats :: Int -> Int -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
@@ -189,7 +191,7 @@ smpServer started = do
           hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayCount ps, weekCount ps, monthCount ps]
           threadDelay interval
 
-    runClient :: Transport c => TProxy c -> c -> m ()
+    runClient :: Transport c => TProxy c -> c -> M ()
     runClient _ h = do
       kh <- asks serverIdentity
       smpVRange <- asks $ smpServerVRange . config
@@ -197,24 +199,24 @@ smpServer started = do
         Right th -> runClientTransport th
         Left _ -> pure ()
 
-runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
+runClientTransport :: Transport c => THandle c -> M ()
 runClientTransport th@THandle {thVersion, sessionId} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   c <- atomically $ newClient q thVersion sessionId ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  raceAny_ ([send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
+  raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
-    disconnectThread_ c (Just expCfg) = [disconnectTransport th c activeAt expCfg]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th c activeAt expCfg]
     disconnectThread_ _ _ = []
 
-clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
+clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {subscriptions, connected} = do
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
-  mapM_ cancelSub subs
+  liftIO $ mapM_ cancelSub subs
   atomically $ writeTVar subscriptions M.empty
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
@@ -227,13 +229,13 @@ clientDisconnected c@Client {subscriptions, connected} = do
 sameClientSession :: Client -> Client -> Bool
 sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
 
-cancelSub :: MonadUnliftIO m => TVar Sub -> m ()
+cancelSub :: TVar Sub -> IO ()
 cancelSub sub =
   readTVarIO sub >>= \case
     Sub {subThread = SubThread t} -> liftIO $ deRefWeak t >>= mapM_ killThread
     _ -> return ()
 
-receive :: forall c m. (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
+receive :: Transport c => THandle c -> Client -> M ()
 receive th Client {rcvQ, sndQ, activeAt} = forever $ do
   ts <- L.toList <$> tGet th
   atomically . writeTVar activeAt =<< liftIO getSystemTime
@@ -241,7 +243,7 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
   write sndQ $ fst as
   write rcvQ $ snd as
   where
-    cmdAction :: SignedTransmission Cmd -> m (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+    cmdAction :: SignedTransmission Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
     cmdAction (sig, signed, (corrId, queueId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, queueId, ERR e)
@@ -252,7 +254,7 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
               VRFailed -> Left (corrId, queueId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
+send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
   -- TODO the line below can return Lefts, but we ignore it and do not disconnect the client
@@ -264,7 +266,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
       MSG {} -> 0
       _ -> 1
 
-disconnectTransport :: (Transport c, MonadUnliftIO m) => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> m ()
+disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
 disconnectTransport THandle {connection} c activeAt expCfg = do
   let interval = checkInterval expCfg * 1000000
   forever . liftIO $ do
@@ -275,8 +277,7 @@ disconnectTransport THandle {connection} c activeAt expCfg = do
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 
-verifyTransmission ::
-  forall m. (MonadUnliftIO m, MonadReader Env m) => Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> m VerificationResult
+verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission sig_ signed queueId cmd = do
   case cmd of
     Cmd SRecipient (NEW k _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
@@ -285,7 +286,7 @@ verifyTransmission sig_ signed queueId cmd = do
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
   where
-    verifyCmd :: SParty p -> (QueueRec -> Bool) -> m VerificationResult
+    verifyCmd :: SParty p -> (QueueRec -> Bool) -> M VerificationResult
     verifyCmd party f = do
       st <- asks queueStore
       q_ <- atomically (getQueue st party queueId)

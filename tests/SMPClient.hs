@@ -12,7 +12,6 @@ module SMPClient where
 
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
-import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
@@ -91,22 +90,22 @@ cfg =
       smpServerVRange = supportedSMPServerVRange
     }
 
-withSmpServerStoreMsgLogOnV2 :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreMsgLogOnV2 :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
 
-withSmpServerStoreMsgLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreMsgLogOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreLogOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
 withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerConfigOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServerConfig -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerConfigOn :: ATransport -> ServerConfig -> ServiceName -> (ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
     (pure ())
 
-withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerThreadOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
 withSmpServerThreadOn t = withSmpServerConfigOn t cfg
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
@@ -122,19 +121,19 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> m a -> m a
+withSmpServerOn :: ATransport -> ServiceName -> IO a -> IO a
 withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 
-withSmpServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
+withSmpServer :: ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
-runSmpTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (THandle c -> m a) -> m a
+runSmpTest :: forall c a. Transport c => (THandle c -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
-runSmpTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => Int -> ([THandle c] -> m a) -> m a
+runSmpTestN :: forall c a. Transport c => Int -> ([THandle c] -> IO a) -> IO a
 runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
   where
-    run :: Int -> [THandle c] -> m a
+    run :: Int -> [THandle c] -> IO a
     run 0 hs = test hs
     run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
