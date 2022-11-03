@@ -18,7 +18,6 @@ module NtfClient where
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
-import Crypto.Random
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -105,13 +104,13 @@ ntfServerCfg =
       serverStatsBackupFile = Nothing
     }
 
-withNtfServerStoreLog :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ThreadId -> m a) -> m a
+withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
 withNtfServerStoreLog t = withNtfServerCfg t ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile}
 
-withNtfServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withNtfServerThreadOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' = withNtfServerCfg t ntfServerCfg {transports = [(port', t)]}
 
-withNtfServerCfg :: (MonadUnliftIO m, MonadRandom m) => ATransport -> NtfServerConfig -> (ThreadId -> m a) -> m a
+withNtfServerCfg :: ATransport -> NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg t cfg =
   serverBracket
     (\started -> runNtfServerBlocking started cfg {transports = [(ntfTestPort, t)]})
@@ -130,13 +129,13 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withNtfServerOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> m a -> m a
+withNtfServerOn :: ATransport -> ServiceName -> IO a -> IO a
 withNtfServerOn t port' = withNtfServerThreadOn t port' . const
 
-withNtfServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
+withNtfServer :: ATransport -> IO a -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort
 
-runNtfTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (THandle c -> m a) -> m a
+runNtfTest :: forall c a. Transport c => (THandle c -> IO a) -> IO a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 
 ntfServerTest ::

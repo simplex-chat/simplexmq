@@ -67,12 +67,12 @@ smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
         Right (ACmd SAgent DISCONNECT {}) -> get h
         _ -> pure t
 
-runSmpAgentTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (c -> m a) -> m a
+runSmpAgentTest :: forall c a. Transport c => (c -> IO a) -> IO a
 runSmpAgentTest test = withSmpServer t . withSmpAgent t $ testSMPAgentClient test
   where
     t = transport @c
 
-runSmpAgentServerTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => ((ThreadId, ThreadId) -> c -> m a) -> m a
+runSmpAgentServerTest :: forall c a. Transport c => ((ThreadId, ThreadId) -> c -> IO a) -> IO a
 runSmpAgentServerTest test =
   withSmpServerThreadOn t testPort $
     \server -> withSmpAgentThreadOn t (agentTestPort, testPort, testDB) $
@@ -83,18 +83,18 @@ runSmpAgentServerTest test =
 smpAgentServerTest :: Transport c => ((ThreadId, ThreadId) -> c -> IO ()) -> Expectation
 smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
-runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => [(ServiceName, ServiceName, AgentDatabase)] -> ([c] -> m a) -> m a
+runSmpAgentTestN :: forall c a. Transport c => [(ServiceName, ServiceName, AgentDatabase)] -> ([c] -> IO a) -> IO a
 runSmpAgentTestN agents test = withSmpServer t $ run agents []
   where
-    run :: [(ServiceName, ServiceName, AgentDatabase)] -> [c] -> m a
+    run :: [(ServiceName, ServiceName, AgentDatabase)] -> [c] -> IO a
     run [] hs = test hs
     run (a@(p, _, _) : as) hs = withSmpAgentOn t a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
     t = transport @c
 
-runSmpAgentTestN_1 :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => Int -> ([c] -> m a) -> m a
+runSmpAgentTestN_1 :: forall c a. Transport c => Int -> ([c] -> IO a) -> IO a
 runSmpAgentTestN_1 nClients test = withSmpServer t . withSmpAgent t $ run nClients []
   where
-    run :: Int -> [c] -> m a
+    run :: Int -> [c] -> IO a
     run 0 hs = test hs
     run n hs = testSMPAgentClient $ \h -> run (n - 1) (h : hs)
     t = transport @c
