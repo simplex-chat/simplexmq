@@ -43,7 +43,7 @@ removeFileIfExists filePath = do
 
 notificationTests :: ATransport -> Spec
 notificationTests t =
-  after_ (removeFile (databaseFile testDB) >> removeFileIfExists (databaseFile testDB2)) $ do
+  after_ (removeFileIfExists (databaseFile testDB) >> removeFileIfExists (databaseFile testDB2)) $ do
     describe "Managing notification tokens" $ do
       it "should register and verify notification token" $
         withAPNSMockServer $ \apns ->
