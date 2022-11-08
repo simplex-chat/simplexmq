@@ -609,7 +609,7 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
                     writeTVar sub s {subThread = NoSub}
 
         time :: T.Text -> m a -> m a
-        time name = timed name sessionId queueId
+        time name = timed name queueId
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
         encryptMsg qr Message {msgId, msgTs, msgFlags, msgBody}
@@ -655,13 +655,13 @@ withLog action = do
   env <- ask
   liftIO . mapM_ action $ storeLog (env :: Env)
 
-timed :: MonadUnliftIO m => T.Text -> ByteString -> RecipientId -> m a -> m a
-timed name sessId qId a = do
+timed :: MonadUnliftIO m => T.Text -> RecipientId -> m a -> m a
+timed name qId a = do
   t <- liftIO getSystemTime
   r <- a
   t' <- liftIO getSystemTime
   let int = diff t t'
-  when (int > sec) . logDebug $ T.unwords [name, tshow $ encode sessId, tshow $ encode qId, tshow int]
+  when (int > sec) . logDebug $ T.unwords [name, tshow $ encode qId, tshow int]
   pure r
   where
     diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral (systemNanoseconds t' - systemNanoseconds t)
