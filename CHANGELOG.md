@@ -1,3 +1,17 @@
+# 3.4.0
+
+SMP agent:
+
+- increase concurrency with connection-level locks
+- fix issues identified in security assessment (see the announcement: https://github.com/simplex-chat/simplex-chat/blob/stable/blog/20221108-simplex-chat-v4.2-security-audit-new-website.md)
+- manual connection queue rotation
+- optional client data in connection requests links
+
+SMP server:
+
+- specialize monad stack to improve performance
+- log slow commands
+
 # 3.3.0
 
 SMP server:
