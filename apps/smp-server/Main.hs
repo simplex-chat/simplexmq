@@ -1,6 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
@@ -8,6 +7,8 @@ module Main where
 import Control.Logger.Simple
 import Data.Functor (($>))
 import Data.Ini (lookupValue)
+import Simplex.Messaging.Encoding.String
+import Data.Text.Encoding (encodeUtf8)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
@@ -65,7 +66,7 @@ smpServerCLIConfig =
               <> "log_stats: off\n\n"
               <> "[TRANSPORT]\n"
               <> ("port: " <> defaultServerPort <> "\n")
-              <> "# basic_auth: credential (any printable ASCII characters without whitespace) \n"
+              <> "# create_password: credential to create queues (any printable ASCII characters without whitespace) \n"
               <> "websockets: off\n\n"
               <> "[INACTIVE_CLIENTS]\n\
                  \# TTL and interval to check inactive clients\n\
@@ -94,6 +95,9 @@ smpServerCLIConfig =
                             -- if the setting is not set, it is enabled when store log is enabled
                             _ -> storeLogFile $> messagesPath,
                     allowNewQueues = True,
+                    newQueueBasicAuth = case lookupValue "TRANSPORT" "create_password" ini of
+                      Right auth -> either error Just . strDecode $ encodeUtf8 auth
+                      _ -> Nothing,
                     messageExpiration = Just defaultMessageExpiration,
                     inactiveClientExpiration =
                       settingIsOn "INACTIVE_CLIENTS" "disconnect"

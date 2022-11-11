@@ -72,6 +72,8 @@ module Simplex.Messaging.Protocol
     pattern SMPServer,
     NtfServer,
     pattern NtfServer,
+    ProtoServerWithAuth,
+    BasicAuth,
     SrvLoc (..),
     CorrId (..),
     QueueId,

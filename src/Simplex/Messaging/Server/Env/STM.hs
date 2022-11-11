@@ -46,6 +46,8 @@ data ServerConfig = ServerConfig
     storeMsgsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
+    -- | simple password that the clients need to pass in handshake to be able to create new queues
+    newQueueBasicAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -109,6 +111,7 @@ data Client = Client
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
+    newAllowed :: Bool,
     activeAt :: TVar SystemTime
   }
 
@@ -127,15 +130,15 @@ newServer qSize = do
   notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
-newClient qSize thVersion sessionId ts = do
+newClient :: Natural -> Version -> ByteString -> Bool -> SystemTime -> STM Client
+newClient qSize thVersion sessionId newAllowed ts = do
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
   activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, newAllowed, activeAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do

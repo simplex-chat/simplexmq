@@ -200,10 +200,10 @@ smpServer started = do
         Left _ -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()
-runClientTransport th@THandle {thVersion, sessionId} = do
+runClientTransport th@THandle {thVersion, newAllowed, sessionId} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newClient q thVersion sessionId ts
+  c <- atomically $ newClient q thVersion sessionId newAllowed ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
