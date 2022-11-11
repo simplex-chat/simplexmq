@@ -65,7 +65,7 @@ smpServerCLIConfig =
               <> "log_stats: off\n\n"
               <> "[TRANSPORT]\n"
               <> ("port: " <> defaultServerPort <> "\n")
-              <> "# basic_auth: base64url encoded credential \n"
+              <> "# basic_auth: credential (any printable ASCII characters without whitespace) \n"
               <> "websockets: off\n\n"
               <> "[INACTIVE_CLIENTS]\n\
                  \# TTL and interval to check inactive clients\n\
