@@ -62,9 +62,10 @@ smpServerCLIConfig =
               <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
                  \# they are preserved in the .bak file until the next restart.\n"
               <> ("restore_messages: " <> (if enableStoreLog then "on" else "off") <> "\n")
-              <> ("log_stats: off\n\n")
+              <> "log_stats: off\n\n"
               <> "[TRANSPORT]\n"
               <> ("port: " <> defaultServerPort <> "\n")
+              <> "# basic_auth: base64url encoded credential \n"
               <> "websockets: off\n\n"
               <> "[INACTIVE_CLIENTS]\n\
                  \# TTL and interval to check inactive clients\n\

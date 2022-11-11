@@ -135,6 +135,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isPrint, isSpace)
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -667,19 +668,28 @@ instance ProtocolTypeI p => Encoding (ProtocolServer p) where
 
 instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
   strEncode ProtocolServer {scheme, host, port, keyHash} =
-    strEncodeServer scheme (strEncode host) port keyHash
-  strP = do
-    scheme <- strP <* "://"
-    keyHash <- strP <* A.char '@'
-    TransportHosts host <- strP
-    port <- portP <|> pure ""
-    pure ProtocolServer {scheme, host, port, keyHash}
-    where
-      portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
+    strEncodeServer scheme (strEncode host) port keyHash Nothing
+  strP =
+    serverStrP >>= \case
+      (srv, Nothing) -> pure srv
+      _ -> fail "ProtocolServer with basic auth not allowed"
 
 instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+newtype BasicAuth = BasicAuth ByteString
+
+instance StrEncoding BasicAuth where
+  strEncode (BasicAuth s) = s
+  strP = BasicAuth <$> A.takeWhile1 (\c -> isPrint c && not (isSpace c))
+
+data ProtoServerWithAuth p = ProtoServerWithAuth (ProtocolServer p) (Maybe BasicAuth)
+
+instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
+  strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
+    strEncodeServer scheme (strEncode host) port keyHash auth_
+  strP = uncurry ProtoServerWithAuth <$> serverStrP
 
 legacyEncodeServer :: ProtocolServer p -> ByteString
 legacyEncodeServer ProtocolServer {host, port, keyHash} =
@@ -692,13 +702,24 @@ legacyServerP = do
 
 legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
 legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
-  strEncodeServer scheme (strEncode $ L.head host) port keyHash
+  strEncodeServer scheme (strEncode $ L.head host) port keyHash Nothing
 
-strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> ByteString
-strEncodeServer scheme host port keyHash =
-  strEncode scheme <> "://" <> strEncode keyHash <> "@" <> host <> portStr
+strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
+strEncodeServer scheme host port keyHash auth_ =
+  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr
   where
     portStr = B.pack $ if null port then "" else ':' : port
+
+serverStrP :: ProtocolTypeI p => Parser (ProtocolServer p, Maybe BasicAuth)
+serverStrP = do
+  scheme <- strP <* "://"
+  keyHash <- strP
+  auth_ <- optional $ A.char ':' *> strP
+  TransportHosts host <- A.char '@' *> strP
+  port <- portP <|> pure ""
+  pure (ProtocolServer {scheme, host, port, keyHash}, auth_)
+  where
+    portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
