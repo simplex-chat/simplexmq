@@ -171,19 +171,16 @@ testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:50
 testSMPServer2 :: SMPServer
 testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
 
-noAuth :: SMPServer -> SMPServerWithAuth
-noAuth srv = ProtoServerWithAuth srv Nothing
-
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
-    { smp = L.fromList [noAuth testSMPServer],
+    { smp = L.fromList [noAuthSrv testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
-initAgentServers2 = initAgentServers {smp = L.fromList [noAuth testSMPServer, noAuth testSMPServer2]}
+initAgentServers2 = initAgentServers {smp = L.fromList [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
 
 agentCfg :: AgentConfig
 agentCfg =

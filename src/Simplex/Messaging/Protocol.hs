@@ -120,6 +120,7 @@ module Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     sameSrvAddr,
     sameSrvAddr',
+    noAuthSrv,
 
     -- * TCP transport functions
     tPut,
@@ -710,6 +711,9 @@ instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
   strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
     strEncodeServer scheme (strEncode host) port keyHash auth_
   strP = uncurry ProtoServerWithAuth <$> serverStrP
+
+noAuthSrv :: ProtocolServer p -> ProtoServerWithAuth p
+noAuthSrv srv = ProtoServerWithAuth srv Nothing
 
 legacyEncodeServer :: ProtocolServer p -> ByteString
 legacyEncodeServer ProtocolServer {host, port, keyHash} =

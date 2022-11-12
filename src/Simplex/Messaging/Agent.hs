@@ -883,12 +883,12 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServerWithAuth -> m ()) -> m ()
         withNextSrv usedSrvs initUsed action = do
           used <- readTVarIO usedSrvs
-          srv@(ProtoServerWithAuth srv' _) <- getNextSMPServer c used
+          srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c used
           atomically $ do
             srvs <- readTVar $ smpServers c
-            let used' = if length used + 1 >= L.length srvs then initUsed else srv' : used
+            let used' = if length used + 1 >= L.length srvs then initUsed else srv : used
             writeTVar usedSrvs used'
-          action srv
+          action srvAuth
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
@@ -1124,8 +1124,8 @@ switchConnection' c connId = withConnLock c connId "switchConnection" $ do
     DuplexConnection cData rqs@(rq@RcvQueue {server, dbQueueId, sndId} :| rqs_) sqs -> do
       clientVRange <- asks $ smpClientVRange . config
       -- try to get the server that is different from all queues, or at least from the primary rcv queue
-      srv@(ProtoServerWithAuth srv_ _) <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
-      srv' <- if srv_ == server then getNextSMPServer c [server] else pure srv
+      srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
+      srv' <- if srv == server then getNextSMPServer c [server] else pure srvAuth
       (q, qUri) <- newRcvQueue c connId srv' clientVRange
       let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
       void . withStore c $ \db -> addConnRcvQueue db connId rq'
@@ -1449,7 +1449,7 @@ pickServer = \case
 getNextSMPServer :: AgentMonad m => AgentClient -> [SMPServer] -> m SMPServerWithAuth
 getNextSMPServer c usedSrvs = do
   srvs <- readTVarIO $ smpServers c
-  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map (`ProtoServerWithAuth` Nothing) usedSrvs) of
+  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
     Just srvs' -> pickServer srvs'
     _ -> pickServer srvs
 
