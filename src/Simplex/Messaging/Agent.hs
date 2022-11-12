@@ -120,7 +120,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta, SndPublicVerifyKey, sameSrvAddr)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta, SndPublicVerifyKey, sameSrvAddr, sameSrvAddr')
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
@@ -248,7 +248,7 @@ getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m Connecti
 getConnectionServers c = withAgentEnv c . getConnectionServers' c
 
 -- | Change servers to be used for creating new queues
-setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
 
 setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
@@ -430,7 +430,7 @@ newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionM
 newConn c connId asyncMode enableNtfs cMode clientData =
   getSMPServer c >>= newConnSrv c connId asyncMode enableNtfs cMode clientData
 
-newConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> Maybe CRClientData -> SMPServer -> m (ConnId, ConnectionRequestUri c)
+newConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
 newConnSrv c connId asyncMode enableNtfs cMode clientData srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   (q, qUri) <- newRcvQueue c "" srv smpClientVRange
@@ -464,7 +464,7 @@ joinConn c connId asyncMode enableNtfs cReq cInfo = do
     _ -> getSMPServer c
   joinConnSrv c connId asyncMode enableNtfs cReq cInfo srv
 
-joinConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> SMPServer -> m ConnId
+joinConnSrv :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> SMPServerWithAuth -> m ConnId
 joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) cInfo srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   case ( qUri `compatibleVersion` smpClientVRange,
@@ -516,7 +516,7 @@ joinConnSrv c connId False enableNtfs (CRContactUri ConnReqUriData {crAgentVRang
 joinConnSrv _c _connId True _enableNtfs (CRContactUri _) _cInfo _srv = do
   throwError $ CMD PROHIBITED
 
-createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServer -> m SMPQueueInfo
+createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> m SMPQueueInfo
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} srv = do
   (rq, qUri) <- newRcvQueue c connId srv $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
@@ -880,15 +880,15 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify cmd = atomically $ writeTBQueue subQ (corrId, connId, cmd)
-        withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServer -> m ()) -> m ()
+        withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServerWithAuth -> m ()) -> m ()
         withNextSrv usedSrvs initUsed action = do
           used <- readTVarIO usedSrvs
-          srv <- getNextSMPServer c used
+          srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c used
           atomically $ do
             srvs <- readTVar $ smpServers c
             let used' = if length used + 1 >= L.length srvs then initUsed else srv : used
             writeTVar usedSrvs used'
-          action srv
+          action srvAuth
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
@@ -1124,8 +1124,8 @@ switchConnection' c connId = withConnLock c connId "switchConnection" $ do
     DuplexConnection cData rqs@(rq@RcvQueue {server, dbQueueId, sndId} :| rqs_) sqs -> do
       clientVRange <- asks $ smpClientVRange . config
       -- try to get the server that is different from all queues, or at least from the primary rcv queue
-      srv <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
-      srv' <- if srv == server then getNextSMPServer c [server] else pure srv
+      srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
+      srv' <- if srv == server then getNextSMPServer c [server] else pure srvAuth
       (q, qUri) <- newRcvQueue c connId srv' clientVRange
       let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
       void . withStore c $ \db -> addConnRcvQueue db connId rq'
@@ -1191,7 +1191,7 @@ connectionStats = \case
   NewConnection _ -> ConnectionStats {rcvServers = [], sndServers = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> m ()
 setSMPServers' c = atomically . writeTVar (smpServers c)
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
@@ -1436,20 +1436,20 @@ debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs} = do
   where
     getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 
-getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
+getSMPServer :: AgentMonad m => AgentClient -> m SMPServerWithAuth
 getSMPServer c = readTVarIO (smpServers c) >>= pickServer
 
-pickServer :: AgentMonad m => NonEmpty SMPServer -> m SMPServer
+pickServer :: AgentMonad m => NonEmpty SMPServerWithAuth -> m SMPServerWithAuth
 pickServer = \case
   srv :| [] -> pure srv
   servers -> do
     gen <- asks randomServer
     atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
 
-getNextSMPServer :: AgentMonad m => AgentClient -> [SMPServer] -> m SMPServer
+getNextSMPServer :: AgentMonad m => AgentClient -> [SMPServer] -> m SMPServerWithAuth
 getNextSMPServer c usedSrvs = do
   srvs <- readTVarIO $ smpServers c
-  case L.nonEmpty $ deleteFirstsBy sameSrvAddr (L.toList srvs) usedSrvs of
+  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
     Just srvs' -> pickServer srvs'
     _ -> pickServer srvs
 
@@ -1766,7 +1766,7 @@ connectReplyQueues c cData@ConnData {connId} ownConnInfo (qInfo :| _) = do
       dbQueueId <- withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
       enqueueConfirmation c cData sq {dbQueueId} ownConnInfo Nothing
 
-confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServer -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
+confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
 confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption = do
   aMessage <- mkAgentMessage agentVersion
   msg <- mkConfirmation aMessage

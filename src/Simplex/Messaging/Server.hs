@@ -280,7 +280,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission sig_ signed queueId cmd = do
   case cmd of
-    Cmd SRecipient (NEW k _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
+    Cmd SRecipient (NEW k _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
@@ -323,7 +323,7 @@ dummyKeyEd448 :: C.PublicKey 'C.Ed448
 dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/XopbOSaq9qyLhrgJWKOLyNrQPNVvpMA"
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} =
+client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
@@ -340,11 +340,15 @@ client clnt@Client {thVersion, sessionId, subscriptions, ntfSubscriptions, rcvQ,
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey ->
+            NEW rKey dhKey auth ->
               ifM
-                (asks $ allowNewQueues . config)
+                allowNew
                 (createQueue st rKey dhKey)
                 (pure (corrId, queueId, ERR AUTH))
+              where
+                allowNew = do
+                  ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
+                  pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
             SUB -> withQueue (`subscribeQueue` queueId)
             GET -> withQueue getMessage
             ACK msgId -> withQueue (`acknowledgeMsg` msgId)

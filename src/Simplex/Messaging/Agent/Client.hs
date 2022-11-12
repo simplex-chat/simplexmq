@@ -164,7 +164,7 @@ data AgentClient = AgentClient
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue (ServerTransmission BrokerMsg),
-    smpServers :: TVar (NonEmpty SMPServer),
+    smpServers :: TVar (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPServer SMPClientVar,
     ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfServer NtfClientVar,
@@ -515,7 +515,7 @@ protocolClientError protocolError_ = \case
   e@PCESignatureError {} -> INTERNAL $ show e
   e@PCEIOError {} -> INTERNAL $ show e
 
-newRcvQueue :: AgentMonad m => AgentClient -> ConnId -> SMPServer -> VersionRange -> m (RcvQueue, SMPQueueUri)
+newRcvQueue :: AgentMonad m => AgentClient -> ConnId -> SMPServerWithAuth -> VersionRange -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c connId srv vRange =
   asks (cmdSignAlg . config) >>= \case
     C.SignAlg a -> newRcvQueue_ a c connId srv vRange
@@ -525,16 +525,16 @@ newRcvQueue_ ::
   C.SAlgorithm a ->
   AgentClient ->
   ConnId ->
-  SMPServer ->
+  SMPServerWithAuth ->
   VersionRange ->
   m (RcvQueue, SMPQueueUri)
-newRcvQueue_ a c connId srv vRange = do
+newRcvQueue_ a c connId (ProtoServerWithAuth srv auth) vRange = do
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (dhKey, privDhKey) <- liftIO C.generateKeyPair'
   (e2eDhKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   logServer "-->" c srv "" "NEW"
   QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
+    withClient c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey auth
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue

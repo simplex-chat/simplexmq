@@ -78,6 +78,7 @@ cfg =
       storeLogFile = Nothing,
       storeMsgsFile = Nothing,
       allowNewQueues = True,
+      newQueueBasicAuth = Nothing,
       messageExpiration = Just defaultMessageExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
