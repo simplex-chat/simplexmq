@@ -7,8 +7,8 @@ module Main where
 import Control.Logger.Simple
 import Data.Functor (($>))
 import Data.Ini (lookupValue)
-import Simplex.Messaging.Encoding.String
 import Data.Text.Encoding (encodeUtf8)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
@@ -65,8 +65,16 @@ smpServerCLIConfig =
               <> ("restore_messages: " <> (if enableStoreLog then "on" else "off") <> "\n")
               <> "log_stats: off\n\n"
               <> "[TRANSPORT]\n"
-              <> ("port: " <> defaultServerPort <> "\n")
-              <> "# create_password: credential to create queues (any printable ASCII characters without whitespace) \n"
+              <> ("port: " <> defaultServerPort <> "\n\n")
+              <> "# Set new_queues option to off to completely prohibit creating new messaging queues.\n"
+              <> "# This can be useful when you want to decommission the server, but not all connections are switched yet.\n"
+              <> "new_queues: on\n\n"
+              <> "# Use create_password option to enable basic auth to create new messaging queues.\n"
+              <> "# The password should be used as part of server address in client configuration:\n"
+              <> "# smp://fingerpring:password@host1,host2\n"
+              <> "# The password will not be shared with the connecting contacts, you must share it only\n"
+              <> "# with the users who you want to allow creating messaging queues on your server.\n"
+              <> "# create_password: credential to create queues (any printable ASCII characters without whitespace) \n\n"
               <> "websockets: off\n\n"
               <> "[INACTIVE_CLIENTS]\n\
                  \# TTL and interval to check inactive clients\n\
@@ -94,7 +102,11 @@ smpServerCLIConfig =
                             Right _ -> Nothing
                             -- if the setting is not set, it is enabled when store log is enabled
                             _ -> storeLogFile $> messagesPath,
-                    allowNewQueues = True,
+                    allowNewQueues = case lookupValue "TRANSPORT" "new_queues" ini of
+                      Right "on" -> True
+                      Right "off" -> False
+                      Right _ -> error "invalid new_queues setting in INI file"
+                      _ -> True,
                     newQueueBasicAuth = case lookupValue "TRANSPORT" "create_password" ini of
                       Right auth -> either error Just . strDecode $ encodeUtf8 auth
                       _ -> Nothing,
