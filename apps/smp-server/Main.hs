@@ -71,7 +71,7 @@ smpServerCLIConfig =
               <> "new_queues: on\n\n"
               <> "# Use create_password option to enable basic auth to create new messaging queues.\n"
               <> "# The password should be used as part of server address in client configuration:\n"
-              <> "# smp://fingerpring:password@host1,host2\n"
+              <> "# smp://fingerprint:password@host1,host2\n"
               <> "# The password will not be shared with the connecting contacts, you must share it only\n"
               <> "# with the users who you want to allow creating messaging queues on your server.\n"
               <> "# create_password: credential to create queues (any printable ASCII characters without whitespace) \n\n"
