@@ -696,13 +696,21 @@ instance IsString BasicAuth where fromString = BasicAuth . B.pack
 
 instance Encoding BasicAuth where
   smpEncode (BasicAuth s) = smpEncode s
-  smpP = BasicAuth <$> smpP
+  smpP = basicAuth <$?> smpP
 
 instance StrEncoding BasicAuth where
   strEncode (BasicAuth s) = s
-  strP = BasicAuth <$> A.takeWhile1 (\c -> isPrint c && not (isSpace c))
+  strP = basicAuth <$?> A.takeWhile1 (/= '@')
+
+basicAuth :: ByteString -> Either String BasicAuth
+basicAuth s
+  | B.all valid s = Right $ BasicAuth s
+  | otherwise = Left "invalid character in BasicAuth"
+  where
+    valid c = isPrint c && not (isSpace c) && c /= '@' && c /= ':' && c /= '/'
 
 data ProtoServerWithAuth p = ProtoServerWithAuth (ProtocolServer p) (Maybe BasicAuth)
+  deriving (Show)
 
 instance ProtocolTypeI p => IsString (ProtoServerWithAuth p) where
   fromString = parseString strDecode
@@ -711,6 +719,10 @@ instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
   strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
     strEncodeServer scheme (strEncode host) port keyHash auth_
   strP = uncurry ProtoServerWithAuth <$> serverStrP
+
+instance ProtocolTypeI p => ToJSON (ProtoServerWithAuth p) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 noAuthSrv :: ProtocolServer p -> ProtoServerWithAuth p
 noAuthSrv srv = ProtoServerWithAuth srv Nothing

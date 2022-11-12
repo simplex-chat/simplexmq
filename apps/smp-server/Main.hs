@@ -7,6 +7,8 @@ module Main where
 import Control.Logger.Simple
 import Data.Functor (($>))
 import Data.Ini (lookupValue)
+import Data.Maybe (fromMaybe)
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
@@ -32,6 +34,11 @@ main = do
     putStrLn $ case inactiveClientExpiration of
       Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
       _ -> "not expiring inactive clients"
+    putStrLn $
+      "creating new queues "
+        <> if allowNewQueues cfg
+          then maybe "allowed" (const "requires basic auth") $ newQueueBasicAuth cfg
+          else "NOT allowed"
     runSMPServer cfg
 
 smpServerCLIConfig :: ServerCLIConfig ServerConfig
@@ -64,8 +71,7 @@ smpServerCLIConfig =
                  \# they are preserved in the .bak file until the next restart.\n"
               <> ("restore_messages: " <> (if enableStoreLog then "on" else "off") <> "\n")
               <> "log_stats: off\n\n"
-              <> "[TRANSPORT]\n"
-              <> ("port: " <> defaultServerPort <> "\n\n")
+              <> "[AUTH]\n"
               <> "# Set new_queues option to off to completely prohibit creating new messaging queues.\n"
               <> "# This can be useful when you want to decommission the server, but not all connections are switched yet.\n"
               <> "new_queues: on\n\n"
@@ -74,7 +80,9 @@ smpServerCLIConfig =
               <> "# smp://fingerprint:password@host1,host2\n"
               <> "# The password will not be shared with the connecting contacts, you must share it only\n"
               <> "# with the users who you want to allow creating messaging queues on your server.\n"
-              <> "# create_password: credential to create queues (any printable ASCII characters without whitespace) \n\n"
+              <> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')\n\n"
+              <> "[TRANSPORT]\n"
+              <> ("port: " <> defaultServerPort <> "\n")
               <> "websockets: off\n\n"
               <> "[INACTIVE_CLIENTS]\n\
                  \# TTL and interval to check inactive clients\n\
@@ -82,7 +90,12 @@ smpServerCLIConfig =
               <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
               <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
           mkServerConfig = \storeLogFile transports ini ->
-            let settingIsOn section name = if lookupValue section name ini == Right "on" then Just () else Nothing
+            let onOff section name = case lookupValue section name ini of
+                  Right "on" -> Just True
+                  Right "off" -> Just False
+                  Right s -> error . T.unpack $ "invalid INI setting " <> name <> ": " <> s
+                  _ -> Nothing
+                settingIsOn section name = if onOff section name == Just True then Just () else Nothing
                 logStats = settingIsOn "STORE_LOG" "log_stats"
              in ServerConfig
                   { transports,
@@ -97,17 +110,14 @@ smpServerCLIConfig =
                     storeLogFile,
                     storeMsgsFile =
                       let messagesPath = combine logPath "smp-server-messages.log"
-                       in case lookupValue "STORE_LOG" "restore_messages" ini of
-                            Right "on" -> Just messagesPath
-                            Right _ -> Nothing
+                       in case onOff "STORE_LOG" "restore_messages" of
+                            Just True -> Just messagesPath
+                            Just False -> Nothing
                             -- if the setting is not set, it is enabled when store log is enabled
                             _ -> storeLogFile $> messagesPath,
-                    allowNewQueues = case lookupValue "TRANSPORT" "new_queues" ini of
-                      Right "on" -> True
-                      Right "off" -> False
-                      Right _ -> error "invalid new_queues setting in INI file"
-                      _ -> True,
-                    newQueueBasicAuth = case lookupValue "TRANSPORT" "create_password" ini of
+                    -- allow creating new queues by default
+                    allowNewQueues = fromMaybe True $ onOff "AUTH" "new_queues",
+                    newQueueBasicAuth = case lookupValue "AUTH" "create_password" ini of
                       Right auth -> either error Just . strDecode $ encodeUtf8 auth
                       _ -> Nothing,
                     messageExpiration = Just defaultMessageExpiration,
