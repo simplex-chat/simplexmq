@@ -61,6 +61,8 @@ module Simplex.Messaging.Agent.Protocol
     SndQAddr,
     SMPServer,
     pattern SMPServer,
+    pattern ProtoServerWithAuth,
+    SMPServerWithAuth,
     SrvLoc (..),
     SMPQueue (..),
     sameQAddress,
@@ -164,12 +166,14 @@ import Simplex.Messaging.Protocol
     NMsgMeta,
     ProtocolServer (..),
     SMPServer,
+    SMPServerWithAuth,
     SndPublicVerifyKey,
     SrvLoc (..),
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
     sameSrvAddr,
+    pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP

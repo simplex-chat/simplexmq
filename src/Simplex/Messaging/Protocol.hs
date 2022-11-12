@@ -70,9 +70,10 @@ module Simplex.Messaging.Protocol
     ProtoServer,
     SMPServer,
     pattern SMPServer,
+    SMPServerWithAuth,
     NtfServer,
     pattern NtfServer,
-    ProtoServerWithAuth,
+    ProtoServerWithAuth (..),
     BasicAuth,
     SrvLoc (..),
     CorrId (..),
@@ -118,6 +119,7 @@ module Simplex.Messaging.Protocol
     legacyServerP,
     legacyStrEncodeServer,
     sameSrvAddr,
+    sameSrvAddr',
 
     -- * TCP transport functions
     tPut,
@@ -253,7 +255,7 @@ type EntityId = ByteString
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
-  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Command Recipient
+  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Maybe BasicAuth -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -569,12 +571,18 @@ pattern SMPServer host port keyHash = ProtocolServer SPSMP host port keyHash
 
 {-# COMPLETE SMPServer #-}
 
+type SMPServerWithAuth = ProtoServerWithAuth 'PSMP
+
 type NtfServer = ProtocolServer 'PNTF
 
 pattern NtfServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PNTF
 pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
+
+sameSrvAddr' :: ProtoServerWithAuth p -> ProtoServerWithAuth p -> Bool
+sameSrvAddr' (ProtoServerWithAuth srv _) (ProtoServerWithAuth srv' _) = sameSrvAddr srv srv'
+{-# INLINE sameSrvAddr' #-}
 
 sameSrvAddr :: ProtocolServer p -> ProtocolServer p -> Bool
 sameSrvAddr ProtocolServer {host, port} ProtocolServer {host = h', port = p'} = host == h' && port == p'
@@ -681,12 +689,22 @@ instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toEncoding = strToJEncoding
 
 newtype BasicAuth = BasicAuth ByteString
+  deriving (Eq, Show)
+
+instance IsString BasicAuth where fromString = BasicAuth . B.pack
+
+instance Encoding BasicAuth where
+  smpEncode (BasicAuth s) = smpEncode s
+  smpP = BasicAuth <$> smpP
 
 instance StrEncoding BasicAuth where
   strEncode (BasicAuth s) = s
   strP = BasicAuth <$> A.takeWhile1 (\c -> isPrint c && not (isSpace c))
 
 data ProtoServerWithAuth p = ProtoServerWithAuth (ProtocolServer p) (Maybe BasicAuth)
+
+instance ProtocolTypeI p => IsString (ProtoServerWithAuth p) where
+  fromString = parseString strDecode
 
 instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
   strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
@@ -893,7 +911,13 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding msg where
 instance PartyI p => ProtocolEncoding (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey -> e (NEW_, ' ', rKey, dhKey)
+    NEW rKey dhKey auth_ -> case auth_ of
+      Just auth
+        | v >= 5 -> new <> e ('A', auth)
+        | otherwise -> new
+      _ -> new
+      where
+        new = e (NEW_, ' ', rKey, dhKey)
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
@@ -941,7 +965,11 @@ instance ProtocolEncoding Cmd where
   protocolP v = \case
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
-        NEW_ -> NEW <$> _smpP <*> smpP
+        NEW_
+          | v >= 5 -> new <*> optional (A.char 'A' *> smpP)
+          | otherwise -> new <*> pure Nothing
+          where
+            new = NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP <*> smpP

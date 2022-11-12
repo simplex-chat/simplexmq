@@ -171,16 +171,19 @@ testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:50
 testSMPServer2 :: SMPServer
 testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
 
+noAuth :: SMPServer -> SMPServerWithAuth
+noAuth srv = ProtoServerWithAuth srv Nothing
+
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
-    { smp = L.fromList [testSMPServer],
+    { smp = L.fromList [noAuth testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
-initAgentServers2 = initAgentServers {smp = L.fromList [testSMPServer, testSMPServer2]}
+initAgentServers2 = initAgentServers {smp = L.fromList [noAuth testSMPServer, noAuth testSMPServer2]}
 
 agentCfg :: AgentConfig
 agentCfg =
@@ -210,7 +213,7 @@ agentCfg =
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
   let cfg' = agentCfg {tcpPort = port', database = db'}
-      initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+      initServers' = initAgentServers {smp = L.fromList [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess

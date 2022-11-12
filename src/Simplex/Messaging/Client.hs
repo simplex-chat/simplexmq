@@ -361,9 +361,10 @@ createSMPQueue ::
   RcvPrivateSignKey ->
   RcvPublicVerifyKey ->
   RcvPublicDhKey ->
+  Maybe BasicAuth ->
   ExceptT ProtocolClientError IO QueueIdsKeys
-createSMPQueue c rpKey rKey dhKey =
-  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey) >>= \case
+createSMPQueue c rpKey rKey dhKey auth =
+  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey auth) >>= \case
     IDS qik -> pure qik
     r -> throwE . PCEUnexpectedResponse $ bshow r
 

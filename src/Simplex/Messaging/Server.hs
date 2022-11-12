@@ -200,10 +200,10 @@ smpServer started = do
         Left _ -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()
-runClientTransport th@THandle {thVersion, newAllowed, sessionId} = do
+runClientTransport th@THandle {thVersion, sessionId} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newClient q thVersion sessionId newAllowed ts
+  c <- atomically $ newClient q thVersion sessionId ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
@@ -280,7 +280,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission sig_ signed queueId cmd = do
   case cmd of
-    Cmd SRecipient (NEW k _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
+    Cmd SRecipient (NEW k _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
@@ -340,11 +340,15 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey ->
+            NEW rKey dhKey auth ->
               ifM
-                (asks $ allowNewQueues . config)
+                allowNew
                 (createQueue st rKey dhKey)
                 (pure (corrId, queueId, ERR AUTH))
+              where
+                allowNew = do
+                  ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
+                  pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
             SUB -> withQueue (`subscribeQueue` queueId)
             GET -> withQueue getMessage
             ACK msgId -> withQueue (`acknowledgeMsg` msgId)

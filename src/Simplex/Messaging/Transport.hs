@@ -96,7 +96,7 @@ smpBlockSize :: Int
 smpBlockSize = 16384
 
 supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange 1 4
+supportedSMPServerVRange = mkVersionRange 1 5
 
 simplexMQVersion :: String
 simplexMQVersion = "3.4.0"
@@ -259,8 +259,6 @@ data THandle c = THandle
     blockSize :: Int,
     -- | agreed server protocol version
     thVersion :: Version,
-    -- | allow creating new queues
-    newAllowed :: Bool,
     -- | send multiple transmissions in a single block
     -- based on protocol and protocol version
     batch :: Bool
@@ -369,7 +367,7 @@ smpServerHandshake c kh smpVRange = do
       | keyHash /= kh ->
         throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` smpVRange -> do
-        pure $ smpThHandle th True smpVersion
+        pure $ smpThHandle th smpVersion
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
@@ -384,11 +382,11 @@ smpClientHandshake c keyHash smpVRange = do
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure $ smpThHandle th True smpVersion
+        pure $ smpThHandle th smpVersion
       Nothing -> throwE $ TEHandshake VERSION
 
-smpThHandle :: forall c. THandle c -> Bool -> Version -> THandle c
-smpThHandle th newAllowed v = (th :: THandle c) {thVersion = v, newAllowed, batch = v >= 4}
+smpThHandle :: forall c. THandle c -> Version -> THandle c
+smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
@@ -397,4 +395,4 @@ getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportErr
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
 smpTHandle :: Transport c => c -> THandle c
-smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, newAllowed = False, batch = False}
+smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, batch = False}

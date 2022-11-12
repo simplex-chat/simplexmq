@@ -111,7 +111,6 @@ data Client = Client
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
-    newAllowed :: Bool,
     activeAt :: TVar SystemTime
   }
 
@@ -130,15 +129,15 @@ newServer qSize = do
   notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> Version -> ByteString -> Bool -> SystemTime -> STM Client
-newClient qSize thVersion sessionId newAllowed ts = do
+newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
+newClient qSize thVersion sessionId ts = do
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
   activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, newAllowed, activeAt}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do

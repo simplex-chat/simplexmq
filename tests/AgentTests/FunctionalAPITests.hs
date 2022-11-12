@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -23,24 +24,26 @@ where
 
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
-import Control.Monad.Except (ExceptT, runExceptT)
+import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import qualified Data.Map as M
+import Data.Maybe (isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Client (ProtocolClientConfig (..))
-import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
+import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO
@@ -127,6 +130,50 @@ functionalAPITests t = do
       testServerMatrix2 t testSwitchAsync
     describe "should delete connection during rotation" $
       testServerMatrix2 t testSwitchDelete
+  describe "SMP basic auth" $ do
+    describe "with server auth" $ do
+      --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
+      it "success                " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
+      it "disabled               " $ testBasicAuth t False (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 0
+      it "NEW fail, no auth      " $ testBasicAuth t True (Just "abcd", 5) (Nothing, 5) (Just "abcd", 5) `shouldReturn` 0
+      it "NEW fail, no auth both " $ testBasicAuth t True (Just "abcd", 5) (Nothing, 5) (Nothing, 5) `shouldReturn` 0
+      it "NEW fail, bad auth     " $ testBasicAuth t True (Just "abcd", 5) (Just "wrong", 5) (Just "abcd", 5) `shouldReturn` 0
+      it "NEW fail, bad auth both" $ testBasicAuth t True (Just "abcd", 5) (Just "wrong", 5) (Just "wrong", 5) `shouldReturn` 0
+      it "NEW fail, version      " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 4) (Just "abcd", 5) `shouldReturn` 0
+      it "NEW fail, version both " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 4) (Just "abcd", 4) `shouldReturn` 0
+      it "JOIN fail, no auth     " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Nothing, 5) `shouldReturn` 1
+      it "JOIN fail, bad auth    " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "wrong", 5) `shouldReturn` 1
+      it "JOIN fail, version     " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 4) `shouldReturn` 1
+    describe "no server auth" $ do
+      it "success     " $ testBasicAuth t True (Nothing, 5) (Nothing, 5) (Nothing, 5) `shouldReturn` 2
+      it "srv disabled" $ testBasicAuth t False (Nothing, 5) (Nothing, 5) (Nothing, 5) `shouldReturn` 0
+      it "version srv " $ testBasicAuth t True (Nothing, 4) (Nothing, 5) (Nothing, 5) `shouldReturn` 2
+      it "version fst " $ testBasicAuth t True (Nothing, 5) (Nothing, 4) (Nothing, 5) `shouldReturn` 2
+      it "version snd " $ testBasicAuth t True (Nothing, 5) (Nothing, 5) (Nothing, 4) `shouldReturn` 2
+      it "version both" $ testBasicAuth t True (Nothing, 5) (Nothing, 4) (Nothing, 4) `shouldReturn` 2
+      it "version all " $ testBasicAuth t True (Nothing, 4) (Nothing, 4) (Nothing, 4) `shouldReturn` 2
+      it "auth fst    " $ testBasicAuth t True (Nothing, 5) (Just "abcd", 5) (Nothing, 5) `shouldReturn` 2
+      it "auth fst    " $ testBasicAuth t True (Nothing, 4) (Just "abcd", 5) (Nothing, 5) `shouldReturn` 2
+      it "auth snd    " $ testBasicAuth t True (Nothing, 5) (Nothing, 5) (Just "abcd", 5) `shouldReturn` 2
+      it "auth both   " $ testBasicAuth t True (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
+      it "auth, disabled" $ testBasicAuth t False (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 0
+
+testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
+testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
+  let testCfg = cfg {allowNewQueues, newQueueBasicAuth = srvAuth, smpServerVRange = mkVersionRange 4 srvVersion}
+      canCreate1 = canCreateQueue allowNewQueues srv clnt1
+      canCreate2 = canCreateQueue allowNewQueues srv clnt2
+      expected
+        | canCreate1 && canCreate2 = 2
+        | canCreate1 = 1
+        | otherwise = 0
+  created <- withSmpServerConfigOn t testCfg testPort $ \_ -> testCreateQueueAuth clnt1 clnt2
+  created `shouldBe` expected
+  pure created
+
+canCreateQueue :: Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> Bool
+canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
+  allowNew && (isNothing srvAuth || (srvVersion == 5 && clntVersion == 5 && srvAuth == clntAuth))
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
@@ -740,6 +787,33 @@ testSwitchDelete servers = do
     ("1", bId', OK) <- get a
     liftIO $ bId `shouldBe` bId'
   pure ()
+
+testCreateQueueAuth :: (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
+testCreateQueueAuth clnt1 clnt2 = do
+  a <- getClient clnt1
+  b <- getClient clnt2
+  Right created <- runExceptT $ do
+    tryError (createConnection a True SCMInvitation Nothing) >>= \case
+      Left (SMP AUTH) -> pure 0
+      Left e -> throwError e
+      Right (bId, qInfo) ->
+        tryError (joinConnection b True qInfo "bob's connInfo") >>= \case
+          Left (SMP AUTH) -> pure 1
+          Left e -> throwError e
+          Right aId -> do
+            ("", _, CONF confId _ "bob's connInfo") <- get a
+            allowConnection a bId confId "alice's connInfo"
+            get a ##> ("", bId, CON)
+            get b ##> ("", aId, INFO "alice's connInfo")
+            get b ##> ("", aId, CON)
+            exchangeGreetings a bId b aId
+            pure 2
+  pure created
+  where
+    getClient (clntAuth, clntVersion) =
+      let servers = initAgentServers {smp = [ProtoServerWithAuth testSMPServer clntAuth]}
+          smpCfg = (defaultClientConfig :: ProtocolClientConfig) {smpServerVRange = mkVersionRange 4 clntVersion}
+       in getSMPAgentClient agentCfg {smpCfg} servers
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

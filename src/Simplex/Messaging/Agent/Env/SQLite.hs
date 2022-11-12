@@ -59,7 +59,7 @@ import UnliftIO.STM
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 data InitialAgentServers = InitialAgentServers
-  { smp :: NonEmpty SMPServer,
+  { smp :: NonEmpty SMPServerWithAuth,
     ntf :: [NtfServer],
     netCfg :: NetworkConfig
   }
