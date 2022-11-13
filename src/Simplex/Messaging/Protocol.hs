@@ -74,7 +74,7 @@ module Simplex.Messaging.Protocol
     NtfServer,
     pattern NtfServer,
     ProtoServerWithAuth (..),
-    BasicAuth,
+    BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
     QueueId,
@@ -689,7 +689,7 @@ instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
-newtype BasicAuth = BasicAuth ByteString
+newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
   deriving (Eq, Show)
 
 instance IsString BasicAuth where fromString = BasicAuth . B.pack
