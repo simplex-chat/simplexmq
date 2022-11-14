@@ -124,7 +124,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (dropPrefix, enumJSON, parse)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -521,13 +521,21 @@ protocolClientError protocolError_ = \case
   e@PCEIOError {} -> INTERNAL $ show e
 
 data SMPTestStep = TSConnect | TSCreateQueue | TSSecureQueue | TSDeleteQueue | TSDisconnect
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SMPTestStep where
+  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
+  toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
 
 data SMPTestFailure = SMPTestFailure
   { testStep :: SMPTestStep,
     testError :: AgentErrorType
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SMPTestFailure where
+  toEncoding = J.genericToEncoding J.defaultOptions
+  toJSON = J.genericToJSON J.defaultOptions
 
 runSMPServerTest :: AgentMonad m => AgentClient -> SMPServerWithAuth -> m (Maybe SMPTestFailure)
 runSMPServerTest c (ProtoServerWithAuth srv auth) = do
