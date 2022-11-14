@@ -17,10 +17,13 @@
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
+    SMPTestFailure (..),
+    SMPTestStep (..),
     newAgentClient,
     withConnLock,
     closeAgentClient,
     closeProtocolServerClients,
+    runSMPServerTest,
     newRcvQueue,
     subscribeQueue,
     subscribeQueues,
@@ -76,6 +79,7 @@ module Simplex.Messaging.Agent.Client
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, stateTVar, throwSTM)
@@ -279,7 +283,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
   where
     connectClient :: m SMPClient
     connectClient = do
-      cfg <- atomically . updateClientConfig c =<< asks (smpCfg . config)
+      cfg <- getClientConfig c smpCfg
       u <- askUnliftIO
       liftEitherError (protocolClientError SMP) (getProtocolClient srv cfg (Just msgQ) $ clientDisconnected u)
 
@@ -350,7 +354,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} srv = do
   where
     connectClient :: m NtfClient
     connectClient = do
-      cfg <- atomically . updateClientConfig c =<< asks (ntfCfg . config)
+      cfg <- getClientConfig c ntfCfg
       liftEitherError (protocolClientError NTF) (getProtocolClient srv cfg Nothing clientDisconnected)
 
     clientDisconnected :: NtfClient -> IO ()
@@ -416,9 +420,10 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
 hostEvent :: forall msg. ProtocolTypeI (ProtoType msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> ProtocolClient msg -> ACommand 'Agent
 hostEvent event client = event (AProtocolType $ protocolTypeI @(ProtoType msg)) $ transportHost client
 
-updateClientConfig :: AgentClient -> ProtocolClientConfig -> STM ProtocolClientConfig
-updateClientConfig AgentClient {useNetworkConfig} cfg = do
-  networkConfig <- readTVar useNetworkConfig
+getClientConfig :: AgentMonad m => AgentClient -> (AgentConfig -> ProtocolClientConfig) -> m ProtocolClientConfig
+getClientConfig AgentClient {useNetworkConfig} cfgSel = do
+  cfg <- asks $ cfgSel . config
+  networkConfig <- readTVarIO useNetworkConfig
   pure cfg {networkConfig}
 
 closeAgentClient :: MonadIO m => AgentClient -> m ()
@@ -515,20 +520,39 @@ protocolClientError protocolError_ = \case
   e@PCESignatureError {} -> INTERNAL $ show e
   e@PCEIOError {} -> INTERNAL $ show e
 
-newRcvQueue :: AgentMonad m => AgentClient -> ConnId -> SMPServerWithAuth -> VersionRange -> m (RcvQueue, SMPQueueUri)
-newRcvQueue c connId srv vRange =
-  asks (cmdSignAlg . config) >>= \case
-    C.SignAlg a -> newRcvQueue_ a c connId srv vRange
+data SMPTestStep = TSConnect | TSCreateQueue | TSSecureQueue | TSDeleteQueue | TSDisconnect
+  deriving (Eq, Show)
 
-newRcvQueue_ ::
-  (C.SignatureAlgorithm a, C.AlgorithmI a, AgentMonad m) =>
-  C.SAlgorithm a ->
-  AgentClient ->
-  ConnId ->
-  SMPServerWithAuth ->
-  VersionRange ->
-  m (RcvQueue, SMPQueueUri)
-newRcvQueue_ a c connId (ProtoServerWithAuth srv auth) vRange = do
+data SMPTestFailure = SMPTestFailure
+  { testStep :: SMPTestStep,
+    testError :: AgentErrorType
+  }
+  deriving (Eq, Show)
+
+runSMPServerTest :: AgentMonad m => AgentClient -> SMPServerWithAuth -> m (Maybe SMPTestFailure)
+runSMPServerTest c (ProtoServerWithAuth srv auth) = do
+  cfg <- getClientConfig c smpCfg
+  C.SignAlg a <- asks $ cmdSignAlg . config
+  liftIO $ do
+    getProtocolClient srv cfg Nothing (\_ -> pure ()) >>= \case
+      Right smp -> do
+        (rKey, rpKey) <- C.generateSignatureKeyPair a
+        (sKey, _) <- C.generateSignatureKeyPair a
+        (dhKey, _) <- C.generateKeyPair'
+        r <- runExceptT $ do
+          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey auth
+          liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
+          liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
+        ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
+        pure $ either Just (const Nothing) r <|> maybe (Just (SMPTestFailure TSDisconnect $ BROKER TIMEOUT)) (const Nothing) ok
+      Left e -> pure . Just $ testErr TSConnect e
+  where
+    testErr :: SMPTestStep -> ProtocolClientError -> SMPTestFailure
+    testErr step err = SMPTestFailure step $ protocolClientError SMP err
+
+newRcvQueue :: AgentMonad m => AgentClient -> ConnId -> SMPServerWithAuth -> VersionRange -> m (RcvQueue, SMPQueueUri)
+newRcvQueue c connId (ProtoServerWithAuth srv auth) vRange = do
+  C.SignAlg a <- asks (cmdSignAlg . config)
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (dhKey, privDhKey) <- liftIO C.generateKeyPair'
   (e2eDhKey, e2ePrivKey) <- liftIO C.generateKeyPair'

@@ -35,10 +35,11 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent.Client (SMPTestFailure (..), SMPTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -154,6 +155,16 @@ functionalAPITests t = do
       it "auth snd    " $ testBasicAuth t True (Nothing, 5) (Nothing, 5) (Just "abcd", 5) `shouldReturn` 2
       it "auth both   " $ testBasicAuth t True (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
       it "auth, disabled" $ testBasicAuth t False (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 0
+  describe "SMP server test via agent API" $ do
+    it "should pass without basic auth" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
+    it "should fail with incorrect fingerprint" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2 {keyHash = "123"}) `shouldReturn` Just (SMPTestFailure TSConnect $ BROKER NETWORK)
+    describe "server with password" $ do
+      let auth = Just "abcd"
+          srv = ProtoServerWithAuth testSMPServer2
+          authErr = Just (SMPTestFailure TSCreateQueue $ SMP AUTH)
+      it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv $ Just "abcd") `shouldReturn` Nothing
+      it "should fail without password" $ testSMPServerConnectionTest t auth (srv Nothing) `shouldReturn` authErr
+      it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -811,6 +822,13 @@ testCreateQueueAuth clnt1 clnt2 = do
       let servers = initAgentServers {smp = [ProtoServerWithAuth testSMPServer clntAuth]}
           smpCfg = (defaultClientConfig :: ProtocolClientConfig) {smpServerVRange = mkVersionRange 4 clntVersion}
        in getSMPAgentClient agentCfg {smpCfg} servers
+
+testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe SMPTestFailure)
+testSMPServerConnectionTest t newQueueBasicAuth srv =
+  withSmpServerConfigOn t cfg {newQueueBasicAuth} testPort2 $ \_ -> do
+    a <- getSMPAgentClient agentCfg initAgentServers -- initially passed server is not running
+    Right r <- runExceptT $ testSMPServerConnection a srv
+    pure r
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
