@@ -63,6 +63,7 @@ module Simplex.Messaging.Agent
     deleteConnection,
     getConnectionServers,
     setSMPServers,
+    testSMPServerConnection,
     setNtfServers,
     setNetworkConfig,
     getNetworkConfig,
@@ -250,6 +251,10 @@ getConnectionServers c = withAgentEnv c . getConnectionServers' c
 -- | Change servers to be used for creating new queues
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
+
+-- | Test SMP server
+testSMPServerConnection :: AgentErrorMonad m => AgentClient -> SMPServerWithAuth -> m (Maybe SMPTestFailure)
+testSMPServerConnection c = withAgentEnv c . runSMPServerTest c
 
 setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
@@ -1822,18 +1827,8 @@ agentRatchetDecrypt db connId encAgentMsg = do
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => ConnId -> Compatible SMPQueueInfo -> m SndQueue
-newSndQueue connId qInfo =
-  asks (cmdSignAlg . config) >>= \case
-    C.SignAlg a -> newSndQueue_ a connId qInfo
-
-newSndQueue_ ::
-  (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m) =>
-  C.SAlgorithm a ->
-  ConnId ->
-  Compatible SMPQueueInfo ->
-  m SndQueue
-newSndQueue_ a connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
-  -- this function assumes clientVersion is compatible - it was tested before
+newSndQueue connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
+  C.SignAlg a <- asks $ cmdSignAlg . config
   (sndPublicKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   pure
