@@ -134,7 +134,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -723,6 +723,9 @@ instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
 instance ProtocolTypeI p => ToJSON (ProtoServerWithAuth p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance ProtocolTypeI p => FromJSON (ProtoServerWithAuth p) where
+  parseJSON = strParseJSON "ProtoServerWithAuth"
 
 noAuthSrv :: ProtocolServer p -> ProtoServerWithAuth p
 noAuthSrv srv = ProtoServerWithAuth srv Nothing
