@@ -2,6 +2,7 @@
 
 import AgentTests (agentTests)
 -- import Control.Logger.Simple
+import CLITests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
@@ -34,4 +35,5 @@ main = do
     describe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "Notifications server" $ ntfServerTests (transport @TLS)
     describe "SMP client agent" $ agentTests (transport @TLS)
+    describe "Server CLIs" cliTests
   removeDirectoryRecursive "tests/tmp"
