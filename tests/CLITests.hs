@@ -4,8 +4,8 @@ module CLITests where
 
 import Data.Ini (lookupValue, readIniFile)
 import Data.List (isPrefixOf)
-import Simplex.Messaging.Notifications.Server.Executable
-import Simplex.Messaging.Server.Executable
+import Simplex.Messaging.Notifications.Server.Main
+import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Util (catchAll_)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)

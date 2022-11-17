@@ -1,7 +1,7 @@
 module Main where
 
 import Control.Logger.Simple
-import Simplex.Messaging.Notifications.Server.Executable
+import Simplex.Messaging.Notifications.Server.Main
 
 cfgPath :: FilePath
 cfgPath = "/etc/opt/simplex-notifications"

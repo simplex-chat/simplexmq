@@ -2,7 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.Executable where
+module Simplex.Messaging.Server.Main where
 
 import Data.Functor (($>))
 import Data.Ini (lookupValue)

@@ -1,7 +1,7 @@
 module Main where
 
 import Control.Logger.Simple
-import Simplex.Messaging.Server.Executable
+import Simplex.Messaging.Server.Main
 
 cfgPath :: FilePath
 cfgPath = "/etc/opt/simplex"

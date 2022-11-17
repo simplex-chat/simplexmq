@@ -66,7 +66,7 @@ library
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env
-      Simplex.Messaging.Notifications.Server.Executable
+      Simplex.Messaging.Notifications.Server.Main
       Simplex.Messaging.Notifications.Server.Push.APNS
       Simplex.Messaging.Notifications.Server.Stats
       Simplex.Messaging.Notifications.Server.Store
@@ -78,8 +78,8 @@ library
       Simplex.Messaging.Server
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Env.STM
-      Simplex.Messaging.Server.Executable
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.Main
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM
       Simplex.Messaging.Server.QueueStore
