@@ -396,6 +396,7 @@ test-suite smp-server-test
     , http2 ==3.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
+    , main-tester ==0.2.*
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
