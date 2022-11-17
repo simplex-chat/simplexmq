@@ -66,6 +66,7 @@ library
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env
+      Simplex.Messaging.Notifications.Server.Executable
       Simplex.Messaging.Notifications.Server.Push.APNS
       Simplex.Messaging.Notifications.Server.Stats
       Simplex.Messaging.Notifications.Server.Store
@@ -77,6 +78,7 @@ library
       Simplex.Messaging.Server
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Env.STM
+      Simplex.Messaging.Server.Executable
       Simplex.Messaging.Server.Expiration
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM
@@ -351,6 +353,7 @@ test-suite smp-server-test
       AgentTests.NotificationTests
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
+      CLITests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
@@ -400,6 +403,7 @@ test-suite smp-server-test
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
+    , silently ==1.2.*
     , simple-logger ==0.1.*
     , simplexmq
     , socks ==0.6.*
