@@ -10,7 +10,7 @@ import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
-import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI)
+import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), defaultX509Config, protocolServerCLI)
 import System.FilePath (combine)
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
@@ -26,11 +26,7 @@ ntfServerCLIConfig cfgPath logPath =
           logDir = logPath,
           iniFile = combine cfgPath "ntf-server.ini",
           storeLogFile = combine logPath "ntf-server-store.log",
-          caKeyFile = combine cfgPath "ca.key",
-          caCrtFile,
-          serverKeyFile,
-          serverCrtFile,
-          fingerprintFile = combine cfgPath "fingerprint",
+          x509cfg = defaultX509Config,
           defaultServerPort = "443",
           executableName = "ntf-server",
           serverVersion = "SMP notifications server v1.2.0",

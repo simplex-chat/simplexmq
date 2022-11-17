@@ -35,5 +35,5 @@ main = do
     describe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "Notifications server" $ ntfServerTests (transport @TLS)
     describe "SMP client agent" $ agentTests (transport @TLS)
-    describe "Server CLIs" cliTests
+    fdescribe "Server CLIs" cliTests
   removeDirectoryRecursive "tests/tmp"
