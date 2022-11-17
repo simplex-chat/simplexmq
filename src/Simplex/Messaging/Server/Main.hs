@@ -8,13 +8,12 @@ module Simplex.Messaging.Server.Main where
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
-import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
-import Simplex.Messaging.Server.CLI (SignAlgorithm (..), X509Config (..), checkSavedFingerprint, confirmOrExit, createServerX509, defaultX509Config, deleteDirIfExists, exitError, getCliCommand', iniTransports, printServerConfig, printServiceInfo, readStrictIni, warnCAPrivateKeyFile)
+import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
@@ -92,7 +91,7 @@ smpServerCLI cfgPath logPath =
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       printServiceInfo serverVersion fp
-      let cfg@ServerConfig {transports, storeLogFile, inactiveClientExpiration} = mkServerConfig ini
+      let cfg@ServerConfig {transports, storeLogFile, inactiveClientExpiration} = serverConfig
       printServerConfig transports storeLogFile
       putStrLn $ case inactiveClientExpiration of
         Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
@@ -103,17 +102,12 @@ smpServerCLI cfgPath logPath =
             then maybe "allowed" (const "requires basic auth") $ newQueueBasicAuth cfg
             else "NOT allowed"
       runSMPServer cfg
-    mkServerConfig ini =
-      let onOff section name = case lookupValue section name ini of
-            Right "on" -> Just True
-            Right "off" -> Just False
-            Right s -> error . T.unpack $ "invalid INI setting " <> name <> ": " <> s
-            _ -> Nothing
-          settingIsOn section name = if onOff section name == Just True then Just () else Nothing
-          logStats = settingIsOn "STORE_LOG" "log_stats"
-          enableStoreLog = settingIsOn "STORE_LOG" "enable"
-          c = combine cfgPath . ($ defaultX509Config)
-       in ServerConfig
+      where
+        enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
+        logStats = settingIsOn "STORE_LOG" "log_stats" ini
+        c = combine cfgPath . ($ defaultX509Config)
+        serverConfig =
+          ServerConfig
             { transports = iniTransports ini,
               tbqSize = 16,
               serverTbqSize = 64,
@@ -126,19 +120,19 @@ smpServerCLI cfgPath logPath =
               storeLogFile = enableStoreLog $> storeLogFilePath,
               storeMsgsFile =
                 let messagesPath = combine logPath "smp-server-messages.log"
-                 in case onOff "STORE_LOG" "restore_messages" of
+                 in case iniOnOff "STORE_LOG" "restore_messages" ini of
                       Just True -> Just messagesPath
                       Just False -> Nothing
                       -- if the setting is not set, it is enabled when store log is enabled
                       _ -> enableStoreLog $> messagesPath,
               -- allow creating new queues by default
-              allowNewQueues = fromMaybe True $ onOff "AUTH" "new_queues",
+              allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = case lookupValue "AUTH" "create_password" ini of
                 Right auth -> either error Just . strDecode $ encodeUtf8 auth
                 _ -> Nothing,
               messageExpiration = Just defaultMessageExpiration,
               inactiveClientExpiration =
-                settingIsOn "INACTIVE_CLIENTS" "disconnect"
+                settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig
                     { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
@@ -166,42 +160,40 @@ data InitOptions = InitOptions
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
-    ( command "init" (info initP (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+    ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
   where
-    initP :: Parser CliCommand
+    initP :: Parser InitOptions
     initP =
-      Init
-        <$> ( InitOptions
-                <$> switch
-                  ( long "store-log"
-                      <> short 'l'
-                      <> help "Enable store log for persistence"
-                  )
-                <*> option
-                  (maybeReader readMaybe)
-                  ( long "sign-algorithm"
-                      <> short 'a'
-                      <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
-                      <> value ED448
-                      <> showDefault
-                      <> metavar "ALG"
-                  )
-                <*> strOption
-                  ( long "ip"
-                      <> help
-                        "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
-                      <> value "127.0.0.1"
-                      <> showDefault
-                      <> metavar "IP"
-                  )
-                <*> (optional . strOption)
-                  ( long "fqdn"
-                      <> short 'n'
-                      <> help "Server FQDN used as Common Name for TLS online certificate"
-                      <> showDefault
-                      <> metavar "FQDN"
-                  )
-            )
+      InitOptions
+        <$> switch
+          ( long "store-log"
+              <> short 'l'
+              <> help "Enable store log for persistence"
+          )
+        <*> option
+          (maybeReader readMaybe)
+          ( long "sign-algorithm"
+              <> short 'a'
+              <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
+              <> value ED448
+              <> showDefault
+              <> metavar "ALG"
+          )
+        <*> strOption
+          ( long "ip"
+              <> help
+                "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
+              <> value "127.0.0.1"
+              <> showDefault
+              <> metavar "IP"
+          )
+        <*> (optional . strOption)
+          ( long "fqdn"
+              <> short 'n'
+              <> help "Server FQDN used as Common Name for TLS online certificate"
+              <> showDefault
+              <> metavar "FQDN"
+          )

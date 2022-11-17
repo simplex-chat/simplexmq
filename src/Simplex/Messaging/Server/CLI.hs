@@ -2,7 +2,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
@@ -13,8 +12,7 @@ import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
-import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.Maybe (fromMaybe)
+import Data.Ini (Ini, lookupValue)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.X509.Validation (Fingerprint (..))
@@ -25,41 +23,11 @@ import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (whenM)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
+import System.Directory (doesDirectoryExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (BufferMode (..), IOMode (..), hFlush, hGetLine, hSetBuffering, stderr, stdout, withFile)
+import System.IO (IOMode (..), hFlush, hGetLine, stdout, withFile)
 import System.Process (readCreateProcess, shell)
-import Text.Read (readMaybe)
-
-data ServerCLIConfig cfg = ServerCLIConfig
-  { cfgDir :: FilePath,
-    logDir :: FilePath,
-    iniFile :: FilePath,
-    storeLogFile :: FilePath,
-    x509cfg :: X509Config,
-    defaultServerPort :: ServiceName,
-    executableName :: String,
-    serverVersion :: String,
-    mkIniFile :: Bool -> ServiceName -> String,
-    mkServerConfig :: Maybe FilePath -> [(ServiceName, ATransport)] -> Ini -> cfg
-  }
-
-protocolServerCLI :: ServerCLIConfig cfg -> (cfg -> IO ()) -> IO ()
-protocolServerCLI cliCfg@ServerCLIConfig {iniFile, executableName} server =
-  getCliCommand cliCfg >>= \case
-    Init opts ->
-      doesFileExist iniFile >>= \case
-        True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
-        _ -> initializeServer cliCfg opts
-    Start ->
-      doesFileExist iniFile >>= \case
-        True -> readIniFile iniFile >>= either exitError (runServer cliCfg server)
-        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    Delete -> do
-      confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
-      cleanup cliCfg
-      putStrLn "Deleted configuration and log files"
 
 exitError :: String -> IO ()
 exitError msg = putStrLn msg >> exitFailure
@@ -71,19 +39,6 @@ confirmOrExit s = do
   hFlush stdout
   ok <- getLine
   when (ok /= "Y") exitFailure
-
-data CliCommand
-  = Init InitOptions
-  | Start
-  | Delete
-
-data InitOptions = InitOptions
-  { enableStoreLog :: Bool,
-    signAlgorithm :: SignAlgorithm,
-    ip :: HostName,
-    fqdn :: Maybe HostName
-  }
-  deriving (Show)
 
 data SignAlgorithm = ED448 | ED25519
   deriving (Read, Show)
@@ -116,18 +71,6 @@ defaultX509Config =
       serverCsrFile = "server.csr"
     }
 
-getCliCommand :: ServerCLIConfig cfg -> IO CliCommand
-getCliCommand cliCfg =
-  customExecParser
-    (prefs showHelpOnEmpty)
-    ( info
-        (helper <*> versionOption <*> cliCommandP cliCfg)
-        (header version <> fullDesc)
-    )
-  where
-    versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
-    version = serverVersion cliCfg
-
 getCliCommand' :: Parser cmd -> String -> IO cmd
 getCliCommand' cmdP version =
   customExecParser
@@ -138,64 +81,6 @@ getCliCommand' cmdP version =
     )
   where
     versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
-
-cliCommandP :: ServerCLIConfig cfg -> Parser CliCommand
-cliCommandP ServerCLIConfig {cfgDir, logDir, iniFile} =
-  hsubparser
-    ( command "init" (info initP (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
-        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
-        <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
-    )
-  where
-    initP :: Parser CliCommand
-    initP =
-      Init
-        <$> ( InitOptions
-                <$> switch
-                  ( long "store-log"
-                      <> short 'l'
-                      <> help "Enable store log for persistence"
-                  )
-                <*> option
-                  (maybeReader readMaybe)
-                  ( long "sign-algorithm"
-                      <> short 'a'
-                      <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
-                      <> value ED448
-                      <> showDefault
-                      <> metavar "ALG"
-                  )
-                <*> strOption
-                  ( long "ip"
-                      <> help
-                        "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
-                      <> value "127.0.0.1"
-                      <> showDefault
-                      <> metavar "IP"
-                  )
-                <*> (optional . strOption)
-                  ( long "fqdn"
-                      <> short 'n'
-                      <> help "Server FQDN used as Common Name for TLS online certificate"
-                      <> showDefault
-                      <> metavar "FQDN"
-                  )
-            )
-
-initializeServer :: ServerCLIConfig cfg -> InitOptions -> IO ()
-initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
-  deleteDirIfExists cfgDir
-  deleteDirIfExists logDir
-  createDirectoryIfMissing True cfgDir
-  createDirectoryIfMissing True logDir
-  let x509cfg' = x509cfg {commonName = fromMaybe ip fqdn, signAlgorithm}
-  fp <- createServerX509 cfgDir x509cfg'
-  writeFile iniFile $ mkIniFile enableStoreLog defaultServerPort
-  putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
-  printServiceInfo (serverVersion cliCfg) fp
-  warnCAPrivateKeyFile cfgDir x509cfg'
-  where
-    ServerCLIConfig {cfgDir, logDir, iniFile, x509cfg, executableName, defaultServerPort, mkIniFile} = cliCfg
 
 createServerX509 :: FilePath -> X509Config -> IO ByteString
 createServerX509 cfgPath x509cfg = do
@@ -282,28 +167,17 @@ strictIni section key ini =
 readStrictIni :: Read a => Text -> Text -> Ini -> a
 readStrictIni section key = read . T.unpack . strictIni section key
 
-runServer :: ServerCLIConfig cfg -> (cfg -> IO ()) -> Ini -> IO ()
-runServer cliCfg server ini = do
-  hSetBuffering stdout LineBuffering
-  hSetBuffering stderr LineBuffering
-  fp <- checkSavedFingerprint cfgDir x509cfg
-  printServiceInfo (serverVersion cliCfg) fp
-  let IniOptions {enableStoreLog, port, enableWebsockets} = mkIniOptions ini
-      transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
-      logFile = if enableStoreLog then Just storeLogFile else Nothing
-      cfg = mkServerConfig logFile transports ini
-  printServerConfig transports logFile
-  server cfg
-  where
-    ServerCLIConfig {cfgDir, storeLogFile, x509cfg, mkServerConfig} = cliCfg
+iniOnOff :: Text -> Text -> Ini -> Maybe Bool
+iniOnOff section name ini = case lookupValue section name ini of
+  Right "on" -> Just True
+  Right "off" -> Just False
+  Right s -> error . T.unpack $ "invalid INI setting " <> name <> ": " <> s
+  _ -> Nothing
 
-runServer' :: FilePath -> X509Config -> ([(ServiceName, ATransport)] -> Ini -> cfg) -> String -> (cfg -> IO ()) -> Ini -> IO ()
-runServer' cfgPath x509cfg mkServerConfig serverVersion server ini = do
-  hSetBuffering stdout LineBuffering
-  hSetBuffering stderr LineBuffering
-  fp <- checkSavedFingerprint cfgPath x509cfg
-  printServiceInfo serverVersion fp
-  server $ mkServerConfig (iniTransports ini) ini
+settingIsOn :: Text -> Text -> Ini -> Maybe ()
+settingIsOn section name ini
+  | iniOnOff section name ini == Just True = Just ()
+  | otherwise = Nothing
 
 checkSavedFingerprint :: FilePath -> X509Config -> IO ByteString
 checkSavedFingerprint cfgPath x509cfg = do
@@ -329,20 +203,8 @@ printServerConfig transports logFile = do
   forM_ transports $ \(p, ATransport t) ->
     putStrLn $ "Listening on port " <> p <> " (" <> transportName t <> ")..."
 
-cleanup :: ServerCLIConfig cfg -> IO ()
-cleanup ServerCLIConfig {cfgDir, logDir} = do
-  deleteDirIfExists cfgDir
-  deleteDirIfExists logDir
-
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path
-
-clearDirs :: ServerCLIConfig cfg -> IO ()
-clearDirs ServerCLIConfig {cfgDir, logDir} = do
-  clearDirIfExists cfgDir
-  clearDirIfExists logDir
-  where
-    clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>= mapM_ (removePathForcibly . combine path)
 
 printServiceInfo :: String -> ByteString -> IO ()
 printServiceInfo serverVersion fpStr = do
