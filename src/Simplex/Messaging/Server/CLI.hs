@@ -2,6 +2,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
@@ -19,6 +20,7 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -33,12 +35,10 @@ exitError :: String -> IO ()
 exitError msg = putStrLn msg >> exitFailure
 
 confirmOrExit :: String -> IO ()
-confirmOrExit s = do
-  putStrLn s
-  putStr "Continue (Y/n): "
-  hFlush stdout
-  ok <- getLine
-  when (ok /= "Y") exitFailure
+confirmOrExit s =
+  withPrompt (s <> "\nContinue (Y/n): ") $ do
+    ok <- getLine
+    when (ok /= "Y") $ putStrLn "Server NOT deleted" >> exitFailure
 
 data SignAlgorithm = ED448 | ED25519
   deriving (Read, Show)
@@ -174,6 +174,24 @@ iniOnOff section name ini = case lookupValue section name ini of
   Right s -> error . T.unpack $ "invalid INI setting " <> name <> ": " <> s
   _ -> Nothing
 
+withPrompt :: String -> IO a -> IO a
+withPrompt s a = putStr s >> hFlush stdout >> a
+
+onOffPrompt :: String -> Bool -> IO Bool
+onOffPrompt prompt def =
+  withPrompt (prompt <> if def then " (Yn): " else " (yN): ") $
+    getLine >>= \case
+      "" -> pure def
+      "y" -> pure True
+      "Y" -> pure True
+      "n" -> pure False
+      "N" -> pure False
+      _ -> putStrLn "Invalid input, please enter 'y' or 'n'" >> onOffPrompt prompt def
+
+onOff :: Bool -> String
+onOff True = "on"
+onOff _ = "off"
+
 settingIsOn :: Text -> Text -> Ini -> Maybe ()
 settingIsOn section name ini
   | iniOnOff section name ini == Just True = Just ()
@@ -206,7 +224,8 @@ printServerConfig transports logFile = do
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path
 
-printServiceInfo :: String -> ByteString -> IO ()
-printServiceInfo serverVersion fpStr = do
+printServiceInfo :: ProtocolTypeI p => String -> ProtoServerWithAuth p -> IO ()
+printServiceInfo serverVersion srv@(ProtoServerWithAuth ProtocolServer {keyHash} _) = do
   putStrLn serverVersion
-  B.putStrLn $ "Fingerprint: " <> strEncode fpStr
+  B.putStrLn $ "Fingerprint: " <> strEncode keyHash
+  B.putStrLn $ "Server address: " <> strEncode srv

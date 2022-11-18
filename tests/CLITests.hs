@@ -29,15 +29,18 @@ ntfLogPath = "tests/tmp/cli/etc/var/simplex-notifications"
 cliTests :: Spec
 cliTests = do
   describe "SMP server CLI" $ do
-    it "should initialize, start and delete the server (no store log)" $ smpServerTest False
-    it "should initialize, start and delete the server (with store log)" $ smpServerTest True
+    describe "initialize, start and delete the server" $ do
+      it "no store log, random password (default)" $ smpServerTest False True
+      it "with store log, random password (default)" $ smpServerTest True True
+      it "no store log, no password" $ smpServerTest False False
+      it "with store log, no password" $ smpServerTest True False
   describe "Ntf server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
     it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
 
-smpServerTest :: Bool -> IO ()
-smpServerTest storeLog = do
-  capture_ (withArgs (["init"] <> ["-l" | storeLog]) $ smpServerCLI cfgPath logPath)
+smpServerTest :: Bool -> Bool -> IO ()
+smpServerTest storeLog basicAuth = do
+  capture_ (withArgs (["init", "-y"] <> ["-l" | storeLog] <> ["--no-password" | not basicAuth]) $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> cfgPath <> "/smp-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ cfgPath <> "/smp-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
@@ -52,7 +55,7 @@ smpServerTest storeLog = do
   r `shouldContain` (if storeLog then ["Store log: " <> logPath <> "/smp-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 5223 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
-  r `shouldContain` ["creating new queues allowed"]
+  r `shouldContain` (if basicAuth then ["creating new queues requires password"] else ["creating new queues allowed"])
   capture_ (withStdin "Y" . withArgs ["delete"] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
