@@ -1,24 +1,31 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Notifications.Server.Main where
 
 import Data.Functor (($>))
-import Data.Ini (readIniFile)
+import Data.Ini (readIniFile, lookupValue)
 import Data.Maybe (fromMaybe)
+import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
+import Data.Either (fromRight)
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -49,33 +56,36 @@ ntfServerCLI cfgPath logPath =
       createDirectoryIfMissing True logPath
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
       fp <- createServerX509 cfgPath x509cfg
-      writeFile iniFile iniFileContent
+      let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp)) Nothing
+      writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
-      printServiceInfo serverVersion fp
       warnCAPrivateKeyFile cfgPath x509cfg
+      printServiceInfo serverVersion srv
       where
-        iniFileContent =
+        iniFileContent host =
           "[STORE_LOG]\n\
           \# The server uses STM memory for persistence,\n\
           \# that will be lost on restart (e.g., as with redis).\n\
           \# This option enables saving memory to append only log,\n\
           \# and restoring it when the server is started.\n\
-          \# Log is compacted on start (deleted objects are removed).\n\
-          \enable: "
-            <> (if enableStoreLog then "on" else "off")
-            <> "\n\
-               \log_stats: off\n\n\
-               \[TRANSPORT]\n\
-               \port: "
-            <> defaultServerPort
-            <> "\n\
-               \websockets: off\n"
+          \# Log is compacted on start (deleted objects are removed).\n"
+            <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> "log_stats: off\n\n"
+            <> "[TRANSPORT]\n"
+            <> "# host is only used to print server address on start\n"
+            <> ("host: " <> host <> "\n")
+            <> ("port: " <> defaultServerPort <> "\n")
+            <> "websockets: off\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
-      printServiceInfo serverVersion fp
-      let cfg@NtfServerConfig {transports, storeLogFile} = serverConfig
+      let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
+          port = T.unpack $ strictIni "TRANSPORT" "port" ini
+          cfg@NtfServerConfig {transports, storeLogFile} = serverConfig
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
+      printServiceInfo serverVersion srv
       printServerConfig transports storeLogFile
       runNtfServer cfg
       where
