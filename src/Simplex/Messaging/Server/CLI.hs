@@ -38,7 +38,7 @@ confirmOrExit :: String -> IO ()
 confirmOrExit s =
   withPrompt (s <> "\nContinue (Y/n): ") $ do
     ok <- getLine
-    when (ok /= "Y") exitFailure
+    when (ok /= "Y") $ putStrLn "Server NOT deleted" >> exitFailure
 
 data SignAlgorithm = ED448 | ED25519
   deriving (Read, Show)

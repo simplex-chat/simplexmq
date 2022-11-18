@@ -7,8 +7,9 @@
 
 module Simplex.Messaging.Notifications.Server.Main where
 
+import Data.Either (fromRight)
 import Data.Functor (($>))
-import Data.Ini (readIniFile, lookupValue)
+import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
@@ -25,7 +26,6 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-import Data.Either (fromRight)
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =

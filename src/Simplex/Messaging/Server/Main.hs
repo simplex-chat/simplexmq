@@ -11,6 +11,7 @@ module Simplex.Messaging.Server.Main where
 import Control.Monad (void)
 import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
@@ -32,7 +33,6 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-import Data.Either (fromRight)
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
 smpServerCLI cfgPath logPath =
@@ -59,11 +59,12 @@ smpServerCLI cfgPath logPath =
     initializeServer opts
       | scripted opts = initialize opts
       | otherwise = do
+        putStrLn "Use `smp-server init -h` for available options."
         void $ withPrompt "SMP server will be initialized (press Enter)" getLine
         enableStoreLog <- onOffPrompt "Enable store log to restore queues and messages on server restart" True
-        logStats <- onOffPrompt "Enable server storing server statistics daily" False
-        putStrLn "Should server require a password to create new messaging queues?"
-        password <- withPrompt "Enter 'r' for random (default), 'n' - no password, or enter password: " serverPassword
+        logStats <- onOffPrompt "Enable logging daily statistics" False
+        putStrLn "Require a password to create new messaging queues?"
+        password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
         let host = fromMaybe (ip opts) (fqdn opts)
         host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
         initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn opts else Just host', password}
