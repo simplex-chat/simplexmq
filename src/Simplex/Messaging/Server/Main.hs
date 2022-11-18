@@ -275,7 +275,7 @@ cliCommandP cfgPath logPath iniFile =
         switch
           ( long "yes"
               <> short 'y'
-              <> help "Scripted initialization using command-line options"
+              <> help "Non-interactive initialization using command-line options"
           )
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
     parseBasicAuth :: ReadM ServerPassword
