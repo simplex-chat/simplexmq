@@ -717,12 +717,12 @@ instance Encoding AMessage where
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
-    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
-    CRContactUri crData -> crEncode "contact" crData Nothing
+    CRInvitationUri crData e2eParams -> crEncode CMInvitation crData (Just e2eParams)
+    CRContactUri crData -> crEncode CMContact crData Nothing
     where
-      crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
+      crEncode :: ConnectionMode -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
       crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams =
-        strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
+        strEncode crScheme <> "/" <> encodeConnectionMode crMode <> "#/?" <> queryStr
         where
           queryStr =
             strEncode . QSP QEscape $
@@ -766,6 +766,15 @@ instance FromJSON AConnectionRequestUri where
 instance ToJSON AConnectionRequestUri where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance ToJSON ConnectionMode where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+encodeConnectionMode :: ConnectionMode -> ByteString
+encodeConnectionMode = \case
+  CMInvitation -> "invitation"
+  CMContact -> "contact"
 
 -- debug :: Show a => String -> a -> a
 -- debug name value = unsafePerformIO (putStrLn $ name <> ": " <> show value) `seq` value
