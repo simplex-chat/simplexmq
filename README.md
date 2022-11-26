@@ -111,7 +111,7 @@ On Linux, you can deploy smp server using Docker.
 
    ```sh
    git clone https://github.com/simplex-chat/simplexmq
-   cd simplex-chat
+   cd simplexmq
    git checkout stable
    DOCKER_BUILDKIT=1 docker build -t smp-server -f ./download.Dockerfile .
    ```
