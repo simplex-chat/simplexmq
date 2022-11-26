@@ -11,17 +11,15 @@ RUN curl https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup -o /usr/bin/ghc
     chmod +x /usr/bin/ghcup
 
 # Install ghc
-RUN ghcup install ghc
+RUN ghcup install ghc 8.10.7
 # Install cabal
 RUN ghcup install cabal
 # Set both as default
-RUN ghcup set ghc && \
+RUN ghcup set ghc 8.10.7 && \
     ghcup set cabal
 
-# Clone simplexmq repository
-RUN git clone https://github.com/simplex-chat/simplexmq
-# and cd to it
-WORKDIR ./simplexmq
+COPY . /project
+WORKDIR /project
 
 # Adjust PATH
 ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
@@ -41,7 +39,7 @@ RUN apt-get update && apt-get install -y openssl
 COPY --from=build /root/.cabal/bin/smp-server /usr/bin/smp-server
 
 # Copy our helper script
-COPY ./entrypoint /usr/bin/entrypoint
+COPY ./scripts/docker/entrypoint /usr/bin/entrypoint
 
 # Open smp-server listening port
 EXPOSE 5223
