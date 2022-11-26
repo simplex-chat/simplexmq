@@ -8,7 +8,7 @@ RUN curl -L https://github.com/simplex-chat/simplexmq/releases/latest/download/s
 	chmod +x /usr/bin/smp-server
 
 # Copy our helper script
-COPY ./entrypoint /usr/bin/entrypoint
+COPY ./scripts/docker/entrypoint /usr/bin/entrypoint
 
 # Open smp-server listening port
 EXPOSE 5223
