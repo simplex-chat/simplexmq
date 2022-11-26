@@ -94,7 +94,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 You can run your SMP server as a Linux process, optionally using a service manager for booting and restarts.
 
-Notice that `smp-server` requires `openssl` as run-time dependency. Install it with your packet manager:
+Notice that `smp-server` requires `openssl` as run-time dependency (it is used to generate server certificates during initialization). Install it with your packet manager:
 
 ```sh
 # For Ubuntu
