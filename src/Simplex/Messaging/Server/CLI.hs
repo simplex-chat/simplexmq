@@ -25,7 +25,7 @@ import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (whenM)
-import System.Directory (doesDirectoryExist, removeDirectoryRecursive)
+import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, hGetLine, stdout, withFile)
@@ -229,3 +229,6 @@ printServiceInfo serverVersion srv@(ProtoServerWithAuth ProtocolServer {keyHash}
   putStrLn serverVersion
   B.putStrLn $ "Fingerprint: " <> strEncode keyHash
   B.putStrLn $ "Server address: " <> strEncode srv
+
+clearDirIfExists :: FilePath -> IO ()
+clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>= mapM_ (removePathForcibly . combine path)

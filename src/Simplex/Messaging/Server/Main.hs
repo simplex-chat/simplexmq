@@ -79,8 +79,8 @@ smpServerCLI cfgPath logPath =
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
         initialize InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password} = do
-          deleteDirIfExists cfgPath
-          deleteDirIfExists logPath
+          clearDirIfExists cfgPath
+          clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
           createDirectoryIfMissing True logPath
           let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}

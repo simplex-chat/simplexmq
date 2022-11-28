@@ -50,8 +50,8 @@ ntfServerCLI cfgPath logPath =
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"
     initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
-      deleteDirIfExists cfgPath
-      deleteDirIfExists logPath
+      clearDirIfExists cfgPath
+      clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
       createDirectoryIfMissing True logPath
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
