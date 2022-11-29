@@ -331,8 +331,8 @@ testServerConnectionAfterError t _ = do
 
   withAgent1 $ \bob -> do
     withAgent2 $ \alice -> do
-      bob #: ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER e)) -> e == NETWORK || e == TIMEOUT
-      alice #: ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER e)) -> e == NETWORK || e == TIMEOUT
+      bob #: ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
+      alice #: ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
       withServer $ do
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False

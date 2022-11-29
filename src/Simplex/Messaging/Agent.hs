@@ -878,7 +878,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         tryCommand action = withRetryInterval ri $ \loop ->
           tryError action >>= \case
             Left e
-              | temporaryAgentError e || e == BROKER HOST -> retrySndOp c loop
+              | temporaryOrHostError e -> retrySndOp c loop
               | otherwise -> cmdError e
             Right () -> withStore' c (`deleteCommand` cmdId)
         tryWithLock name = tryCommand . withConnLock c connId name
@@ -1016,7 +1016,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
-                  | temporaryAgentError e || e == BROKER HOST -> do
+                  | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
                     ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c loop)
                   | otherwise -> notifyDel msgId err
@@ -1242,7 +1242,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         replaceToken tknId = do
           ns <- asks ntfSupervisor
           tryReplace ns `catchError` \e ->
-            if temporaryAgentError e || e == BROKER HOST
+            if temporaryOrHostError e
               then throwError e
               else do
                 withStore' c $ \db -> removeNtfToken db tkn
@@ -1577,7 +1577,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             ignored = pure "END from disconnected client - ignored"
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
-          notify . ERR $ BROKER UNEXPECTED
+          notify . ERR $ BROKER (B.unpack $ strEncode srv) UNEXPECTED
       where
         notify :: ACommand 'Agent -> m ()
         notify msg = atomically $ writeTBQueue subQ ("", connId, msg)
