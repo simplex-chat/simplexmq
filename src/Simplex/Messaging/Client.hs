@@ -30,6 +30,7 @@ module Simplex.Messaging.Client
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
+    clientServer,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -80,6 +81,7 @@ import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
@@ -211,6 +213,9 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     isOnionHost = \case THOnionHost _ -> True; _ -> False
     onionHost = find isOnionHost hosts
     publicHost = find (not . isOnionHost) hosts
+
+clientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient msg -> String  
+clientServer = B.unpack . strEncode . protocolServer
 
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.

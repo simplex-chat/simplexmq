@@ -142,6 +142,7 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
@@ -1050,7 +1051,7 @@ data AgentErrorType
   | -- | NTF protocol errors forwarded to agent clients
     NTF {ntfErr :: ErrorType}
   | -- | SMP server errors
-    BROKER {brokerErr :: BrokerErrorType}
+    BROKER {brokerAddress :: String, brokerErr :: BrokerErrorType}
   | -- | errors of other agents
     AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
@@ -1144,23 +1145,27 @@ instance StrEncoding AgentErrorType where
       <|> "CONN " *> (CONN <$> parseRead1)
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
-      <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
-      <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
-      <|> "BROKER " *> (BROKER <$> parseRead1)
+      <|> "BROKER " *> (BROKER <$> srvP <* " RESPONSE " <*> (RESPONSE <$> strP))
+      <|> "BROKER " *> (BROKER <$> srvP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
+      <|> "BROKER " *> (BROKER <$> srvP <* A.space <*> parseRead1)
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
+    where
+      srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
-    BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
-    BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
-    BROKER e -> "BROKER " <> bshow e
+    BROKER srv (RESPONSE e) -> "BROKER " <> addr srv <> " RESPONSE " <> strEncode e
+    BROKER srv (TRANSPORT e) -> "BROKER " <> addr srv <> " TRANSPORT " <> serializeTransportError e
+    BROKER srv e -> "BROKER " <> addr srv <> " " <> bshow e
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
+    where
+      addr = encodeUtf8 . T.pack
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 

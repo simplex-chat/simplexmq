@@ -27,6 +27,7 @@ import Control.Monad
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
@@ -39,6 +40,7 @@ import Simplex.Messaging.Agent.Client (SMPTestFailure (..), SMPTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
@@ -157,12 +159,14 @@ functionalAPITests t = do
       it "auth, disabled" $ testBasicAuth t False (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 0
   describe "SMP server test via agent API" $ do
     it "should pass without basic auth" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
-    it "should fail with incorrect fingerprint" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2 {keyHash = "123"}) `shouldReturn` Just (SMPTestFailure TSConnect $ BROKER NETWORK)
+    let srv1 = testSMPServer2 {keyHash = "1234"}
+    it "should fail with incorrect fingerprint" $ do
+      testSMPServerConnectionTest t Nothing (noAuthSrv srv1) `shouldReturn` Just (SMPTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
           authErr = Just (SMPTestFailure TSCreateQueue $ SMP AUTH)
-      it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv $ Just "abcd") `shouldReturn` Nothing
+      it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testSMPServerConnectionTest t auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
 
@@ -355,7 +359,7 @@ testAsyncServerOffline t = do
   Right (bobId, cReq) <- withSmpServerStoreLogOn t testPort $ \_ ->
     runExceptT $ createConnection alice True SCMInvitation Nothing
   -- connection fails
-  Left (BROKER NETWORK) <- runExceptT $ joinConnection bob True cReq "bob's connInfo"
+  Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob True cReq "bob's connInfo"
   ("", "", DOWN srv conns) <- get alice
   srv `shouldBe` testSMPServer
   conns `shouldBe` [bobId]
@@ -415,7 +419,7 @@ testDuplicateMessage t = do
   -- commenting two lines below and uncommenting further two lines would also pass,
   -- it is the scenario tested above, when the message was not acknowledged by the user
   threadDelay 200000
-  Left (BROKER TIMEOUT) <- runExceptT $ ackMessage bob1 aliceId 5
+  Left (BROKER _ TIMEOUT) <- runExceptT $ ackMessage bob1 aliceId 5
 
   disconnectAgentClient alice
   disconnectAgentClient bob1
