@@ -62,6 +62,7 @@ module Simplex.Messaging.Agent
     suspendConnection,
     deleteConnection,
     getConnectionServers,
+    getConnectionRatchetAdHash,
     setSMPServers,
     testSMPServerConnection,
     setNtfServers,
@@ -116,7 +117,7 @@ import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
@@ -247,6 +248,10 @@ deleteConnection c = withAgentEnv c . deleteConnection' c
 -- | get servers used for connection
 getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers c = withAgentEnv c . getConnectionServers' c
+
+-- | get connection ratchet associated data for connection verification (should match AD of the peer)
+getConnectionRatchetAdHash :: AgentErrorMonad m => AgentClient -> ConnId -> m ByteString
+getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 
 -- | Change servers to be used for creating new queues
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> m ()
@@ -1186,6 +1191,11 @@ getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionSt
 getConnectionServers' c connId = do
   SomeConn _ conn <- withStore c (`getConn` connId)
   pure $ connectionStats conn
+
+getConnectionRatchetAdHash' :: AgentMonad m => AgentClient -> ConnId -> m ByteString
+getConnectionRatchetAdHash' c connId = do
+  CR.Ratchet {rcAD = Str rcAD} <- withStore c (`getRatchet` connId)
+  pure $ C.sha256Hash rcAD
 
 connectionStats :: Connection c -> ConnectionStats
 connectionStats = \case

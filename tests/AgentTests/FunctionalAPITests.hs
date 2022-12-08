@@ -169,6 +169,9 @@ functionalAPITests t = do
       it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testSMPServerConnectionTest t auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
+  fdescribe "getRatchetAdHash" $
+    it "should return the same data for both peers" $
+      withSmpServer t testRatchetAdHash
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -833,6 +836,17 @@ testSMPServerConnectionTest t newQueueBasicAuth srv =
     a <- getSMPAgentClient agentCfg initAgentServers -- initially passed server is not running
     Right r <- runExceptT $ testSMPServerConnection a srv
     pure r
+
+testRatchetAdHash :: IO ()
+testRatchetAdHash = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    ad1 <- getConnectionRatchetAdHash a bId
+    ad2 <- getConnectionRatchetAdHash b aId
+    liftIO $ ad1 `shouldBe` ad2
+  pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
