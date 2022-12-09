@@ -249,7 +249,7 @@ deleteConnection c = withAgentEnv c . deleteConnection' c
 getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers c = withAgentEnv c . getConnectionServers' c
 
--- | get connection ratchet associated data for connection verification (should match AD of the peer)
+-- | get connection ratchet associated data hash for verification (should match peer AD hash)
 getConnectionRatchetAdHash :: AgentErrorMonad m => AgentClient -> ConnId -> m ByteString
 getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 
