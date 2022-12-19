@@ -105,7 +105,7 @@ apt update && apt install openssl
 
 #### Using Docker
 
-On Linux, you can deploy smp server using Docker.
+On Linux, you can deploy smp server using Docker. This will download image from [Docker Hub](https://hub.docker.com/r/simplexchat/simplexmq).
 
 1. Create `config` and `logs` directories:
 
