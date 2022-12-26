@@ -312,7 +312,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
-          incClientStat c client "DISCONNECT" "" `E.catch` \(e :: E.SomeException) -> print e
+          incClientStat c client "DISCONNECT" ""
           notifySub "" $ hostEvent DISCONNECT client
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
@@ -507,7 +507,7 @@ withClient_ c srv statCmd action = do
     logServerError :: ProtocolClient msg -> AgentErrorType -> m a
     logServerError cl e = do
       logServer "<--" c srv "" $ strEncode e
-      stat cl $ bshow e
+      stat cl $ strEncode e
       throwError e
 
 withLogClient_ :: (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> QueueId -> ByteString -> (ProtocolClient msg -> m a) -> m a
