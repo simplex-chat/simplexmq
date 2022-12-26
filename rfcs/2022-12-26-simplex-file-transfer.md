@@ -127,7 +127,7 @@ parts:
     chunks: [2:abc=:def=, 4:abc=:def=]
   - server: xftp://abc=@example3.com
     chunks: [1:abc=:def=, 4:abc=:def=]
-  - server : xftp://abc=@example4.com
+  - server: xftp://abc=@example4.com
     chunks: [2:abc=:def=, 3:abc=:def=]
 ```
 
