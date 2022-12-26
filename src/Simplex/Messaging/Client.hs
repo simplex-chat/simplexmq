@@ -26,7 +26,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    ProtocolClient (thVersion, sessionId, transportHost),
+    ProtocolClient (thVersion, sessionId, sessionTs, transportHost),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -77,6 +77,7 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
+import Data.Time.Clock (UTCTime, getCurrentTime)
 import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
@@ -101,6 +102,7 @@ data ProtocolClient msg = ProtocolClient
   { action :: Async (),
     connected :: TVar Bool,
     sessionId :: SessionId,
+    sessionTs :: UTCTime,
     thVersion :: Version,
     protocolServer :: ProtoServer msg,
     transportHost :: TransportHost,
@@ -214,7 +216,7 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     onionHost = find isOnionHost hosts
     publicHost = find (not . isOnionHost) hosts
 
-clientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient msg -> String  
+clientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient msg -> String
 clientServer = B.unpack . strEncode . protocolServer
 
 -- | Connects to 'ProtocolServer' using passed client configuration
@@ -242,6 +244,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
         ProtocolClient
           { action = undefined,
             sessionId = undefined,
+            sessionTs = undefined,
             thVersion = undefined,
             connected,
             protocolServer,
@@ -262,8 +265,9 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
           runTransportClient socksProxy useHost port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left PCENetworkError)
       th_ <- tcpConnectTimeout `timeout` atomically (takeTMVar thVar)
+      sessionTs <- getCurrentTime
       pure $ case th_ of
-        Just (Right THandle {sessionId, thVersion}) -> Right c {action, sessionId, thVersion}
+        Just (Right THandle {sessionId, thVersion}) -> Right c {action, sessionId, sessionTs, thVersion}
         Just (Left e) -> Left e
         Nothing -> Left PCENetworkError
 
@@ -281,7 +285,8 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
           atomically $ do
             writeTVar (connected c) True
             putTMVar thVar $ Right th
-          let c' = c {sessionId, thVersion} :: ProtocolClient msg
+          sessionTs <- getCurrentTime
+          let c' = c {sessionId, thVersion, sessionTs} :: ProtocolClient msg
           -- TODO remove ping if 0 is passed (or Nothing?)
           raceAny_ [send c' th, process c', receive c' th, ping c']
             `finally` disconnected c'

@@ -79,6 +79,8 @@ module Simplex.Messaging.Agent
     suspendAgent,
     execAgentStoreSQL,
     debugAgentLocks,
+    getAgentStats,
+    resetAgentStats,
     logConnection,
   )
 where
@@ -313,6 +315,12 @@ execAgentStoreSQL c = withAgentEnv c . execAgentStoreSQL' c
 
 debugAgentLocks :: AgentErrorMonad m => AgentClient -> m AgentLocks
 debugAgentLocks c = withAgentEnv c $ debugAgentLocks' c
+
+getAgentStats :: AgentErrorMonad m => AgentClient -> m [(AgentStatsKey, Int)]
+getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> readTVarIO cnt) . M.assocs
+
+resetAgentStats :: AgentErrorMonad m => AgentClient -> m ()
+resetAgentStats = atomically . TM.clear . agentStats
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
