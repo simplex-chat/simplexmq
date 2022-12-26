@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -8,7 +9,9 @@ module Simplex.Messaging.Transport.Client
     runTLSTransportClient,
     smpClientHandshake,
     defaultSMPPort,
+    defaultTransportClientConfig,
     defaultSocksProxy,
+    TransportClientConfig (..),
     SocksProxy,
     TransportHost (..),
     TransportHosts (..),
@@ -93,20 +96,31 @@ instance IsString TransportHost where fromString = parseString strDecode
 
 instance IsString (NonEmpty TransportHost) where fromString = parseString strDecode
 
+data TransportClientConfig = TransportClientConfig
+  { socksProxy :: Maybe SocksProxy,
+    tcpKeepAlive :: Maybe KeepAliveOpts,
+    logTLSErrors :: Bool
+  }
+  deriving (Eq, Show)
+
+defaultTransportClientConfig :: TransportClientConfig
+defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True
+
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ socksProxy_ host port keyHash keepAliveOpts client = do
-  let clientParams = mkTLSClientParams tlsParams caStore_ (B.unpack $ strEncode host) port keyHash
-      connectTCP = case socksProxy_ of
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTLSTransportClient tlsParams caStore_ TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors} host port keyHash client = do
+  let hostName = B.unpack $ strEncode host
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash
+      connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy $ hostAddr host
-        _ -> connectTCPClient . B.unpack $ strEncode host
+        _ -> connectTCPClient hostName
   c <- liftIO $ do
     sock <- connectTCP port
-    mapM_ (setSocketKeepAlive sock) keepAliveOpts
-    connectTLS clientParams sock >>= getClientConnection
+    mapM_ (setSocketKeepAlive sock) tcpKeepAlive
+    connectTLS (Just hostName) logTLSErrors clientParams sock >>= getClientConnection
   client c `E.finally` liftIO (closeConnection c)
   where
     hostAddr = \case

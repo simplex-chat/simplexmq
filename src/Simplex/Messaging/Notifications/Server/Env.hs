@@ -55,7 +55,8 @@ data NtfServerConfig = NtfServerConfig
     logStatsInterval :: Maybe Int,
     logStatsStartTime :: Int,
     serverStatsLogFile :: FilePath,
-    serverStatsBackupFile :: Maybe FilePath
+    serverStatsBackupFile :: Maybe FilePath,
+    logTLSErrors :: Bool
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig

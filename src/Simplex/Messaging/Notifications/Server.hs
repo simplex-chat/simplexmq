@@ -66,7 +66,7 @@ runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtf
 type M a = ReaderT NtfEnv IO a
 
 ntfServer :: NtfServerConfig -> TMVar Bool -> M ()
-ntfServer cfg@NtfServerConfig {transports} started = do
+ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
   restoreServerStats
   s <- asks subscriber
   ps <- asks pushServer
@@ -77,7 +77,7 @@ ntfServer cfg@NtfServerConfig {transports} started = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams (runClient t)
+      runTransportServer started tcpPort serverParams logTLSErrors (runClient t)
 
     runClient :: Transport c => TProxy c -> c -> M ()
     runClient _ h = do

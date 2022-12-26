@@ -57,6 +57,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     defaultClientConfig,
     defaultNetworkConfig,
+    transportClientConfig,
     chooseTransportHost,
     ServerTransmission,
   )
@@ -90,7 +91,7 @@ import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
@@ -159,7 +160,8 @@ data NetworkConfig = NetworkConfig
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds)
-    smpPingInterval :: Int
+    smpPingInterval :: Int,
+    logTLSErrors :: Bool
   }
   deriving (Eq, Show, Generic, FromJSON)
 
@@ -176,8 +178,13 @@ defaultNetworkConfig =
       tcpConnectTimeout = 7_500_000,
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
-      smpPingInterval = 600_000_000 -- 10min
+      smpPingInterval = 600_000_000, -- 10min
+      logTLSErrors = False
     }
+
+transportClientConfig :: NetworkConfig -> TransportClientConfig
+transportClientConfig NetworkConfig {socksProxy, tcpKeepAlive, logTLSErrors} =
+  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors}
 
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig
@@ -241,7 +248,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpKeepAlive, socksProxy, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> STM (PClient msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
@@ -265,9 +272,10 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
     runClient :: (ServiceName, ATransport) -> TransportHost -> PClient msg -> IO (Either ProtocolClientError (ProtocolClient msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
+      let tcConfig = transportClientConfig networkConfig
       action <-
         async $
-          runTransportClient socksProxy useHost port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c cVar)
+          runTransportClient tcConfig useHost port' (Just $ keyHash protocolServer) (client t c cVar)
             `finally` atomically (putTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       pure $ case c_ of

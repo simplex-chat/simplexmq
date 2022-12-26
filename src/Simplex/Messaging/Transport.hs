@@ -154,12 +154,14 @@ data TLS = TLS
     getLock :: TMVar ()
   }
 
-connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
-connectTLS params sock =
+connectTLS :: T.TLSParams p => Maybe HostName -> Bool -> p -> Socket -> IO T.Context
+connectTLS host_ logErrors params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
-    T.handshake ctx
-      `catchAll` \e -> putStrLn ("exception: " <> show e) >> E.throwIO e
+    (if logErrors then logHandshakeErrors else id) (T.handshake ctx)
     pure ctx
+  where
+    logHandshakeErrors = (`catchAll` \e -> putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e)
+    host = maybe "" (\h -> " (" <> h <> ")") host_
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
 getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS

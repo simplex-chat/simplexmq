@@ -25,7 +25,8 @@ data HTTP2ServerConfig = HTTP2ServerConfig
     serverSupported :: T.Supported,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
-    certificateFile :: FilePath
+    certificateFile :: FilePath,
+    logTLSErrors :: Bool
   }
   deriving (Show)
 
@@ -42,12 +43,12 @@ data HTTP2Server = HTTP2Server
   }
 
 getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
-getHTTP2Server HTTP2ServerConfig {qSize, http2Port, serverSupported, caCertificateFile, certificateFile, privateKeyFile} = do
+getHTTP2Server HTTP2ServerConfig {qSize, http2Port, serverSupported, caCertificateFile, certificateFile, privateKeyFile, logTLSErrors} = do
   tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port tlsServerParams $ \r sendResponse -> do
+    runHTTP2Server started http2Port tlsServerParams logTLSErrors $ \r sendResponse -> do
       reqBody <- getRequestBody r ""
       reqTrailers <- H.getRequestTrailers r
       atomically $ writeTBQueue reqQ HTTP2Request {request = r, reqBody, reqTrailers, sendResponse}
@@ -62,9 +63,9 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, serverSupported, caCertifica
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> T.ServerParams -> HTTP2ServerFunc -> IO ()
-runHTTP2Server started port serverParams http2Server =
-  runTransportServer started port serverParams $ \c -> withTlsConfig c 16384 (`H.run` server)
+runHTTP2Server :: TMVar Bool -> ServiceName -> T.ServerParams -> Bool -> HTTP2ServerFunc -> IO ()
+runHTTP2Server started port serverParams logTLSErrors http2Server =
+  runTransportServer started port serverParams logTLSErrors $ \c -> withTlsConfig c 16384 (`H.run` server)
   where
     server :: Request -> Aux -> (Response -> [PushPromise] -> IO ()) -> IO ()
     server req _aux sendResp = http2Server req (`sendResp` [])

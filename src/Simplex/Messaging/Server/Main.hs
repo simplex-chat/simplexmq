@@ -109,26 +109,27 @@ smpServerCLI cfgPath logPath =
                 <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
-                <> "[AUTH]\n"
-                <> "# Set new_queues option to off to completely prohibit creating new messaging queues.\n"
-                <> "# This can be useful when you want to decommission the server, but not all connections are switched yet.\n"
-                <> "new_queues: on\n\n"
-                <> "# Use create_password option to enable basic auth to create new messaging queues.\n"
-                <> "# The password should be used as part of server address in client configuration:\n"
-                <> "# smp://fingerprint:password@host1,host2\n"
-                <> "# The password will not be shared with the connecting contacts, you must share it only\n"
-                <> "# with the users who you want to allow creating messaging queues on your server.\n"
+                <> "[AUTH]\n\
+                   \# Set new_queues option to off to completely prohibit creating new messaging queues.\n\
+                   \# This can be useful when you want to decommission the server, but not all connections are switched yet.\n\
+                   \new_queues: on\n\n\
+                   \# Use create_password option to enable basic auth to create new messaging queues.\n\
+                   \# The password should be used as part of server address in client configuration:\n\
+                   \# smp://fingerprint:password@host1,host2\n\
+                   \# The password will not be shared with the connecting contacts, you must share it only\n\
+                   \# with the users who you want to allow creating messaging queues on your server.\n"
                 <> ( case basicAuth of
                        Just auth -> "create_password: " <> T.unpack (safeDecodeUtf8 $ strEncode auth)
                        _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
                    )
-                <> "\n\n"
-                <> "[TRANSPORT]\n"
-                <> "# host is only used to print server address on start\n"
+                <> "\n\n\
+                   \[TRANSPORT]\n\
+                   \# host is only used to print server address on start\n"
                 <> ("host: " <> host <> "\n")
                 <> ("port: " <> defaultServerPort <> "\n")
-                <> "websockets: off\n\n"
-                <> "[INACTIVE_CLIENTS]\n\
+                <> "log_tls_errors: off\n\
+                   \websockets: off\n\n\
+                   \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
                 <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
@@ -191,7 +192,8 @@ smpServerCLI cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
-              smpServerVRange = supportedSMPServerVRange
+              smpServerVRange = supportedSMPServerVRange,
+              logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
             }
 
 data CliCommand

@@ -67,7 +67,8 @@ data ServerConfig = ServerConfig
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
     -- | SMP client-server protocol version range
-    smpServerVRange :: VersionRange
+    smpServerVRange :: VersionRange,
+    logTLSErrors :: Bool
   }
 
 defaultMessageExpiration :: ExpirationConfig
