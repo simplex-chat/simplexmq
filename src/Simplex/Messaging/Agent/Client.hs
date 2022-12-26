@@ -947,7 +947,6 @@ storeError = \case
 
 incStat :: AgentClient -> Int -> AgentStatsKey -> STM ()
 incStat AgentClient {agentStats} n k = do
-  -- TM.alterF (fmap Just . maybe (newTVar n) (\v -> modifyTVar v (+ n) $> v)) k $ agentStats c
   TM.lookup k agentStats >>= \case
     Just v -> modifyTVar v (+ n)
     _ -> newTVar n >>= \v -> TM.insert k v agentStats
