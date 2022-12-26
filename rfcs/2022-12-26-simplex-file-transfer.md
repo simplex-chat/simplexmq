@@ -58,6 +58,12 @@ In any case, file upload and download could be done via HTTP2.
       - chunk size.
     - Response:
       - chunk ID for the sender and different IDs for all recipients.
+  - add recipients to file chunk
+    - Parameters:
+      - sender's chunk ID
+      - Ed25519 keys for commands of each recipient.
+    - Response:
+      - chunk IDs for new recipients.
   - upload file chunk.
   - delete file chunk (invalidates all recipient IDs).
 - File recipient:
@@ -105,23 +111,24 @@ This "file description" itself will be sent as a small file. To estimate its siz
 
 For 1gb file, sent via 4 different servers, in 8Mb chunks, with redundancy 2, the size of "file description", assuming text encoding, will be ~34kb (`128 * (8 + 32 + 64) * 2 * 4/3 + 128 * 4 + (64 + 32 + 32) * 4/3 + 256`).
 
-File description format:
+File description format (yml):
 
 ```
 name: file.ext
 size: 33200000
-part: 8Mb
+chunk: 8Mb
 hash: abc=
 key: abc=
 iv: abc=
-host: example1.com
-parts: 1:abc=:def=, 3:abc=:def=
-host: example2.com
-parts: 2:abc=:def=, 4:abc=:def=
-host: example3.com
-parts: 1:abc=:def=, 4:abc=:def=
-host: example4.com
-parts: 2:abc=:def=, 3:abc=:def=
+parts:
+  - host: example1.com
+    chunks: [1:abc=:def=, 3:abc=:def=]
+  - host: example2.com
+    chunks: [2:abc=:def=, 4:abc=:def=]
+  - host: example3.com
+    chunks: [1:abc=:def=, 4:abc=:def=]
+  - host: example4.com
+    chunks: [2:abc=:def=, 3:abc=:def=]
 ```
 
 This file description is sent to all recipients via normal messages, split to 15780 byte chunks if needed.
