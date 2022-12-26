@@ -283,7 +283,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
         Left e -> case e of
           PPConnection _ -> retryDeliver
           PPRetryLater -> retryDeliver
-          -- TODO alert
           PPCryptoError _ -> err e
           PPResponseError _ _ -> err e
           PPTokenInvalid -> updateTknStatus NTInvalid >> err e

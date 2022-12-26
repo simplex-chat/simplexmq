@@ -432,7 +432,7 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
       withRetryInterval ri $ \loop -> void $ tryConnectClient (const reconnectClient) loop
 
 hostEvent :: forall msg. ProtocolTypeI (ProtoType msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> ProtocolClient msg -> ACommand 'Agent
-hostEvent event client = event (AProtocolType $ protocolTypeI @(ProtoType msg)) $ transportHost client
+hostEvent event client = event (AProtocolType $ protocolTypeI @(ProtoType msg)) $ transportHost' client
 
 getClientConfig :: AgentMonad m => AgentClient -> (AgentConfig -> ProtocolClientConfig) -> m ProtocolClientConfig
 getClientConfig AgentClient {useNetworkConfig} cfgSel = do
@@ -965,4 +965,4 @@ incClientStatN :: AgentClient -> ProtocolClient msg -> Int -> ByteString -> Byte
 incClientStatN c pc n cmd res = do
   atomically $ incStat c n statsKey
   where
-    statsKey = AgentStatsKey {host = strEncode $ transportHost pc, clientTs = strEncode $ sessionTs pc, cmd, res}
+    statsKey = AgentStatsKey {host = strEncode $ transportHost' pc, clientTs = strEncode $ sessionTs pc, cmd, res}

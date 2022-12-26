@@ -90,7 +90,7 @@ signedJWTToken pk (JWTToken hdr claims) = do
 
 readECPrivateKey :: FilePath -> IO EC.PrivateKey
 readECPrivateKey f = do
-  -- TODO this is specific to APNS key
+  -- this pattern match is specific to APNS key type, it may need to be extended for other push providers
   [PK.Unprotected (X.PrivKeyEC X.PrivKeyEC_Named {privkeyEC_name, privkeyEC_priv})] <- PK.readKeyFile f
   pure EC.PrivateKey {private_curve = ECT.getCurveByName privkeyEC_name, private_d = privkeyEC_priv}
 
@@ -357,7 +357,7 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
         _ -> err status reason'
       | status == Just N.gone410 = throwError PPTokenInvalid
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
-      -- Just tooManyRequests429 -> TODO TooManyRequests - too many requests for the same token
+      -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token
       | otherwise = err status reason'
     err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     err s r = throwError $ PPResponseError s r

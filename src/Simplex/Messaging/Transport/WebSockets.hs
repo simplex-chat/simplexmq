@@ -18,6 +18,7 @@ import Simplex.Messaging.Transport
     TransportError (..),
     TransportPeer (..),
     closeTLS,
+    smpBlockSize,
     trimCR,
     withTlsUnique,
   )
@@ -33,7 +34,7 @@ websocketsOpts :: ConnectionOptions
 websocketsOpts =
   defaultConnectionOptions
     { connectionCompressionOptions = NoCompression,
-      connectionFramePayloadSizeLimit = SizeLimit $ 16 * 1024, -- TODO move to Protocol
+      connectionFramePayloadSizeLimit = SizeLimit $ fromIntegral smpBlockSize,
       connectionMessageDataSizeLimit = SizeLimit 65536
     }
 
