@@ -121,13 +121,13 @@ hash: abc=
 key: abc=
 iv: abc=
 parts:
-  - host: example1.com
+  - server: xftp://abc=@example1.com
     chunks: [1:abc=:def=, 3:abc=:def=]
-  - host: example2.com
+  - server: xftp://abc=@example2.com
     chunks: [2:abc=:def=, 4:abc=:def=]
-  - host: example3.com
+  - server: xftp://abc=@example3.com
     chunks: [1:abc=:def=, 4:abc=:def=]
-  - host: example4.com
+  - server : xftp://abc=@example4.com
     chunks: [2:abc=:def=, 3:abc=:def=]
 ```
 
