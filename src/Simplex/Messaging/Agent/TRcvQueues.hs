@@ -23,11 +23,9 @@ clear (TRcvQueues qs) = TM.clear qs
 deleteConn :: ConnId -> TRcvQueues -> STM ()
 deleteConn cId (TRcvQueues qs) = modifyTVar' qs $ M.filter (\rq -> cId /= connId rq)
 
--- TODO possibly, should be limited to active queues
 hasConn :: ConnId -> TRcvQueues -> STM Bool
 hasConn cId (TRcvQueues qs) = any (\rq -> cId == connId rq) <$> readTVar qs
 
--- TODO possibly, should be limited to active queues
 getConns :: TRcvQueues -> STM (Set ConnId)
 getConns (TRcvQueues qs) = M.foldr' (S.insert . connId) S.empty <$> readTVar qs
 

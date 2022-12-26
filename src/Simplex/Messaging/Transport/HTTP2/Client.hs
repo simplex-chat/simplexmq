@@ -26,7 +26,7 @@ import UnliftIO.STM
 import UnliftIO.Timeout
 
 data HTTP2Client = HTTP2Client
-  { action :: Async (),
+  { action :: Maybe (Async ()),
     connected :: TVar Bool,
     host :: HostName,
     port :: ServiceName,
@@ -71,7 +71,7 @@ getHTTP2Client host port config@HTTP2ClientConfig {tcpKeepAlive, connTimeout, ca
     mkHTTPS2Client = do
       connected <- newTVar False
       reqQ <- newTBQueue $ qSize config
-      pure HTTP2Client {action = undefined, connected, host, port, config, reqQ}
+      pure HTTP2Client {action = Nothing, connected, host, port, config, reqQ}
 
     runClient :: HTTP2Client -> IO (Either HTTP2ClientError HTTP2Client)
     runClient c = do
@@ -84,7 +84,7 @@ getHTTP2Client host port config@HTTP2ClientConfig {tcpKeepAlive, connTimeout, ca
             `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
       conn_ <- connTimeout `timeout` atomically (takeTMVar cVar)
       pure $ case conn_ of
-        Just (Right ()) -> Right c {action}
+        Just (Right ()) -> Right c {action = Just action}
         Just (Left e) -> Left e
         Nothing -> Left HCNetworkError1
 
@@ -111,8 +111,7 @@ getHTTP2Client host port config@HTTP2ClientConfig {tcpKeepAlive, connTimeout, ca
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTP2Client :: HTTP2Client -> IO ()
--- TODO disconnect
-closeHTTP2Client = uninterruptibleCancel . action
+closeHTTP2Client = mapM_ uninterruptibleCancel . action
 
 sendRequest :: HTTP2Client -> Request -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequest HTTP2Client {reqQ, config} req = do

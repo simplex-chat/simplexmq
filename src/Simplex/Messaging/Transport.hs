@@ -28,6 +28,7 @@ module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     supportedSMPServerVRange,
     simplexMQVersion,
+    smpBlockSize,
 
     -- * Transport connection class
     Transport (..),

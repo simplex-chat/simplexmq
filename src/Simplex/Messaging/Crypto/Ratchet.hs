@@ -472,7 +472,6 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
     decryptMessage :: MessageKey -> EncRatchetMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
-      -- TODO add associated data
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)
