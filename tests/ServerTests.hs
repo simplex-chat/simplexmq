@@ -104,9 +104,11 @@ decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.Cry
 decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
 
 decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
-decryptMsgV3 dhShared nonce body = do
-  ClientRcvMsgBody {msgBody} <- parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body)
-  pure msgBody
+decryptMsgV3 dhShared nonce body =
+  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
+    Right ClientRcvMsgBody {msgBody} -> Right msgBody
+    Right _ -> Left "unexpected ClientRcvMsgQuota"
+    Left e -> Left e
 
 testCreateSecureV2 :: forall c. Transport c => TProxy c -> Spec
 testCreateSecureV2 _ =

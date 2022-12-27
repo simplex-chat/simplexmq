@@ -538,14 +538,19 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           | otherwise = case status qr of
             QueueOff -> return $ err AUTH
             QueueActive ->
-              mapM mkMessage (C.maxLenBS msgBody) >>= \case
+              case C.maxLenBS msgBody of
                 Left _ -> pure $ err LARGE_MSG
-                Right msg -> do
-                  resp@(_, _, sent) <- time "SEND" $ do
+                Right body -> do
+                  (resp, msg_) <- time "SEND" $ do
                     q <- getStoreMsgQueue "SEND" $ recipientId qr
                     expireMessages q
-                    atomically $ ifM (isFull q) (pure $ err QUOTA) (writeMsg q msg $> ok)
-                  when (sent == OK) . time "SEND ok" $ do
+                    msg <- mkMessage body
+                    atomically $ do
+                      full <- isFull q
+                      if full
+                        then writeMsg q (msgQuota msg) $> (err QUOTA, Nothing)
+                        else writeMsg q msg $> (ok, Just msg)
+                  forM_ msg_ $ \msg -> time "SEND ok" $ do
                     when (notification msgFlags) $
                       atomically . trySendNotification msg =<< asks idsDrg
                     stats <- asks serverStats
@@ -565,6 +570,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
               old <- liftIO $ mapM expireBeforeEpoch msgExp
               atomically $ mapM_ (deleteExpiredMsgs q) old
 
+            msgQuota :: Message -> Message
+            msgQuota msg = MessageQuota {msgId = msgId (msg :: Message), msgTs = msgTs (msg :: Message)}
+
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =
               forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
@@ -572,12 +580,14 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
 
             writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
             writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              unlessM (isFullTBQueue q) $ do
-                (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg rcvNtfDhSecret ntfNonceDrg
-                writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
+              unlessM (isFullTBQueue q) $ case msg of
+                Message {msgId, msgTs} -> do
+                  (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
+                  writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
+                _ -> pure ()
 
-            mkMessageNotification :: Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
-            mkMessageNotification Message {msgId, msgTs} rcvNtfDhSecret ntfNonceDrg = do
+            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
+            mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
               cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
@@ -615,17 +625,23 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         time name = timed name queueId
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
-        encryptMsg qr Message {msgId, msgTs, msgFlags, msgBody}
-          | thVersion == 1 || thVersion == 2 = encrypt msgBody
-          | otherwise = encrypt $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
+        encryptMsg qr msg = case msg of
+          Message {msgFlags, msgBody}
+            -- TODO refactor, probably msgTs should not be sent in RcvMessage if version is > 2
+            | thVersion == 1 || thVersion == 2 -> encrypt msgFlags msgBody
+            | otherwise -> encrypt msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
+          MessageQuota {} ->
+            encrypt noMsgFlags $ encodeRcvMsgBody (RcvMsgQuota msgTs')
           where
-            encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
-            encrypt body =
-              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) body
-               in RcvMessage msgId msgTs msgFlags encBody
+            encrypt :: KnownNat i => MsgFlags -> C.MaxLenBS i -> RcvMessage
+            encrypt msgFlags body =
+              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+               in RcvMessage msgId' msgTs' msgFlags encBody
+            msgId' = msgId (msg :: Message)
+            msgTs' = msgTs (msg :: Message)
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s Message {msgId} = tryPutTMVar (delivered s) msgId
+        setDelivered s msg = tryPutTMVar (delivered s) $ msgId (msg :: Message)
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do

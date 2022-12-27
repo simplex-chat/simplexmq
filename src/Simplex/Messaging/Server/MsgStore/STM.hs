@@ -7,9 +7,13 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.Messaging.Server.MsgStore.STM where
+module Simplex.Messaging.Server.MsgStore.STM
+  ( STMMsgStore,
+    MsgQueue,
+    newMsgStore,
+  )
+where
 
-import Control.Concurrent.STM.TBQueue (flushTBQueue)
 import Control.Monad (when)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -22,7 +26,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import UnliftIO.STM
 
-newtype MsgQueue = MsgQueue {msgQueue :: TBQueue Message}
+data MsgQueue = MsgQueue {msgQueue :: TBQueue Message, quota :: Natural, lastMsg :: TVar (Maybe Message)}
 
 type STMMsgStore = TMap RecipientId MsgQueue
 
@@ -34,22 +38,31 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
   getMsgQueue st rId quota = maybe newQ pure =<< TM.lookup rId st
     where
       newQ = do
-        q <- MsgQueue <$> newTBQueue quota
+        msgQueue <- newTBQueue (quota + 1)
+        lastMsg <- newTVar Nothing
+        let q = MsgQueue {msgQueue, quota, lastMsg}
         TM.insert rId q st
-        return q
+        pure q
 
   delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
   delMsgQueue st rId = TM.delete rId st
 
   flushMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
-  flushMsgQueue st rId = TM.lookup rId st >>= maybe (pure []) (flushTBQueue . msgQueue)
+  flushMsgQueue st rId = TM.lookupDelete rId st >>= maybe (pure []) (flushTBQueue . msgQueue)
 
 instance MonadMsgQueue MsgQueue STM where
   isFull :: MsgQueue -> STM Bool
-  isFull = isFullTBQueue . msgQueue
+  isFull MsgQueue {msgQueue, quota} = (quota <=) <$> lengthTBQueue msgQueue
 
   writeMsg :: MsgQueue -> Message -> STM ()
-  writeMsg = writeTBQueue . msgQueue
+  writeMsg MsgQueue {msgQueue, lastMsg} msg = do
+    writeTBQueue msgQueue msg
+    writeTVar lastMsg $ Just msg
+
+  lastQueueMsg :: MsgQueue -> STM (Maybe Message)
+  lastQueueMsg MsgQueue {msgQueue, lastMsg} = do
+    len <- lengthTBQueue msgQueue
+    if len == 0 then pure Nothing else readTVar lastMsg
 
   tryPeekMsg :: MsgQueue -> STM (Maybe Message)
   tryPeekMsg = tryPeekTBQueue . msgQueue
@@ -58,26 +71,28 @@ instance MonadMsgQueue MsgQueue STM where
   peekMsg = peekTBQueue . msgQueue
 
   tryDelMsg :: MsgQueue -> MsgId -> STM Bool
-  tryDelMsg (MsgQueue q) msgId' =
+  tryDelMsg MsgQueue {msgQueue = q} msgId' =
     tryPeekTBQueue q >>= \case
-      Just Message {msgId}
-        | msgId == msgId' || B.null msgId' -> tryReadTBQueue q $> True
+      Just msg
+        | msgId msg == msgId' || B.null msgId' -> tryReadTBQueue q $> True
         | otherwise -> pure False
       _ -> pure False
 
   -- atomic delete (== read) last and peek next message if available
   tryDelPeekMsg :: MsgQueue -> MsgId -> STM (Bool, Maybe Message)
-  tryDelPeekMsg (MsgQueue q) msgId' =
+  tryDelPeekMsg MsgQueue {msgQueue = q} msgId' =
     tryPeekTBQueue q >>= \case
-      msg_@(Just Message {msgId})
-        | msgId == msgId' || B.null msgId' -> (True,) <$> (tryReadTBQueue q >> tryPeekTBQueue q)
+      msg_@(Just msg)
+        | msgId msg == msgId' || B.null msgId' -> (True,) <$> (tryReadTBQueue q >> tryPeekTBQueue q)
         | otherwise -> pure (False, msg_)
       _ -> pure (False, Nothing)
 
   deleteExpiredMsgs :: MsgQueue -> Int64 -> STM ()
-  deleteExpiredMsgs (MsgQueue q) old = loop
+  deleteExpiredMsgs MsgQueue {msgQueue = q} old = loop
     where
       loop = tryPeekTBQueue q >>= mapM_ delOldMsg
-      delOldMsg Message {msgTs} =
-        when (systemSeconds msgTs < old) $
-          tryReadTBQueue q >> loop
+      delOldMsg = \case
+        Message {msgTs} ->
+          when (systemSeconds msgTs < old) $
+            tryReadTBQueue q >> loop
+        _ -> pure ()
