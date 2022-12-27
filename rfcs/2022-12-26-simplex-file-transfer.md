@@ -23,7 +23,7 @@ But these solution are complex and they do not scale.
 Another approach would be adopting some open-source file storage, possibly S3-compatible, to host files while "in transit". The downsides are:
 
 1. Missing features. S3-compatible file servers require a service layer that we would need to develop to manage user accounts and permissions. Other solutions allow self-registering users and uploading files without service layer, but are not flexible enough in managing policies for these files.
-2. Limited meta-data protection, both on the application and on transport layer: same address for sending and recieving a file, file size is known to the server, etc.
+2. Limited meta-data protection, both on the application and on transport layer: same address for sending and receiving a file, file size is known to the server, etc.
 3. More difficult to self-host for the users when the server has 2 components - a 3rd party solution with our service component.
 
 We are not considering P2P solutions because of their bad meta-data privacy and requirement of having a single network - the same reason why P2P design is not used for SimpleX messaging network.
@@ -34,7 +34,7 @@ The parameters of the solution would be:
 
 1. The server does not have knowledge of the users and actual files – only anonymously uploaded fixed-size chunks (considered 8Mb, maybe we should allow 2 sizes, e.g. 1Mb and 8Mb).
 2. The server should allow broadcast, so that a chunk can be downloaded by multiple recipients.
-3. There should be no identifiers and cyphertext in common inside TLS between sender and recipient traffic, and between the traffic of different recipients of the same file. This approach can be extended to support public chunks that have persistent identifier.
+3. There should be no identifiers and ciphertext in common inside TLS between sender and recipient traffic, and between the traffic of different recipients of the same file. This approach can be extended to support public chunks that have persistent identifier.
 4. The server should prevent multiple uploads of the same chunk. This can be extended to allow multiple downloads from the same persistent address.
 5. Clients can send the chunks from the same file via multiple servers, both by splitting chunks between them and for redundancy.
 
@@ -95,7 +95,7 @@ To send the file, the sender will:
 
 - compute SHA512 digest
 - pad the file to match the whole number of chunks in size,
-- encrypt it with a randomly chosen symmetric key and IV (e.g., using NaCL cryptbox),
+- encrypt it with a randomly chosen symmetric key and IV (e.g., using NaCL cryptobox),
 - split into fixed size chunks
 - upload each chunk to a randomly chosen server.
 
@@ -152,5 +152,5 @@ Having received the description, the recipient will:
 - download all chunks falling back to secondary servers, if needed
 - combine the chunks into a file
 - decrypt the file
-- unpad it
+- un-pad it
 - validate file digest
