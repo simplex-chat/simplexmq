@@ -11,9 +11,9 @@ SMP servers define a limit on the number of messages that can be stored on the s
 
 Sending agent permanently stops trying to send messages having received `ERR QUOTA` (or, for the period of clients migration, increases TTL much more than in cases of network errors).
 
-Add SMP server event that means "quota reached" (e.g. QTA) - it will be delivered to the recipient once all messages are retrieved at the same point in message stream where the sender received `ERR QUOTA`. Alternatively, it could be a message flag that is set on the last message in the queue at a point the sender received `ERR QUOTA`.
+Add SMP server event that means "quota reached" (e.g. `QTA` or `MSG QUOTA`) - it will be delivered to the recipient once all messages are retrieved at the same point in message stream where the sender received `ERR QUOTA`. Alternatively, it could be a message flag that is set on the last message in the queue at a point the sender received `ERR QUOTA`.
 
-Add SMP agent message that means "quota available, resume sending" (e.g. A_QTA or A_RESUME) – the receiving agent will send it via the reply queue to the sending agent that will resume sending messages at this point.
+Add SMP agent message that means "quota available, resume sending" (e.g. `A_QTA` or `A_RESUME`) – the receiving agent will send it via the reply queue to the sending agent that will resume sending messages at this point.
 
 Possibly, increase TTL for local messages to 30 days. That might require separately addressing the problem of permanently failing servers.
 
