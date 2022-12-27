@@ -42,12 +42,24 @@ The parameters of the solution would be:
 
 File transfer servers will be chosen by file senders. The servers will allow senders to anonymously upload fixed-size file chunks.
 
-### Transport protocol: one of two options:
+### Transport protocol
 
-- fixed-size blocks with binary-encoded commands over TCP, similar to SMP and notifications server protocols
-- HTTP2.
+- binary-encoded commands sent as fixed-size padded block in the body of HTTP2 POST request, similar to SMP and notifications server protocol transmission encodings.
+- HTTP2 POST with a fixed size padded block body for file upload and download.
 
-In any case, file upload and download could be done via HTTP2.
+Block size - 4096 bytes (it would fit ~120 Ed25519 recipient keys).
+
+The reasons to use HTTP2:
+
+- avoid the need to have two hostnames (or two different ports) for commands and file uploads.
+- compatibility with the existing clients.
+
+The reason not to use JSON bodies:
+
+- bigger request size, so fewer recipient keys would fit in a single request
+- signature over command has to be outside of JSON anyway.
+
+The reason not to use URI segments / HTTP verbs / REST semantics – to have consistent request size.
 
 ### Required server commands:
 
