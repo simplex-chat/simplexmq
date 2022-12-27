@@ -15,26 +15,26 @@ Sending files as currently implemented in SimpleX Chat is inefficient for these 
 These problems could be solved within SMP protocol:
 
 - streaming messages without waiting for acknowledgements.
-- bigger queue sizes stored on hard drive accepting large files without waiting for the recipient confirmation.
+- bigger queue sizes stored on hard drive and accepting large files without waiting for the recipient confirmation.
 - adding broadcast to SMP servers.
 
-But these solution are complex and they do not scale.
+These solution are complex and they do not scale well.
 
 Another approach would be adopting some open-source file storage, possibly S3-compatible, to host files while "in transit". The downsides are:
 
-1. Missing features. S3-compatible file servers require a service layer that we would need to develop to manage user accounts and permissions. Other solutions allow self-registering users and uploading files without service layer, but are not flexible enough in managing policies for these files.
+1. Missing features. S3-compatible file servers require a service layer that we would need to develop to manage user accounts and permissions. There are solutions that allow self-registering users and uploading files without service layer, but they are not flexible enough in managing policies for these files.
 2. Limited meta-data protection, both on the application and on transport layer: same address for sending and receiving a file, file size is known to the server, etc.
-3. More difficult to self-host for the users when the server has 2 components - a 3rd party solution with our service component.
+3. More difficult to self-host for the users when the server has 2 components (a 3rd party solution with our service component).
 
 We are not considering P2P solutions because of their bad meta-data privacy and requirement of having a single network - the same reason why P2P design is not used for SimpleX messaging network.
 
-A proposed solution is to develop a file hosting service (SimpleX File Transfer service) that would have better meta-data protection and functionality than the alternatives, using the ideas SMP protocol design.
+A proposed solution is to develop a file hosting service (SimpleX File Transfer service) that would have better meta-data protection and functionality than the alternatives, using the ideas from SMP protocol design.
 
 The parameters of the solution would be:
 
 1. The server does not have knowledge of the users and actual files – only anonymously uploaded fixed-size chunks (considered 8Mb, maybe we should allow 2 sizes, e.g. 1Mb and 8Mb).
 2. The server should allow broadcast, so that a chunk can be downloaded by multiple recipients.
-3. There should be no identifiers and ciphertext in common inside TLS between sender and recipient traffic, and between the traffic of different recipients of the same file. This approach can be extended to support public chunks that have persistent identifier.
+3. There should be no identifiers and ciphertext in common inside TLS between sender and recipient traffic, and between the traffic of different recipients of the same file. This approach can be extended to support public chunks that have persistent identifiers.
 4. The server should prevent multiple uploads of the same chunk. This can be extended to allow multiple downloads from the same persistent address.
 5. Clients can send the chunks from the same file via multiple servers, both by splitting chunks between them and for redundancy.
 
@@ -52,14 +52,14 @@ Block size - 4096 bytes (it would fit ~120 Ed25519 recipient keys).
 The reasons to use HTTP2:
 
 - avoid the need to have two hostnames (or two different ports) for commands and file uploads.
-- compatibility with the existing clients.
+- compatibility with the existing HTTP2 client libraries.
 
 The reason not to use JSON bodies:
 
 - bigger request size, so fewer recipient keys would fit in a single request
 - signature over command has to be outside of JSON anyway.
 
-The reason not to use URI segments / HTTP verbs / REST semantics – to have consistent request size.
+The reason not to use URI segments / HTTP verbs / REST semantics is to have consistent request size.
 
 ### Required server commands:
 
