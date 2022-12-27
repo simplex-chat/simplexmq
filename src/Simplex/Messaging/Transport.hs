@@ -156,11 +156,11 @@ data TLS = TLS
 
 connectTLS :: T.TLSParams p => Maybe HostName -> Bool -> p -> Socket -> IO T.Context
 connectTLS host_ logErrors params sock =
-  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
-    (if logErrors then logHandshakeErrors else id) (T.handshake ctx)
-    pure ctx
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx ->
+    logHandshakeErrors (T.handshake ctx) $> ctx
   where
-    logHandshakeErrors = (`catchAll` \e -> putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e)
+    logHandshakeErrors = if logErrors then (`catchAll` logThrow) else id
+    logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
