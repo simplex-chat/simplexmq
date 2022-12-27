@@ -44,7 +44,6 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.Server
-import Simplex.Messaging.Transport.KeepAlive
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -70,7 +69,7 @@ ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient Nothing host ntfTestPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
+  runTransportClient defaultTransportClientConfig host ntfTestPort (Just testKeyHash) $ \h ->
     liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedNTFServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -101,7 +100,8 @@ ntfServerCfg =
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
-      serverStatsBackupFile = Nothing
+      serverStatsBackupFile = Nothing,
+      logTLSErrors = True
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
@@ -178,7 +178,8 @@ apnsMockServerConfig =
       serverSupported = http2TLSParams,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt"
+      certificateFile = "tests/fixtures/server.crt",
+      logTLSErrors = True
     }
 
 withAPNSMockServer :: (APNSMockServer -> IO ()) -> IO ()

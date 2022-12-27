@@ -23,7 +23,6 @@ import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
-import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -58,7 +57,7 @@ testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testSMPClient client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient Nothing useHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
+  runTransportClient defaultTransportClientConfig useHost testPort (Just testKeyHash) $ \h ->
     liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -88,7 +87,8 @@ cfg =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
-      smpServerVRange = supportedSMPServerVRange
+      smpServerVRange = supportedSMPServerVRange,
+      logTLSErrors = True
     }
 
 withSmpServerStoreMsgLogOnV2 :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
