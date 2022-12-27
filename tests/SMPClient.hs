@@ -69,8 +69,8 @@ cfg :: ServerConfig
 cfg =
   ServerConfig
     { transports = undefined,
-      tbqSize = 1,
-      serverTbqSize = 1,
+      tbqSize = 10,
+      serverTbqSize = 10,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
