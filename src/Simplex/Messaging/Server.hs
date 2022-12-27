@@ -97,14 +97,13 @@ runSMPServer cfg = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: TMVar Bool -> ServerConfig -> IO ()
-runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started)
+runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started cfg)
 
 type M a = ReaderT Env IO a
 
-smpServer :: TMVar Bool -> M ()
-smpServer started = do
+smpServer :: TMVar Bool -> ServerConfig -> M ()
+smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
   s <- asks server
-  cfg@ServerConfig {transports} <- asks config
   restoreServerStats
   restoreServerMessages
   raceAny_
@@ -117,7 +116,7 @@ smpServer started = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams (runClient t)
+      runTransportServer started tcpPort serverParams logTLSErrors (runClient t)
 
     serverThread ::
       forall s.

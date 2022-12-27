@@ -4,13 +4,19 @@ logd="/var/opt/simplex/"
 
 # Check if server has been initialized
 if [ ! -f "$confd/smp-server.ini" ]; then
-	# If not, determine ip or domain
-	case $addr in
-		'') printf "Please specify \$addr environment variable.\n"; exit 1 ;;
-		*[a-zA-Z]*) smp-server init -y -l -n "$addr" ;;
-		*) smp-server init -y -l --ip "$addr" ;;
-	esac
+  # If not, determine ip or domain
+  case $addr in
+    '') printf "Please specify \$addr environment variable.\n"; exit 1 ;;
+    *[a-zA-Z]*) set -- -n $addr ;;
+    *) set -- --ip $addr ;;
+  esac
 
+  case $pass in
+    '') set -- "$@" --no-password ;;
+    *) set -- "$@" --password $pass ;;
+  esac
+
+  smp-server init -y -l "$@"
 fi
 
 # backup store log

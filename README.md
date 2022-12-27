@@ -105,25 +105,23 @@ apt update && apt install openssl
 
 #### Using Docker
 
-On Linux, you can deploy smp server using Docker.
+On Linux, you can deploy smp server using Docker. This will download image from [Docker Hub](https://hub.docker.com/r/simplexchat/simplexmq).
 
-1. Build your `smp-server` image:
+1. Create `config` and `logs` directories:
 
    ```sh
-   git clone https://github.com/simplex-chat/simplexmq
-   cd simplexmq
-   git checkout stable
-   DOCKER_BUILDKIT=1 docker build -t smp-server -f ./download.Dockerfile .
+   mkdir -p ~/simplex/{config,logs}
    ```
-2. Run your Docker container:
+
+2. Run your Docker container. You must change **your_ip_or_domain**. `-e pass="password"` is optional variable to password-protect your `smp` server:
    ```sh
    docker run -d \
-	     --name smp-server \
-	     -e addr="your_ip_or_domain" \
-	     -p 5223:5223 \
-	     -v ${PWD}/scripts/docker/config:/etc/opt/simplex \
-	     -v ${PWD}/scripts/docker/logs:/var/opt/simplex \
-	     smp-server
+       -e addr="your_ip_or_domain" \
+       -e pass="password" \
+       -p 5223:5223 \
+       -v $HOME/simplex/config:/etc/opt/simplex:z \
+       -v $HOME/simplex/logs:/var/opt/simplex:z \
+       simplexchat/simplexmq
    ```
 
 #### Ubuntu
@@ -146,15 +144,22 @@ On Linux, you can build smp server using Docker.
    git checkout stable
    DOCKER_BUILDKIT=1 docker build -t smp-server -f ./build.Dockerfile .
    ```
-2. Run your Docker container:
+
+2. Create `config` and `logs` directories:
+
+   ```sh
+   mkdir -p ~/simplex/{config,logs}
+   ```
+
+3. Run your Docker container. You must change **your_ip_or_domain**. `-e pass="password"` is optional variable to password-protect your `smp` server::
    ```sh
    docker run -d \
-	     --name smp-server \
-	     -e addr="your_ip_or_domain" \
-	     -p 5223:5223 \
-	     -v ${PWD}/scripts/docker/config:/etc/opt/simplex \
-	     -v ${PWD}/scripts/docker/logs:/var/opt/simplex \
-	     smp-server
+       -e addr="your_ip_or_domain" \
+       -e pass="password" \
+       -p 5223:5223 \
+       -v $HOME/simplex/config:/etc/opt/simplex:z \
+       -v $HOME/simplex/logs:/var/opt/simplex:z \
+       smp-server
    ```
 
 #### Using your distribution

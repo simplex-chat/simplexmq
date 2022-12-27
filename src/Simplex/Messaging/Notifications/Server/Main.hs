@@ -71,12 +71,13 @@ ntfServerCLI cfgPath logPath =
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
-            <> "log_stats: off\n\n"
-            <> "[TRANSPORT]\n"
-            <> "# host is only used to print server address on start\n"
+            <> "log_stats: off\n\n\
+               \[TRANSPORT]\n\
+               \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
-            <> "websockets: off\n"
+            <> "log_tls_errors: off\n\
+               \websockets: off\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -111,7 +112,8 @@ ntfServerCLI cfgPath logPath =
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
-              serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log"
+              serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log",
+              logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
             }
 
 data CliCommand
