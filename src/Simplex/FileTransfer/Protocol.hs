@@ -188,8 +188,7 @@ instance FilePartyI p => ProtocolEncoding (FileCommand p) where
   checkCredentials (sig, _, chunkId, _) cmd = case cmd of
     -- NEW must not have signature and chunk ID
     NEW {}
-      | isJust sig -> Left $ CMD HAS_AUTH
-      | not (B.null chunkId) -> Left $ CMD HAS_AUTH
+      | isJust sig || not (B.null chunkId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     -- other client commands must have both signature and queue ID
     _
