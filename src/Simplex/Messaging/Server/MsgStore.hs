@@ -19,14 +19,12 @@ instance StrEncoding MsgLogRecord where
   strP = "v3 " *> (MLRv3 <$> strP_ <*> strP) <|> MLRv1 <$> strP_ <*> strP
 
 class MonadMsgStore s q m | s -> q where
-  getMsgQueue :: s -> RecipientId -> Natural -> m q
+  getMsgQueue :: s -> RecipientId -> Int -> m q
   delMsgQueue :: s -> RecipientId -> m ()
   flushMsgQueue :: s -> RecipientId -> m [Message]
 
 class MonadMsgQueue q m where
-  isFull :: q -> m Bool
-  writeMsg :: q -> Message -> m () -- non blocking
-  lastQueueMsg :: q -> m (Maybe Message)
+  writeMsg :: q -> Message -> m (Maybe Message) -- non blocking
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking
   tryDelMsg :: q -> MsgId -> m Bool -- non blocking

@@ -541,22 +541,19 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
               case C.maxLenBS msgBody of
                 Left _ -> pure $ err LARGE_MSG
                 Right body -> do
-                  (resp, msg_) <- time "SEND" $ do
+                  msg_ <- time "SEND" $ do
                     q <- getStoreMsgQueue "SEND" $ recipientId qr
                     expireMessages q
-                    msg <- mkMessage body
-                    atomically $ do
-                      full <- isFull q
-                      if full
-                        then writeMsg q (msgQuota msg) $> (err QUOTA, Nothing)
-                        else writeMsg q msg $> (ok, Just msg)
-                  forM_ msg_ $ \msg -> time "SEND ok" $ do
-                    when (notification msgFlags) $
-                      atomically . trySendNotification msg =<< asks idsDrg
-                    stats <- asks serverStats
-                    atomically $ modifyTVar (msgSent stats) (+ 1)
-                    atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
-                  pure resp
+                    atomically . writeMsg q =<< mkMessage body
+                  case msg_ of
+                    Nothing -> pure $ err QUOTA
+                    Just msg -> time "SEND ok" $ do
+                      when (notification msgFlags) $
+                        atomically . trySendNotification msg =<< asks idsDrg
+                      stats <- asks serverStats
+                      atomically $ modifyTVar (msgSent stats) (+ 1)
+                      atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                      pure ok
           where
             mkMessage :: C.MaxLenBS MaxMessageLen -> m Message
             mkMessage body = do
@@ -569,9 +566,6 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
               atomically $ mapM_ (deleteExpiredMsgs q) old
-
-            msgQuota :: Message -> Message
-            msgQuota msg = MessageQuota {msgId = msgId (msg :: Message), msgTs = msgTs (msg :: Message)}
 
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =
@@ -733,7 +727,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
             addToMsgQueue rId msg = do
               full <- atomically $ do
                 q <- getMsgQueue ms rId quota
-                ifM (isFull q) (pure True) (writeMsg q msg $> False)
+                isNothing <$> writeMsg q msg
               when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
