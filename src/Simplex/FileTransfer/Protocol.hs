@@ -9,18 +9,19 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.FileTransfer.Protocol where
+
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Maybe (isNothing, isJust)
-import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
-import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..), Recipient, Sender, SRecipient, SSender, Cmd)
-import Simplex.Messaging.Util ((<$?>))
-import Data.Type.Equality (TestEquality (testEquality))
+import Data.Data (type (:~:) (Refl))
+import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Int (Int64)
-import Data.Data (type (:~:)(Refl))
+import Data.Maybe (isJust, isNothing)
+import Data.Type.Equality (TestEquality (testEquality))
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
+import Simplex.Messaging.Protocol hiding (Cmd, Command (..), CommandTag (..), Recipient, SRecipient, SSender, Sender)
+import Simplex.Messaging.Util ((<$?>))
 
 -- | File protocol clients
 data FileParty = Recipient | Sender
@@ -81,7 +82,6 @@ instance ProtocolMsgTag FileCmdTag where
     "FACK" -> Just $ FCT SRecipient FACK_
     "PING" -> Just $ FCT SRecipient PING_
     _ -> Nothing
-
 
 instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
   decodeTag s = decodeTag s >>= (\(FCT _ t) -> checkParty' t)
@@ -157,16 +157,17 @@ instance ProtocolEncoding FileCmd where
   checkCredentials t (FileCmd p c) = FileCmd p <$> checkCredentials t c
 
 data FileResponseTag
-  = FRChunkId_
+  = FRChunkIds_
+  | FRRcvIds_
   | FROk_
   | FRErr_
   | FRPong_
-
   deriving (Show)
 
 instance Encoding FileResponseTag where
   smpEncode = \case
-    FRChunkId_ -> "CHUNK"
+    FRChunkIds_ -> "CHUNK"
+    FRRcvIds_ -> "RIDS"
     FROk_ -> "OK"
     FRErr_ -> "ERR"
     FRPong_ -> "PONG"
@@ -174,14 +175,16 @@ instance Encoding FileResponseTag where
 
 instance ProtocolMsgTag FileResponseTag where
   decodeTag = \case
-    "CHUNK" -> Just FRChunkId_
+    "CHUNK" -> Just FRChunkIds_
+    "RIDS" -> Just FRRcvIds_
     "OK" -> Just FROk_
     "ERR" -> Just FRErr_
     "PONG" -> Just FRPong_
     _ -> Nothing
 
 data FileResponse
-  = FRChunkId FileChunkId
+  = FRChunkIds FileChunkId (NonEmpty FileChunkId)
+  | FRRcvIds (NonEmpty FileChunkId)
   | FROk
   | FRErr ErrorType
   | FRPong
@@ -190,7 +193,8 @@ data FileResponse
 instance ProtocolEncoding FileResponse where
   type Tag FileResponse = FileResponseTag
   encodeProtocol _v = \case
-    FRChunkId chunkId -> e (FRChunkId_, ' ', chunkId)
+    FRChunkIds chId rIds -> e (FRChunkIds_, ' ', chId, rIds)
+    FRRcvIds rIds -> e (FRRcvIds_, ' ', rIds)
     FROk -> e FROk_
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
@@ -199,13 +203,14 @@ instance ProtocolEncoding FileResponse where
       e = smpEncode
 
   protocolP _v = \case
-    FRChunkId_ -> FRChunkId <$> _smpP
+    FRChunkIds_ -> FRChunkIds <$> _smpP <*> smpP
+    FRRcvIds_ -> FRRcvIds <$> _smpP
     FROk_ -> pure FROk
     FRErr_ -> FRErr <$> _smpP
     FRPong_ -> pure FRPong
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
-    FRChunkId {} -> noEntity
+    FRChunkIds {} -> noEntity
     -- ERR response does not always have entity ID
     FRErr _ -> Right cmd
     -- PONG response must not have queue ID

@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.34.4.
+-- This file has been generated from package.yaml by hpack version 0.35.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -34,6 +34,15 @@ flag swift
 
 library
   exposed-modules:
+      Simplex.FileTransfer
+      Simplex.FileTransfer.Client
+      Simplex.FileTransfer.Client.Main
+      Simplex.FileTransfer.Description
+      Simplex.FileTransfer.Protocol
+      Simplex.FileTransfer.Server
+      Simplex.FileTransfer.Server.Main
+      Simplex.FileTransfer.Server.Store
+      Simplex.FileTransfer.Server.StoreLog
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
@@ -152,9 +161,9 @@ library
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 executable ntf-server
   main-is: Main.hs
@@ -214,9 +223,9 @@ executable ntf-server
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 executable smp-agent
   main-is: Main.hs
@@ -276,9 +285,9 @@ executable smp-agent
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 executable smp-server
   main-is: Main.hs
@@ -338,9 +347,9 @@ executable smp-server
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 test-suite smp-server-test
   type: exitcode-stdio-1.0
@@ -424,6 +433,6 @@ test-suite smp-server-test
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
