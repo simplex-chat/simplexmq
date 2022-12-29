@@ -1,3 +1,15 @@
+# 4.1.0
+
+SMP agent and server:
+
+- option to toggle TLS handshake error logs (disabled by default).
+
+SMP agent:
+
+- include server address in BROKER error.
+- api to get hash of double ratchet associated data (for connection verification).
+- api to get agent statistics.
+
 # 4.0.0
 
 SMP server:
