@@ -791,7 +791,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", ERR . INTERNAL $ show e)
-      Right (corrId, connId, cmd) -> processCmd ri corrId connId cmdId cmd
+      Right (corrId, connId, cmd) -> processCmd (riFast ri) corrId connId cmdId cmd
   where
     processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> AgentCommand -> m ()
     processCmd ri corrId connId cmdId command = case command of
@@ -964,22 +964,22 @@ queuePendingMsgs c sq msgIds = atomically $ do
   modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
   -- s <- readTVar (msgDeliveryOp c)
   -- unsafeIOToSTM $ putStrLn $ "msgDeliveryOp: " <> show (opsInProgress s)
-  q <- getPendingMsgQ c sq
-  mapM_ (writeTQueue q) msgIds
+  (mq, _) <- getPendingMsgQ c sq
+  mapM_ (writeTQueue mq) msgIds
 
-getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId)
+getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId, TMVar ())
 getPendingMsgQ c SndQueue {server, sndId} = do
   let qKey = (server, sndId)
   maybe (newMsgQueue qKey) pure =<< TM.lookup qKey (smpQueueMsgQueues c)
   where
     newMsgQueue qKey = do
-      mq <- newTQueue
-      TM.insert qKey mq $ smpQueueMsgQueues c
-      pure mq
+      q <- (,) <$> newTQueue <*> newEmptyTMVar
+      TM.insert qKey q $ smpQueueMsgQueues c
+      pure q
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandshake} sq = do
-  mq <- atomically $ getPendingMsgQ c sq
+  (mq, qLock) <- atomically $ getPendingMsgQ c sq
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -993,7 +993,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
       Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, internalTs}) ->
-        withRetryInterval ri $ \loop -> do
+        withRetryLock2 ri qLock $ \loop -> do
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             _ -> sendAgentMessage c sq msgFlags msgBody
@@ -1004,7 +1004,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndOp c loop
+                  _ -> retrySndOp c $ loop False
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1013,7 +1013,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
                     | otherwise ->
-                      ifM (msgExpired helloTimeout) connErr (retrySndOp c loop)
+                      ifM (msgExpired helloTimeout) connErr (retrySndOp c $ loop True)
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -1022,6 +1022,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId err
                   AM_A_MSG_ -> notifyDel msgId err
+                  AM_QCONT_ -> notifyDel msgId err
                   AM_QADD_ -> qError msgId "QADD: AUTH"
                   AM_QKEY_ -> qError msgId "QKEY: AUTH"
                   AM_QUSE_ -> qError msgId "QUSE: AUTH"
@@ -1031,7 +1032,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c loop)
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c $ loop True)
                   | otherwise -> notifyDel msgId err
               where
                 msgExpired timeoutSel = do
@@ -1071,6 +1072,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                       qInfo <- createReplyQueue c cData sq srv
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
                 AM_A_MSG_ -> notify $ SENT mId
+                AM_QCONT_ -> pure ()
                 AM_QADD_ -> pure ()
                 AM_QKEY_ -> pure ()
                 AM_QUSE_ -> pure ()
@@ -1534,6 +1536,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                           A_MSG body -> do
                             logServer "<--" c srv rId "MSG <MSG>"
                             notify $ MSG msgMeta msgFlags body
+                          QCONT addr -> qDuplex "QCONT" $ continueSending addr
                           QADD qs -> qDuplex "QADD" $ qAddMsg qs
                           QKEY qs -> qDuplex "QKEY" $ qKeyMsg qs
                           QUSE qs -> qDuplex "QUSE" $ qUseMsg qs
@@ -1701,6 +1704,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                 AcceptedConfirmation {ownConnInfo} <- withStore c (`getAcceptedConfirmation` connId)
                 connectReplyQueues c cData ownConnInfo smpQueues `catchError` (notify . ERR)
               _ -> prohibited
+
+        continueSending :: (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()
+        continueSending addr (DuplexConnection _ _ sqs) =
+          case findQ addr sqs of
+            Just sq -> do
+              logServer "<--" c srv rId "MSG <A_SEND>"
+              atomically $ do
+                (_, qLock) <- getPendingMsgQ c sq
+                void $ tryPutTMVar qLock ()
+            Nothing -> qError "A_SEND: queue address not found"
 
         -- processed by queue sender
         qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()

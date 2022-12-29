@@ -499,7 +499,7 @@ testGetSubCommands t =
 
 testExceedQueueQuota :: forall c. Transport c => TProxy c -> Spec
 testExceedQueueQuota t =
-  fit "should reply with ERR QUOTA to sender and send QUOTA message to the recipient" $ do
+  it "should reply with ERR QUOTA to sender and send QUOTA message to the recipient" $ do
     withSmpServerConfigOn (ATransport t) cfg {msgQueueQuota = 2} testPort $ \_ ->
       testSMPClient @c $ \sh -> testSMPClient @c $ \rh -> do
         (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
