@@ -50,12 +50,12 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
     callAction slow fast = action loop
       where
         loop = \case
-          RISlow -> runLoop slow (`callAction` fast) riSlow
-          RIFast -> runLoop fast (callAction slow) riFast
-        runLoop (elapsed, delay) call ri = do
-          waitForDelay delay
+          RISlow -> run slow riSlow (`callAction` fast)
+          RIFast -> run fast riFast (callAction slow)
+        run (elapsed, delay) ri call = do
+          wait delay
           call (elapsed + delay, nextDelay elapsed delay ri)
-        waitForDelay delay = do
+        wait delay = do
           waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
             threadDelay delay
