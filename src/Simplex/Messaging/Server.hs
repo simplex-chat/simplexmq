@@ -621,7 +621,6 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         encryptMsg :: QueueRec -> Message -> RcvMessage
         encryptMsg qr msg = case msg of
           Message {msgFlags, msgBody}
-            -- TODO refactor, probably msgTs should not be sent in RcvMessage if version is > 2
             | thVersion == 1 || thVersion == 2 -> encrypt msgFlags msgBody
             | otherwise -> encrypt msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
           MessageQuota {} ->
