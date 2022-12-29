@@ -1004,7 +1004,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndOp c $ loop False
+                  _ -> retrySndOp c $ loop RISlow
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1013,7 +1013,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
                     | otherwise ->
-                      ifM (msgExpired helloTimeout) connErr (retrySndOp c $ loop True)
+                      ifM (msgExpired helloTimeout) connErr (retrySndOp c $ loop RIFast)
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -1032,7 +1032,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c $ loop True)
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c $ loop RIFast)
                   | otherwise -> notifyDel msgId err
               where
                 msgExpired timeoutSel = do
@@ -1498,8 +1498,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
           handleNotifyAck $
             decryptSMPMessage v rq msg >>= \case
               SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
-              SMP.ClientRcvMsgQuota {} -> pure ()
+              SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
           where
+            queueDrained = case conn of
+              DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ QCONT (sndAddress rq)
+              _ -> pure ()
             processClientMsg srvTs msgFlags msgBody = do
               clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
                 parseMessage msgBody
@@ -1709,11 +1712,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         continueSending addr (DuplexConnection _ _ sqs) =
           case findQ addr sqs of
             Just sq -> do
-              logServer "<--" c srv rId "MSG <A_SEND>"
+              logServer "<--" c srv rId "MSG <QCONT>"
               atomically $ do
                 (_, qLock) <- getPendingMsgQ c sq
                 void $ tryPutTMVar qLock ()
-            Nothing -> qError "A_SEND: queue address not found"
+            Nothing -> qError "QCONT: queue address not found"
 
         -- processed by queue sender
         qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()

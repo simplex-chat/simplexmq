@@ -1,7 +1,15 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Agent.RetryInterval where
+module Simplex.Messaging.Agent.RetryInterval
+  ( RetryInterval (..),
+    RetryInterval2 (..),
+    RetryIntervalMode (..),
+    withRetryInterval,
+    withRetryLock2,
+  )
+where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad (void)
@@ -20,41 +28,44 @@ data RetryInterval2 = RetryInterval2
     riFast :: RetryInterval
   }
 
+data RetryIntervalMode = RISlow | RIFast
+  deriving (Eq)
+
 withRetryInterval :: forall m. MonadIO m => RetryInterval -> (m () -> m ()) -> m ()
-withRetryInterval RetryInterval {initialInterval, increaseAfter, maxInterval} action =
-  callAction 0 initialInterval
+withRetryInterval ri action = callAction 0 $ initialInterval ri
   where
     callAction :: Int -> Int -> m ()
-    callAction elapsedTime delay = action loop
+    callAction elapsed delay = action loop
       where
         loop = do
-          let newDelay =
-                if elapsedTime < increaseAfter || delay == maxInterval
-                  then delay
-                  else min (delay * 3 `div` 2) maxInterval
           liftIO $ threadDelay delay
-          callAction (elapsedTime + delay) newDelay
+          callAction (elapsed + delay) (nextDelay elapsed delay ri)
 
--- This function allows action to toggle between slow and fast retry intervals, resetting elapsed time to 0 when it switches.
-withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> ((Bool -> m ()) -> m ()) -> m ()
+-- This function allows action to toggle between slow and fast retry intervals.
+withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> ((RetryIntervalMode -> m ()) -> m ()) -> m ()
 withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
-  callAction 0 (initialInterval riFast) True
+  callAction (0, initialInterval riSlow) (0, initialInterval riFast)
   where
-    callAction :: Int -> Int -> Bool -> m ()
-    callAction elapsed delay fast = action loop
+    callAction :: (Int, Int) -> (Int, Int) -> m ()
+    callAction slow fast = action loop
       where
-        loop newFast = do
-          let RetryInterval {increaseAfter, maxInterval} = if newFast then riFast else riSlow
-              newElapsed = if newFast == fast then elapsed else 0
-              newDelay =
-                if newElapsed < increaseAfter || delay == maxInterval
-                  then delay
-                  else min (delay * 3 `div` 2) maxInterval
-          waiting <- atomically $ tryTakeTMVar lock >> newTVar True
+        loop = \case
+          RISlow -> runLoop slow (`callAction` fast) riSlow
+          RIFast -> runLoop fast (callAction slow) riFast
+        runLoop (elapsed, delay) call ri = do
+          waitForDelay delay
+          call (elapsed + delay, nextDelay elapsed delay ri)
+        waitForDelay delay = do
+          waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
             threadDelay delay
             atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
           atomically $ do
             takeTMVar lock
             writeTVar waiting False
-          callAction (newElapsed + delay) newDelay newFast
+
+nextDelay :: Int -> Int -> RetryInterval -> Int
+nextDelay elapsed delay RetryInterval {increaseAfter, maxInterval} =
+  if elapsed < increaseAfter || delay == maxInterval
+    then delay
+    else min (delay * 3 `div` 2) maxInterval
