@@ -368,13 +368,6 @@ data ADhSecret
 
 type DhSecretX25519 = DhSecret X25519
 
-instance Encoding DhSecretX25519 where
-  smpEncode = smpEncode . strEncode
-  {-# INLINE smpEncode #-}
-  smpDecode = strDecode
-  {-# INLINE smpDecode #-}
-
-
 type family DhAlgorithm (a :: Algorithm) :: Constraint where
   DhAlgorithm X25519 = ()
   DhAlgorithm X448 = ()

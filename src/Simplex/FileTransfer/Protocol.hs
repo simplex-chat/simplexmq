@@ -101,7 +101,7 @@ data FileCommand (p :: FileParty) where
   FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
   FPUT :: FileCommand Sender
   FDEL :: FileCommand Sender
-  FGET :: RcvDhSecret -> FileCommand Recipient
+  FGET :: RcvPublicDhKey -> FileCommand Recipient
   FACK :: FileCommand Recipient
   PING :: FileCommand Recipient
 
