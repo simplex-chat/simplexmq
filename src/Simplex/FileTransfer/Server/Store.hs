@@ -88,8 +88,9 @@ ackFile :: FileStore -> RecipientId -> STM (Either ErrorType ())
 ackFile st@FileStore {recipients} recipientId = do
   TM.lookupDelete recipientId recipients >>= \case
     Just (sId, _) ->
-      withFile st sId $ \FileRec {recipientIds} ->
-        modifyTVar recipientIds (S.delete recipientId) $> Right ()
+      withFile st sId $ \FileRec {recipientIds} -> do
+        modifyTVar' recipientIds $ S.delete recipientId
+        pure $ Right ()
     _ -> pure $ Left AUTH
 
 withFile :: FileStore -> SenderId -> (FileRec -> STM (Either ErrorType a)) -> STM (Either ErrorType a)
