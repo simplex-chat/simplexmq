@@ -85,12 +85,11 @@ getFile st sId = withFile st sId $ pure . Right
 -- TODO possibly, if acknowledgement of file reception by the last recipient
 -- is going to lead to deleting the file this has to be updated and return some value to delete the actual file
 ackFile :: FileStore -> RecipientId -> STM (Either ErrorType ())
-ackFile FileStore {files, recipients} recipientId = do
+ackFile st@FileStore {recipients} recipientId = do
   TM.lookupDelete recipientId recipients >>= \case
-    Just (senderId, _) -> do
-      TM.lookup senderId files
-        >>= mapM_ ((`modifyTVar'` S.delete recipientId) . recipientIds)
-      pure $ Right ()
+    Just (sId, _) ->
+      withFile st sId $ \FileRec {recipientIds} ->
+        modifyTVar recipientIds (S.delete recipientId) $> Right ()
     _ -> pure $ Left AUTH
 
 withFile :: FileStore -> SenderId -> (FileRec -> STM (Either ErrorType a)) -> STM (Either ErrorType a)
