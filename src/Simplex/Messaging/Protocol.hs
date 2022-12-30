@@ -345,7 +345,7 @@ data RcvMsgBody
       }
 
 msgQuotaTag :: ByteString
-msgQuotaTag = "QUOTA "
+msgQuotaTag = "QUOTA"
 
 encodeRcvMsgBody :: RcvMsgBody -> C.MaxLenBS MaxRcvMessageLen
 encodeRcvMsgBody = \case
@@ -353,7 +353,7 @@ encodeRcvMsgBody = \case
     let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
      in C.appendMaxLenBS rcvMeta msgBody
   RcvMsgQuota {msgTs} ->
-    C.unsafeMaxLenBS $ msgQuotaTag <> smpEncode msgTs
+    C.unsafeMaxLenBS $ msgQuotaTag <> " " <> smpEncode msgTs
 
 data ClientRcvMsgBody
   = ClientRcvMsgBody
@@ -368,7 +368,7 @@ data ClientRcvMsgBody
 clientRcvMsgBodyP :: Parser ClientRcvMsgBody
 clientRcvMsgBodyP = msgQuotaP <|> msgBodyP
   where
-    msgQuotaP = A.string msgQuotaTag *> (ClientRcvMsgQuota <$> smpP)
+    msgQuotaP = A.string msgQuotaTag *> (ClientRcvMsgQuota <$> _smpP)
     msgBodyP = do
       msgTs <- smpP
       msgFlags <- smpP
