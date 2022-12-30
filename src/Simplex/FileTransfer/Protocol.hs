@@ -13,11 +13,11 @@ module Simplex.FileTransfer.Protocol where
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Data (type (:~:) (Refl))
-import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (isJust, isNothing)
 import Data.Type.Equality (TestEquality (testEquality))
+import Data.Word (Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Protocol hiding (Cmd, Command (..), CommandTag (..), Recipient, SRecipient, SSender, Sender)
@@ -97,7 +97,7 @@ instance Protocol FileResponse where
 
 data FileCommand (p :: FileParty) where
   -- Sender key, recipients keys, chunk size
-  FNEW :: SndPublicVerifyKey -> NonEmpty RcvPublicVerifyKey -> Int64 -> FileCommand Sender
+  FNEW :: SndPublicVerifyKey -> NonEmpty RcvPublicVerifyKey -> Word32 -> FileCommand Sender
   FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
   FPUT :: FileCommand Sender
   FDEL :: FileCommand Sender
