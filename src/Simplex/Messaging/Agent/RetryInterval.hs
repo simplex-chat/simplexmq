@@ -39,7 +39,8 @@ withRetryInterval ri action = callAction 0 $ initialInterval ri
       where
         loop = do
           liftIO $ threadDelay delay
-          callAction (elapsed + delay) (nextDelay elapsed delay ri)
+          let elapsed' = elapsed + delay
+          callAction elapsed' $ nextDelay elapsed' delay ri
 
 -- This function allows action to toggle between slow and fast retry intervals.
 withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> ((RetryIntervalMode -> m ()) -> m ()) -> m ()
@@ -54,9 +55,10 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
           RIFast -> run fast riFast (callAction slow)
         run (elapsed, delay) ri call = do
           wait delay
-          call (elapsed + delay, nextDelay elapsed delay ri)
+          let elapsed' = elapsed + delay
+          call (elapsed', nextDelay elapsed' delay ri)
         wait delay = do
-          waiting <- newTVarIO True
+          waiting <- atomically $ tryTakeTMVar lock >> newTVar True
           _ <- liftIO . forkIO $ do
             threadDelay delay
             atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
