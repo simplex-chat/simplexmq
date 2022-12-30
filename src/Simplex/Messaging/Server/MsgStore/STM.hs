@@ -29,7 +29,7 @@ import UnliftIO.STM
 data MsgQueue = MsgQueue
   { msgQueue :: TQueue Message,
     quota :: Int,
-    hasSpace :: TVar Bool,
+    canWrite :: TVar Bool,
     size :: TVar Int
   }
 
@@ -44,9 +44,9 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
     where
       newQ = do
         msgQueue <- newTQueue
-        hasSpace <- newTVar True
+        canWrite <- newTVar True
         size <- newTVar 0
-        let q = MsgQueue {msgQueue, quota, hasSpace, size}
+        let q = MsgQueue {msgQueue, quota, canWrite, size}
         TM.insert rId q st
         pure q
 
@@ -58,14 +58,15 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
 
 instance MonadMsgQueue MsgQueue STM where
   writeMsg :: MsgQueue -> Message -> STM (Maybe Message)
-  writeMsg MsgQueue {msgQueue = q, quota, hasSpace, size} msg = do
-    sp <- (||) <$> isEmptyTQueue q <*> readTVar hasSpace
-    if sp
+  writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} msg = do
+    canWrt <- readTVar canWrite
+    empty <- isEmptyTQueue q
+    if canWrt || empty
       then do
-        sp' <- (quota >) <$> readTVar size
-        writeTVar hasSpace sp'
+        canWrt' <- (quota >) <$> readTVar size
+        writeTVar canWrite canWrt'
         modifyTVar' size (+ 1)
-        if sp'
+        if canWrt'
           then writeTQueue q msg $> Just msg
           else writeTQueue q msgQuota $> Nothing
       else pure Nothing

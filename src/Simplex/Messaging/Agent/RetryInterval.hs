@@ -58,7 +58,7 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
           let elapsed' = elapsed + delay
           call (elapsed', nextDelay elapsed' delay ri)
         wait delay = do
-          waiting <- atomically $ tryTakeTMVar lock >> newTVar True
+          waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
             threadDelay delay
             atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
