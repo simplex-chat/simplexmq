@@ -25,6 +25,8 @@ import Simplex.FileTransfer.Protocol (SFileParty (..))
 import Data.List.NonEmpty (NonEmpty)
 import Data.Aeson.KeyMap (mapMaybe)
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 data FileStore = FileStore
   { chunks :: TMap SenderId FileRec,
@@ -34,7 +36,7 @@ data FileStore = FileStore
 data FileRec = FileRec
   { senderId :: SenderId,
     senderKey :: SndPublicVerifyKey,
-    readers :: TVar [RecipientId],
+    readers :: TVar (Set RecipientId),
     filepath :: String
   }
   deriving (Eq)
@@ -65,11 +67,11 @@ addRecipients:: FileStore -> SenderId -> NonEmpty (RecipientId, RcvPublicVerifyK
 addRecipients FileStore{chunks, recipients} senderId addReaders = do
   TM.lookup senderId chunks >>= \case
     Just chunk ->
-      readTVar (readers chunk) >>= \readers ->
-      forM_ addReaders $ \(recipientId, key) ->
-        ifM (TM.member recipientId recipients) (pure $ Left DUPLICATE_) $
-          TM.insert recipientId (senderId, key) recipients
-          recipientId : readers
+      readTVar (readers chunk) >>= \_r ->
+        forM_ addReaders $ \(recipientId, key) ->
+          ifM (TM.member recipientId recipients) (pure $ Left DUPLICATE_) $
+            TM.insert recipientId (senderId, key) recipients
+            modifyTVar' (readers chunk) $ Set.insert recipientId
   pure $ Right ()
 
 deleteFile :: FileStore -> SenderId -> STM (Either ErrorType ())
@@ -90,8 +92,8 @@ ackFile FileStore {chunks, recipients} senderId recipientId = do
   TM.lookup senderId chunks >>= \case
     Just chunk ->
       TM.lookupDelete recipientId recipients
-      readTVar (readers chunk) >>= \readers ->
-        TM.lookupDelete recipientId readers
+      readTVar (readers chunk) >>= \_r ->
+        modifyTVar' (readers chunk) $ Set.delete recipientId
     _ -> pure $ Left AUTH
   pure $ Right ()
 
