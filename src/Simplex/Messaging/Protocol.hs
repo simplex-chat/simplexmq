@@ -589,22 +589,25 @@ sameSrvAddr :: ProtocolServer p -> ProtocolServer p -> Bool
 sameSrvAddr ProtocolServer {host, port} ProtocolServer {host = h', port = p'} = host == h' && port == p'
 {-# INLINE sameSrvAddr #-}
 
-data ProtocolType = PSMP | PNTF
+data ProtocolType = PSMP | PNTF | PXFTP
   deriving (Eq, Ord, Show)
 
 instance StrEncoding ProtocolType where
   strEncode = \case
     PSMP -> "smp"
     PNTF -> "ntf"
+    PXFTP -> "xftp"
   strP =
     A.takeTill (\c -> c == ':' || c == ' ') >>= \case
       "smp" -> pure PSMP
       "ntf" -> pure PNTF
+      "xftp" -> pure PXFTP
       _ -> fail "bad ProtocolType"
 
 data SProtocolType (p :: ProtocolType) where
   SPSMP :: SProtocolType 'PSMP
   SPNTF :: SProtocolType 'PNTF
+  SPXFTP :: SProtocolType 'PXFTP
 
 deriving instance Eq (SProtocolType p)
 
@@ -622,17 +625,20 @@ instance Eq AProtocolType where
 instance TestEquality SProtocolType where
   testEquality SPSMP SPSMP = Just Refl
   testEquality SPNTF SPNTF = Just Refl
+  testEquality SPXFTP SPXFTP = Just Refl
   testEquality _ _ = Nothing
 
 protocolType :: SProtocolType p -> ProtocolType
 protocolType = \case
   SPSMP -> PSMP
   SPNTF -> PNTF
+  SPXFTP -> PXFTP
 
 aProtocolType :: ProtocolType -> AProtocolType
 aProtocolType = \case
   PSMP -> AProtocolType SPSMP
   PNTF -> AProtocolType SPNTF
+  PXFTP -> AProtocolType SPXFTP
 
 instance ProtocolTypeI p => StrEncoding (SProtocolType p) where
   strEncode = strEncode . protocolType
@@ -657,6 +663,8 @@ class ProtocolTypeI (p :: ProtocolType) where
 instance ProtocolTypeI 'PSMP where protocolTypeI = SPSMP
 
 instance ProtocolTypeI 'PNTF where protocolTypeI = SPNTF
+
+instance ProtocolTypeI 'PXFTP where protocolTypeI = SPXFTP
 
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer

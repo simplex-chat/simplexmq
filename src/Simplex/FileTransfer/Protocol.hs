@@ -12,15 +12,26 @@ module Simplex.FileTransfer.Protocol where
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Data (type (:~:) (Refl))
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (isJust, isNothing)
-import Data.Type.Equality (TestEquality (testEquality))
+import Data.Type.Equality
 import Data.Word (Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
-import Simplex.Messaging.Protocol hiding (Cmd, Command (..), CommandTag (..), Recipient, SRecipient, SSender, Sender)
+import Simplex.Messaging.Protocol
+  ( CommandError (..),
+    ErrorType (..),
+    Protocol (..),
+    ProtocolEncoding (..),
+    ProtocolMsgTag (..),
+    ProtocolType (..),
+    RcvPublicDhKey,
+    RcvPublicVerifyKey,
+    SndPublicVerifyKey,
+    messageTagP,
+    _smpP,
+  )
 import Simplex.Messaging.Util ((<$?>))
 
 -- | File protocol clients
@@ -88,7 +99,7 @@ instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
 
 instance Protocol FileResponse where
   type ProtoCommand FileResponse = FileCmd
-  type ProtoType FileResponse = 'PNTF
+  type ProtoType FileResponse = 'PXFTP
   protocolClientHandshake = ntfClientHandshake
   protocolPing = FileCmd SRecipient PING
   protocolError = \case
