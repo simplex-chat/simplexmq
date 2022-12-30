@@ -17,11 +17,11 @@ import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (isJust, isNothing)
 import Data.Type.Equality (TestEquality (testEquality))
+import Data.Word (Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Protocol hiding (Cmd, Command (..), CommandTag (..), Recipient, SRecipient, SSender, Sender)
 import Simplex.Messaging.Util ((<$?>))
-import Data.Word (Word32)
 
 -- | File protocol clients
 data FileParty = Recipient | Sender
