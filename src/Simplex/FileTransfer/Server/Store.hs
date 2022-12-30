@@ -1,101 +1,100 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Use lambda-case" #-}
 
-module Simplex.FileTransfer.Server.Store where
+module Simplex.FileTransfer.Server.Store
+  ( FileStore,
+    newQueueStore,
+    addFile,
+    setFilePath,
+    addRecipient,
+    deleteFile,
+    getFile,
+    ackFile,
+  )
+where
 
-import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
-import Control.Monad
+import Control.Concurrent.STM
 import Data.Functor (($>))
+import Data.Set (Set)
+import qualified Data.Set as S
+import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, ($>>=))
-import UnliftIO.STM
-import Simplex.FileTransfer.Protocol (SFileParty (..))
-import Data.List.NonEmpty (NonEmpty)
-import Data.Aeson.KeyMap (mapMaybe)
-import Data.Maybe (fromMaybe)
-import Data.Set (Set)
-import qualified Data.Set as Set
+import Simplex.Messaging.Util (ifM)
 
 data FileStore = FileStore
-  { chunks :: TMap SenderId FileRec,
+  { files :: TMap SenderId FileRec,
     recipients :: TMap RecipientId (SenderId, RcvPublicVerifyKey)
   }
 
 data FileRec = FileRec
   { senderId :: SenderId,
     senderKey :: SndPublicVerifyKey,
-    readers :: TVar (Set RecipientId),
-    filepath :: String
+    recipientIds :: TVar (Set RecipientId),
+    filepath :: TVar (Maybe FilePath)
   }
   deriving (Eq)
 
-{-   newFile :: s -> FileRec -> m (Either ErrorType ())
-  addRecipients:: s -> SenderId -> NonEmpty (RecipientId, RcvPublicVerifyKey) -> m (Either ErrorType ())
-  putFile:: s -> SenderId -> String -> m (Either ErrorType ())
-  deleteFile :: s -> SenderId -> m (Either ErrorType ())
-  getFile :: s -> QueueId -> m (Either ErrorType FileRec)
-  ackFile :: s -> QueueId -> RecipientId -> m (Either ErrorType ()) -}
-
 newQueueStore :: STM FileStore
 newQueueStore = do
-  chunks <- TM.empty
+  files <- TM.empty
   recipients <- TM.empty
-  pure FileStore {chunks, recipients}
+  pure FileStore {files, recipients}
 
-newFile :: FileStore -> FileRec -> [(RecipientId, RcvPublicVerifyKey)] -> STM (Either ErrorType ())
-newFile FileStore {chunks, recipients} fileRec@FileRec {senderId} addReaders = do
-  ifM hasId (pure $ Left DUPLICATE_) $ do
-    TM.insert senderId fileRec chunks
-    forM_ addReaders $ \(recipientId, key) -> TM.insert recipientId (senderId, key) recipients
+addFile :: FileStore -> SenderId -> SndPublicVerifyKey -> STM (Either ErrorType ())
+addFile FileStore {files} sId sKey =
+  ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
+    f <- newFileRec sId sKey
+    TM.insert sId f files
     pure $ Right ()
-  where
-    hasId = TM.member senderId chunks
 
-addRecipients:: FileStore -> SenderId -> NonEmpty (RecipientId, RcvPublicVerifyKey) -> STM (Either ErrorType ())
-addRecipients FileStore{chunks, recipients} senderId addReaders = do
-  TM.lookup senderId chunks >>= \case
-    Just chunk ->
-      readTVar (readers chunk) >>= \_r ->
-        forM_ addReaders $ \(recipientId, key) ->
-          ifM (TM.member recipientId recipients) (pure $ Left DUPLICATE_) $
-            TM.insert recipientId (senderId, key) recipients
-            modifyTVar' (readers chunk) $ Set.insert recipientId
-  pure $ Right ()
+newFileRec :: SenderId -> SndPublicVerifyKey -> STM FileRec
+newFileRec senderId senderKey = do
+  recipientIds <- newTVar S.empty
+  filepath <- newTVar Nothing
+  pure FileRec {senderId, senderKey, recipientIds, filepath}
+
+setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either ErrorType ())
+setFilePath st sId fPath =
+  withFile st sId $ \FileRec {filepath} ->
+    writeTVar filepath (Just fPath) $> Right ()
+
+addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either ErrorType ())
+addRecipient st@FileStore {recipients} senderId recipient@(rId, _) =
+  withFile st senderId $ \FileRec {recipientIds} -> do
+    rIds <- readTVar recipientIds
+    mem <- TM.member rId recipients
+    if rId `S.member` rIds || mem
+      then pure $ Left DUPLICATE_
+      else do
+        writeTVar recipientIds $! S.insert rId rIds
+        TM.insert rId recipient recipients
+        pure $ Right ()
 
 deleteFile :: FileStore -> SenderId -> STM (Either ErrorType ())
-deleteFile FileStore {chunks, recipients} senderId = do
-  TM.lookupDelete senderId chunks >>= \case
-    Just chunk -> 
-      readTVar (readers chunk) >>= \readers ->
-        forM_ readers $ \recipientId -> TM.lookupDelete recipientId recipients
+deleteFile FileStore {files, recipients} senderId = do
+  TM.lookupDelete senderId files >>= \case
+    Just FileRec {recipientIds} -> do
+      readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
+      pure $ Right ()
     _ -> pure $ Left AUTH
-  pure $ Right ()
 
 getFile :: FileStore -> SenderId -> STM (Either ErrorType FileRec)
-getFile FileStore {chunks} senderId =
-  toResult <$> TM.lookup senderId chunks
+getFile st sId = withFile st sId $ pure . Right
 
-ackFile :: FileStore -> SenderId -> RecipientId -> STM (Either ErrorType ())
-ackFile FileStore {chunks, recipients} senderId recipientId = do
-  TM.lookup senderId chunks >>= \case
-    Just chunk ->
-      TM.lookupDelete recipientId recipients
-      readTVar (readers chunk) >>= \_r ->
-        modifyTVar' (readers chunk) $ Set.delete recipientId
+-- TODO possibly, if acknowledgement of file reception by the last recipient
+-- is going to lead to deleting the file this has to be updated and return some value to delete the actual file
+ackFile :: FileStore -> RecipientId -> STM (Either ErrorType ())
+ackFile FileStore {files, recipients} recipientId = do
+  TM.lookupDelete recipientId recipients >>= \case
+    Just (senderId, _) -> do
+      TM.lookup senderId files
+        >>= mapM_ ((`modifyTVar'` S.delete recipientId) . recipientIds)
+      pure $ Right ()
     _ -> pure $ Left AUTH
-  pure $ Right ()
 
-toResult :: Maybe a -> Either ErrorType a
-toResult = maybe (Left AUTH) Right
+withFile :: FileStore -> SenderId -> (FileRec -> STM (Either ErrorType a)) -> STM (Either ErrorType a)
+withFile FileStore {files} sId a =
+  TM.lookup sId files >>= \case
+    Just f -> a f
+    _ -> pure $ Left AUTH
