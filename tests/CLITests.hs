@@ -51,7 +51,7 @@ smpServerTest storeLog basicAuth = do
   lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "off"
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SMP server v4.0.0"]
+  r `shouldContain` ["SMP server v4.1.0"]
   r `shouldContain` (if storeLog then ["Store log: " <> logPath <> "/smp-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 5223 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
