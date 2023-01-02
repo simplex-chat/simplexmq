@@ -2,8 +2,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.FileTransfer.Server.Store
-  ( FileStore,
-    newQueueStore,
+  ( FileStore(..),
+    FileRec,
+    newFileStore,
     addFile,
     setFilePath,
     addRecipient,
@@ -35,8 +36,8 @@ data FileRec = FileRec
   }
   deriving (Eq)
 
-newQueueStore :: STM FileStore
-newQueueStore = do
+newFileStore :: STM FileStore
+newFileStore = do
   files <- TM.empty
   recipients <- TM.empty
   pure FileStore {files, recipients}

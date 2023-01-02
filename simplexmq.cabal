@@ -40,7 +40,9 @@ library
       Simplex.FileTransfer.Description
       Simplex.FileTransfer.Protocol
       Simplex.FileTransfer.Server
+      Simplex.FileTransfer.Server.Env
       Simplex.FileTransfer.Server.Main
+      Simplex.FileTransfer.Server.Stats
       Simplex.FileTransfer.Server.Store
       Simplex.FileTransfer.Server.StoreLog
       Simplex.Messaging.Agent
