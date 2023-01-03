@@ -45,6 +45,7 @@ library
       Simplex.FileTransfer.Server.Stats
       Simplex.FileTransfer.Server.Store
       Simplex.FileTransfer.Server.StoreLog
+      Simplex.FileTransfer.Transport
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite

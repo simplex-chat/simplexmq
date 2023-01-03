@@ -6,34 +6,23 @@
 
 module Simplex.FileTransfer.Server.Env where
 
-import Control.Concurrent (ThreadId)
-import Control.Concurrent.Async (Async)
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.ByteString.Char8 (ByteString)
 import Data.Time.Clock (getCurrentTime)
-import Data.Time.Clock.System (SystemTime)
-import Data.Word (Word16)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
-import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import Simplex.FileTransfer.Protocol (FileResponse, SFileParty, FileCommand, FileParty, FilePartyI)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
-import Simplex.Messaging.Server.StoreLog (StoreLog)
 
 data FileServerConfig = FileServerConfig
   { transports :: [(ServiceName, ATransport)],
