@@ -23,6 +23,10 @@ import UnliftIO.STM
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
+import Data.ByteString (ByteString)
+import Simplex.Messaging.Protocol (Transmission, CorrId (CorrId))
+import Simplex.FileTransfer.Protocol (FileResponse, FilePartyI, SFileParty, FileCommand)
+import Data.Time.Clock.System (SystemTime)
 
 data FileServerConfig = FileServerConfig
   { transports :: [(ServiceName, ATransport)],
@@ -67,7 +71,7 @@ data FileEnv = FileEnv
 
 newFileServerEnv :: (MonadUnliftIO m, MonadRandom m) => FileServerConfig -> m FileEnv
 newFileServerEnv config@FileServerConfig {subQSize, smpAgentCfg, storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
-  idsDrg <- newTVarIO =<< drgNew
+  idsDrg <- drgNew >>= newTVarIO
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
   -- subscriber <- atomically $ newFileSubscriber subQSize smpAgentCfg
@@ -75,3 +79,23 @@ newFileServerEnv config@FileServerConfig {subQSize, smpAgentCfg, storeLogFile, c
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
   pure FileEnv {config, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+
+data FileRequest
+  = FileReqNew CorrId ANewFileParty
+  | forall e. FilePartyI e => FileReqCmd (SFileParty e) (FileRec e) (Transmission (FileCommand e))
+
+data FileServerClient = FileServerClient
+  { rcvQ :: TBQueue FileRequest,
+    sndQ :: TBQueue (Transmission FileResponse),
+    sessionId :: ByteString,
+    connected :: TVar Bool,
+    activeAt :: TVar SystemTime
+  }
+
+newNtfServerClient :: Natural -> ByteString -> SystemTime -> STM FileServerClient
+newNtfServerClient qSize sessionId ts = do
+  rcvQ <- newTBQueue qSize
+  sndQ <- newTBQueue qSize
+  connected <- newTVar True
+  activeAt <- newTVar ts
+  return FileServerClient {rcvQ, sndQ, sessionId, connected, activeAt}
