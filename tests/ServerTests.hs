@@ -49,6 +49,7 @@ serverTests t@(ATransport t') = do
     describe "switch subscription to another TCP connection" $ testSwitchSub t
     describe "GET command" $ testGetCommand t'
     describe "GET & SUB commands" $ testGetSubCommands t'
+    describe "Exceeding queue quota" $ testExceedQueueQuota t'
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
   describe "Restore messages (v2)" $ testRestoreMessagesV2 t
@@ -104,9 +105,11 @@ decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.Cry
 decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
 
 decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
-decryptMsgV3 dhShared nonce body = do
-  ClientRcvMsgBody {msgBody} <- parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body)
-  pure msgBody
+decryptMsgV3 dhShared nonce body =
+  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
+    Right ClientRcvMsgBody {msgBody} -> Right msgBody
+    Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
+    Left e -> Left e
 
 testCreateSecureV2 :: forall c. Transport c => TProxy c -> Spec
 testCreateSecureV2 _ =
@@ -493,6 +496,32 @@ testGetSubCommands t =
       -- no more messages for getter too
       Resp "12" _ OK <- signSendRecv rh2 rKey ("12", rId, GET)
       pure ()
+
+testExceedQueueQuota :: forall c. Transport c => TProxy c -> Spec
+testExceedQueueQuota t =
+  it "should reply with ERR QUOTA to sender and send QUOTA message to the recipient" $ do
+    withSmpServerConfigOn (ATransport t) cfg {msgQueueQuota = 2} testPort $ \_ ->
+      testSMPClient @c $ \sh -> testSMPClient @c $ \rh -> do
+        (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+        (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
+        let dec = decryptMsgV3 dhShared
+        Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello 1")
+        Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND "hello 2")
+        Resp "3" _ (ERR QUOTA) <- signSendRecv sh sKey ("3", sId, _SEND "hello 3")
+        Resp "" _ (Msg mId1 msg1) <- tGet1 rh
+        (dec mId1 msg1, Right "hello 1") #== "hello 1"
+        Resp "4" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("4", rId, ACK mId1)
+        (dec mId2 msg2, Right "hello 2") #== "hello 2"
+        Resp "5" _ (ERR QUOTA) <- signSendRecv sh sKey ("5", sId, _SEND "hello 3")
+        Resp "6" _ (Msg mId3 msg3) <- signSendRecv rh rKey ("6", rId, ACK mId2)
+        (dec mId3 msg3, Left "ClientRcvMsgQuota") #== "ClientRcvMsgQuota"
+        Resp "7" _ (ERR QUOTA) <- signSendRecv sh sKey ("7", sId, _SEND "hello 3")
+        Resp "8" _ OK <- signSendRecv rh rKey ("8", rId, ACK mId3)
+        Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND "hello 3")
+        Resp "" _ (Msg mId4 msg4) <- tGet1 rh
+        (dec mId4 msg4, Right "hello 3") #== "hello 3"
+        Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId4)
+        pure ()
 
 testWithStoreLog :: ATransport -> Spec
 testWithStoreLog at@(ATransport t) =

@@ -791,7 +791,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
     atomically $ beginAgentOperation c AOSndNetwork
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", ERR . INTERNAL $ show e)
-      Right (corrId, connId, cmd) -> processCmd ri corrId connId cmdId cmd
+      Right (corrId, connId, cmd) -> processCmd (riFast ri) corrId connId cmdId cmd
   where
     processCmd :: RetryInterval -> ACorrId -> ConnId -> AsyncCmdId -> AgentCommand -> m ()
     processCmd ri corrId connId cmdId command = case command of
@@ -964,22 +964,22 @@ queuePendingMsgs c sq msgIds = atomically $ do
   modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
   -- s <- readTVar (msgDeliveryOp c)
   -- unsafeIOToSTM $ putStrLn $ "msgDeliveryOp: " <> show (opsInProgress s)
-  q <- getPendingMsgQ c sq
-  mapM_ (writeTQueue q) msgIds
+  (mq, _) <- getPendingMsgQ c sq
+  mapM_ (writeTQueue mq) msgIds
 
-getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId)
+getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId, TMVar ())
 getPendingMsgQ c SndQueue {server, sndId} = do
   let qKey = (server, sndId)
   maybe (newMsgQueue qKey) pure =<< TM.lookup qKey (smpQueueMsgQueues c)
   where
     newMsgQueue qKey = do
-      mq <- newTQueue
-      TM.insert qKey mq $ smpQueueMsgQueues c
-      pure mq
+      q <- (,) <$> newTQueue <*> newEmptyTMVar
+      TM.insert qKey q $ smpQueueMsgQueues c
+      pure q
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandshake} sq = do
-  mq <- atomically $ getPendingMsgQ c sq
+  (mq, qLock) <- atomically $ getPendingMsgQ c sq
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -993,7 +993,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
       Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, internalTs}) ->
-        withRetryInterval ri $ \loop -> do
+        withRetryLock2 ri qLock $ \loop -> do
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             _ -> sendAgentMessage c sq msgFlags msgBody
@@ -1004,7 +1004,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndOp c loop
+                  _ -> retrySndOp c $ loop RISlow
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1013,7 +1013,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
                     | otherwise ->
-                      ifM (msgExpired helloTimeout) connErr (retrySndOp c loop)
+                      ifM (msgExpired helloTimeout) connErr (retrySndOp c $ loop RIFast)
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -1022,6 +1022,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId err
                   AM_A_MSG_ -> notifyDel msgId err
+                  AM_QCONT_ -> notifyDel msgId err
                   AM_QADD_ -> qError msgId "QADD: AUTH"
                   AM_QKEY_ -> qError msgId "QKEY: AUTH"
                   AM_QUSE_ -> qError msgId "QUSE: AUTH"
@@ -1031,7 +1032,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c loop)
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c $ loop RIFast)
                   | otherwise -> notifyDel msgId err
               where
                 msgExpired timeoutSel = do
@@ -1071,6 +1072,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                       qInfo <- createReplyQueue c cData sq srv
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
                 AM_A_MSG_ -> notify $ SENT mId
+                AM_QCONT_ -> pure ()
                 AM_QADD_ -> pure ()
                 AM_QKEY_ -> pure ()
                 AM_QUSE_ -> pure ()
@@ -1492,88 +1494,96 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
     processSMP :: RcvQueue -> Connection c -> ConnData -> m ()
     processSMP rq@RcvQueue {e2ePrivKey, e2eDhSecret, status} conn cData@ConnData {connId, duplexHandshake} = withConnLock c connId "processSMP" $
       case cmd of
-        SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> handleNotifyAck $ do
-          SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage v rq msg
-          clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
-            parseMessage msgBody
-          clientVRange <- asks $ smpClientVRange . config
-          unless (phVer `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
-          case (e2eDhSecret, e2ePubKey_) of
-            (Nothing, Just e2ePubKey) -> do
-              let e2eDh = C.dh' e2ePubKey e2ePrivKey
-              decryptClientMessage e2eDh clientMsg >>= \case
-                (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption, encConnInfo, agentVersion}) ->
-                  smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion >> ack
-                (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
-                  smpInvitation connReq connInfo >> ack
-                _ -> prohibited >> ack
-            (Just e2eDh, Nothing) -> do
-              decryptClientMessage e2eDh clientMsg >>= \case
-                (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
-                  -- primary queue is set as Active in helloMsg, below is to set additional queues Active
-                  let RcvQueue {primary, dbReplaceQueueId} = rq
-                  unless (status == Active) . withStore' c $ \db -> setRcvQueueStatus db rq Active
-                  case (conn, dbReplaceQueueId) of
-                    (DuplexConnection _ rqs _, Just replacedId) -> do
-                      when primary . withStore' c $ \db -> setRcvQueuePrimary db connId rq
-                      case find (\RcvQueue {dbQueueId} -> dbQueueId == replacedId) rqs of
-                        Just RcvQueue {server, rcvId} -> do
-                          enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
-                        _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
-                    _ -> pure ()
-                  tryError agentClientMsg >>= \case
-                    Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
-                      HELLO -> helloMsg >> ackDel msgId
-                      REPLY cReq -> replyMsg cReq >> ackDel msgId
-                      -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
-                      A_MSG body -> do
-                        logServer "<--" c srv rId "MSG <MSG>"
-                        notify $ MSG msgMeta msgFlags body
-                      QADD qs -> qDuplex "QADD" $ qAddMsg qs
-                      QKEY qs -> qDuplex "QKEY" $ qKeyMsg qs
-                      QUSE qs -> qDuplex "QUSE" $ qUseMsg qs
-                      -- no action needed for QTEST
-                      -- any message in the new queue will mark it active and trigger deletion of the old queue
-                      QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
-                      where
-                        qDuplex :: String -> (Connection 'CDuplex -> m ()) -> m ()
-                        qDuplex name a = case conn of
-                          DuplexConnection {} -> a conn >> ackDel msgId
-                          _ -> qError $ name <> ": message must be sent to duplex connection"
-                    Right _ -> prohibited >> ack
-                    Left e@(AGENT A_DUPLICATE) -> do
-                      withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
-                        Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
-                          | userAck -> ackDel internalId
-                          | otherwise -> do
-                            liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
-                              AgentMessage _ (A_MSG body) -> do
-                                logServer "<--" c srv rId "MSG <MSG>"
-                                notify $ MSG msgMeta msgFlags body
-                              _ -> pure ()
-                        _ -> throwError e
-                    Left e -> throwError e
-                  where
-                    agentClientMsg :: m (Maybe (InternalId, MsgMeta, AMessage))
-                    agentClientMsg = withStore c $ \db -> runExceptT $ do
-                      agentMsgBody <- agentRatchetDecrypt db connId encAgentMsg
-                      liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
-                        agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
-                          let msgType = agentMessageType agentMsg
-                              internalHash = C.sha256Hash agentMsgBody
-                          internalTs <- liftIO getCurrentTime
-                          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- liftIO $ updateRcvIds db connId
-                          let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash prevMsgHash
-                              recipient = (unId internalId, internalTs)
-                              broker = (srvMsgId, systemToUTCTime srvTs)
-                              msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
-                              rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash}
-                          liftIO $ createRcvMsg db connId rq rcvMsg
-                          pure $ Just (internalId, msgMeta, aMessage)
-                        _ -> pure Nothing
-                _ -> prohibited >> ack
-            _ -> prohibited >> ack
+        SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
+          handleNotifyAck $
+            decryptSMPMessage v rq msg >>= \case
+              SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
+              SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
           where
+            queueDrained = case conn of
+              DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ QCONT (sndAddress rq)
+              _ -> pure ()
+            processClientMsg srvTs msgFlags msgBody = do
+              clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
+                parseMessage msgBody
+              clientVRange <- asks $ smpClientVRange . config
+              unless (phVer `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
+              case (e2eDhSecret, e2ePubKey_) of
+                (Nothing, Just e2ePubKey) -> do
+                  let e2eDh = C.dh' e2ePubKey e2ePrivKey
+                  decryptClientMessage e2eDh clientMsg >>= \case
+                    (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption, encConnInfo, agentVersion}) ->
+                      smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion >> ack
+                    (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
+                      smpInvitation connReq connInfo >> ack
+                    _ -> prohibited >> ack
+                (Just e2eDh, Nothing) -> do
+                  decryptClientMessage e2eDh clientMsg >>= \case
+                    (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
+                      -- primary queue is set as Active in helloMsg, below is to set additional queues Active
+                      let RcvQueue {primary, dbReplaceQueueId} = rq
+                      unless (status == Active) . withStore' c $ \db -> setRcvQueueStatus db rq Active
+                      case (conn, dbReplaceQueueId) of
+                        (DuplexConnection _ rqs _, Just replacedId) -> do
+                          when primary . withStore' c $ \db -> setRcvQueuePrimary db connId rq
+                          case find (\RcvQueue {dbQueueId} -> dbQueueId == replacedId) rqs of
+                            Just RcvQueue {server, rcvId} -> do
+                              enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
+                            _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
+                        _ -> pure ()
+                      tryError agentClientMsg >>= \case
+                        Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
+                          HELLO -> helloMsg >> ackDel msgId
+                          REPLY cReq -> replyMsg cReq >> ackDel msgId
+                          -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
+                          A_MSG body -> do
+                            logServer "<--" c srv rId "MSG <MSG>"
+                            notify $ MSG msgMeta msgFlags body
+                          QCONT addr -> qDuplex "QCONT" $ continueSending addr
+                          QADD qs -> qDuplex "QADD" $ qAddMsg qs
+                          QKEY qs -> qDuplex "QKEY" $ qKeyMsg qs
+                          QUSE qs -> qDuplex "QUSE" $ qUseMsg qs
+                          -- no action needed for QTEST
+                          -- any message in the new queue will mark it active and trigger deletion of the old queue
+                          QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
+                          where
+                            qDuplex :: String -> (Connection 'CDuplex -> m ()) -> m ()
+                            qDuplex name a = case conn of
+                              DuplexConnection {} -> a conn >> ackDel msgId
+                              _ -> qError $ name <> ": message must be sent to duplex connection"
+                        Right _ -> prohibited >> ack
+                        Left e@(AGENT A_DUPLICATE) -> do
+                          withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
+                            Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
+                              | userAck -> ackDel internalId
+                              | otherwise -> do
+                                liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
+                                  AgentMessage _ (A_MSG body) -> do
+                                    logServer "<--" c srv rId "MSG <MSG>"
+                                    notify $ MSG msgMeta msgFlags body
+                                  _ -> pure ()
+                            _ -> throwError e
+                        Left e -> throwError e
+                      where
+                        agentClientMsg :: m (Maybe (InternalId, MsgMeta, AMessage))
+                        agentClientMsg = withStore c $ \db -> runExceptT $ do
+                          agentMsgBody <- agentRatchetDecrypt db connId encAgentMsg
+                          liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
+                            agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
+                              let msgType = agentMessageType agentMsg
+                                  internalHash = C.sha256Hash agentMsgBody
+                              internalTs <- liftIO getCurrentTime
+                              (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- liftIO $ updateRcvIds db connId
+                              let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash prevMsgHash
+                                  recipient = (unId internalId, internalTs)
+                                  broker = (srvMsgId, systemToUTCTime srvTs)
+                                  msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
+                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash}
+                              liftIO $ createRcvMsg db connId rq rcvMsg
+                              pure $ Just (internalId, msgMeta, aMessage)
+                            _ -> pure Nothing
+                    _ -> prohibited >> ack
+                _ -> prohibited >> ack
             ack :: m ()
             ack = enqueueCmd $ ICAck rId srvMsgId
             ackDel :: InternalId -> m ()
@@ -1697,6 +1707,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                 AcceptedConfirmation {ownConnInfo} <- withStore c (`getAcceptedConfirmation` connId)
                 connectReplyQueues c cData ownConnInfo smpQueues `catchError` (notify . ERR)
               _ -> prohibited
+
+        continueSending :: (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()
+        continueSending addr (DuplexConnection _ _ sqs) =
+          case findQ addr sqs of
+            Just sq -> do
+              logServer "<--" c srv rId "MSG <QCONT>"
+              atomically $ do
+                (_, qLock) <- getPendingMsgQ c sq
+                void $ tryPutTMVar qLock ()
+            Nothing -> qError "QCONT: queue address not found"
 
         -- processed by queue sender
         qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()

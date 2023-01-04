@@ -180,7 +180,7 @@ data AgentClient = AgentClient
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
     pendingMsgsQueued :: TMap SndQAddr Bool,
-    smpQueueMsgQueues :: TMap SndQAddr (TQueue InternalId),
+    smpQueueMsgQueues :: TMap SndQAddr (TQueue InternalId, TMVar ()),
     smpQueueMsgDeliveries :: TMap SndQAddr (Async ()),
     connCmdsQueued :: TMap ConnId Bool,
     asyncCmdQueues :: TMap (Maybe SMPServer) (TQueue AsyncCmdId),

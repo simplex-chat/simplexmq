@@ -83,7 +83,7 @@ data AgentConfig = AgentConfig
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
-    messageRetryInterval :: RetryInterval,
+    messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     ntfCron :: Word16,
@@ -108,12 +108,24 @@ defaultReconnectInterval =
       maxInterval = 180_000000
     }
 
-defaultMessageRetryInterval :: RetryInterval
+defaultMessageRetryInterval :: RetryInterval2
 defaultMessageRetryInterval =
-  RetryInterval
-    { initialInterval = 1_000000,
-      increaseAfter = 10_000000,
-      maxInterval = 60_000000
+  RetryInterval2
+    { riFast =
+        RetryInterval
+          { initialInterval = 1_000000,
+            increaseAfter = 10_000000,
+            maxInterval = 60_000000
+          },
+      riSlow =
+        -- TODO: these timeouts can be increased once most clients are updates
+        -- to resume sending on QCONT messages.
+        -- After that local message expiration period should be also increased.
+        RetryInterval
+          { initialInterval = 10_000000,
+            increaseAfter = 30_000000,
+            maxInterval = 300_000000
+          }
     }
 
 defaultAgentConfig :: AgentConfig

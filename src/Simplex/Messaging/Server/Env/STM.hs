@@ -39,7 +39,7 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
     serverTbqSize :: Natural,
-    msgQueueQuota :: Natural,
+    msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
