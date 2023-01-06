@@ -266,10 +266,8 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
         _ -> pure ()
     (NTActive, PNCheckMessages) ->
-      -- TODO check token status
       void $ deliverNotification pp tkn ntf
     (NTActive, PNMessage {}) -> do
-      -- TODO check token status
       stats <- asks serverStats
       atomically $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
