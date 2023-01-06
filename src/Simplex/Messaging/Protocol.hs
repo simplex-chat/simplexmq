@@ -888,7 +888,7 @@ data ErrorType
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
-    DUPLICATE_ -- TODO remove, not part of SMP protocol
+    DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
 
 instance ToJSON ErrorType where

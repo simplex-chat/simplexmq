@@ -191,7 +191,7 @@ runNtfWorker c srv doWork = do
                 case clientNtfCreds of
                   Just ClientNtfCreds {ntfPrivateKey, notifierId} -> do
                     nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) ntfPrivateKey
-                    -- TODO smaller retry until Active, less frequently (daily?) once Active
+                    -- possible improvement: smaller retry until Active, less frequently (daily?) once Active
                     let actionTs' = addUTCTime 30 ts
                     withStore' c $ \db ->
                       updateNtfSubscription db sub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew} (NtfSubNTFAction NSACheck) actionTs'

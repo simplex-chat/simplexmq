@@ -67,7 +67,9 @@ module Simplex.Messaging.Crypto
 
     -- * key encoding/decoding
     encodePubKey,
+    decodePubKey,
     encodePrivKey,
+    decodePrivKey,
     pubKeyBytes,
 
     -- * sign/verify
@@ -888,12 +890,12 @@ cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
 -- | Message signing.
 --
 -- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
-sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> ExceptT CryptoError IO (Signature a)
-sign' (PrivateKeyEd25519 pk k) msg = pure . SignatureEd25519 $ Ed25519.sign pk k msg
-sign' (PrivateKeyEd448 pk k) msg = pure . SignatureEd448 $ Ed448.sign pk k msg
+sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> Signature a
+sign' (PrivateKeyEd25519 pk k) msg = SignatureEd25519 $ Ed25519.sign pk k msg
+sign' (PrivateKeyEd448 pk k) msg = SignatureEd448 $ Ed448.sign pk k msg
 
-sign :: APrivateSignKey -> ByteString -> ExceptT CryptoError IO ASignature
-sign (APrivateSignKey a k) = fmap (ASignature a) . sign' k
+sign :: APrivateSignKey -> ByteString -> ASignature
+sign (APrivateSignKey a k) = ASignature a . sign' k
 
 -- | Signature verification.
 --

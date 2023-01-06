@@ -266,8 +266,10 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
         _ -> pure ()
     (NTActive, PNCheckMessages) ->
+      -- TODO check token status
       void $ deliverNotification pp tkn ntf
     (NTActive, PNMessage {}) -> do
+      -- TODO check token status
       stats <- asks serverStats
       atomically $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
@@ -512,7 +514,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
-            -- TODO retry if subscription failed, if pending or AUTH do nothing
+            -- possible improvement: retry if subscription failed, if pending or AUTH do nothing
             pure $
               if notifierKey == registeredNKey
                 then NRSubId subId
