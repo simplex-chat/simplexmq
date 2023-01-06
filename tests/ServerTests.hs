@@ -14,7 +14,7 @@ module ServerTests where
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad.Except (forM, forM_, runExceptT)
+import Control.Monad.Except (forM, forM_)
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
@@ -78,8 +78,7 @@ sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
 signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right sig <- runExceptT $ C.sign pk t
-  Right () <- tPut1 h (Just sig, t)
+  Right () <- tPut1 h (Just $ C.sign pk t, t)
   tGet1 h
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())

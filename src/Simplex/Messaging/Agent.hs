@@ -504,7 +504,7 @@ joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri ConnReqUriData {crAge
           unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
           pure connId'
         Left e -> do
-          -- TODO recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
+          -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
           unless asyncMode $ withStore' c (`deleteConn` connId')
           throwError e
       where
@@ -1226,7 +1226,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         (Nothing, Just NTARegister) -> do
           when (savedDeviceToken /= suppliedDeviceToken) $ withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
           registerToken tkn $> NTRegistered
-        -- TODO minimal time before repeat registration
+        -- possible improvement: add minimal time before repeat registration
         (Just tknId, Nothing)
           | savedDeviceToken == suppliedDeviceToken ->
             when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
@@ -1244,8 +1244,8 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               agentNtfEnableCron c tknId tkn cron
               when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
               when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCDelete
-            pure ntfTknStatus -- TODO
-            -- agentNtfCheckToken c tknId tkn >>= \case
+            -- possible improvement: get updated token status from the server, or maybe TCRON could return the current status
+            pure ntfTknStatus
           | otherwise -> replaceToken tknId
         (Just tknId, Just NTADelete) -> do
           agentNtfDeleteToken c tknId tkn
@@ -1411,11 +1411,6 @@ sendNtfConnCommands c cmd = do
         when enableNtfs . atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
       _ ->
         atomically $ writeTBQueue (subQ c) ("", connId, ERR $ INTERNAL "no connection data")
-
--- TODO
--- There should probably be another function to cancel all subscriptions that would flush the queue first,
--- so that supervisor stops processing pending commands?
--- It is an optimization, but I am thinking how it would behave if a user were to flip on/off quickly several times.
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c = atomically . writeTVar (ntfServers c)
