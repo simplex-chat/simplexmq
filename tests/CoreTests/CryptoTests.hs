@@ -4,6 +4,7 @@
 module CoreTests.CryptoTests (cryptoTests) where
 
 import qualified Data.ByteString.Char8 as B
+import Data.Either (isRight)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Simplex.Messaging.Crypto as C
@@ -61,7 +62,7 @@ testDHCryptoBox = it "should encrypt / decrypt string" . ioProperty $ do
         paddedLen = B.length b + abs pad + 2
         cipher = C.cbEncrypt (C.dh' rk spk) nonce b paddedLen
         plain = C.cbDecrypt (C.dh' sk rpk) nonce =<< cipher
-     in Right b == plain
+     in isRight cipher && cipher /= plain && Right b == plain
 
 testEncoding :: (C.AlgorithmI a) => C.SAlgorithm a -> Spec
 testEncoding alg = it "should encode / decode key" . ioProperty $ do
