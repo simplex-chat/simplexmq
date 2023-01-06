@@ -111,7 +111,7 @@ processUpload = do
       resp <- addFile http2 (sPub, sKey) (fromList [rPub]) fileSize
       case resp of
         Just (FRChunkIds sChunkId rChunkIds)  ->  do
-          file <- readFileToUpload "/tmp/a"
+          file <- readFileToUpload "tempFile"
           _ <- uploadFile http2 sChunkId (sPub, sKey) file
           print "Done all"
         _ -> pure ()
@@ -159,7 +159,7 @@ processUpload = do
   c <- readTVarIO (https2Client client)
   case c of
     Just http2 -> do
-      _ <- uploadFile http2 "/tmp/a"
+      _ <- uploadFile http2 "tempFile"
       print "Done"
     _ -> print "No client"
   pure ()
