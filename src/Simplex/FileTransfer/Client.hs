@@ -9,14 +9,14 @@ module Simplex.FileTransfer.Client where
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Data.Word (Word16)
-import Simplex.Messaging.Client
+import Simplex.Messaging.Client hiding (qSize)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Util (bshow)
 import Simplex.FileTransfer.Protocol (FileResponse(..), FilePartyI, FileCommand (FPUT), FileChunkId, FileCmd (FileCmd), SFileParty (SSender))
 import Network.TLS (HostName)
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Transport.HTTP2.Client (HTTP2ClientConfig, HTTP2Client, HTTP2ClientError, getHTTP2Client, HTTP2Response (HTTP2Response), response, respBody, defaultHTTP2ClientConfig, sendRequest)
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2ClientConfig (..), HTTP2Client, HTTP2ClientError, getHTTP2Client, HTTP2Response (HTTP2Response), response, respBody, defaultHTTP2ClientConfig, sendRequest)
 import Control.Concurrent.STM (TVar)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (writeTVar)
@@ -50,6 +50,8 @@ import Control.Exception (bracket)
 import GHC.IO.IOMode (IOMode(..))
 import System.IO (withFile)
 import System.Directory.Internal.Prelude (fromMaybe)
+import Simplex.Messaging.Transport.Client (TransportClientConfig(..))
+import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
 
 type FileClient = ProtocolClient FileResponse
 
@@ -155,7 +157,12 @@ uploadFile http2 chunkId (_senderPubKey, senderPrivKey) file = do
 
 processUpload :: IO ()
 processUpload = do
-  client <- createFileClient "localhost" defaultHTTP2ClientConfig
+  client <- createFileClient "localhost" HTTP2ClientConfig{ qSize = 64,
+      connTimeout = 10000000,
+      transportConfig = TransportClientConfig Nothing Nothing True,
+      caStoreFile = "tests/fixtures/ca.crt",
+      suportedTLSParams = http2TLSParams
+    }
   c <- readTVarIO (https2Client client)
   case c of
     Just http2 -> do
