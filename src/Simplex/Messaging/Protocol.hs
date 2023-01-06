@@ -1168,18 +1168,16 @@ tPut th trs
     tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO [Either TransportError ()]
     tPutBatch rs ts = do
       let (n, s, ts_) = encodeBatch 0 "" ts
-      r <-
-        if n == 0
-          then putStrLn ("large message (" <> show (B.length $ L.head ts) <> " bytes)") >> pure [Left TELargeMsg]
-          else replicate n <$> tPutLog (lenEncode n `B.cons` s)
+      r <- if n == 0 then largeMsg else replicate n <$> tPutLog (lenEncode n `B.cons` s)
       let rs' = rs <> r
       case ts_ of
         Just ts' -> tPutBatch rs' ts'
         _ -> pure rs'
+    largeMsg = putStrLn "tPut error: large message" >> pure [Left TELargeMsg]
     tPutLog s = do
       r <- tPutBlock th s
       case r of
-        Left e -> putStrLn ("transport error" <> show e)
+        Left e -> putStrLn ("tPut error: " <> show e)
         _ -> pure ()
       pure r
     encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
