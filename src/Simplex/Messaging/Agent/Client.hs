@@ -98,7 +98,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
-import Data.List (partition, (\\))
+import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -303,12 +303,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
           TM.delete srv smpClients
-          qs <- RQ.getDelSrvQueues srv $ activeSubs c
+          (qs, conns) <- RQ.getDelSrvQueues srv $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
-          cs <- RQ.getConns (activeSubs c)
-          -- TODO deduplicate conns
-          let conns = map (connId :: RcvQueue -> ConnId) qs \\ S.toList cs
-          pure (qs, conns)
+          pure (qs, S.toList conns)
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
@@ -345,8 +342,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
             unless connected . forM_ client_ $ \cl -> do
               incClientStat c cl "CONNECT" ""
               notifySub "" $ hostEvent CONNECT cl
-            -- TODO deduplicate okConns
-            let conns = okConns \\ S.toList cs
+            let conns = S.toList $ S.fromList okConns `S.difference` cs
             unless (null conns) $ notifySub "" $ UP srv conns
           let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
           liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
@@ -647,8 +643,7 @@ temporaryOrHostError = \case
 subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> [RcvQueue] -> m (Maybe SMPClient, [(RcvQueue, Either AgentErrorType ())])
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue qs
-  forM_ qs_ $ \rq@RcvQueue {connId, server = _server} -> atomically $ do
-    -- TODO check server is correct
+  forM_ qs_ $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
   case L.nonEmpty qs_ of
@@ -667,9 +662,11 @@ subscribeQueues c srv qs = do
             pure $ map (second . first $ protocolClientError SMP $ clientServer smp) rs
     _ -> pure (Nothing, errs)
   where
-    checkQueue rq@RcvQueue {rcvId, server} = do
-      prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
-      pure $ if prohibited || srv /= server then Left (rq, Left $ CMD PROHIBITED) else Right rq
+    checkQueue rq@RcvQueue {rcvId, server}
+      | server == srv = do
+        prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
+        pure $ if prohibited || srv /= server then Left (rq, Left $ CMD PROHIBITED) else Right rq
+      | otherwise = pure $ Left (rq, Left $ INTERNAL "queue server does not match parameter")
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()

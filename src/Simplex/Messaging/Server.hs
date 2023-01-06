@@ -256,7 +256,6 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-  -- TODO the line below can return Lefts, but we ignore it and do not disconnect the client
   void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
   atomically . writeTVar activeAt =<< liftIO getSystemTime
   where

@@ -1160,26 +1160,33 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO (NonEmpty (Either TransportError ()))
+tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
 tPut th trs
   | batch th = tPutBatch [] $ L.map tEncode trs
-  | otherwise = forM trs $ tPutBlock th . tEncode
+  | otherwise = forM (L.toList trs) $ tPutLog . tEncode
   where
-    tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO (NonEmpty (Either TransportError ()))
+    tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO [Either TransportError ()]
     tPutBatch rs ts = do
       let (n, s, ts_) = encodeBatch 0 "" ts
-      r <- if n == 0 then pure [Left TELargeMsg] else replicate n <$> tPutBlock th (lenEncode n `B.cons` s)
+      r <- if n == 0 then largeMsg else replicate n <$> tPutLog (lenEncode n `B.cons` s)
       let rs' = rs <> r
       case ts_ of
         Just ts' -> tPutBatch rs' ts'
-        _ -> pure $ L.fromList rs'
+        _ -> pure rs'
+    largeMsg = putStrLn "tPut error: large message" >> pure [Left TELargeMsg]
+    tPutLog s = do
+      r <- tPutBlock th s
+      case r of
+        Left e -> putStrLn ("tPut error: " <> show e)
+        _ -> pure ()
+      pure r
     encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
     encodeBatch n s ts@(t :| ts_)
       | n == 255 = (n, s, Just ts)
       | otherwise =
         let s' = s <> smpEncode (Large t)
             n' = n + 1
-         in if B.length s' > blockSize th - 1
+         in if B.length s' > blockSize th - 1 -- one byte is reserved for the number of messages in the batch
               then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
               else case L.nonEmpty ts_ of
                 Just ts' -> encodeBatch n' s' ts'
