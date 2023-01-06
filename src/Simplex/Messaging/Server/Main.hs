@@ -160,8 +160,8 @@ smpServerCLI cfgPath logPath =
         serverConfig =
           ServerConfig
             { transports = iniTransports ini,
-              tbqSize = 16,
-              serverTbqSize = 64,
+              tbqSize = 32,
+              serverTbqSize = 128,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
