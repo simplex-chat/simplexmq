@@ -27,10 +27,12 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 import Simplex.FileTransfer.Server (startServer)
 import Simplex.FileTransfer.Client (processUpload)
+import Control.Concurrent (threadDelay)
 
 fileServerCLI :: FilePath -> FilePath -> IO ()
 fileServerCLI cfgPath logPath = do
   startServer
+  threadDelay 10000000
   processUpload
   
 fileServerCLIOrig :: FilePath -> FilePath -> IO ()
