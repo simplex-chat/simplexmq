@@ -1160,20 +1160,22 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO (NonEmpty (Either TransportError ()))
+tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
 tPut th trs
-  | batch th = tPutBatch [] $ Just $ L.map tEncode trs
-  | otherwise = forM trs $ tPutLog . tEncode
+  | batch th = tPutBatch [] $ L.map tEncode trs
+  | otherwise = forM (L.toList trs) $ tPutLog . tEncode
   where
-    tPutBatch :: [Either TransportError ()] -> Maybe (NonEmpty ByteString) -> IO (NonEmpty (Either TransportError ()))
-    tPutBatch rs Nothing = pure $ L.fromList rs
-    tPutBatch rs (Just ts) = do
+    tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO [Either TransportError ()]
+    tPutBatch rs ts = do
       let (n, s, ts_) = encodeBatch 0 "" ts
       r <-
         if n == 0
           then putStrLn ("large message (" <> show (B.length $ L.head ts) <> " bytes)") >> pure [Left TELargeMsg]
           else replicate n <$> tPutLog (lenEncode n `B.cons` s)
-      tPutBatch (rs <> r) ts_
+      let rs' = rs <> r
+      case ts_ of
+        Just ts' -> tPutBatch rs' ts'
+        _ -> pure rs'
     tPutLog s = do
       r <- tPutBlock th s
       case r of
