@@ -1045,7 +1045,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   withStore' c $ \db -> do
                     setSndQueueStatus db sq Confirmed
                     when (isJust rq_) $ removeConfirmations db connId
-                  -- TODO possibly notification flag should be ON for one of the parties, to result in contact connected notification
                   unless (duplexHandshake == Just True) . void $ enqueueMessage c cData sq SMP.noMsgFlags HELLO
                 AM_CONN_INFO_REPLY -> pure ()
                 AM_REPLY_ -> pure ()
