@@ -257,24 +257,30 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   (tkn@NtfTknData {ntfTknId, token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
-  case (status, ntf) of
-    (_, PNVerification _) ->
-      -- TODO check token status
-      deliverNotification pp tkn ntf >>= \case
-        Right _ -> do
-          status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
-          forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-        _ -> pure ()
-    (NTActive, PNCheckMessages) ->
+  case ntf of
+    PNVerification _
+      | status /= NTInvalid && status /= NTExpired ->
+        deliverNotification pp tkn ntf >>= \case
+          Right _ -> do
+            status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
+            forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+          _ -> pure ()
+      | otherwise -> logError "bad notification token status"
+    PNCheckMessages -> withActiveTkn status $ do
       void $ deliverNotification pp tkn ntf
-    (NTActive, PNMessage {}) -> do
+    PNMessage {} -> withActiveTkn status $ do
       stats <- asks serverStats
       atomically $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
       incNtfStat ntfDelivered
-    _ ->
-      liftIO $ logError "bad notification token status"
+    -- not used in production
+    PNAlert _ -> withActiveTkn status $ do
+      void $ deliverNotification pp tkn ntf
   where
+    withActiveTkn :: NtfTknStatus -> M () -> M ()
+    withActiveTkn status action
+      | status == NTActive = action
+      | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> M (Either PushProviderError ())
     deliverNotification pp tkn@NtfTknData {ntfTknId, tknStatus} ntf = do
       deliver <- liftIO $ getPushClient s pp
