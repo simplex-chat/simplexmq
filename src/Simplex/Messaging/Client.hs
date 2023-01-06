@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -94,7 +93,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, liftError, raceAny_)
+import Simplex.Messaging.Util (bshow, raceAny_)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 
@@ -541,7 +540,7 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}} pKey
 mkTransmission :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> ClientCommand msg -> ExceptT ProtocolClientError IO (SentRawTransmission, TMVar (Response msg))
 mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCorrId, sentCommands}} (pKey, qId, cmd) = do
   corrId <- liftIO $ atomically getNextCorrId
-  t <- signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)
+  let t = signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)
   r <- liftIO . atomically $ mkRequest corrId
   pure (t, r)
   where
@@ -549,12 +548,8 @@ mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCo
     getNextCorrId = do
       i <- stateTVar clientCorrId $ \i -> (i, i + 1)
       pure . CorrId $ bshow i
-    signTransmission :: ByteString -> ExceptT ProtocolClientError IO SentRawTransmission
-    signTransmission t = case pKey of
-      Nothing -> pure (Nothing, t)
-      Just pk -> do
-        sig <- liftError PCESignatureError $ C.sign pk t
-        return (Just sig, t)
+    signTransmission :: ByteString -> SentRawTransmission
+    signTransmission t = ((`C.sign` t) <$> pKey, t)
     mkRequest :: CorrId -> STM (TMVar (Response msg))
     mkRequest corrId = do
       r <- newEmptyTMVar

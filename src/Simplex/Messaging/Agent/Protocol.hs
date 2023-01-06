@@ -1130,7 +1130,6 @@ instance ToJSON BrokerErrorType where
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 -- | Errors of another SMP agent.
--- TODO encode/decode without A prefix
 data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE

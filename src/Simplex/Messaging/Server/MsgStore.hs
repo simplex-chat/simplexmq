@@ -6,7 +6,6 @@ module Simplex.Messaging.Server.MsgStore where
 
 import Control.Applicative ((<|>))
 import Data.Int (Int64)
-import Numeric.Natural
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (Message (..), MsgId, RcvMessage (..), RecipientId)
 

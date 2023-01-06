@@ -512,7 +512,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
-            -- TODO retry if subscription failed, if pending or AUTH do nothing
+            -- possible improvement: retry if subscription failed, if pending or AUTH do nothing
             pure $
               if notifierKey == registeredNKey
                 then NRSubId subId
