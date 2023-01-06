@@ -58,8 +58,12 @@ import Simplex.FileTransfer.Protocol (FileCmd(..), FileResponse, SFileParty (SRe
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.X509.Validation (HostName)
 import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, HTTP2ClientError, HTTP2ClientConfig, getHTTP2Client)
-import Simplex.Messaging.Transport.HTTP2.Server (getHTTP2Server, HTTP2ServerConfig (..))
+import Simplex.Messaging.Transport.HTTP2.Server (getHTTP2Server, HTTP2ServerConfig (..), HTTP2Server (HTTP2Server), HTTP2Request (HTTP2Request, reqBody, sendResponse))
 import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
+import Simplex.Messaging.Transport.HTTP2.Server (HTTP2Server(reqQ))
+import qualified Network.HTTP2.Server as H
+import qualified Network.HTTP.Types as N
+import qualified Data.Aeson as J
 
 startServer :: IO ()
 startServer = do
@@ -72,8 +76,16 @@ startServer = do
     certificateFile = "tests/fixtures/server.crt",
     logTLSErrors = True
   }
-  server <- getHTTP2Server config 
+  print "Starting server"
+  http2Server <- getHTTP2Server config
+  qSize <- newTBQueueIO 64
+  action <- async $ runServer qSize http2Server
   pure ()
+  where
+    runServer qSize HTTP2Server {reqQ} = forever $ do
+      HTTP2Request {reqBody, sendResponse} <- atomically $ readTBQueue reqQ
+      print "Sending response"
+      sendResponse $ H.responseNoBody N.ok200 []
 
 {-
 runFileServer :: FileServerConfig -> IO ()
