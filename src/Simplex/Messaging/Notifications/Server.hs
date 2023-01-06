@@ -367,13 +367,11 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
-          -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st tknId
           verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
-              -- TODO move active token check here to differentiate error
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
             else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
@@ -381,7 +379,6 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
       s_ <- atomically $ getNtfSubscription st entId
       case s_ of
         Just s@NtfSubData {tokenId = subTknId} -> do
-          -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st subTknId
           verifyToken' t_ $ verifiedSubCmd s c
         _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed

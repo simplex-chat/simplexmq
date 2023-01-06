@@ -504,7 +504,7 @@ joinConnSrv c connId asyncMode enableNtfs (CRInvitationUri ConnReqUriData {crAge
           unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
           pure connId'
         Left e -> do
-          -- TODO recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
+          -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
           unless asyncMode $ withStore' c (`deleteConn` connId')
           throwError e
       where
