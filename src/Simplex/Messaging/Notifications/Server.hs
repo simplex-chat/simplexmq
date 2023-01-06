@@ -266,19 +266,16 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
           _ -> pure ()
       | otherwise -> logError "bad notification token status"
-    PNCheckMessages -> withActiveTkn status $ do
+    PNCheckMessages -> checkActiveTkn status $ do
       void $ deliverNotification pp tkn ntf
-    PNMessage {} -> withActiveTkn status $ do
+    PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
       atomically $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
       incNtfStat ntfDelivered
-    -- not used in production
-    PNAlert _ -> withActiveTkn status $ do
-      void $ deliverNotification pp tkn ntf
   where
-    withActiveTkn :: NtfTknStatus -> M () -> M ()
-    withActiveTkn status action
+    checkActiveTkn :: NtfTknStatus -> M () -> M ()
+    checkActiveTkn status action
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> M (Either PushProviderError ())
