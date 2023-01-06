@@ -24,9 +24,12 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import Data.ByteString (ByteString)
-import Simplex.Messaging.Protocol (Transmission, CorrId (CorrId))
+import Simplex.Messaging.Protocol (Transmission, CorrId (CorrId), RcvPublicVerifyKey, SndPublicVerifyKey)
 import Simplex.FileTransfer.Protocol (FileResponse, FilePartyI, SFileParty, FileCommand)
 import Data.Time.Clock.System (SystemTime)
+import Data.List.NonEmpty (NonEmpty)
+import Data.Word (Word32)
+import Data.Aeson (ToJSON)
 
 data FileServerConfig = FileServerConfig
   { transports :: [(ServiceName, ATransport)],
@@ -81,8 +84,8 @@ newFileServerEnv config@FileServerConfig {subQSize, smpAgentCfg, storeLogFile, c
   pure FileEnv {config, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data FileRequest
-  = FileReqNew CorrId ANewFileParty
-  | forall e. FilePartyI e => FileReqCmd (SFileParty e) (FileRec e) (Transmission (FileCommand e))
+  = FileReqNew NewFileRec
+  | forall e. FilePartyI e => FileReqCmd (Transmission (FileCommand e))
 
 data FileServerClient = FileServerClient
   { rcvQ :: TBQueue FileRequest,

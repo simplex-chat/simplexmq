@@ -16,7 +16,7 @@ import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.FileTransfer.Server (runFileServer)
+-- import Simplex.FileTransfer.Server (runFileServer)
 import Simplex.FileTransfer.Server.Env (FileServerConfig (..))
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern FileServer)
 import Simplex.Messaging.Server.CLI
@@ -25,9 +25,18 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
+import Simplex.FileTransfer.Server (startServer)
+import Simplex.FileTransfer.Client (processUpload)
 
 fileServerCLI :: FilePath -> FilePath -> IO ()
-fileServerCLI cfgPath logPath =
+fileServerCLI cfgPath logPath = do
+  startServer
+  processUpload
+  
+fileServerCLIOrig :: FilePath -> FilePath -> IO ()
+fileServerCLIOrig cfgPath logPath = do
+  startServer
+  processUpload
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -87,7 +96,7 @@ fileServerCLI cfgPath logPath =
           srv = ProtoServerWithAuth (FileServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
       printServerConfig transports storeLogFile
-      runFileServer cfg
+      -- runFileServer cfg
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini

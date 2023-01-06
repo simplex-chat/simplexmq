@@ -4,6 +4,7 @@
 module Simplex.FileTransfer.Server.Store
   ( FileStore(..),
     FileRec,
+    NewFileRec(..),
     newFileStore,
     addFile,
     setFilePath,
@@ -22,6 +23,8 @@ import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM)
+import Data.List.NonEmpty (NonEmpty)
+import Data.Word (Word32)
 
 data FileStore = FileStore
   { files :: TMap SenderId FileRec,
@@ -35,6 +38,14 @@ data FileRec = FileRec
     filepath :: TVar (Maybe FilePath)
   }
   deriving (Eq)
+
+data NewFileRec = NewFileRec
+ {
+   senderPubKey :: SndPublicVerifyKey,
+   recipientKeys :: NonEmpty RcvPublicVerifyKey,
+   fileSize :: Word32
+ }
+ deriving (Eq)
 
 newFileStore :: STM FileStore
 newFileStore = do

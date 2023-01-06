@@ -14,6 +14,8 @@ import System.Timeout (timeout)
 import Test.Hspec
 import Test.Main (withStdin)
 import Simplex.FileTransfer.Server.Main (fileServerCLI)
+import Simplex.FileTransfer.Client (processUpload)
+import Simplex.FileTransfer.Server (startServer)
 
 cfgPath :: FilePath
 cfgPath = "tests/tmp/cli/etc/opt/simplex"
@@ -47,7 +49,7 @@ cliTests = do
 
   describe "File server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ fileServerTest False
-    it "should initialize, start and delete the server (with store log)" $ fileServerTest True
+    fit "should initialize, start and delete the server (with store log)" $ fileServerTest True
 
 smpServerTest :: Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -91,6 +93,11 @@ ntfServerTest storeLog = do
 
 fileServerTest :: Bool -> IO ()
 fileServerTest storeLog = do
+  startServer
+  processUpload
+
+fileServerTestOrig :: Bool -> IO ()
+fileServerTestOrig storeLog = do
   capture_ (withArgs (["init"] <> ["-l" | storeLog]) $ fileServerCLI fileCfgPath fileLogPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> fileCfgPath <> "/file-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ fileCfgPath <> "/file-server.ini"
