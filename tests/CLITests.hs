@@ -6,6 +6,7 @@ import Data.Ini (lookupValue, readIniFile)
 import Data.List (isPrefixOf)
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (catchAll_)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
@@ -51,7 +52,7 @@ smpServerTest storeLog basicAuth = do
   lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "off"
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SMP server v4.1.0"]
+  r `shouldContain` ["SMP server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> logPath <> "/smp-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 5223 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
@@ -71,7 +72,7 @@ ntfServerTest storeLog = do
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
   doesFileExist (ntfCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SMP notifications server v1.2.0"]
+  r `shouldContain` ["SMP notifications server v" <> ntfServerVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)

@@ -1,3 +1,26 @@
+# 4.2.0
+
+SMP agent and server:
+
+- reduce sender traffic in cases when queue quota is exceeded:
+  - server sends quota exceeded message to the recipient when sender receives ERR QUOTA.
+  - recipient sends QCONT message to the send once the queue is drained (via reply queue).
+  - sender retry delays are increased, reducing traffic, but sender instantly resumes delivery where QCONT is received.
+
+SMP server:
+
+- increase internal queue sizes.
+
+SMP agent:
+
+- deduplicate connection IDs in connect/disconnect responses.
+- unit tests for Crypto.hs.
+- fix connection switch to another queue: correctly set primary send queue.
+
+Notification server (v1.3.0):
+
+- check token status when sending verification notificaiton.
+
 # 4.1.0
 
 SMP agent and server:
