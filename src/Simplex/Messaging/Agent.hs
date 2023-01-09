@@ -1081,16 +1081,18 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   case conn of
                     DuplexConnection cData' rqs sqs -> do
                       -- remove old snd queue from connection once QTEST is sent to the new queue
-                      case findQ (qAddress sq) sqs of
+                      let addr = qAddress sq
+                      case findQ addr sqs of
                         -- this is the same queue where this loop delivers messages to but with updated state
                         Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
-                          case removeQP (\SndQueue {dbQueueId} -> dbQueueId == replacedId) sqs of
+                          -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
+                          case removeQP (\sq'@SndQueue {dbQueueId} -> dbQueueId == replacedId && not (sameQueue addr sq')) sqs of
                             Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
                             Just (sq', sq'' : sqs') -> do
                               -- remove the delivery from the map to stop the thread when the delivery loop is complete
                               atomically $ TM.delete (qAddress sq') $ smpQueueMsgQueues c
                               withStore' c $ \db -> do
-                                when primary $ setSndQueuePrimary db connId sq'
+                                when primary $ setSndQueuePrimary db connId sq
                                 deletePendingMsgs db connId sq'
                                 deleteConnSndQueue db connId sq'
                               let sqs'' = sq'' :| sqs'
