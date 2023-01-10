@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -11,7 +12,8 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
@@ -27,6 +29,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
+import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport
@@ -173,13 +176,13 @@ testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
-    { smp = L.fromList [noAuthSrv testSMPServer],
+    { smp = userServers [noAuthSrv testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
-initAgentServers2 = initAgentServers {smp = L.fromList [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
+initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
 
 agentCfg :: AgentConfig
 agentCfg =
@@ -209,10 +212,13 @@ agentCfg =
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
   let cfg' = agentCfg {tcpPort = port', database = db'}
-      initServers' = initAgentServers {smp = L.fromList [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
+      initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
+
+userServers :: NonEmpty SMPServerWithAuth -> Map UserId (NonEmpty SMPServerWithAuth)
+userServers srvs = M.fromList [(1, srvs)]
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile (dbFile db')
@@ -226,7 +232,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m, MonadFail m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig agentTestHost
-  runTransportClient defaultTransportClientConfig useHost port' (Just testKeyHash) $ \h -> do
+  runTransportClient defaultTransportClientConfig Nothing useHost port' (Just testKeyHash) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h

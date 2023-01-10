@@ -34,6 +34,7 @@ import Simplex.Messaging.Protocol
     NotifierId,
     NtfPrivateSignKey,
     NtfPublicVerifyKey,
+    QueueId,
     RcvDhSecret,
     RcvNtfDhSecret,
     RcvPrivateSignKey,
@@ -47,7 +48,8 @@ import Simplex.Messaging.Version
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data RcvQueue = RcvQueue
-  { connId :: ConnId,
+  { userId :: UserId,
+    connId :: ConnId,
     server :: SMPServer,
     -- | recipient queue ID
     rcvId :: SMP.RecipientId,
@@ -89,7 +91,8 @@ data ClientNtfCreds = ClientNtfCreds
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
-  { connId :: ConnId,
+  { userId :: UserId,
+    connId :: ConnId,
     server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
@@ -149,6 +152,27 @@ sndAddress RcvQueue {server, sndId} = (server, sndId)
 findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
 findRQ sAddr = find $ sameQAddress sAddr . sndAddress
 {-# INLINE findRQ #-}
+
+class SMPQueue q => SMPQueueRec q where
+  qUserId :: q -> UserId
+  qConnId :: q -> ConnId
+  queueId :: q -> QueueId
+
+instance SMPQueueRec RcvQueue where
+  qUserId = userId
+  {-# INLINE qUserId #-}
+  qConnId = connId
+  {-# INLINE qConnId #-}
+  queueId = rcvId
+  {-# INLINE queueId #-}
+
+instance SMPQueueRec SndQueue where
+  qUserId = userId
+  {-# INLINE qUserId #-}
+  qConnId = connId
+  {-# INLINE qConnId #-}
+  queueId = sndId
+  {-# INLINE queueId #-}
 
 -- * Connection types
 
@@ -222,6 +246,7 @@ deriving instance Show SomeConn
 
 data ConnData = ConnData
   { connId :: ConnId,
+    userId :: UserId,
     connAgentVersion :: Version,
     enableNtfs :: Bool,
     duplexHandshake :: Maybe Bool, -- added in agent protocol v2
@@ -230,6 +255,8 @@ data ConnData = ConnData
   deriving (Eq, Show)
 
 data AgentCmdType = ACClient | ACInternal
+
+type UserId = Int64
 
 instance StrEncoding AgentCmdType where
   strEncode = \case
@@ -471,6 +498,8 @@ data StoreError
     SEInternal ByteString
   | -- | Failed to generate unique random ID
     SEUniqueID
+  | -- | User ID not found
+    SEUserNotFound
   | -- | Connection not found (or both queues absent).
     SEConnNotFound
   | -- | Connection already used.

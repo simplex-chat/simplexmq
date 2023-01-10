@@ -160,7 +160,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
             void $ tryConnectClient (const reconnectClient) loop
 
     connectClient :: ExceptT ProtocolClientError IO SMPClient
-    connectClient = ExceptT $ getProtocolClient srv (smpCfg agentCfg) (Just msgQ) clientDisconnected
+    connectClient = ExceptT $ getProtocolClient srv (smpCfg agentCfg) Nothing (Just msgQ) clientDisconnected
 
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected _ = do

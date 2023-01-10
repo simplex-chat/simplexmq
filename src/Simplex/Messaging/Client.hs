@@ -54,6 +54,7 @@ module Simplex.Messaging.Client
     ProtocolClientError (..),
     ProtocolClientConfig (..),
     NetworkConfig (..),
+    TransportSessionMode (..),
     defaultClientConfig,
     defaultNetworkConfig,
     transportClientConfig,
@@ -152,6 +153,8 @@ data NetworkConfig = NetworkConfig
     hostMode :: HostMode,
     -- | if above criteria is not met, if the below setting is True return error, otherwise use the first host
     requiredHostMode :: Bool,
+    -- | transport sessions are created per user or per entity
+    sessionMode :: TransportSessionMode,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -168,12 +171,23 @@ instance ToJSON NetworkConfig where
   toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
   toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
+data TransportSessionMode = TSMUser | TSMEntity
+  deriving (Eq, Show, Generic)
+
+instance ToJSON TransportSessionMode where
+  toJSON = J.genericToJSON . enumJSON $ dropPrefix "TSM"
+  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TSM"
+
+instance FromJSON TransportSessionMode where
+  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TSM"
+
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
     { socksProxy = Nothing,
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
+      sessionMode = TSMUser,
       tcpConnectTimeout = 7_500_000,
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
@@ -239,8 +253,8 @@ transportHost' = transportHost . client_
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient msg -> IO ()) -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected = do
+getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe ByteString -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient msg -> IO ()) -> IO (Either ProtocolClientError (ProtocolClient msg))
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} proxyUsername msgQ disconnected = do
   case chooseTransportHost networkConfig (host protocolServer) of
     Right useHost ->
       (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
@@ -274,7 +288,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
       let tcConfig = transportClientConfig networkConfig
       action <-
         async $
-          runTransportClient tcConfig useHost port' (Just $ keyHash protocolServer) (client t c cVar)
+          runTransportClient tcConfig proxyUsername useHost port' (Just $ keyHash protocolServer) (client t c cVar)
             `finally` atomically (putTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       pure $ case c_ of
