@@ -299,7 +299,7 @@ instance ProtocolServerClient NtfResponse where
   clientProtocolError = NTF
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
-getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, connId_) = do
+getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, entityId_) = do
   unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
   atomically (getClientVar tSess smpClients)
     >>= either
@@ -310,7 +310,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     connectClient = do
       cfg <- getClientConfig c smpCfg
       u <- askUnliftIO
-      let proxyUsername = Just $ bshow userId <> maybe "" (":" <>) connId_
+      let proxyUsername = Just $ bshow userId <> maybe "" (":" <>) entityId_
       liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient srv cfg proxyUsername (Just msgQ) $ clientDisconnected u)
 
     clientDisconnected :: UnliftIO m -> SMPClient -> IO ()

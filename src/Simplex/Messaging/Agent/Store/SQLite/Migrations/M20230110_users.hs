@@ -16,7 +16,7 @@ CREATE TABLE users (
 
 INSERT INTO users (user_id) VALUES (1);
 
-ALTER TABLE connections ADD COLUMN user_id INTEGER DEFAULT 1 CHECK (user_id NOT NULL)
+ALTER TABLE connections ADD COLUMN user_id INTEGER CHECK (user_id NOT NULL)
 REFERENCES users ON DELETE CASCADE;
 
 CREATE INDEX idx_connections_user ON connections(user_id);

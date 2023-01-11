@@ -23,7 +23,7 @@ CREATE TABLE connections(
   duplex_handshake INTEGER NULL DEFAULT 0,
   enable_ntfs INTEGER,
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
-  user_id INTEGER DEFAULT 1 CHECK(user_id NOT NULL)
+  user_id INTEGER CHECK(user_id NOT NULL)
   REFERENCES users ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
