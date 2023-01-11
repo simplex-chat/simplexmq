@@ -32,12 +32,14 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
@@ -59,7 +61,7 @@ import UnliftIO.STM
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 data InitialAgentServers = InitialAgentServers
-  { smp :: NonEmpty SMPServerWithAuth,
+  { smp :: Map UserId (NonEmpty SMPServerWithAuth),
     ntf :: [NtfServer],
     netCfg :: NetworkConfig
   }

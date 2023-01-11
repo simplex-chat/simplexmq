@@ -22,7 +22,9 @@ CREATE TABLE connections(
   ,
   duplex_handshake INTEGER NULL DEFAULT 0,
   enable_ntfs INTEGER,
-  deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL)
+  deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
+  user_id INTEGER CHECK(user_id NOT NULL)
+  REFERENCES users ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -228,3 +230,5 @@ CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
   conn_id,
   snd_queue_id
 );
+CREATE TABLE users(user_id INTEGER PRIMARY KEY AUTOINCREMENT);
+CREATE INDEX idx_connections_user ON connections(user_id);

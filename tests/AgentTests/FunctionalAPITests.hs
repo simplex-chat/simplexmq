@@ -218,8 +218,8 @@ runTestCfg2 aliceCfg bobCfg baseMsgId runTest = do
 runAgentClientTest :: AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientTest alice bob baseId = do
   Right () <- runExceptT $ do
-    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
@@ -254,8 +254,8 @@ runAgentClientTest alice bob baseId = do
 runAgentClientContactTest :: AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientContactTest alice bob baseId = do
   Right () <- runExceptT $ do
-    (_, qInfo) <- createConnection alice True SCMContact Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (_, qInfo) <- createConnection alice 1 True SCMContact Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContact alice True invId "alice's connInfo"
     ("", _, CONF confId _ "alice's connInfo") <- get bob
@@ -302,9 +302,9 @@ testAsyncInitiatingOffline = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (bobId, cReq) <- createConnection alice True SCMInvitation Nothing
+    (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing
     disconnectAgentClient alice
-    aliceId <- joinConnection bob True cReq "bob's connInfo"
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo"
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
     subscribeConnection alice' bobId
     ("", _, CONF confId _ "bob's connInfo") <- get alice'
@@ -320,8 +320,8 @@ testAsyncJoiningOfflineBeforeActivation = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     disconnectAgentClient bob
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
@@ -338,9 +338,9 @@ testAsyncBothOffline = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (bobId, cReq) <- createConnection alice True SCMInvitation Nothing
+    (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing
     disconnectAgentClient alice
-    aliceId <- joinConnection bob True cReq "bob's connInfo"
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo"
     disconnectAgentClient bob
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
     subscribeConnection alice' bobId
@@ -360,9 +360,9 @@ testAsyncServerOffline t = do
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   -- create connection and shutdown the server
   Right (bobId, cReq) <- withSmpServerStoreLogOn t testPort $ \_ ->
-    runExceptT $ createConnection alice True SCMInvitation Nothing
+    runExceptT $ createConnection alice 1 True SCMInvitation Nothing
   -- connection fails
-  Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob True cReq "bob's connInfo"
+  Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True cReq "bob's connInfo"
   ("", "", DOWN srv conns) <- get alice
   srv `shouldBe` testSMPServer
   conns `shouldBe` [bobId]
@@ -372,7 +372,7 @@ testAsyncServerOffline t = do
     liftIO $ do
       srv1 `shouldBe` testSMPServer
       conns1 `shouldBe` [bobId]
-    aliceId <- joinConnection bob True cReq "bob's connInfo"
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
@@ -387,9 +387,9 @@ testAsyncHelloTimeout = do
   alice <- getSMPAgentClient agentCfgV1 initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2, helloTimeout = 1} initAgentServers
   Right () <- runExceptT $ do
-    (_, cReq) <- createConnection alice True SCMInvitation Nothing
+    (_, cReq) <- createConnection alice 1 True SCMInvitation Nothing
     disconnectAgentClient alice
-    aliceId <- joinConnection bob True cReq "bob's connInfo"
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo"
     get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
   pure ()
 
@@ -444,8 +444,8 @@ testDuplicateMessage t = do
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = do
-  (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
-  aliceId <- joinConnection bob True qInfo "bob's connInfo"
+  (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+  aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
   get alice ##> ("", bobId, CON)
@@ -459,7 +459,7 @@ testInactiveClientDisconnected t = do
   withSmpServerConfigOn t cfg' testPort $ \_ -> do
     alice <- getSMPAgentClient agentCfg initAgentServers
     Right () <- runExceptT $ do
-      (connId, _cReq) <- createConnection alice True SCMInvitation Nothing
+      (connId, _cReq) <- createConnection alice 1 True SCMInvitation Nothing
       get alice ##> ("", "", DOWN testSMPServer [connId])
     pure ()
 
@@ -470,7 +470,7 @@ testActiveClientNotDisconnected t = do
     alice <- getSMPAgentClient agentCfg initAgentServers
     ts <- getSystemTime
     Right () <- runExceptT $ do
-      (connId, _cReq) <- createConnection alice True SCMInvitation Nothing
+      (connId, _cReq) <- createConnection alice 1 True SCMInvitation Nothing
       keepSubscribing alice connId ts
     pure ()
   where
@@ -619,10 +619,10 @@ testAsyncCommands = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    bobId <- createConnectionAsync alice "1" True SCMInvitation
+    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
-    aliceId <- joinConnectionAsync bob "2" True qInfo "bob's connInfo"
+    aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo"
     ("2", aliceId', OK) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -663,7 +663,7 @@ testAsyncCommands = do
 testAsyncCommandsRestore :: ATransport -> IO ()
 testAsyncCommandsRestore t = do
   alice <- getSMPAgentClient agentCfg initAgentServers
-  Right bobId <- runExceptT $ createConnectionAsync alice "1" True SCMInvitation
+  Right bobId <- runExceptT $ createConnectionAsync alice 1 "1" True SCMInvitation
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disconnectAgentClient alice
   alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
@@ -679,8 +679,8 @@ testAcceptContactAsync = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    (_, qInfo) <- createConnection alice True SCMContact Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (_, qInfo) <- createConnection alice 1 True SCMContact Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContactAsync alice "1" True invId "alice's connInfo"
     ("1", bobId', OK) <- get alice
@@ -808,11 +808,11 @@ testCreateQueueAuth clnt1 clnt2 = do
   a <- getClient clnt1
   b <- getClient clnt2
   Right created <- runExceptT $ do
-    tryError (createConnection a True SCMInvitation Nothing) >>= \case
+    tryError (createConnection a 1 True SCMInvitation Nothing) >>= \case
       Left (SMP AUTH) -> pure 0
       Left e -> throwError e
       Right (bId, qInfo) ->
-        tryError (joinConnection b True qInfo "bob's connInfo") >>= \case
+        tryError (joinConnection b 1 True qInfo "bob's connInfo") >>= \case
           Left (SMP AUTH) -> pure 1
           Left e -> throwError e
           Right aId -> do
@@ -826,7 +826,7 @@ testCreateQueueAuth clnt1 clnt2 = do
   pure created
   where
     getClient (clntAuth, clntVersion) =
-      let servers = initAgentServers {smp = [ProtoServerWithAuth testSMPServer clntAuth]}
+      let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
           smpCfg = (defaultClientConfig :: ProtocolClientConfig) {smpServerVRange = mkVersionRange 4 clntVersion}
        in getSMPAgentClient agentCfg {smpCfg} servers
 
@@ -834,7 +834,7 @@ testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAut
 testSMPServerConnectionTest t newQueueBasicAuth srv =
   withSmpServerConfigOn t cfg {newQueueBasicAuth} testPort2 $ \_ -> do
     a <- getSMPAgentClient agentCfg initAgentServers -- initially passed server is not running
-    Right r <- runExceptT $ testSMPServerConnection a srv
+    Right r <- runExceptT $ testSMPServerConnection a 1 srv
     pure r
 
 testRatchetAdHash :: IO ()

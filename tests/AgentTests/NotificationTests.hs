@@ -213,8 +213,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right (bobId, aliceId, nonce, message) <- runExceptT $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -275,9 +275,9 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     DeviceToken {} <- registerTestToken bob "bcde" NMInstant apnsQ
     -- establish connection
     liftIO $ threadDelay 50000
-    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
     liftIO $ threadDelay 1000000
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     liftIO $ threadDelay 750000
     void $ messageNotification apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -327,8 +327,8 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right () <- runExceptT $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -392,8 +392,8 @@ testChangeToken APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
   Right (aliceId, bobId) <- runExceptT $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice True SCMInvitation Nothing
-    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")

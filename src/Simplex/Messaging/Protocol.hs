@@ -77,6 +77,7 @@ module Simplex.Messaging.Protocol
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
+    EntityId,
     QueueId,
     RecipientId,
     SenderId,

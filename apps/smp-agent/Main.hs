@@ -7,6 +7,7 @@ module Main where
 
 import Control.Logger.Simple
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Server (runSMPAgent)
 import Simplex.Messaging.Client (defaultNetworkConfig)
@@ -18,7 +19,7 @@ cfg = defaultAgentConfig
 servers :: InitialAgentServers
 servers =
   InitialAgentServers
-    { smp = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"],
+    { smp = M.fromList [(1, L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"])],
       ntf = [],
       netCfg = defaultNetworkConfig
     }
