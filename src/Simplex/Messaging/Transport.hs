@@ -214,7 +214,7 @@ instance Transport TLS where
       $ do
         b <- readChunks =<< readTVarIO buffer
         let (s, b') = B.splitAt n b
-        atomically $ writeTVar buffer b'
+        atomically $ writeTVar buffer $! b'
         pure s
     where
       readChunks :: ByteString -> IO ByteString
@@ -237,7 +237,7 @@ instance Transport TLS where
       $ do
         b <- readChunks =<< readTVarIO buffer
         let (s, b') = B.break (== '\n') b
-        atomically $ writeTVar buffer (B.drop 1 b') -- drop '\n' we made a break at
+        atomically $ writeTVar buffer $! B.drop 1 b' -- drop '\n' we made a break at
         pure $ trimCR s
     where
       readChunks :: ByteString -> IO ByteString

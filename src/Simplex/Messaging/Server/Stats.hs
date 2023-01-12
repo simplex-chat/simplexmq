@@ -61,12 +61,12 @@ getServerStatsData s = do
 
 setServerStats :: ServerStats -> ServerStatsData -> STM ()
 setServerStats s d = do
-  writeTVar (fromTime s) (_fromTime d)
-  writeTVar (qCreated s) (_qCreated d)
-  writeTVar (qSecured s) (_qSecured d)
-  writeTVar (qDeleted s) (_qDeleted d)
-  writeTVar (msgSent s) (_msgSent d)
-  writeTVar (msgRecv s) (_msgRecv d)
+  writeTVar (fromTime s) $! _fromTime d
+  writeTVar (qCreated s) $! _qCreated d
+  writeTVar (qSecured s) $! _qSecured d
+  writeTVar (qDeleted s) $! _qDeleted d
+  writeTVar (msgSent s) $! _msgSent d
+  writeTVar (msgRecv s) $! _msgRecv d
   setPeriodStats (activeQueues s) (_activeQueues d)
 
 instance StrEncoding ServerStatsData where
@@ -126,9 +126,9 @@ getPeriodStatsData s = do
 
 setPeriodStats :: PeriodStats a -> PeriodStatsData a -> STM ()
 setPeriodStats s d = do
-  writeTVar (day s) (_day d)
-  writeTVar (week s) (_week d)
-  writeTVar (month s) (_month d)
+  writeTVar (day s) $! _day d
+  writeTVar (week s) $! _week d
+  writeTVar (month s) $! _month d
 
 instance (Ord a, StrEncoding a) => StrEncoding (PeriodStatsData a) where
   strEncode PeriodStatsData {_day, _week, _month} =
@@ -165,4 +165,4 @@ updatePeriodStats stats pId = do
   updatePeriod week
   updatePeriod month
   where
-    updatePeriod pSel = modifyTVar (pSel stats) (S.insert pId)
+    updatePeriod pSel = modifyTVar' (pSel stats) (S.insert pId)
