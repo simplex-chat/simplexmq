@@ -310,8 +310,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     connectClient = do
       cfg <- getClientConfig c smpCfg
       u <- askUnliftIO
-      let proxyUsername = Just $ bshow userId <> maybe "" (":" <>) entityId_
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient srv cfg proxyUsername (Just msgQ) $ clientDisconnected u)
+      let proxyUsername = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
+      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient srv cfg (Just proxyUsername) (Just msgQ) $ clientDisconnected u)
 
     clientDisconnected :: UnliftIO m -> SMPClient -> IO ()
     clientDisconnected u client = do
@@ -590,7 +590,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
   C.SignAlg a <- asks $ cmdSignAlg . config
   liftIO $ do
-    let proxyUsername = bshow userId
+    let proxyUsername = C.sha256Hash $ bshow userId
     getProtocolClient srv cfg (Just proxyUsername) Nothing (\_ -> pure ()) >>= \case
       Right smp -> do
         (rKey, rpKey) <- C.generateSignatureKeyPair a
