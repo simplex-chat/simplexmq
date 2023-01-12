@@ -65,9 +65,9 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
+import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
+import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -386,7 +386,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                 Right _ -> do
                   withLog (`logCreateById` rId)
                   stats <- asks serverStats
-                  atomically $ modifyTVar (qCreated stats) (+ 1)
+                  atomically $ modifyTVar' (qCreated stats) (+ 1)
                   subscribeQueue qr rId $> IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
@@ -404,7 +404,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         secureQueue_ st sKey = time "KEY" $ do
           withLog $ \s -> logSecureQueue s queueId sKey
           stats <- asks serverStats
-          atomically $ modifyTVar (qSecured stats) (+ 1)
+          atomically $ modifyTVar' (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
@@ -528,7 +528,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             updateStats :: m ()
             updateStats = do
               stats <- asks serverStats
-              atomically $ modifyTVar (msgRecv stats) (+ 1)
+              atomically $ modifyTVar' (msgRecv stats) (+ 1)
               atomically $ updatePeriodStats (activeQueues stats) queueId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
@@ -550,7 +550,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                       when (notification msgFlags) $
                         atomically . trySendNotification msg =<< asks idsDrg
                       stats <- asks serverStats
-                      atomically $ modifyTVar (msgSent stats) (+ 1)
+                      atomically $ modifyTVar' (msgSent stats) (+ 1)
                       atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                       pure ok
           where
@@ -599,9 +599,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           where
             forkSub :: m ()
             forkSub = do
-              atomically . modifyTVar sub $ \s -> s {subThread = SubPending}
+              atomically . modifyTVar' sub $ \s -> s {subThread = SubPending}
               t <- mkWeakThreadId =<< forkIO subscriber
-              atomically . modifyTVar sub $ \case
+              atomically . modifyTVar' sub $ \case
                 s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
                 s -> s
               where
@@ -612,7 +612,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                     writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
                     s <- readTVar sub
                     void $ setDelivered s msg
-                    writeTVar sub s {subThread = NoSub}
+                    writeTVar sub $! s {subThread = NoSub}
 
         time :: T.Text -> m a -> m a
         time name = timed name queueId
@@ -646,7 +646,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
           stats <- asks serverStats
-          atomically $ modifyTVar (qDeleted stats) (+ 1)
+          atomically $ modifyTVar' (qDeleted stats) (+ 1)
           atomically $
             deleteQueue st queueId >>= \case
               Left e -> pure $ err e

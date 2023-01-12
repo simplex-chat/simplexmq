@@ -964,11 +964,7 @@ pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
 
 pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-pseudoRandomBytes n gVar = do
-  g <- readTVar gVar
-  let (bytes, g') = randomBytesGenerate n g
-  writeTVar gVar g'
-  return bytes
+pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

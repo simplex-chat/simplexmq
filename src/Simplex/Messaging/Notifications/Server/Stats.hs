@@ -70,14 +70,14 @@ getNtfServerStatsData s = do
 
 setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> STM ()
 setNtfServerStats s d = do
-  writeTVar (fromTime (s :: NtfServerStats)) (_fromTime (d :: NtfServerStatsData))
-  writeTVar (tknCreated s) (_tknCreated d)
-  writeTVar (tknVerified s) (_tknVerified d)
-  writeTVar (tknDeleted s) (_tknDeleted d)
-  writeTVar (subCreated s) (_subCreated d)
-  writeTVar (subDeleted s) (_subDeleted d)
-  writeTVar (ntfReceived s) (_ntfReceived d)
-  writeTVar (ntfDelivered s) (_ntfDelivered d)
+  writeTVar (fromTime (s :: NtfServerStats)) $! _fromTime (d :: NtfServerStatsData)
+  writeTVar (tknCreated s) $! _tknCreated d
+  writeTVar (tknVerified s) $! _tknVerified d
+  writeTVar (tknDeleted s) $! _tknDeleted d
+  writeTVar (subCreated s) $! _subCreated d
+  writeTVar (subDeleted s) $! _subDeleted d
+  writeTVar (ntfReceived s) $! _ntfReceived d
+  writeTVar (ntfDelivered s) $! _ntfDelivered d
   setPeriodStats (activeTokens s) (_activeTokens d)
   setPeriodStats (activeSubs s) (_activeSubs d)
 

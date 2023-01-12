@@ -905,7 +905,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           atomically $ do
             srvs <- readTVar $ smpServers c
             let used' = if length used + 1 >= L.length srvs then initUsed else srv : used
-            writeTVar usedSrvs used'
+            writeTVar usedSrvs $! used'
           action srvAuth
 -- ^ ^ ^ async command processing /
 
