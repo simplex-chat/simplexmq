@@ -101,8 +101,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
-import Data.List (partition)
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List (foldl', partition)
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -160,7 +160,7 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (async)
+import UnliftIO (async, mapConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -348,16 +348,19 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     reconnectClient :: m ()
     reconnectClient =
       withLockMap_ (reconnectLocks c) tSess "reconnect" $
-        atomically (RQ.getSrvQueues srv $ pendingSubs c) >>= resubscribe
+        atomically (RQ.getSrvQueues srv $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
       where
-        resubscribe :: [RcvQueue] -> m ()
+        resubscribe :: NonEmpty RcvQueue -> m ()
         resubscribe qs = do
           connected <- maybe False isRight <$> atomically (TM.lookup tSess smpClients $>>= tryReadTMVar)
           cs <- atomically . RQ.getConns $ activeSubs c
-          -- TODO probably tSess should be passed here or nothing
-          -- maybe this should be another function, not subscribeQueues
-          (client_, rs) <- subscribeQueues c srv qs
-          let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+          -- TODO the unsolved problem is changing session mode
+          -- currently it would reconnect the same client and will keep it around, until the app is restarted.
+          -- instead it should check whether session mode changed and connect somehow differently if it did...
+          -- Another unrelated problem with changing network settings is NSE - it does not re-connect when they change in the UI.
+          -- TODO list of queues can be empty, it should not trigger reconnections
+          (client_, rs) <- subscribeQueues_ c tSess qs
+          let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
           liftIO $ do
             unless connected . forM_ client_ $ \cl -> do
               incClientStat c userId cl "CONNECT" ""
@@ -683,39 +686,45 @@ temporaryOrHostError = \case
   BROKER _ HOST -> True
   e -> temporaryAgentError e
 
+subscribeQueues :: AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues c qs = do
+  (errs, qs') <- partitionEithers <$> mapM checkQueue qs
+  forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
+    modifyTVar (subscrConns c) $ S.insert connId
+    RQ.addQueue rq $ pendingSubs c
+  (errs <>) <$> do
+    mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
+    let sessRcvQs = foldl' (addRcvQueue mode) M.empty qs'
+    concat <$> mapConcurrently (fmap (L.toList . snd) . uncurry (subscribeQueues_ c)) (M.assocs sessRcvQs)
+  where
+    checkQueue rq@RcvQueue {rcvId, server} = do
+      prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
+      pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
+    addRcvQueue :: TransportSessionMode -> Map SMPTransportSession (NonEmpty RcvQueue) -> RcvQueue -> Map SMPTransportSession (NonEmpty RcvQueue)
+    addRcvQueue mode m rq@RcvQueue {userId, server, rcvId} =
+      let tSess = (userId, server, if mode == TSMEntity then Just rcvId else Nothing)
+       in M.alter (Just . maybe [rq] (rq <|)) tSess m
+
 -- | subscribe multiple queues - all passed queues should be on the same server
-subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> [RcvQueue] -> m (Maybe SMPClient, [(RcvQueue, Either AgentErrorType ())])
-subscribeQueues c srv qs = do
-  (errs, qs_) <- partitionEithers <$> mapM checkQueue qs
-  forM_ qs_ $ \rq@RcvQueue {connId} -> atomically $ do
+-- TODO check session? depends on how session mode change will be handled
+subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (Maybe SMPClient, NonEmpty (RcvQueue, Either AgentErrorType ()))
+subscribeQueues_ c tSess@(userId, srv, _) qs = do
+  forM_ qs $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar' (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
-  case L.nonEmpty qs_ of
-    Just qs' -> do
-      mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
-      -- TODO these subscriptions should happen in different sessions if mode is TSMEntity
-      -- it is also a question whether it is needed to group by server outside if grouping by sessions should happen here anyway
-      let userId = 1
-          tSess = (userId, srv, Nothing)
-      smp_ <- tryError $ getSMPServerClient c tSess
-      (eitherToMaybe smp_,) . (errs <>) <$> case smp_ of
-        Left e -> pure $ map (,Left e) qs_
-        Right smp -> do
-          logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
-          let qs2 = L.map queueCreds qs'
-              n = (length qs2 - 1) `div` 90 + 1
-          liftIO $ incClientStatN c userId smp n "SUBS" "OK"
-          liftIO $ do
-            rs <- zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
-            mapM_ (uncurry $ processSubResult c) rs
-            pure $ map (second . first $ protocolClientError SMP $ clientServer smp) rs
-    _ -> pure (Nothing, errs)
+  smp_ <- tryError $ getSMPServerClient c tSess
+  (eitherToMaybe smp_,) <$> case smp_ of
+    Left e -> pure $ L.map (,Left e) qs
+    Right smp -> do
+      logServer "-->" c srv (bshow (length qs) <> " queues") "SUB"
+      let qs2 = L.map queueCreds qs
+          n = (length qs2 - 1) `div` 90 + 1
+      liftIO $ incClientStatN c userId smp n "SUBS" "OK"
+      liftIO $ do
+        rs <- L.zip qs <$> subscribeSMPQueues smp qs2
+        mapM_ (uncurry $ processSubResult c) rs
+        pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
   where
-    checkQueue rq@RcvQueue {rcvId, server}
-      | server == srv = do
-        prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
-        pure $ if prohibited || srv /= server then Left (rq, Left $ CMD PROHIBITED) else Right rq
-      | otherwise = pure $ Left (rq, Left $ INTERNAL "queue server does not match parameter")
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
