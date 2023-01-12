@@ -75,12 +75,14 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Version (showVersion)
 import GHC.Generics (Generic)
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
@@ -100,7 +102,7 @@ supportedSMPServerVRange :: VersionRange
 supportedSMPServerVRange = mkVersionRange 1 5
 
 simplexMQVersion :: String
-simplexMQVersion = "4.2.1"
+simplexMQVersion = showVersion SMQ.version
 
 -- * Transport connection class
 
