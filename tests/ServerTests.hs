@@ -52,7 +52,7 @@ serverTests t@(ATransport t') = do
     describe "Exceeding queue quota" $ testExceedQueueQuota t'
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
-  describe "Restore messages (v2)" $ testRestoreMessagesV2 t
+  describe "Restore messages (old / v2)" $ testRestoreMessagesV2 t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -628,10 +628,12 @@ testRestoreMessages at@(ATransport t) =
       Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
       Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
       Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
+      Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND "hello 5")
+      Resp "6" _ (ERR QUOTA) <- signSendRecv h sKey ("6", sId, _SEND "hello 6")
       pure ()
 
     logSize testStoreLogFile `shouldReturn` 2
-    logSize testStoreMsgsFile `shouldReturn` 3
+    logSize testStoreMsgsFile `shouldReturn` 5
 
     withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
       rId <- readTVarIO recipientId
@@ -647,15 +649,21 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
-    logSize testStoreMsgsFile `shouldReturn` 1
+    logSize testStoreMsgsFile `shouldReturn` 3
 
     withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
       rId <- readTVarIO recipientId
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
+      let dec = decryptMsgV3 dh
       Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
-      Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId4)
-      (decryptMsgV3 dh mId4 msg4, Right "hello 4") #== "restored message delivered"
+      (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
+      Resp "5" _ (Msg mId5 msg5) <- signSendRecv h rKey ("5", rId, ACK mId4)
+      (dec mId5 msg5, Right "hello 5") #== "restored message delivered"
+      Resp "6" _ (Msg mId6 msg6) <- signSendRecv h rKey ("6", rId, ACK mId5)
+      (dec mId6 msg6, Left "ClientRcvMsgQuota") #== "restored message delivered"
+      Resp "7" _ OK <- signSendRecv h rKey ("7", rId, ACK mId6)
+      pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0
