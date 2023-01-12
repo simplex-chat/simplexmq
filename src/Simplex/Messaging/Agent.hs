@@ -931,7 +931,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             srvs_ <- TM.lookup userId $ smpServers c
             -- TODO this condition does not account for servers change, it has to be changed to see if there are any remaining unused servers configured for the user
             let used' = if length used + 1 >= maybe 0 L.length srvs_ then initUsed else srv : used
-            writeTVar usedSrvs used'
+            writeTVar usedSrvs $! used'
           action srvAuth
 -- ^ ^ ^ async command processing /
 

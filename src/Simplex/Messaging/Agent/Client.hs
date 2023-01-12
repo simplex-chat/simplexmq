@@ -651,7 +651,7 @@ subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
 subscribeQueue c rq@RcvQueue {connId, server, rcvPrivateKey, rcvId} = do
   whenM (atomically . TM.member (server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
   atomically $ do
-    modifyTVar (subscrConns c) $ S.insert connId
+    modifyTVar' (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
   withSMPClient c rq "SUB" $ \smp ->
     liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq)
@@ -688,7 +688,7 @@ subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> [RcvQueue] -> m (
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue qs
   forM_ qs_ $ \rq@RcvQueue {connId} -> atomically $ do
-    modifyTVar (subscrConns c) $ S.insert connId
+    modifyTVar' (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
   case L.nonEmpty qs_ of
     Just qs' -> do
@@ -720,7 +720,7 @@ subscribeQueues c srv qs = do
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
 addSubscription c rq@RcvQueue {connId} = atomically $ do
-  modifyTVar (subscrConns c) $ S.insert connId
+  modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
@@ -729,7 +729,7 @@ hasActiveSubscription c connId = RQ.hasConn connId $ activeSubs c
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
 removeSubscription c connId = do
-  modifyTVar (subscrConns c) $ S.delete connId
+  modifyTVar' (subscrConns c) $ S.delete connId
   RQ.deleteConn connId $ activeSubs c
   RQ.deleteConn connId $ pendingSubs c
 
@@ -995,7 +995,7 @@ storeError = \case
 incStat :: AgentClient -> Int -> AgentStatsKey -> STM ()
 incStat AgentClient {agentStats} n k = do
   TM.lookup k agentStats >>= \case
-    Just v -> modifyTVar v (+ n)
+    Just v -> modifyTVar' v (+ n)
     _ -> newTVar n >>= \v -> TM.insert k v agentStats
 
 incClientStat :: AgentClient -> UserId -> ProtocolClient msg -> ByteString -> ByteString -> IO ()

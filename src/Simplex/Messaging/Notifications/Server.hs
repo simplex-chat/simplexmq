@@ -548,7 +548,7 @@ withNtfLog action = liftIO . mapM_ action =<< asks storeLog
 incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
 incNtfStat statSel = do
   stats <- asks serverStats
-  atomically $ modifyTVar (statSel stats) (+ 1)
+  atomically $ modifyTVar' (statSel stats) (+ 1)
 
 saveServerStats :: M ()
 saveServerStats =
