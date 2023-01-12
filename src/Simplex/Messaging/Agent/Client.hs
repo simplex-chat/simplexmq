@@ -357,8 +357,6 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           -- TODO the unsolved problem is changing session mode
           -- currently it would reconnect the same client and will keep it around, until the app is restarted.
           -- instead it should check whether session mode changed and connect somehow differently if it did...
-          -- Another unrelated problem with changing network settings is NSE - it does not re-connect when they change in the UI.
-          -- TODO list of queues can be empty, it should not trigger reconnections
           (client_, rs) <- subscribeQueues_ c tSess qs
           let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
           liftIO $ do
