@@ -321,7 +321,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
           TM.delete tSess smpClients
-          (qs, conns) <- RQ.getDelSrvQueues srv $ activeSubs c
+          (qs, conns) <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
           pure (qs, S.toList conns)
 
@@ -348,7 +348,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     reconnectClient :: m ()
     reconnectClient =
       withLockMap_ (reconnectLocks c) tSess "reconnect" $
-        atomically (RQ.getSrvQueues srv $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
+        atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
       where
         resubscribe :: NonEmpty RcvQueue -> m ()
         resubscribe qs = do
@@ -707,9 +707,6 @@ subscribeQueues c qs = do
 -- TODO check session? depends on how session mode change will be handled
 subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (Maybe SMPClient, NonEmpty (RcvQueue, Either AgentErrorType ()))
 subscribeQueues_ c tSess@(userId, srv, _) qs = do
-  forM_ qs $ \rq@RcvQueue {connId} -> atomically $ do
-    modifyTVar' (subscrConns c) $ S.insert connId
-    RQ.addQueue rq $ pendingSubs c
   smp_ <- tryError $ getSMPServerClient c tSess
   (eitherToMaybe smp_,) <$> case smp_ of
     Left e -> pure $ L.map (,Left e) qs
