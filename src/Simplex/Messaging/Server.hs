@@ -728,7 +728,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
                 isNothing <$> writeMsg q msg
               case msg of
                 Message {} -> when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
-                _ -> pure ()
+                MessageQuota {} -> pure ()
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
