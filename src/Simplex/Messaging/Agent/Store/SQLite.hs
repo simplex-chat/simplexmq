@@ -303,7 +303,7 @@ withTransaction st action = withConnection st $ loop 500 2_000_000
 
 createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
-  DB.execute_ db "INSERT INTO users () VALUES ()"
+  DB.execute_ db "INSERT INTO users DEFAULT VALUES"
   insertedRowId db
 
 deleteUserRecord :: DB.Connection -> UserId -> IO (Either StoreError ())
