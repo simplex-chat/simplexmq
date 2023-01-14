@@ -169,7 +169,7 @@ functionalAPITests t = do
       it "auth both   " $ testBasicAuth t True (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
       it "auth, disabled" $ testBasicAuth t False (Nothing, 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 0
   describe "SMP server test via agent API" $ do
-    it "should runRight_ without basic auth" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
+    it "should pass without basic auth" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
     let srv1 = testSMPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
       testSMPServerConnectionTest t Nothing (noAuthSrv srv1) `shouldReturn` Just (SMPTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
@@ -177,7 +177,7 @@ functionalAPITests t = do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
           authErr = Just (SMPTestFailure TSCreateQueue $ SMP AUTH)
-      it "should runRight_ with correct password" $ testSMPServerConnectionTest t auth (srv auth) `shouldReturn` Nothing
+      it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testSMPServerConnectionTest t auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
   describe "getRatchetAdHash" $
