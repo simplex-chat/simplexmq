@@ -8,7 +8,7 @@
 
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore,
-    MsgQueue,
+    MsgQueue (..),
     newMsgStore,
     getMsgQueue,
     delMsgQueue,
@@ -86,22 +86,22 @@ peekMsg :: MsgQueue -> STM Message
 peekMsg = peekTQueue . msgQueue
 {-# INLINE peekMsg #-}
 
-tryDelMsg :: MsgQueue -> MsgId -> STM Bool
+tryDelMsg :: MsgQueue -> MsgId -> STM (Maybe Message)
 tryDelMsg mq msgId' =
   tryPeekMsg mq >>= \case
-    Just msg
-      | msgId msg == msgId' || B.null msgId' -> tryDeleteMsg mq >> pure True
-      | otherwise -> pure False
-    _ -> pure False
+    msg_@(Just msg)
+      | msgId msg == msgId' || B.null msgId' -> tryDeleteMsg mq >> pure msg_
+      | otherwise -> pure Nothing
+    _ -> pure Nothing
 
 -- atomic delete (== read) last and peek next message if available
-tryDelPeekMsg :: MsgQueue -> MsgId -> STM (Bool, Maybe Message)
+tryDelPeekMsg :: MsgQueue -> MsgId -> STM (Maybe Message, Maybe Message)
 tryDelPeekMsg mq msgId' =
   tryPeekMsg mq >>= \case
     msg_@(Just msg)
-      | msgId msg == msgId' || B.null msgId' -> (True,) <$> (tryDeleteMsg mq >> tryPeekMsg mq)
-      | otherwise -> pure (False, msg_)
-    _ -> pure (False, Nothing)
+      | msgId msg == msgId' || B.null msgId' -> (msg_,) <$> (tryDeleteMsg mq >> tryPeekMsg mq)
+      | otherwise -> pure (Nothing, msg_)
+    _ -> pure (Nothing, Nothing)
 
 deleteExpiredMsgs :: MsgQueue -> Int64 -> STM ()
 deleteExpiredMsgs mq old = loop
