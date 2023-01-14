@@ -791,7 +791,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
         Right d -> do
           s <- asks serverStats
           _qCount <- fmap (length . M.keys) . readTVarIO . queues =<< asks queueStore
-          _msgCount <- foldM (\n MsgQueue {size} -> (n +) <$> readTVarIO size) 0 =<< readTVarIO =<< asks msgStore
+          _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
           atomically $ setServerStats s d {_qCount, _msgCount}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
