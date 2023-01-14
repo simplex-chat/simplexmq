@@ -104,8 +104,8 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
   s <- asks server
-  restoreServerStats
   restoreServerMessages
+  restoreServerStats
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
@@ -174,7 +174,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
         hSetBuffering h LineBuffering
@@ -187,7 +187,31 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
           ps <- atomically $ periodStatCounts activeQueues ts
-          hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayCount ps, weekCount ps, monthCount ps]
+          msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
+          msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
+          psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          qCount' <- readTVarIO qCount
+          msgCount' <- readTVarIO msgCount
+          hPutStrLn h $
+            intercalate
+              ","
+              [ iso8601Show $ utctDay fromTime',
+                show qCreated',
+                show qSecured',
+                show qDeleted',
+                show msgSent',
+                show msgRecv',
+                dayCount ps,
+                weekCount ps,
+                monthCount ps,
+                show msgSentNtf',
+                show msgRecvNtf',
+                dayCount psNtf,
+                weekCount psNtf,
+                monthCount psNtf,
+                show qCount',
+                show msgCount'
+              ]
           threadDelay interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
@@ -387,6 +411,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   withLog (`logCreateById` rId)
                   stats <- asks serverStats
                   atomically $ modifyTVar' (qCreated stats) (+ 1)
+                  atomically $ modifyTVar' (qCount stats) (+ 1)
                   subscribeQueue qr rId $> IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
@@ -509,12 +534,12 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   q <- getStoreMsgQueue "ACK" queueId
                   case s of
                     Sub {subThread = ProhibitSub} -> do
-                      msgDeleted <- atomically $ tryDelMsg q msgId
-                      when msgDeleted updateStats
+                      deletedMsg_ <- atomically $ tryDelMsg q msgId
+                      mapM_ updateStats deletedMsg_
                       pure ok
                     _ -> do
-                      (msgDeleted, msg_) <- atomically $ tryDelPeekMsg q msgId
-                      when msgDeleted updateStats
+                      (deletedMsg_, msg_) <- atomically $ tryDelPeekMsg q msgId
+                      mapM_ updateStats deletedMsg_
                       deliverMessage "ACK" qr queueId sub q msg_
                 _ -> pure $ err NO_MSG
           where
@@ -525,11 +550,17 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                 if msgId == msgId' || B.null msgId
                   then pure $ Just s
                   else putTMVar delivered msgId' $> Nothing
-            updateStats :: m ()
-            updateStats = do
-              stats <- asks serverStats
-              atomically $ modifyTVar' (msgRecv stats) (+ 1)
-              atomically $ updatePeriodStats (activeQueues stats) queueId
+            updateStats :: Message -> m ()
+            updateStats = \case
+              MessageQuota {} -> pure ()
+              Message {msgFlags} -> do
+                stats <- asks serverStats
+                atomically $ modifyTVar' (msgRecv stats) (+ 1)
+                atomically $ modifyTVar' (msgCount stats) (+ 1)
+                atomically $ updatePeriodStats (activeQueues stats) queueId
+                when (notification msgFlags) $ do
+                  atomically $ modifyTVar' (msgRecvNtf stats) (+ 1)
+                  atomically $ updatePeriodStats (activeQueuesNtf stats) queueId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -547,10 +578,13 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   case msg_ of
                     Nothing -> pure $ err QUOTA
                     Just msg -> time "SEND ok" $ do
-                      when (notification msgFlags) $
-                        atomically . trySendNotification msg =<< asks idsDrg
                       stats <- asks serverStats
+                      when (notification msgFlags) $ do
+                        atomically . trySendNotification msg =<< asks idsDrg
+                        atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
+                        atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                       atomically $ modifyTVar' (msgSent stats) (+ 1)
+                      atomically $ modifyTVar' (msgCount stats) (subtract 1)
                       atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                       pure ok
           where
@@ -647,6 +681,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           ms <- asks msgStore
           stats <- asks serverStats
           atomically $ modifyTVar' (qDeleted stats) (+ 1)
+          atomically $ modifyTVar' (qCount stats) (subtract 1)
           atomically $
             deleteQueue st queueId >>= \case
               Left e -> pure $ err e
@@ -755,7 +790,9 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setServerStats s d
+          _qCount <- fmap (length . M.keys) . readTVarIO . queues =<< asks queueStore
+          _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
+          atomically $ setServerStats s d {_qCount, _msgCount}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Left e -> do
