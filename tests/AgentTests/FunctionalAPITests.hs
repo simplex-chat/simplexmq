@@ -581,7 +581,7 @@ testBatchedSubscriptions t = do
   ("", "", DOWN {}) <- get a
   ("", "", DOWN {}) <- get b
   ("", "", DOWN {}) <- get b
-  runRight_ $ do
+  runServers $ do
     ("", "", UP {}) <- get a
     ("", "", UP {}) <- get a
     ("", "", UP {}) <- get b
@@ -603,7 +603,7 @@ testBatchedSubscriptions t = do
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
         res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
-          runRight a <* killThread t2
+          runRight a `finally` killThread t2
         killThread t1
         pure res
 
