@@ -232,3 +232,4 @@ CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
 );
 CREATE TABLE users(user_id INTEGER PRIMARY KEY AUTOINCREMENT);
 CREATE INDEX idx_connections_user ON connections(user_id);
+CREATE INDEX idx_commands_conn_id ON commands(conn_id);

@@ -1506,7 +1506,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
-processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cmd) = do
+processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
   processSMP rq conn $ connData conn
   where
@@ -1609,9 +1609,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             ackDel = enqueueCmd . ICAckDel rId srvMsgId
             handleNotifyAck :: m () -> m ()
             handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
-        SMP.END -> do
-          -- TODO is race condition possible here on session mode change?
-          tSess <- mkSMPTransportSession c rq
+        SMP.END ->
           atomically (TM.lookup tSess smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId
           where
