@@ -47,21 +47,21 @@ addQueue rq (TRcvQueues qs) = TM.insert (qKey rq) rq qs
 deleteQueue :: RcvQueue -> TRcvQueues -> STM ()
 deleteQueue rq (TRcvQueues qs) = TM.delete (qKey rq) qs
 
-getSessQueues :: (UserId, SMPServer, Maybe RecipientId) -> TRcvQueues -> STM [RcvQueue]
+getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
 getSessQueues tSess (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
-getDelSessQueues :: (UserId, SMPServer, Maybe RecipientId) -> TRcvQueues -> STM ([RcvQueue], Set ConnId)
+getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM ([RcvQueue], Set ConnId)
 getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ (([], S.empty), M.empty)
   where
     addQ (removed@(remQs, remConns), qs') rq@RcvQueue {connId}
       | rq `isSession` tSess = ((rq : remQs, S.insert connId remConns), qs')
       | otherwise = (removed, M.insert (qKey rq) rq qs')
 
-isSession :: RcvQueue -> (UserId, SMPServer, Maybe RecipientId) -> Bool
-isSession RcvQueue {userId, server, rcvId} (uId, srv, qId_) =
-  userId == uId && server == srv && maybe True (rcvId ==) qId_
+isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
+isSession rq (uId, srv, connId_) =
+  userId rq == uId && server rq == srv && maybe True (connId rq ==) connId_
 
-qKey :: RcvQueue -> (UserId, SMPServer, RecipientId)
-qKey RcvQueue {userId, server, rcvId} = (userId, server, rcvId)
+qKey :: RcvQueue -> (UserId, SMPServer, ConnId)
+qKey rq = (userId rq, server rq, connId rq)

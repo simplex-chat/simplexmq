@@ -26,7 +26,7 @@ where
 
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
-import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
+import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -41,7 +41,8 @@ import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (SMPTestFailure (..), SMPTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
+import Simplex.Messaging.Agent.Store (UserId)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
@@ -183,6 +184,9 @@ functionalAPITests t = do
   describe "getRatchetAdHash" $
     it "should return the same data for both peers" $
       withSmpServer t testRatchetAdHash
+  describe "multiple users" $
+    it "should connect two users and switch session mode" $
+      withSmpServer t testTwoUsers
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -446,9 +450,12 @@ testDuplicateMessage t = do
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnection alice bob = do
-  (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
-  aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
+makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
+
+makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnectionForUsers alice aliceUserId bob bobUserId = do
+  (bobId, qInfo) <- createConnection alice aliceUserId True SCMInvitation Nothing
+  aliceId <- joinConnection bob bobUserId True qInfo "bob's connInfo"
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
   get alice ##> ("", bobId, CON)
@@ -536,10 +543,8 @@ testSuspendingAgentCompleteSending t = do
     get b =##> \case ("", c, SENT 6) -> c == aId; ("", "", UP {}) -> True; _ -> False
     ("", "", SUSPENDED) <- get b
 
-    r <- get a
-    liftIO $ print r
-    ("", "", UP {}) <- pure r
-    get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+    get a =##> \case ("", c, Msg "hello too") -> c == bId; ("", "", UP {}) -> True; _ -> False
+    get a =##> \case ("", c, Msg "hello too") -> c == bId; ("", "", UP {}) -> True; _ -> False
     ackMessage a bId 5
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
     ackMessage a bId 6
@@ -830,6 +835,73 @@ testRatchetAdHash = do
     ad1 <- getConnectionRatchetAdHash a bId
     ad2 <- getConnectionRatchetAdHash b aId
     liftIO $ ad1 `shouldBe` ad2
+
+testTwoUsers :: IO ()
+testTwoUsers = do
+  let nc = netCfg initAgentServers
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  sessionMode nc `shouldBe` TSMUser
+  runRight_ $ do
+    (aId1, bId1) <- makeConnectionForUsers a 1 b 1
+    exchangeGreetings a bId1 b aId1
+    (aId1', bId1') <- makeConnectionForUsers a 1 b 1
+    exchangeGreetings a bId1' b aId1'
+    a `hasClients` 1
+    b `hasClients` 1
+    setNetworkConfig a nc {sessionMode = TSMEntity}
+    liftIO $ threadDelay 250000
+    ("", "", DOWN _ _) <- get a
+    ("", "", UP _ _) <- get a
+    a `hasClients` 2
+
+    exchangeGreetingsMsgId 6 a bId1 b aId1
+    exchangeGreetingsMsgId 6 a bId1' b aId1'
+    liftIO $ threadDelay 250000
+    setNetworkConfig a nc {sessionMode = TSMUser}
+    liftIO $ threadDelay 250000
+    ("", "", DOWN _ _) <- get a
+    ("", "", DOWN _ _) <- get a
+    ("", "", UP _ _) <- get a
+    ("", "", UP _ _) <- get a
+    a `hasClients` 1
+
+    aUserId2 <- createUser a [noAuthSrv testSMPServer]
+    (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
+    exchangeGreetings a bId2 b aId2
+    (aId2', bId2') <- makeConnectionForUsers a aUserId2 b 1
+    exchangeGreetings a bId2' b aId2'
+    a `hasClients` 2
+    b `hasClients` 1
+    setNetworkConfig a nc {sessionMode = TSMEntity}
+    liftIO $ threadDelay 250000
+    ("", "", DOWN _ _) <- get a
+    ("", "", DOWN _ _) <- get a
+    ("", "", UP _ _) <- get a
+    ("", "", UP _ _) <- get a
+    a `hasClients` 4
+    exchangeGreetingsMsgId 8 a bId1 b aId1
+    exchangeGreetingsMsgId 8 a bId1' b aId1'
+    exchangeGreetingsMsgId 6 a bId2 b aId2
+    exchangeGreetingsMsgId 6 a bId2' b aId2'
+    liftIO $ threadDelay 250000
+    setNetworkConfig a nc {sessionMode = TSMUser}
+    liftIO $ threadDelay 250000
+    ("", "", DOWN _ _) <- get a
+    ("", "", DOWN _ _) <- get a
+    ("", "", DOWN _ _) <- get a
+    ("", "", DOWN _ _) <- get a
+    ("", "", UP _ _) <- get a
+    ("", "", UP _ _) <- get a
+    ("", "", UP _ _) <- get a
+    ("", "", UP _ _) <- get a
+    a `hasClients` 2
+    exchangeGreetingsMsgId 10 a bId1 b aId1
+    exchangeGreetingsMsgId 10 a bId1' b aId1'
+    exchangeGreetingsMsgId 8 a bId2 b aId2
+    exchangeGreetingsMsgId 8 a bId2' b aId2'
+  where
+    hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
