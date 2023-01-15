@@ -684,7 +684,7 @@ temporaryOrHostError = \case
   BROKER _ HOST -> True
   e -> temporaryAgentError e
 
-subscribeQueues :: AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
@@ -693,7 +693,7 @@ subscribeQueues c qs = do
   (errs <>) <$> do
     mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
     let sessRcvQs = foldl' (addRcvQueue mode) M.empty qs'
-    concat <$> mapConcurrently (fmap (L.toList . snd) . uncurry (subscribeQueues_ c)) (M.assocs sessRcvQs)
+    concat <$> mapConcurrently (fmap L.toList . uncurry (subscribeQueues_ c)) (M.assocs sessRcvQs)
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
@@ -703,22 +703,17 @@ subscribeQueues c qs = do
       let tSess = mkSMPTSession rq mode
        in M.alter (Just . maybe [rq] (rq <|)) tSess m
 
--- | subscribe multiple queues - all passed queues should be on the same server
--- TODO check session? depends on how session mode change will be handled
-subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (Maybe SMPClient, NonEmpty (RcvQueue, Either AgentErrorType ()))
-subscribeQueues_ c tSess@(userId, srv, _) qs = do
-  smp_ <- tryError $ getSMPServerClient c tSess
-  (eitherToMaybe smp_,) <$> case smp_ of
+subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (NonEmpty (RcvQueue, Either AgentErrorType ()))
+subscribeQueues_ c tSess@(userId, srv, _) qs =
+  tryError (getSMPServerClient c tSess) >>= \case
     Left e -> pure $ L.map (,Left e) qs
-    Right smp -> do
+    Right smp -> liftIO $ do
       logServer "-->" c srv (bshow (length qs) <> " queues") "SUB"
-      let qs2 = L.map queueCreds qs
-          n = (length qs2 - 1) `div` 90 + 1
-      liftIO $ incClientStatN c userId smp n "SUBS" "OK"
-      liftIO $ do
-        rs <- L.zip qs <$> subscribeSMPQueues smp qs2
-        mapM_ (uncurry $ processSubResult c) rs
-        pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
+      let n = (length qs - 1) `div` 90 + 1
+      incClientStatN c userId smp n "SUBS" "OK"
+      rs <- L.zip qs <$> subscribeSMPQueues smp (L.map queueCreds qs)
+      mapM_ (uncurry $ processSubResult c) rs
+      pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
