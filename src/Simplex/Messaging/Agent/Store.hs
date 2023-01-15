@@ -254,6 +254,13 @@ data ConnData = ConnData
   }
   deriving (Eq, Show)
 
+data PendingCommand = PendingCommand
+  { corrId :: ACorrId,
+    userId :: UserId,
+    connId :: ConnId,
+    command :: AgentCommand
+  }
+
 data AgentCmdType = ACClient | ACInternal
 
 type UserId = Int64
