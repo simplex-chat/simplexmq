@@ -99,7 +99,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::))
 import Data.Foldable (foldl')
 import Data.Functor (($>))
-import Data.List (deleteFirstsBy, find)
+import Data.List (deleteFirstsBy, find, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -126,7 +126,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta, SndPublicVerifyKey, sameSrvAddr, sameSrvAddr')
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta, SndPublicVerifyKey, protoServer, sameSrvAddr, sameSrvAddr')
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
@@ -921,8 +921,8 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId used
           atomically $ do
             srvs_ <- TM.lookup userId $ smpServers c
-            -- TODO this condition does not account for servers change, it has to be changed to see if there are any remaining unused servers configured for the user
-            let used' = if length used + 1 >= maybe 0 L.length srvs_ then initUsed else srv : used
+            let unused = maybe [] ((\\ used) . map protoServer . L.toList) srvs_
+                used' = if null unused then initUsed else srv : used
             writeTVar usedSrvs $! used'
           action srvAuth
 -- ^ ^ ^ async command processing /
