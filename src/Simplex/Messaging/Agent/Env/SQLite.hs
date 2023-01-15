@@ -122,9 +122,9 @@ defaultMessageRetryInterval =
         -- to resume sending on QCONT messages.
         -- After that local message expiration period should be also increased.
         RetryInterval
-          { initialInterval = 10_000000,
+          { initialInterval = 30_000000,
             increaseAfter = 30_000000,
-            maxInterval = 300_000000
+            maxInterval = 600_000000
           }
     }
 
