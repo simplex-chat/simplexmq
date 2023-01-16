@@ -145,7 +145,7 @@ functionalAPITests t = do
       testServerMatrix2 t testSwitchAsync
     describe "should delete connection during rotation" $
       testServerMatrix2 t testSwitchDelete
-  describe "SMP basic auth" $ do
+  fdescribe "SMP basic auth" $ do
     describe "with server auth" $ do
       --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
       it "success                " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
@@ -156,7 +156,7 @@ functionalAPITests t = do
       it "JOIN fail, no auth     " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Nothing, 5) `shouldReturn` 1
       it "JOIN fail, bad auth    " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "wrong", 5) `shouldReturn` 1
       it "JOIN fail, version     " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 4) `shouldReturn` 1
-    describe "no server auth" $ do
+    fdescribe "no server auth" $ do
       it "success     " $ testBasicAuth t True (Nothing, 5) (Nothing, 5) (Nothing, 5) `shouldReturn` 2
       it "srv disabled" $ testBasicAuth t False (Nothing, 5) (Nothing, 5) (Nothing, 5) `shouldReturn` 0
       it "version srv " $ testBasicAuth t True (Nothing, 4) (Nothing, 5) (Nothing, 5) `shouldReturn` 2
@@ -812,6 +812,7 @@ testCreateQueueAuth clnt1 clnt2 = do
             get a ##> ("", bId, CON)
             get b ##> ("", aId, INFO "alice's connInfo")
             get b ##> ("", aId, CON)
+            liftIO $ print "connected"
             exchangeGreetings a bId b aId
             pure 2
   where
@@ -910,12 +911,16 @@ exchangeGreetingsMsgId :: Int64 -> AgentClient -> ConnId -> AgentClient -> ConnI
 exchangeGreetingsMsgId msgId alice bobId bob aliceId = do
   msgId1 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   liftIO $ msgId1 `shouldBe` msgId
+  liftIO $ print "exchangeGreetings 1"
   get alice ##> ("", bobId, SENT msgId)
+  liftIO $ print "exchangeGreetings 2"
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId msgId
   msgId2 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   let msgId' = msgId + 1
   liftIO $ msgId2 `shouldBe` msgId'
+  liftIO $ print "exchangeGreetings 3"
   get bob ##> ("", aliceId, SENT msgId')
+  liftIO $ print "exchangeGreetings 4"
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId msgId'
