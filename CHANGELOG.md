@@ -1,3 +1,13 @@
+# 4.3.0
+
+SMP server:
+
+- additional server usage statistics.
+
+SMP agent:
+
+- increase retry interval when sending messages after ERR QUOTA.
+
 # 4.2.0
 
 SMP agent and server:
