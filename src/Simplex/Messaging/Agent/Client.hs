@@ -48,9 +48,6 @@ module Simplex.Messaging.Agent.Client
     agentNtfCreateSubscription,
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
-    -- TODO possibly, this should not be exported?
-    -- this is used in END processing
-    mkSMPTransportSession,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -169,9 +166,6 @@ type ClientVar msg = TMVar (Either AgentErrorType (ProtocolClient msg))
 type SMPClientVar = TMVar (Either AgentErrorType SMPClient)
 
 type NtfClientVar = TMVar (Either AgentErrorType NtfClient)
-
--- | Transport session key - includes entity ID if `sessionMode = TSMEntity`.
-type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 
 type SMPTransportSession = TransportSession SMP.BrokerMsg
 
@@ -299,7 +293,7 @@ instance ProtocolServerClient NtfResponse where
   clientProtocolError = NTF
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
-getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, entityId_) = do
+getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
   atomically (getClientVar tSess smpClients)
     >>= either
@@ -310,8 +304,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     connectClient = do
       cfg <- getClientConfig c smpCfg
       u <- askUnliftIO
-      let proxyUsername = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient srv cfg (Just proxyUsername) (Just msgQ) $ clientDisconnected u)
+      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg (Just msgQ) $ clientDisconnected u)
 
     clientDisconnected :: UnliftIO m -> SMPClient -> IO ()
     clientDisconnected u client = do
@@ -376,7 +369,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
     connectClient :: m NtfClient
     connectClient = do
       cfg <- getClientConfig c ntfCfg
-      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient srv cfg Nothing Nothing clientDisconnected)
+      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg Nothing clientDisconnected)
 
     clientDisconnected :: NtfClient -> IO ()
     clientDisconnected client = do
@@ -583,8 +576,8 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
   C.SignAlg a <- asks $ cmdSignAlg . config
   liftIO $ do
-    let proxyUsername = C.sha256Hash $ bshow userId
-    getProtocolClient srv cfg (Just proxyUsername) Nothing (\_ -> pure ()) >>= \case
+    let tSess = (userId, srv, Nothing)
+    getProtocolClient tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right smp -> do
         (rKey, rpKey) <- C.generateSignatureKeyPair a
         (sKey, _) <- C.generateSignatureKeyPair a

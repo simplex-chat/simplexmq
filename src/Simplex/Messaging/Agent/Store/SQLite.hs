@@ -836,13 +836,20 @@ getPendingCommands db connId = do
   where
     srvCmdId (host, port, keyHash, cmdId) = (SMPServer <$> host <*> port <*> keyHash, cmdId)
 
-getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ACorrId, ConnId, AgentCommand))
+getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError PendingCommand)
 getPendingCommand db msgId = do
-  firstRow id SECmdNotFound $
+  firstRow pendingCommand SECmdNotFound $
     DB.query
       db
-      "SELECT corr_id, conn_id, command FROM commands WHERE command_id = ?"
+      [sql|
+        SELECT c.corr_id, cs.user_id, c.conn_id, c.command
+        FROM commands c
+        JOIN connections cs USING (conn_id)
+        WHERE c.command_id = ?
+      |]
       (Only msgId)
+  where
+    pendingCommand (corrId, userId, connId, command) = PendingCommand {corrId, userId, connId, command}
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =

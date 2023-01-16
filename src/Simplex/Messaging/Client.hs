@@ -26,6 +26,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
+    TransportSession,
     ProtocolClient (thVersion, sessionId, sessionTs),
     SMPClient,
     getProtocolClient,
@@ -76,6 +77,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (rights)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -111,7 +113,7 @@ data ProtocolClient msg = ProtocolClient
 
 data PClient msg = PClient
   { connected :: TVar Bool,
-    protocolServer :: ProtoServer msg,
+    transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
@@ -127,7 +129,7 @@ type SMPClient = ProtocolClient SMP.BrokerMsg
 type ClientCommand msg = (Maybe C.APrivateSignKey, QueueId, ProtoCommand msg)
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission msg = (ProtoServer msg, Version, SessionId, QueueId, msg)
+type ServerTransmission msg = (TransportSession msg, Version, SessionId, QueueId, msg)
 
 data HostMode
   = -- | prefer (or require) onion hosts when connecting via SOCKS proxy
@@ -243,19 +245,26 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     publicHost = find (not . isOnionHost) hosts
 
 clientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient msg -> String
-clientServer = B.unpack . strEncode . protocolServer . client_
+clientServer = B.unpack . strEncode . snd3 . transportSession . client_
+  where
+    snd3 (_, s, _) = s
 
 transportHost' :: ProtocolClient msg -> TransportHost
 transportHost' = transportHost . client_
+
+type UserId = Int64
+
+-- | Transport session key - includes entity ID if `sessionMode = TSMEntity`.
+type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe ByteString -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient msg -> IO ()) -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} proxyUsername msgQ disconnected = do
-  case chooseTransportHost networkConfig (host protocolServer) of
+getProtocolClient :: forall msg. Protocol msg => TransportSession msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient msg -> IO ()) -> IO (Either ProtocolClientError (ProtocolClient msg))
+getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected = do
+  case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
@@ -272,7 +281,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
       return
         PClient
           { connected,
-            protocolServer,
+            transportSession,
             transportHost,
             tcpTimeout,
             clientCorrId,
@@ -286,9 +295,10 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
       let tcConfig = transportClientConfig networkConfig
+          username = proxyUsername transportSession
       action <-
         async $
-          runTransportClient tcConfig proxyUsername useHost port' (Just $ keyHash protocolServer) (client t c cVar)
+          runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
             `finally` atomically (putTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       pure $ case c_ of
@@ -296,15 +306,18 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
         Just (Left e) -> Left e
         Nothing -> Left PCENetworkError
 
+    proxyUsername :: TransportSession msg -> ByteString
+    proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
+
     useTransport :: (ServiceName, ATransport)
-    useTransport = case port protocolServer of
+    useTransport = case port srv of
       "" -> defaultTransport cfg
       "80" -> ("80", transport @WS)
       p -> (p, transport @TLS)
 
     client :: forall c. Transport c => TProxy c -> PClient msg -> TMVar (Either ProtocolClientError (ProtocolClient msg)) -> c -> IO ()
     client _ c cVar h =
-      runExceptT (protocolClientHandshake @msg h (keyHash protocolServer) smpServerVRange) >>= \case
+      runExceptT (protocolClientHandshake @msg h (keyHash srv) smpServerVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {sessionId, thVersion} -> do
           sessionTs <- getCurrentTime
@@ -426,8 +439,8 @@ writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
 writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ $ client_ c)
 
 serverTransmission :: ProtocolClient msg -> RecipientId -> msg -> ServerTransmission msg
-serverTransmission ProtocolClient {thVersion, sessionId, client_ = PClient {protocolServer}} entityId message =
-  (protocolServer, thVersion, sessionId, entityId, message)
+serverTransmission ProtocolClient {thVersion, sessionId, client_ = PClient {transportSession}} entityId message =
+  (transportSession, thVersion, sessionId, entityId, message)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --
