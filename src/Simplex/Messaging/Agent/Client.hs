@@ -99,7 +99,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (isRight, partitionEithers)
+import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.List (foldl', partition)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
@@ -352,17 +352,10 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       where
         resubscribe :: NonEmpty RcvQueue -> m ()
         resubscribe qs = do
-          connected <- maybe False isRight <$> atomically (TM.lookup tSess smpClients $>>= tryReadTMVar)
           cs <- atomically . RQ.getConns $ activeSubs c
-          -- TODO the unsolved problem is changing session mode
-          -- currently it would reconnect the same client and will keep it around, until the app is restarted.
-          -- instead it should check whether session mode changed and connect somehow differently if it did...
-          (client_, rs) <- subscribeQueues_ c tSess qs
-          let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
+          rs <- subscribeQueues c $ L.toList qs
+          let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
           liftIO $ do
-            unless connected . forM_ client_ $ \cl -> do
-              incClientStat c userId cl "CONNECT" ""
-              notifySub "" $ hostEvent CONNECT cl
             let conns = S.toList $ S.fromList okConns `S.difference` cs
             unless (null conns) $ notifySub "" $ UP srv conns
           let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
@@ -610,12 +603,19 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
     testErr step = SMPTestFailure step . protocolClientError SMP addr
 
 mkTransportSession :: AgentMonad m => AgentClient -> UserId -> ProtoServer msg -> EntityId -> m (TransportSession msg)
-mkTransportSession c userId srv entityId = do
-  mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
-  pure (userId, srv, if mode == TSMEntity then Just entityId else Nothing)
+mkTransportSession c userId srv entityId = mkTSession userId srv entityId <$> getSessionMode c
+
+mkTSession :: UserId -> ProtoServer msg -> EntityId -> TransportSessionMode -> TransportSession msg
+mkTSession userId srv entityId mode = (userId, srv, if mode == TSMEntity then Just entityId else Nothing)
 
 mkSMPTransportSession :: (AgentMonad m, SMPQueueRec q) => AgentClient -> q -> m SMPTransportSession
-mkSMPTransportSession c q = mkTransportSession c (qUserId q) (qServer q) (queueId q)
+mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
+
+mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
+mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
+
+getSessionMode :: AgentMonad m => AgentClient -> m TransportSessionMode
+getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
 newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
@@ -684,7 +684,7 @@ temporaryOrHostError = \case
   BROKER _ HOST -> True
   e -> temporaryAgentError e
 
-subscribeQueues :: AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
@@ -693,32 +693,27 @@ subscribeQueues c qs = do
   (errs <>) <$> do
     mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
     let sessRcvQs = foldl' (addRcvQueue mode) M.empty qs'
-    concat <$> mapConcurrently (fmap (L.toList . snd) . uncurry (subscribeQueues_ c)) (M.assocs sessRcvQs)
+    concat <$> mapConcurrently (fmap L.toList . uncurry (subscribeQueues_ c)) (M.assocs sessRcvQs)
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
     addRcvQueue :: TransportSessionMode -> Map SMPTransportSession (NonEmpty RcvQueue) -> RcvQueue -> Map SMPTransportSession (NonEmpty RcvQueue)
-    addRcvQueue mode m rq@RcvQueue {userId, server, rcvId} =
-      let tSess = (userId, server, if mode == TSMEntity then Just rcvId else Nothing)
+    addRcvQueue mode m rq =
+      let tSess = mkSMPTSession rq mode
        in M.alter (Just . maybe [rq] (rq <|)) tSess m
 
--- | subscribe multiple queues - all passed queues should be on the same server
--- TODO check session? depends on how session mode change will be handled
-subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (Maybe SMPClient, NonEmpty (RcvQueue, Either AgentErrorType ()))
-subscribeQueues_ c tSess@(userId, srv, _) qs = do
-  smp_ <- tryError $ getSMPServerClient c tSess
-  (eitherToMaybe smp_,) <$> case smp_ of
+subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (NonEmpty (RcvQueue, Either AgentErrorType ()))
+subscribeQueues_ c tSess@(userId, srv, _) qs =
+  tryError (getSMPServerClient c tSess) >>= \case
     Left e -> pure $ L.map (,Left e) qs
-    Right smp -> do
+    Right smp -> liftIO $ do
       logServer "-->" c srv (bshow (length qs) <> " queues") "SUB"
-      let qs2 = L.map queueCreds qs
-          n = (length qs2 - 1) `div` 90 + 1
-      liftIO $ incClientStatN c userId smp n "SUBS" "OK"
-      liftIO $ do
-        rs <- L.zip qs <$> subscribeSMPQueues smp qs2
-        mapM_ (uncurry $ processSubResult c) rs
-        pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
+      let n = (length qs - 1) `div` 90 + 1
+      incClientStatN c userId smp n "SUBS" "OK"
+      rs <- L.zip qs <$> subscribeSMPQueues smp (L.map queueCreds qs)
+      mapM_ (uncurry $ processSubResult c) rs
+      pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 

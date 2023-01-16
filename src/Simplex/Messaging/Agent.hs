@@ -386,12 +386,16 @@ deleteUser' c userId = do
 
 newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> m ConnId
 newConnAsync c userId corrId enableNtfs cMode = do
-  g <- asks idsDrg
-  connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-  let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing, deleted = False} -- connection mode is determined by the accepting agent
-  connId <- withStore c $ \db -> createNewConn db g cData cMode
+  connId <- newConnNoQueues c userId "" enableNtfs cMode
   enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode)
   pure connId
+
+newConnNoQueues :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> m ConnId
+newConnNoQueues c userId connId enableNtfs cMode = do
+  g <- asks idsDrg
+  connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
+  let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, deleted = False} -- connection mode is determined by the accepting agent
+  withStore c $ \db -> createNewConn db g cData cMode
 
 joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange} _) cInfo = do
@@ -473,9 +477,9 @@ newConn c userId connId asyncMode enableNtfs cMode clientData =
 newConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> Bool -> SConnectionMode c -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
 newConnSrv c userId connId asyncMode enableNtfs cMode clientData srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  (q, qUri) <- newRcvQueue c userId "" srv smpClientVRange
-  connId' <- setUpConn asyncMode q $ maxVersion smpAgentVRange
-  let rq = (q :: RcvQueue) {connId = connId'}
+  connId' <- if asyncMode then pure connId else newConnNoQueues c userId connId enableNtfs cMode
+  (rq, qUri) <- newRcvQueue c userId connId' srv smpClientVRange `catchError` \e -> liftIO (print e) >> throwError e
+  void . withStore c $ \db -> updateNewConnRcv db connId' rq
   addSubscription c rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
@@ -487,14 +491,6 @@ newConnSrv c userId connId asyncMode enableNtfs cMode clientData srv = do
       (pk1, pk2, e2eRcvParams) <- liftIO . CR.generateE2EParams $ maxVersion e2eEncryptVRange
       withStore' c $ \db -> createRatchetX3dhKeys db connId' pk1 pk2
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange)
-  where
-    setUpConn True rq _ = do
-      void . withStore c $ \db -> updateNewConnRcv db connId rq
-      pure connId
-    setUpConn False rq connAgentVersion = do
-      g <- asks idsDrg
-      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, deleted = False} -- connection mode is determined by the accepting agent
-      withStore c $ \db -> createRcvConn db g cData rq cMode
 
 joinConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConn c userId connId asyncMode enableNtfs cReq cInfo = do

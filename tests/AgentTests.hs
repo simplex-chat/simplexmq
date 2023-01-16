@@ -381,8 +381,8 @@ testMsgDeliveryAgentRestart t bob = do
           (corrId == "3" && cmd == OK)
             || (corrId == "" && cmd == SENT 5)
         _ -> False
-      bob <# ("", "", UP server ["alice"])
-      bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
+      bob <#= \case ("", "alice", Msg "hello again") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
+      bob <#= \case ("", "alice", Msg "hello again") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
