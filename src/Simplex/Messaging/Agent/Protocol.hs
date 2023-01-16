@@ -577,6 +577,7 @@ data AgentMessageType
   | AM_HELLO_
   | AM_REPLY_
   | AM_A_MSG_
+  | AM_QCONT_
   | AM_QADD_
   | AM_QKEY_
   | AM_QUSE_
@@ -590,6 +591,7 @@ instance Encoding AgentMessageType where
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
+    AM_QCONT_ -> "QC"
     AM_QADD_ -> "QA"
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
@@ -603,6 +605,7 @@ instance Encoding AgentMessageType where
       'M' -> pure AM_A_MSG_
       'Q' ->
         A.anyChar >>= \case
+          'C' -> pure AM_QCONT_
           'A' -> pure AM_QADD_
           'K' -> pure AM_QKEY_
           'U' -> pure AM_QUSE_
@@ -623,6 +626,7 @@ agentMessageType = \case
     -- REPLY is only used in v1
     REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
+    QCONT _ -> AM_QCONT_
     QADD _ -> AM_QADD_
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
@@ -645,6 +649,7 @@ data AMsgType
   = HELLO_
   | REPLY_
   | A_MSG_
+  | QCONT_
   | QADD_
   | QKEY_
   | QUSE_
@@ -656,6 +661,7 @@ instance Encoding AMsgType where
     HELLO_ -> "H"
     REPLY_ -> "R"
     A_MSG_ -> "M"
+    QCONT_ -> "QC"
     QADD_ -> "QA"
     QKEY_ -> "QK"
     QUSE_ -> "QU"
@@ -667,6 +673,7 @@ instance Encoding AMsgType where
       'M' -> pure A_MSG_
       'Q' ->
         A.anyChar >>= \case
+          'C' -> pure QCONT_
           'A' -> pure QADD_
           'K' -> pure QKEY_
           'U' -> pure QUSE_
@@ -684,6 +691,8 @@ data AMessage
     REPLY (L.NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
+  | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
+    QCONT SndQAddr
   | -- add queue to connection (sent by recipient), with optional address of the replaced queue
     QADD (L.NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
@@ -701,6 +710,7 @@ instance Encoding AMessage where
     HELLO -> smpEncode HELLO_
     REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
     A_MSG body -> smpEncode (A_MSG_, Tail body)
+    QCONT addr -> smpEncode (QCONT_, addr)
     QADD qs -> smpEncode (QADD_, qs)
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
@@ -711,6 +721,7 @@ instance Encoding AMessage where
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
+        QCONT_ -> QCONT <$> smpP
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
@@ -1119,7 +1130,6 @@ instance ToJSON BrokerErrorType where
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 -- | Errors of another SMP agent.
--- TODO encode/decode without A prefix
 data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE

@@ -14,7 +14,7 @@ module ServerTests where
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad.Except (forM, forM_, runExceptT)
+import Control.Monad.Except (forM, forM_)
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
@@ -49,9 +49,10 @@ serverTests t@(ATransport t') = do
     describe "switch subscription to another TCP connection" $ testSwitchSub t
     describe "GET command" $ testGetCommand t'
     describe "GET & SUB commands" $ testGetSubCommands t'
+    describe "Exceeding queue quota" $ testExceedQueueQuota t'
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
-  describe "Restore messages (v2)" $ testRestoreMessagesV2 t
+  describe "Restore messages (old / v2)" $ testRestoreMessagesV2 t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -77,8 +78,7 @@ sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
 signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right sig <- runExceptT $ C.sign pk t
-  Right () <- tPut1 h (Just sig, t)
+  Right () <- tPut1 h (Just $ C.sign pk t, t)
   tGet1 h
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
@@ -104,9 +104,11 @@ decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.Cry
 decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
 
 decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
-decryptMsgV3 dhShared nonce body = do
-  ClientRcvMsgBody {msgBody} <- parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body)
-  pure msgBody
+decryptMsgV3 dhShared nonce body =
+  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
+    Right ClientRcvMsgBody {msgBody} -> Right msgBody
+    Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
+    Left e -> Left e
 
 testCreateSecureV2 :: forall c. Transport c => TProxy c -> Spec
 testCreateSecureV2 _ =
@@ -494,6 +496,32 @@ testGetSubCommands t =
       Resp "12" _ OK <- signSendRecv rh2 rKey ("12", rId, GET)
       pure ()
 
+testExceedQueueQuota :: forall c. Transport c => TProxy c -> Spec
+testExceedQueueQuota t =
+  it "should reply with ERR QUOTA to sender and send QUOTA message to the recipient" $ do
+    withSmpServerConfigOn (ATransport t) cfg {msgQueueQuota = 2} testPort $ \_ ->
+      testSMPClient @c $ \sh -> testSMPClient @c $ \rh -> do
+        (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+        (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
+        let dec = decryptMsgV3 dhShared
+        Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello 1")
+        Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND "hello 2")
+        Resp "3" _ (ERR QUOTA) <- signSendRecv sh sKey ("3", sId, _SEND "hello 3")
+        Resp "" _ (Msg mId1 msg1) <- tGet1 rh
+        (dec mId1 msg1, Right "hello 1") #== "hello 1"
+        Resp "4" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("4", rId, ACK mId1)
+        (dec mId2 msg2, Right "hello 2") #== "hello 2"
+        Resp "5" _ (ERR QUOTA) <- signSendRecv sh sKey ("5", sId, _SEND "hello 3")
+        Resp "6" _ (Msg mId3 msg3) <- signSendRecv rh rKey ("6", rId, ACK mId2)
+        (dec mId3 msg3, Left "ClientRcvMsgQuota") #== "ClientRcvMsgQuota"
+        Resp "7" _ (ERR QUOTA) <- signSendRecv sh sKey ("7", sId, _SEND "hello 3")
+        Resp "8" _ OK <- signSendRecv rh rKey ("8", rId, ACK mId3)
+        Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND "hello 3")
+        Resp "" _ (Msg mId4 msg4) <- tGet1 rh
+        (dec mId4 msg4, Right "hello 3") #== "hello 3"
+        Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId4)
+        pure ()
+
 testWithStoreLog :: ATransport -> Spec
 testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
@@ -600,10 +628,12 @@ testRestoreMessages at@(ATransport t) =
       Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
       Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
       Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
+      Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND "hello 5")
+      Resp "6" _ (ERR QUOTA) <- signSendRecv h sKey ("6", sId, _SEND "hello 6")
       pure ()
 
     logSize testStoreLogFile `shouldReturn` 2
-    logSize testStoreMsgsFile `shouldReturn` 3
+    logSize testStoreMsgsFile `shouldReturn` 5
 
     withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
       rId <- readTVarIO recipientId
@@ -619,15 +649,21 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
-    logSize testStoreMsgsFile `shouldReturn` 1
+    logSize testStoreMsgsFile `shouldReturn` 3
 
     withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
       rId <- readTVarIO recipientId
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
+      let dec = decryptMsgV3 dh
       Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
-      Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId4)
-      (decryptMsgV3 dh mId4 msg4, Right "hello 4") #== "restored message delivered"
+      (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
+      Resp "5" _ (Msg mId5 msg5) <- signSendRecv h rKey ("5", rId, ACK mId4)
+      (dec mId5 msg5, Right "hello 5") #== "restored message delivered"
+      Resp "6" _ (Msg mId6 msg6) <- signSendRecv h rKey ("6", rId, ACK mId5)
+      (dec mId6 msg6, Left "ClientRcvMsgQuota") #== "restored message delivered"
+      Resp "7" _ OK <- signSendRecv h rKey ("7", rId, ACK mId6)
+      pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0

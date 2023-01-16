@@ -257,24 +257,27 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   (tkn@NtfTknData {ntfTknId, token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
-  case (status, ntf) of
-    (_, PNVerification _) ->
-      -- TODO check token status
-      deliverNotification pp tkn ntf >>= \case
-        Right _ -> do
-          status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
-          forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-        _ -> pure ()
-    (NTActive, PNCheckMessages) ->
+  case ntf of
+    PNVerification _
+      | status /= NTInvalid && status /= NTExpired ->
+        deliverNotification pp tkn ntf >>= \case
+          Right _ -> do
+            status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
+            forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+          _ -> pure ()
+      | otherwise -> logError "bad notification token status"
+    PNCheckMessages -> checkActiveTkn status $ do
       void $ deliverNotification pp tkn ntf
-    (NTActive, PNMessage {}) -> do
+    PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
       atomically $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
       incNtfStat ntfDelivered
-    _ ->
-      liftIO $ logError "bad notification token status"
   where
+    checkActiveTkn :: NtfTknStatus -> M () -> M ()
+    checkActiveTkn status action
+      | status == NTActive = action
+      | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> M (Either PushProviderError ())
     deliverNotification pp tkn@NtfTknData {ntfTknId, tknStatus} ntf = do
       deliver <- liftIO $ getPushClient s pp
@@ -361,13 +364,11 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
-          -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st tknId
           verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
-              -- TODO move active token check here to differentiate error
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
             else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
@@ -375,7 +376,6 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
       s_ <- atomically $ getNtfSubscription st entId
       case s_ of
         Just s@NtfSubData {tokenId = subTknId} -> do
-          -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st subTknId
           verifyToken' t_ $ verifiedSubCmd s c
         _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
@@ -512,7 +512,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
-            -- TODO retry if subscription failed, if pending or AUTH do nothing
+            -- possible improvement: retry if subscription failed, if pending or AUTH do nothing
             pure $
               if notifierKey == registeredNKey
                 then NRSubId subId
@@ -548,7 +548,7 @@ withNtfLog action = liftIO . mapM_ action =<< asks storeLog
 incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
 incNtfStat statSel = do
   stats <- asks serverStats
-  atomically $ modifyTVar (statSel stats) (+ 1)
+  atomically $ modifyTVar' (statSel stats) (+ 1)
 
 saveServerStats :: M ()
 saveServerStats =

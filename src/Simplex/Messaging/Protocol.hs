@@ -141,6 +141,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
+import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -303,12 +304,17 @@ data RcvMessage = RcvMessage
   deriving (Eq, Show)
 
 -- | received message without server/recipient encryption
-data Message = Message
-  { msgId :: MsgId,
-    msgTs :: SystemTime,
-    msgFlags :: MsgFlags,
-    msgBody :: C.MaxLenBS MaxMessageLen
-  }
+data Message
+  = Message
+      { msgId :: MsgId,
+        msgTs :: SystemTime,
+        msgFlags :: MsgFlags,
+        msgBody :: C.MaxLenBS MaxMessageLen
+      }
+  | MessageQuota
+      { msgId :: MsgId,
+        msgTs :: SystemTime
+      }
 
 instance StrEncoding RcvMessage where
   strEncode RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} =
@@ -328,44 +334,72 @@ instance StrEncoding RcvMessage where
 newtype EncRcvMsgBody = EncRcvMsgBody ByteString
   deriving (Eq, Show)
 
-data RcvMsgBody = RcvMsgBody
-  { msgTs :: SystemTime,
-    msgFlags :: MsgFlags,
-    msgBody :: C.MaxLenBS MaxMessageLen
-  }
+data RcvMsgBody
+  = RcvMsgBody
+      { msgTs :: SystemTime,
+        msgFlags :: MsgFlags,
+        msgBody :: C.MaxLenBS MaxMessageLen
+      }
+  | RcvMsgQuota
+      { msgTs :: SystemTime
+      }
+
+msgQuotaTag :: ByteString
+msgQuotaTag = "QUOTA"
 
 encodeRcvMsgBody :: RcvMsgBody -> C.MaxLenBS MaxRcvMessageLen
-encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody} =
-  let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
-   in C.appendMaxLenBS rcvMeta msgBody
+encodeRcvMsgBody = \case
+  RcvMsgBody {msgTs, msgFlags, msgBody} ->
+    let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
+     in C.appendMaxLenBS rcvMeta msgBody
+  RcvMsgQuota {msgTs} ->
+    C.unsafeMaxLenBS $ msgQuotaTag <> " " <> smpEncode msgTs
 
-data ClientRcvMsgBody = ClientRcvMsgBody
-  { msgTs :: SystemTime,
-    msgFlags :: MsgFlags,
-    msgBody :: ByteString
-  }
+data ClientRcvMsgBody
+  = ClientRcvMsgBody
+      { msgTs :: SystemTime,
+        msgFlags :: MsgFlags,
+        msgBody :: ByteString
+      }
+  | ClientRcvMsgQuota
+      { msgTs :: SystemTime
+      }
 
 clientRcvMsgBodyP :: Parser ClientRcvMsgBody
-clientRcvMsgBodyP = do
-  msgTs <- smpP
-  msgFlags <- smpP
-  Tail msgBody <- _smpP
-  pure ClientRcvMsgBody {msgTs, msgFlags, msgBody}
+clientRcvMsgBodyP = msgQuotaP <|> msgBodyP
+  where
+    msgQuotaP = A.string msgQuotaTag *> (ClientRcvMsgQuota <$> _smpP)
+    msgBodyP = do
+      msgTs <- smpP
+      msgFlags <- smpP
+      Tail msgBody <- _smpP
+      pure ClientRcvMsgBody {msgTs, msgFlags, msgBody}
 
 instance StrEncoding Message where
-  strEncode Message {msgId, msgTs, msgFlags, msgBody} =
-    B.unwords
-      [ strEncode msgId,
-        strEncode msgTs,
-        "flags=" <> strEncode msgFlags,
-        strEncode msgBody
-      ]
+  strEncode = \case
+    Message {msgId, msgTs, msgFlags, msgBody} ->
+      B.unwords
+        [ strEncode msgId,
+          strEncode msgTs,
+          "flags=" <> strEncode msgFlags,
+          strEncode msgBody
+        ]
+    MessageQuota {msgId, msgTs} ->
+      B.unwords
+        [ strEncode msgId,
+          strEncode msgTs,
+          "quota"
+        ]
   strP = do
     msgId <- strP_
     msgTs <- strP_
-    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
-    msgBody <- strP
-    pure Message {msgId, msgTs, msgFlags, msgBody}
+    msgQuotaP msgId msgTs <|> msgP msgId msgTs
+    where
+      msgQuotaP msgId msgTs = "quota" $> MessageQuota {msgId, msgTs}
+      msgP msgId msgTs = do
+        msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
+        msgBody <- strP
+        pure Message {msgId, msgTs, msgFlags, msgBody}
 
 type EncNMsgMeta = ByteString
 
@@ -377,7 +411,9 @@ data SMPMsgMeta = SMPMsgMeta
   deriving (Show)
 
 rcvMessageMeta :: MsgId -> ClientRcvMsgBody -> SMPMsgMeta
-rcvMessageMeta msgId ClientRcvMsgBody {msgTs, msgFlags} = SMPMsgMeta {msgId, msgTs, msgFlags}
+rcvMessageMeta msgId = \case
+  ClientRcvMsgBody {msgTs, msgFlags} -> SMPMsgMeta {msgId, msgTs, msgFlags}
+  ClientRcvMsgQuota {msgTs} -> SMPMsgMeta {msgId, msgTs, msgFlags = noMsgFlags}
 
 data NMsgMeta = NMsgMeta
   { msgId :: MsgId,
@@ -860,7 +896,7 @@ data ErrorType
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
-    DUPLICATE_ -- TODO remove, not part of SMP protocol
+    DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
 
 instance ToJSON ErrorType where
@@ -1132,26 +1168,33 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO (NonEmpty (Either TransportError ()))
+tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
 tPut th trs
   | batch th = tPutBatch [] $ L.map tEncode trs
-  | otherwise = forM trs $ tPutBlock th . tEncode
+  | otherwise = forM (L.toList trs) $ tPutLog . tEncode
   where
-    tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO (NonEmpty (Either TransportError ()))
+    tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO [Either TransportError ()]
     tPutBatch rs ts = do
       let (n, s, ts_) = encodeBatch 0 "" ts
-      r <- if n == 0 then pure [Left TELargeMsg] else replicate n <$> tPutBlock th (lenEncode n `B.cons` s)
+      r <- if n == 0 then largeMsg else replicate n <$> tPutLog (lenEncode n `B.cons` s)
       let rs' = rs <> r
       case ts_ of
         Just ts' -> tPutBatch rs' ts'
-        _ -> pure $ L.fromList rs'
+        _ -> pure rs'
+    largeMsg = putStrLn "tPut error: large message" >> pure [Left TELargeMsg]
+    tPutLog s = do
+      r <- tPutBlock th s
+      case r of
+        Left e -> putStrLn ("tPut error: " <> show e)
+        _ -> pure ()
+      pure r
     encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
     encodeBatch n s ts@(t :| ts_)
       | n == 255 = (n, s, Just ts)
       | otherwise =
         let s' = s <> smpEncode (Large t)
             n' = n + 1
-         in if B.length s' > blockSize th - 1
+         in if B.length s' > blockSize th - 1 -- one byte is reserved for the number of messages in the batch
               then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
               else case L.nonEmpty ts_ of
                 Just ts' -> encodeBatch n' s' ts'

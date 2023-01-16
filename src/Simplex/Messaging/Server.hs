@@ -65,9 +65,9 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
+import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
+import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -104,8 +104,8 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
   s <- asks server
-  restoreServerStats
   restoreServerMessages
+  restoreServerStats
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
@@ -174,7 +174,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
         hSetBuffering h LineBuffering
@@ -187,7 +187,31 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
           ps <- atomically $ periodStatCounts activeQueues ts
-          hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayCount ps, weekCount ps, monthCount ps]
+          msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
+          msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
+          psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          qCount' <- readTVarIO qCount
+          msgCount' <- readTVarIO msgCount
+          hPutStrLn h $
+            intercalate
+              ","
+              [ iso8601Show $ utctDay fromTime',
+                show qCreated',
+                show qSecured',
+                show qDeleted',
+                show msgSent',
+                show msgRecv',
+                dayCount ps,
+                weekCount ps,
+                monthCount ps,
+                show msgSentNtf',
+                show msgRecvNtf',
+                dayCount psNtf,
+                weekCount psNtf,
+                monthCount psNtf,
+                show qCount',
+                show msgCount'
+              ]
           threadDelay interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
@@ -256,7 +280,6 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-  -- TODO the line below can return Lefts, but we ignore it and do not disconnect the client
   void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
   atomically . writeTVar activeAt =<< liftIO getSystemTime
   where
@@ -387,7 +410,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                 Right _ -> do
                   withLog (`logCreateById` rId)
                   stats <- asks serverStats
-                  atomically $ modifyTVar (qCreated stats) (+ 1)
+                  atomically $ modifyTVar' (qCreated stats) (+ 1)
+                  atomically $ modifyTVar' (qCount stats) (+ 1)
                   subscribeQueue qr rId $> IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
@@ -405,7 +429,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         secureQueue_ st sKey = time "KEY" $ do
           withLog $ \s -> logSecureQueue s queueId sKey
           stats <- asks serverStats
-          atomically $ modifyTVar (qSecured stats) (+ 1)
+          atomically $ modifyTVar' (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
@@ -510,12 +534,12 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   q <- getStoreMsgQueue "ACK" queueId
                   case s of
                     Sub {subThread = ProhibitSub} -> do
-                      msgDeleted <- atomically $ tryDelMsg q msgId
-                      when msgDeleted updateStats
+                      deletedMsg_ <- atomically $ tryDelMsg q msgId
+                      mapM_ updateStats deletedMsg_
                       pure ok
                     _ -> do
-                      (msgDeleted, msg_) <- atomically $ tryDelPeekMsg q msgId
-                      when msgDeleted updateStats
+                      (deletedMsg_, msg_) <- atomically $ tryDelPeekMsg q msgId
+                      mapM_ updateStats deletedMsg_
                       deliverMessage "ACK" qr queueId sub q msg_
                 _ -> pure $ err NO_MSG
           where
@@ -526,11 +550,17 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                 if msgId == msgId' || B.null msgId
                   then pure $ Just s
                   else putTMVar delivered msgId' $> Nothing
-            updateStats :: m ()
-            updateStats = do
-              stats <- asks serverStats
-              atomically $ modifyTVar (msgRecv stats) (+ 1)
-              atomically $ updatePeriodStats (activeQueues stats) queueId
+            updateStats :: Message -> m ()
+            updateStats = \case
+              MessageQuota {} -> pure ()
+              Message {msgFlags} -> do
+                stats <- asks serverStats
+                atomically $ modifyTVar' (msgRecv stats) (+ 1)
+                atomically $ modifyTVar' (msgCount stats) (+ 1)
+                atomically $ updatePeriodStats (activeQueues stats) queueId
+                when (notification msgFlags) $ do
+                  atomically $ modifyTVar' (msgRecvNtf stats) (+ 1)
+                  atomically $ updatePeriodStats (activeQueuesNtf stats) queueId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -538,20 +568,25 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           | otherwise = case status qr of
             QueueOff -> return $ err AUTH
             QueueActive ->
-              mapM mkMessage (C.maxLenBS msgBody) >>= \case
+              case C.maxLenBS msgBody of
                 Left _ -> pure $ err LARGE_MSG
-                Right msg -> do
-                  resp@(_, _, sent) <- time "SEND" $ do
+                Right body -> do
+                  msg_ <- time "SEND" $ do
                     q <- getStoreMsgQueue "SEND" $ recipientId qr
                     expireMessages q
-                    atomically $ ifM (isFull q) (pure $ err QUOTA) (writeMsg q msg $> ok)
-                  when (sent == OK) . time "SEND ok" $ do
-                    when (notification msgFlags) $
-                      atomically . trySendNotification msg =<< asks idsDrg
-                    stats <- asks serverStats
-                    atomically $ modifyTVar (msgSent stats) (+ 1)
-                    atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
-                  pure resp
+                    atomically . writeMsg q =<< mkMessage body
+                  case msg_ of
+                    Nothing -> pure $ err QUOTA
+                    Just msg -> time "SEND ok" $ do
+                      stats <- asks serverStats
+                      when (notification msgFlags) $ do
+                        atomically . trySendNotification msg =<< asks idsDrg
+                        atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
+                        atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
+                      atomically $ modifyTVar' (msgSent stats) (+ 1)
+                      atomically $ modifyTVar' (msgCount stats) (subtract 1)
+                      atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                      pure ok
           where
             mkMessage :: C.MaxLenBS MaxMessageLen -> m Message
             mkMessage body = do
@@ -572,12 +607,14 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
 
             writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
             writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              unlessM (isFullTBQueue q) $ do
-                (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg rcvNtfDhSecret ntfNonceDrg
-                writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
+              unlessM (isFullTBQueue q) $ case msg of
+                Message {msgId, msgTs} -> do
+                  (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
+                  writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
+                _ -> pure ()
 
-            mkMessageNotification :: Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
-            mkMessageNotification Message {msgId, msgTs} rcvNtfDhSecret ntfNonceDrg = do
+            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
+            mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
               cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
@@ -596,9 +633,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           where
             forkSub :: m ()
             forkSub = do
-              atomically . modifyTVar sub $ \s -> s {subThread = SubPending}
+              atomically . modifyTVar' sub $ \s -> s {subThread = SubPending}
               t <- mkWeakThreadId =<< forkIO subscriber
-              atomically . modifyTVar sub $ \case
+              atomically . modifyTVar' sub $ \case
                 s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
                 s -> s
               where
@@ -609,23 +646,28 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                     writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
                     s <- readTVar sub
                     void $ setDelivered s msg
-                    writeTVar sub s {subThread = NoSub}
+                    writeTVar sub $! s {subThread = NoSub}
 
         time :: T.Text -> m a -> m a
         time name = timed name queueId
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
-        encryptMsg qr Message {msgId, msgTs, msgFlags, msgBody}
-          | thVersion == 1 || thVersion == 2 = encrypt msgBody
-          | otherwise = encrypt $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
+        encryptMsg qr msg = case msg of
+          Message {msgFlags, msgBody}
+            | thVersion == 1 || thVersion == 2 -> encrypt msgFlags msgBody
+            | otherwise -> encrypt msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
+          MessageQuota {} ->
+            encrypt noMsgFlags $ encodeRcvMsgBody (RcvMsgQuota msgTs')
           where
-            encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
-            encrypt body =
-              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) body
-               in RcvMessage msgId msgTs msgFlags encBody
+            encrypt :: KnownNat i => MsgFlags -> C.MaxLenBS i -> RcvMessage
+            encrypt msgFlags body =
+              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+               in RcvMessage msgId' msgTs' msgFlags encBody
+            msgId' = msgId (msg :: Message)
+            msgTs' = msgTs (msg :: Message)
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s Message {msgId} = tryPutTMVar (delivered s) msgId
+        setDelivered s msg = tryPutTMVar (delivered s) $ msgId (msg :: Message)
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
@@ -638,7 +680,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
           stats <- asks serverStats
-          atomically $ modifyTVar (qDeleted stats) (+ 1)
+          atomically $ modifyTVar' (qDeleted stats) (+ 1)
+          atomically $ modifyTVar' (qCount stats) (subtract 1)
           atomically $
             deleteQueue st queueId >>= \case
               Left e -> pure $ err e
@@ -717,8 +760,11 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
             addToMsgQueue rId msg = do
               full <- atomically $ do
                 q <- getMsgQueue ms rId quota
-                ifM (isFull q) (pure True) (writeMsg q msg $> False)
-              when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+                isNothing <$> writeMsg q msg
+              case msg of
+                Message {} ->
+                  when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+                MessageQuota {} -> pure ()
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
@@ -744,7 +790,9 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setServerStats s d
+          _qCount <- fmap (length . M.keys) . readTVarIO . queues =<< asks queueStore
+          _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
+          atomically $ setServerStats s d {_qCount, _msgCount}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Left e -> do

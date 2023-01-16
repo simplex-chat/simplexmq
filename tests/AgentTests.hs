@@ -78,6 +78,8 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_1 $ testConcurrentMsgDelivery t
     it "should deliver messages if one of connections has quota exceeded" $
       smpAgentTest2_2_1 $ testMsgDeliveryQuotaExceeded t
+    it "should resume delivering messages after exceeding quota once all messages are received" $
+      smpAgentTest2_2_1 $ testResumeDeliveryQuotaExceeded t
 
 tGetAgent :: Transport c => c -> IO (ATransmissionOrError 'Agent)
 tGetAgent h = do
@@ -429,6 +431,32 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
   alice #: ("1", "bob2", "SEND F :hello") #> ("1", "bob2", MID 4)
   -- if delivery is blocked it won't go further
   alice <# ("", "bob2", SENT 4)
+
+testResumeDeliveryQuotaExceeded :: Transport c => TProxy c -> c -> c -> IO ()
+testResumeDeliveryQuotaExceeded _ alice bob = do
+  connect (alice, "alice") (bob, "bob")
+  forM_ [1 .. 4 :: Int] $ \i -> do
+    let corrId = bshow i
+        msg = "message " <> bshow i
+    (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
+    alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
+  ("5", "bob", Right (MID 8)) <- alice #: ("5", "bob", "SEND F :over quota")
+  alice #:# "the last message not sent yet"
+  bob <#= \case ("", "alice", Msg "message 1") -> True; _ -> False
+  bob #: ("1", "alice", "ACK 4") #> ("1", "alice", OK)
+  alice #:# "the last message not sent"
+  bob <#= \case ("", "alice", Msg "message 2") -> True; _ -> False
+  bob #: ("2", "alice", "ACK 5") #> ("2", "alice", OK)
+  alice #:# "the last message not sent"
+  bob <#= \case ("", "alice", Msg "message 3") -> True; _ -> False
+  bob #: ("3", "alice", "ACK 6") #> ("3", "alice", OK)
+  alice #:# "the last message not sent"
+  bob <#= \case ("", "alice", Msg "message 4") -> True; _ -> False
+  bob #: ("4", "alice", "ACK 7") #> ("4", "alice", OK)
+  alice <# ("", "bob", SENT 8)
+  bob <#= \case ("", "alice", Msg "over quota") -> True; _ -> False
+  -- message 8 is skipped because of alice agent sending "QCONT" message
+  bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do

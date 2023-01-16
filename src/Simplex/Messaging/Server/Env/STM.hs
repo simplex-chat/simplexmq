@@ -39,7 +39,7 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
     serverTbqSize :: Natural,
-    msgQueueQuota :: Natural,
+    msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
@@ -164,8 +164,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
       (qs, s') <- liftIO $ readWriteStoreLog s
       atomically $ do
         writeTVar queues =<< mapM newTVar qs
-        writeTVar senders $ M.foldr' addSender M.empty qs
-        writeTVar notifiers $ M.foldr' addNotifier M.empty qs
+        writeTVar senders $! M.foldr' addSender M.empty qs
+        writeTVar notifiers $! M.foldr' addNotifier M.empty qs
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)

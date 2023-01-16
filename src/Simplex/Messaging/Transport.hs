@@ -75,12 +75,14 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Version (showVersion)
 import GHC.Generics (Generic)
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
@@ -100,7 +102,7 @@ supportedSMPServerVRange :: VersionRange
 supportedSMPServerVRange = mkVersionRange 1 5
 
 simplexMQVersion :: String
-simplexMQVersion = "4.0.0"
+simplexMQVersion = showVersion SMQ.version
 
 -- * Transport connection class
 
@@ -214,7 +216,7 @@ instance Transport TLS where
       $ do
         b <- readChunks =<< readTVarIO buffer
         let (s, b') = B.splitAt n b
-        atomically $ writeTVar buffer b'
+        atomically $ writeTVar buffer $! b'
         pure s
     where
       readChunks :: ByteString -> IO ByteString
@@ -237,7 +239,7 @@ instance Transport TLS where
       $ do
         b <- readChunks =<< readTVarIO buffer
         let (s, b') = B.break (== '\n') b
-        atomically $ writeTVar buffer (B.drop 1 b') -- drop '\n' we made a break at
+        atomically $ writeTVar buffer $! B.drop 1 b' -- drop '\n' we made a break at
         pure $ trimCR s
     where
       readChunks :: ByteString -> IO ByteString

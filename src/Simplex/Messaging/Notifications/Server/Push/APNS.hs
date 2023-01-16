@@ -97,7 +97,7 @@ readECPrivateKey f = do
 data PushNotification
   = PNVerification NtfRegCode
   | PNMessage PNMessageData
-  | PNAlert Text
+  -- | PNAlert Text
   | PNCheckMessages
   deriving (Show)
 
@@ -287,14 +287,14 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNMessage pnMessageData ->
     encrypt (strEncode pnMessageData) $ \ntfData ->
       apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
-  PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
+  -- PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
     encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
-    apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
+    -- apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
 
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
 apnsRequest c tkn ntf@APNSNotification {aps} = do
