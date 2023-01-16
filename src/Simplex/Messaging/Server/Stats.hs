@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -5,7 +6,7 @@
 
 module Simplex.Messaging.Server.Stats where
 
-import Control.Applicative (optional)
+import Control.Applicative (optional, (<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Set (Set)
@@ -24,7 +25,12 @@ data ServerStats = ServerStats
     qDeleted :: TVar Int,
     msgSent :: TVar Int,
     msgRecv :: TVar Int,
-    activeQueues :: PeriodStats RecipientId
+    activeQueues :: PeriodStats RecipientId,
+    msgSentNtf :: TVar Int,
+    msgRecvNtf :: TVar Int,
+    activeQueuesNtf :: PeriodStats RecipientId,
+    qCount :: TVar Int,
+    msgCount :: TVar Int
   }
 
 data ServerStatsData = ServerStatsData
@@ -34,7 +40,12 @@ data ServerStatsData = ServerStatsData
     _qDeleted :: Int,
     _msgSent :: Int,
     _msgRecv :: Int,
-    _activeQueues :: PeriodStatsData RecipientId
+    _activeQueues :: PeriodStatsData RecipientId,
+    _msgSentNtf :: Int,
+    _msgRecvNtf :: Int,
+    _activeQueuesNtf :: PeriodStatsData RecipientId,
+    _qCount :: Int,
+    _msgCount :: Int
   }
 
 newServerStats :: UTCTime -> STM ServerStats
@@ -46,7 +57,12 @@ newServerStats ts = do
   msgSent <- newTVar 0
   msgRecv <- newTVar 0
   activeQueues <- newPeriodStats
-  pure ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues}
+  msgSentNtf <- newTVar 0
+  msgRecvNtf <- newTVar 0
+  activeQueuesNtf <- newPeriodStats
+  qCount <- newTVar 0
+  msgCount <- newTVar 0
+  pure ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount}
 
 getServerStatsData :: ServerStats -> STM ServerStatsData
 getServerStatsData s = do
@@ -57,20 +73,30 @@ getServerStatsData s = do
   _msgSent <- readTVar $ msgSent s
   _msgRecv <- readTVar $ msgRecv s
   _activeQueues <- getPeriodStatsData $ activeQueues s
-  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues}
+  _msgSentNtf <- readTVar $ msgSentNtf s
+  _msgRecvNtf <- readTVar $ msgRecvNtf s
+  _activeQueuesNtf <- getPeriodStatsData $ activeQueuesNtf s
+  _qCount <- readTVar $ qCount s
+  _msgCount <- readTVar $ msgCount s
+  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues, _msgSentNtf, _msgRecvNtf, _activeQueuesNtf, _qCount, _msgCount}
 
 setServerStats :: ServerStats -> ServerStatsData -> STM ()
 setServerStats s d = do
-  writeTVar (fromTime s) (_fromTime d)
-  writeTVar (qCreated s) (_qCreated d)
-  writeTVar (qSecured s) (_qSecured d)
-  writeTVar (qDeleted s) (_qDeleted d)
-  writeTVar (msgSent s) (_msgSent d)
-  writeTVar (msgRecv s) (_msgRecv d)
-  setPeriodStats (activeQueues s) (_activeQueues d)
+  writeTVar (fromTime s) $! _fromTime d
+  writeTVar (qCreated s) $! _qCreated d
+  writeTVar (qSecured s) $! _qSecured d
+  writeTVar (qDeleted s) $! _qDeleted d
+  writeTVar (msgSent s) $! _msgSent d
+  writeTVar (msgRecv s) $! _msgRecv d
+  setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
+  writeTVar (msgSentNtf s) $! _msgSentNtf d
+  writeTVar (msgRecvNtf s) $! _msgRecvNtf d
+  setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
+  writeTVar (qCount s) $! _qCount d
+  writeTVar (msgCount s) $! _qCount d
 
 instance StrEncoding ServerStatsData where
-  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues} =
+  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "qCreated=" <> strEncode _qCreated,
@@ -78,8 +104,12 @@ instance StrEncoding ServerStatsData where
         "qDeleted=" <> strEncode _qDeleted,
         "msgSent=" <> strEncode _msgSent,
         "msgRecv=" <> strEncode _msgRecv,
+        "msgSentNtf=" <> strEncode _msgSentNtf,
+        "msgRecvNtf=" <> strEncode _msgRecvNtf,
         "activeQueues:",
-        strEncode _activeQueues
+        strEncode _activeQueues,
+        "activeQueuesNtf:",
+        strEncode _activeQueuesNtf
       ]
   strP = do
     _fromTime <- "fromTime=" *> strP <* A.endOfLine
@@ -88,15 +118,21 @@ instance StrEncoding ServerStatsData where
     _qDeleted <- "qDeleted=" *> strP <* A.endOfLine
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
-    r <- optional ("activeQueues:" <* A.endOfLine)
-    _activeQueues <- case r of
-      Just _ -> strP <* optional A.endOfLine
-      _ -> do
-        _day <- "dayMsgQueues=" *> strP <* A.endOfLine
-        _week <- "weekMsgQueues=" *> strP <* A.endOfLine
-        _month <- "monthMsgQueues=" *> strP <* optional A.endOfLine
-        pure PeriodStatsData {_day, _week, _month}
-    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues}
+    _msgSentNtf <- "msgSentNtf=" *> strP <* A.endOfLine <|> pure 0
+    _msgRecvNtf <- "msgRecvNtf=" *> strP <* A.endOfLine <|> pure 0
+    _activeQueues <-
+      optional ("activeQueues:" <* A.endOfLine) >>= \case
+        Just _ -> strP <* optional A.endOfLine
+        _ -> do
+          _day <- "dayMsgQueues=" *> strP <* A.endOfLine
+          _week <- "weekMsgQueues=" *> strP <* A.endOfLine
+          _month <- "monthMsgQueues=" *> strP <* optional A.endOfLine
+          pure PeriodStatsData {_day, _week, _month}
+    _activeQueuesNtf <-
+      optional ("activeQueuesNtf:" <* A.endOfLine) >>= \case
+        Just _ -> strP <* optional A.endOfLine
+        _ -> pure newPeriodStatsData
+    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _qCount = 0, _msgCount = 0}
 
 data PeriodStats a = PeriodStats
   { day :: TVar (Set a),
@@ -117,6 +153,9 @@ data PeriodStatsData a = PeriodStatsData
     _month :: Set a
   }
 
+newPeriodStatsData :: PeriodStatsData a
+newPeriodStatsData = PeriodStatsData {_day = S.empty, _week = S.empty, _month = S.empty}
+
 getPeriodStatsData :: PeriodStats a -> STM (PeriodStatsData a)
 getPeriodStatsData s = do
   _day <- readTVar $ day s
@@ -126,9 +165,9 @@ getPeriodStatsData s = do
 
 setPeriodStats :: PeriodStats a -> PeriodStatsData a -> STM ()
 setPeriodStats s d = do
-  writeTVar (day s) (_day d)
-  writeTVar (week s) (_week d)
-  writeTVar (month s) (_month d)
+  writeTVar (day s) $! _day d
+  writeTVar (week s) $! _week d
+  writeTVar (month s) $! _month d
 
 instance (Ord a, StrEncoding a) => StrEncoding (PeriodStatsData a) where
   strEncode PeriodStatsData {_day, _week, _month} =
@@ -165,4 +204,4 @@ updatePeriodStats stats pId = do
   updatePeriod week
   updatePeriod month
   where
-    updatePeriod pSel = modifyTVar (pSel stats) (S.insert pId)
+    updatePeriod pSel = modifyTVar' (pSel stats) (S.insert pId)

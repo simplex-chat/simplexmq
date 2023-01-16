@@ -27,6 +27,9 @@ import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
+ntfServerVersion :: String
+ntfServerVersion = "1.3.0"
+
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
@@ -45,7 +48,7 @@ ntfServerCLI cfgPath logPath =
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "ntf-server.ini"
-    serverVersion = "SMP notifications server v1.2.0"
+    serverVersion = "SMP notifications server v" <> ntfServerVersion
     defaultServerPort = "443"
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"

@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        4.0.0
+version:        4.3.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -431,6 +431,7 @@ test-suite smp-server-test
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
+      CoreTests.RetryIntervalTests
       CoreTests.VersionRangeTests
       NtfClient
       NtfServerTests
