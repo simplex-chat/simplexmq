@@ -56,6 +56,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
