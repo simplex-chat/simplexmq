@@ -63,6 +63,7 @@ module Simplex.Messaging.Agent
     switchConnection,
     suspendConnection,
     deleteConnection,
+    deleteConnections,
     getConnectionServers,
     getConnectionRatchetAdHash,
     setSMPServers,
@@ -254,6 +255,10 @@ suspendConnection c = withAgentEnv c . suspendConnection' c
 -- | Delete SMP agent connection (DEL command)
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
+
+-- | Delete multiple connections, batching commands when possible
+deleteConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+deleteConnections c = withAgentEnv c . deleteConnections' c
 
 -- | get servers used for connection
 getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
@@ -1215,6 +1220,46 @@ disableConn c connId = do
   atomically $ removeSubscription c connId
   ns <- asks ntfSupervisor
   atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
+
+deleteConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+deleteConnections' _ [] = pure M.empty
+deleteConnections' c connIds = do
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
+  let (errs, cs) = M.mapEither id conns
+      errs' = M.map (Left . storeError) errs
+      (delRs, rcvQs) = M.mapEither rcvQueueOrResult cs
+  rcvRs <- connResults <$> deleteQueues c (concat $ M.elems rcvQs)
+  let rs = M.unions ([errs', delRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
+  notifyResultError rs
+  pure rs
+  where
+    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
+    rcvQueueOrResult (SomeConn _ conn) = case conn of
+      DuplexConnection _ rqs _ -> Right $ L.toList rqs
+      RcvConnection _ rq -> Right [rq]
+      ContactConnection _ rq -> Right [rq]
+      SndConnection _ _ -> Left $ Right ()
+      NewConnection _ -> Left $ Right ()
+    connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
+    connResults = M.map snd . foldl' addResult M.empty
+      where
+        -- collects results by connection ID
+        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QSubResult
+        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        -- combines two results for one connection, by prioritizing errors in Active queues
+        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
+        combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
+        combineRes r' _ = Just r'
+        order :: QSubResult -> Int
+        order (Active, Left _) = 1
+        order (_, Left _) = 2
+        order _ = 3
+    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
+    notifyResultError rs = do
+      let actual = M.size rs
+          expected = length connIds
+      when (actual /= expected) . atomically $
+        writeTBQueue (subQ c) ("", "", ERR . INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = do

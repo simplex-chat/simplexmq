@@ -54,6 +54,7 @@ module Simplex.Messaging.Agent.Client
     sendAck,
     suspendQueue,
     deleteQueue,
+    deleteQueues,
     logServer,
     logSecret,
     removeSubscription,
@@ -683,30 +684,42 @@ subscribeQueues c qs = do
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
-  (errs <>) <$> do
-    mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
-    let sessRcvQs = foldl' (addRcvQueue mode) M.empty qs'
-    concat <$> mapConcurrently (fmap L.toList . uncurry (subscribeQueues_ c)) (M.assocs sessRcvQs)
+  (errs <>) <$> sendTSessionBatches "SUB" 90 subscribeQueues_ c qs
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
+    subscribeQueues_ smp qs' = do
+      rs <- sendBatch subscribeSMPQueues smp qs'
+      mapM_ (uncurry $ processSubResult c) rs
+      pure rs
+
+type BatchResponses e = (NonEmpty (RcvQueue, Either e ()))
+
+-- statBatchSize is not used to batch the commands, only for traffic statistics
+sendTSessionBatches :: forall m. AgentMonad m => ByteString -> Int -> (SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError )) -> AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+sendTSessionBatches statCmd statBatchSize action c qs = do
+  mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
+  let sessRcvQs :: Map SMPTransportSession (NonEmpty RcvQueue) = foldl' (addRcvQueue mode) M.empty qs
+  concatMap L.toList <$> mapConcurrently (uncurry sendClientBatch) (M.assocs sessRcvQs)
+  where
     addRcvQueue :: TransportSessionMode -> Map SMPTransportSession (NonEmpty RcvQueue) -> RcvQueue -> Map SMPTransportSession (NonEmpty RcvQueue)
     addRcvQueue mode m rq =
       let tSess = mkSMPTSession rq mode
        in M.alter (Just . maybe [rq] (rq <|)) tSess m
+    sendClientBatch :: SMPTransportSession -> NonEmpty RcvQueue -> m (BatchResponses AgentErrorType)
+    sendClientBatch tSess@(userId, srv, _) qs' = 
+      tryError (getSMPServerClient c tSess) >>= \case
+        Left e -> pure $ L.map (,Left e) qs'
+        Right smp -> liftIO $ do
+          logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
+          rs <- action smp qs'
+          let n = (length qs - 1) `div` statBatchSize + 1
+          incClientStatN c userId smp n (statCmd <> "S") "OK"
+          pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
 
-subscribeQueues_ :: AgentMonad m => AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m (NonEmpty (RcvQueue, Either AgentErrorType ()))
-subscribeQueues_ c tSess@(userId, srv, _) qs =
-  tryError (getSMPServerClient c tSess) >>= \case
-    Left e -> pure $ L.map (,Left e) qs
-    Right smp -> liftIO $ do
-      logServer "-->" c srv (bshow (length qs) <> " queues") "SUB"
-      let n = (length qs - 1) `div` 90 + 1
-      incClientStatN c userId smp n "SUBS" "OK"
-      rs <- L.zip qs <$> subscribeSMPQueues smp (L.map queueCreds qs)
-      mapM_ (uncurry $ processSubResult c) rs
-      pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
+sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateSignKey, SMP.RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError)
+sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
@@ -814,9 +827,13 @@ suspendQueue c rq@RcvQueue {rcvId, rcvPrivateKey} =
     suspendSMPQueue smp rcvPrivateKey rcvId
 
 deleteQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} =
+deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
   withSMPClient c rq "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
+
+-- TODO change batch size - it is bigger for DEL
+deleteQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+deleteQueues = sendTSessionBatches "DEL" 90 $ sendBatch deleteSMPQueues
 
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> MsgFlags -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {sndId, sndPrivateKey} msgFlags agentMsg =
