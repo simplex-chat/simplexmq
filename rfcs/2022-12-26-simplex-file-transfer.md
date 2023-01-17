@@ -95,9 +95,11 @@ To send the file, the sender will:
 
 - compute SHA512 digest
 - pad the file to match the whole number of chunks in size,
-- encrypt it with a randomly chosen symmetric key and IV (e.g., using NaCL cryptobox),
+- encrypt it with a randomly chosen symmetric key and IV (e.g., using NaCL crypto_secretbox),
 - split into fixed size chunks
 - upload each chunk to a randomly chosen server.
+
+The sending client should generate more per-recipient keys than the actual number of recipients, possibly rounding up to a power of 2, to conceal the actual number of intended recipients.
 
 Then the sending client will combine addresses of all chunks and other information into "file description", different for each file recipient, that will include:
 
@@ -106,22 +108,24 @@ Then the sending client will combine addresses of all chunks and other informati
 - list of chunk descriptions; information for each chunk:
   - private Ed25519 key to sign commands for file transfer server.
   - chunk address (server host and chunk ID).
+  - chunk sha512 digest
 
 To reduce the size, chunk descriptions will be grouped by the server host.
 
-This "file description" itself will be sent as a small file. To estimate its size:
+This "file description" itself will be sent as a small file over an authenticated channel, to prevent file description modification. To estimate its size:
 
 - each chunk \* redundancy per chunk, assuming chunks are grouped per server:
-  - chunk number in the file - 8 bytes (including any overhead)
+  - 1-based chunk number in the file - 8 bytes (including any overhead)
   - Ed25519 key (different for each recipient / chunk combination) - 32 bytes \* 4/3 (base64, assuming text encoding)
   - chunk ID (different for each recipient) - 64 bytes \* 4/3
+  - optional (only in the first chunk occurence) chunk sha512 digests - 64 bytes \* 4/3
 - server addresses - say, 128 bytes per server
 - sha512 digest - 64 bytes \* 4/3
 - encryption key - 32 bytes \* 4/3
 - IV - 32 bytes \* 4/3
 - encoding overhead - say, 256 bytes
 
-For 1gb file, sent via 4 different servers, in 8Mb chunks, with redundancy 2, the size of "file description", assuming text encoding, will be ~34kb (`128 * (8 + 32 + 64) * 2 * 4/3 + 128 * 4 + (64 + 32 + 32) * 4/3 + 256`).
+For 1gb file, sent via 4 different servers, in 8Mb chunks, with redundancy 2, the size of "file description", assuming text encoding, will be ~45kb (`128 * (8 + 32 + 64) * 2 * 4/3 + 128 * 64 * 4/3 + 128 * 4 + (64 + 32 + 32) * 4/3 + 256`).
 
 File description format (yml):
 
@@ -132,11 +136,12 @@ chunk: 8Mb
 hash: abc=
 key: abc=
 iv: abc=
+part_hashes: [def=, def=, def=, def=]
 parts:
   - server: xftp://abc=@example1.com
-    chunks: [1:abc=:def=, 3:abc=:def=]
+    chunks: [1:abc=:def=:ghi=, 3:abc=:def=:ghi=]
   - server: xftp://abc=@example2.com
-    chunks: [2:abc=:def=, 4:abc=:def=]
+    chunks: [2:abc=:def=:ghi=, 4:abc=:def=:ghi=]
   - server: xftp://abc=@example3.com
     chunks: [1:abc=:def=, 4:abc=:def=]
   - server: xftp://abc=@example4.com
