@@ -103,6 +103,14 @@ executables:
     ghc-options:
       - -threaded
 
+  xftp-server:
+    source-dirs: apps/xftp-server
+    main: Main.hs
+    dependencies:
+      - simplexmq
+    ghc-options:
+      - -threaded
+
   smp-agent:
     source-dirs: apps/smp-agent
     main: Main.hs
