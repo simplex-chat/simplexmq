@@ -613,7 +613,9 @@ subscribeQueue c rq@RcvQueue {connId, server, rcvPrivateKey, rcvId} = do
   r <- withLogClient c server rcvId "SUB" $ \smp ->
     liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq)
   case r of
-    Left e -> reconnectServer c server >> throwError (protocolClientError SMP (B.unpack $ strEncode server) e)
+    Left e -> do
+      when (temporaryClientError e) $ reconnectServer c server
+      throwError (protocolClientError SMP (B.unpack $ strEncode server) e)
     _ -> pure ()
 
 processSubResult :: AgentClient -> RcvQueue -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
