@@ -611,7 +611,7 @@ subscribeQueue c rq@RcvQueue {connId, server, rcvPrivateKey, rcvId} = do
     modifyTVar' (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
   r <- withLogClient c server rcvId "SUB" $ \smp ->
-    liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq)
+    liftIO $ runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq
   case r of
     Left e -> do
       when (temporaryClientError e) $ reconnectServer c server
