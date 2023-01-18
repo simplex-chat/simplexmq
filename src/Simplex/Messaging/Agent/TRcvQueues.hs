@@ -40,9 +40,9 @@ getSrvQueues srv (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
   where
     addQ qs' rq@RcvQueue {server} = if srv == server then rq : qs' else qs'
 
-getDelSrvQueues :: SMPServer -> TRcvQueues -> STM ([RcvQueue], Set ConnId)
-getDelSrvQueues srv (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ (([], S.empty), M.empty)
+getDelSrvQueues :: SMPServer -> TRcvQueues -> STM [RcvQueue]
+getDelSrvQueues srv (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.empty)
   where
-    addQ (removed@(remQs, remConns), qs') rq@RcvQueue {connId, server, rcvId}
-      | srv == server = ((rq : remQs, S.insert connId remConns), qs')
+    addQ (removed, qs') rq@RcvQueue {server, rcvId}
+      | srv == server = (rq : removed, qs')
       | otherwise = (removed, M.insert (server, rcvId) rq qs')

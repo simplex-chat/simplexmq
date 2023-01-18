@@ -303,9 +303,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
           TM.delete srv smpClients
-          (qs, conns) <- RQ.getDelSrvQueues srv $ activeSubs c
+          qs <- RQ.getDelSrvQueues srv $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
-          pure (qs, S.toList conns)
+          let cs = S.fromList $ map (\RcvQueue {connId} -> connId) qs
+          cs' <- RQ.getConns $ activeSubs c
+          pure (qs, S.toList $ cs `S.difference` cs')
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
