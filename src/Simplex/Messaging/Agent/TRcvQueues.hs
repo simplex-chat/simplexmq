@@ -1,5 +1,3 @@
-{-# LANGUAGE NamedFieldPuns #-}
-
 module Simplex.Messaging.Agent.TRcvQueues
   ( TRcvQueues,
     empty,
@@ -52,11 +50,11 @@ getSessQueues tSess (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
-getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM ([RcvQueue], Set ConnId)
-getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ (([], S.empty), M.empty)
+getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
+getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.empty)
   where
-    addQ (removed@(remQs, remConns), qs') rq@RcvQueue {connId}
-      | rq `isSession` tSess = ((rq : remQs, S.insert connId remConns), qs')
+    addQ (removed, qs') rq
+      | rq `isSession` tSess = (rq : removed, qs')
       | otherwise = (removed, M.insert (qKey rq) rq qs')
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
