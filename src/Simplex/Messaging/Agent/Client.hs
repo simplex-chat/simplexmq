@@ -651,11 +651,12 @@ subscribeQueue c rq@RcvQueue {connId, server, rcvPrivateKey, rcvId} = do
     modifyTVar' (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
   r <- withSMPClient c rq "SUB" $ \smp ->
-    liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq)
+    liftIO $ runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq
   case r of
     Left e -> do
       tSess <- mkSMPTransportSession c rq
-      reconnectServer c tSess >> throwError (protocolClientError SMP (B.unpack $ strEncode server) e)
+      when (temporaryClientError e) $ reconnectServer c tSess
+      throwError (protocolClientError SMP (B.unpack $ strEncode server) e)
     _ -> pure ()
 
 processSubResult :: AgentClient -> RcvQueue -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
