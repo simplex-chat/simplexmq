@@ -88,7 +88,7 @@ setServerStats s d = do
   writeTVar (qDeleted s) $! _qDeleted d
   writeTVar (msgSent s) $! _msgSent d
   writeTVar (msgRecv s) $! _msgRecv d
-  setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
+  setPeriodStats (activeQueues s) (_activeQueues d)
   writeTVar (msgSentNtf s) $! _msgSentNtf d
   writeTVar (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
