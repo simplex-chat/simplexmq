@@ -690,14 +690,17 @@ subscribeQueues c qs = do
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
-  (errs <>) <$> sendTSessionBatches "SUB" 90 subscribeQueues_ c qs
+  u <- askUnliftIO
+  (errs <>) <$> sendTSessionBatches "SUB" 90 (subscribeQueues_ u) c qs
   where
     checkQueue rq@RcvQueue {rcvId, server} = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
-    subscribeQueues_ smp qs' = do
+    subscribeQueues_ u smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
+      when (any temporaryClientError . lefts . map snd $ L.toList rs) $
+        unliftIO u $ reconnectServer c $ transportSession' smp
       pure rs
 
 type BatchResponses e = (NonEmpty (RcvQueue, Either e ()))
@@ -717,12 +720,11 @@ sendTSessionBatches statCmd statBatchSize action c qs = do
     sendClientBatch tSess@(userId, srv, _) qs' =
       tryError (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map (,Left e) qs'
-        Right smp -> do
+        Right smp -> liftIO $ do
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
-          rs <- liftIO $ action smp qs'
+          rs <- action smp qs'
           let n = (length qs - 1) `div` statBatchSize + 1
-          liftIO $ incClientStatN c userId smp n (statCmd <> "S") "OK"
-          when (any temporaryClientError . lefts . map snd $ L.toList rs) $ reconnectServer c tSess
+          incClientStatN c userId smp n (statCmd <> "S") "OK"
           pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
 
 sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateSignKey, SMP.RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError)

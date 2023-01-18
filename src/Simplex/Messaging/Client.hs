@@ -33,6 +33,7 @@ module Simplex.Messaging.Client
     closeProtocolClient,
     clientServer,
     transportHost',
+    transportSession',
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -252,6 +253,9 @@ clientServer = B.unpack . strEncode . snd3 . transportSession . client_
 
 transportHost' :: ProtocolClient msg -> TransportHost
 transportHost' = transportHost . client_
+
+transportSession' :: ProtocolClient msg -> TransportSession msg
+transportSession' = transportSession . client_
 
 type UserId = Int64
 
