@@ -97,7 +97,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
 import Data.List (foldl', partition)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
@@ -118,6 +118,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
+import Simplex.Messaging.Agent.TAsyncs
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues)
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
@@ -158,7 +159,7 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (async, mapConcurrently)
+import UnliftIO (mapConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -202,8 +203,8 @@ data AgentClient = AgentClient
     connLocks :: TMap ConnId Lock,
     -- locks to prevent concurrent reconnections to SMP servers
     reconnectLocks :: TMap SMPTransportSession Lock,
-    reconnections :: TVar [Async ()],
-    asyncClients :: TVar [Async ()],
+    reconnections :: TAsyncs,
+    asyncClients :: TAsyncs,
     agentStats :: TMap AgentStatsKey (TVar Int),
     clientId :: Int,
     agentEnv :: Env
@@ -272,8 +273,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
   reconnectLocks <- TM.empty
-  reconnections <- newTVar []
-  asyncClients <- newTVar []
+  reconnections <- newTAsyncs
+  asyncClients <- newTAsyncs
   agentStats <- TM.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, connLocks, reconnectLocks, reconnections, asyncClients, agentStats, clientId, agentEnv}
@@ -298,7 +299,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
   atomically (getClientVar tSess smpClients)
     >>= either
-      (newProtocolClient c tSess smpClients connectClient reconnectClient)
+      (newProtocolClient c tSess smpClients connectClient reconnectSMPClient)
       (waitForProtocolClient c tSess)
   where
     connectClient :: m SMPClient
@@ -315,9 +316,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
           TM.delete tSess smpClients
-          (qs, conns) <- RQ.getDelSessQueues tSess $ activeSubs c
+          qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
-          pure (qs, S.toList conns)
+          let cs = S.fromList $ map qConnId qs
+          cs' <- RQ.getConns $ activeSubs c
+          pure (qs, S.toList $ cs `S.difference` cs')
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
@@ -326,36 +329,36 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            unliftIO u reconnectServer
+            unliftIO u $ reconnectServer c tSess
 
-        reconnectServer :: m ()
-        reconnectServer = do
-          a <- async tryReconnectClient
-          atomically $ modifyTVar' (reconnections c) (a :)
+        notifySub :: ConnId -> ACommand 'Agent -> IO ()
+        notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
 
-        tryReconnectClient :: m ()
-        tryReconnectClient = do
-          ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \loop ->
-            reconnectClient `catchError` const loop
+reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
+reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
+  where
+    tryReconnectSMPClient aId = do
+      ri <- asks $ reconnectInterval . config
+      withRetryInterval ri $ \loop ->
+        reconnectSMPClient c tSess `catchError` const loop
+      atomically . removeAsyncAction aId $ reconnections c
 
-    reconnectClient :: m ()
-    reconnectClient =
-      withLockMap_ (reconnectLocks c) tSess "reconnect" $
-        atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
-      where
-        resubscribe :: NonEmpty RcvQueue -> m ()
-        resubscribe qs = do
-          cs <- atomically . RQ.getConns $ activeSubs c
-          rs <- subscribeQueues c $ L.toList qs
-          let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-          liftIO $ do
-            let conns = S.toList $ S.fromList okConns `S.difference` cs
-            unless (null conns) $ notifySub "" $ UP srv conns
-          let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
-          liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-          mapM_ (throwError . snd) $ listToMaybe tempErrs
-
+reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient c tSess@(_, srv, _) =
+  withLockMap_ (reconnectLocks c) tSess "reconnect" $
+    atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
+  where
+    resubscribe :: NonEmpty RcvQueue -> m ()
+    resubscribe qs = do
+      cs <- atomically . RQ.getConns $ activeSubs c
+      rs <- subscribeQueues c $ L.toList qs
+      let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+      liftIO $ do
+        let conns = S.toList $ S.fromList okConns `S.difference` cs
+        unless (null conns) $ notifySub "" $ UP srv conns
+      let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
+      liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
+      mapM_ (throwError . snd) $ listToMaybe tempErrs
     notifySub :: ConnId -> ACommand 'Agent -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
 
@@ -364,7 +367,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
   unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
   atomically (getClientVar tSess ntfClients)
     >>= either
-      (newProtocolClient c tSess ntfClients connectClient $ pure ())
+      (newProtocolClient c tSess ntfClients connectClient $ \_ _ -> pure ())
       (waitForProtocolClient c tSess)
   where
     connectClient :: m NtfClient
@@ -404,7 +407,7 @@ newProtocolClient ::
   TransportSession msg ->
   TMap (TransportSession msg) (ClientVar msg) ->
   m (ProtocolClient msg) ->
-  m () ->
+  (AgentClient -> TransportSession msg -> m ()) ->
   ClientVar msg ->
   m (ProtocolClient msg)
 newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconnectClient clientVar = tryConnectClient pure tryConnectAsync
@@ -427,13 +430,12 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
               TM.delete tSess clients
           throwError e
     tryConnectAsync :: m ()
-    tryConnectAsync = do
-      a <- async connectAsync
-      atomically $ modifyTVar' (asyncClients c) (a :)
-    connectAsync :: m ()
-    connectAsync = do
+    tryConnectAsync = newAsyncAction connectAsync $ asyncClients c
+    connectAsync :: Int -> m ()
+    connectAsync aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \loop -> void $ tryConnectClient (const reconnectClient) loop
+      withRetryInterval ri $ \loop -> void $ tryConnectClient (const $ reconnectClient c tSess) loop
+      atomically . removeAsyncAction aId $ asyncClients c
 
 hostEvent :: forall msg. ProtocolTypeI (ProtoType msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> ProtocolClient msg -> ACommand 'Agent
 hostEvent event client = event (AProtocolType $ protocolTypeI @(ProtoType msg)) $ transportHost' client
@@ -449,8 +451,8 @@ closeAgentClient c = liftIO $ do
   atomically $ writeTVar (active c) False
   closeProtocolServerClients c smpClients
   closeProtocolServerClients c ntfClients
-  cancelActions $ reconnections c
-  cancelActions $ asyncClients c
+  cancelActions . actions $ reconnections c
+  cancelActions . actions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
   cancelActions $ asyncCmdProcesses c
   atomically . RQ.clear $ activeSubs c
@@ -648,9 +650,13 @@ subscribeQueue c rq@RcvQueue {connId, server, rcvPrivateKey, rcvId} = do
   atomically $ do
     modifyTVar' (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
-  withSMPClient c rq "SUB" $ \smp ->
+  r <- withSMPClient c rq "SUB" $ \smp ->
     liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq)
-      >>= either throwError pure
+  case r of
+    Left e -> do
+      tSess <- mkSMPTransportSession c rq
+      reconnectServer c tSess >> throwError (protocolClientError SMP (B.unpack $ strEncode server) e)
+    _ -> pure ()
 
 processSubResult :: AgentClient -> RcvQueue -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
 processSubResult c rq r = do
@@ -697,7 +703,7 @@ subscribeQueues c qs = do
 type BatchResponses e = (NonEmpty (RcvQueue, Either e ()))
 
 -- statBatchSize is not used to batch the commands, only for traffic statistics
-sendTSessionBatches :: forall m. AgentMonad m => ByteString -> Int -> (SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError )) -> AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+sendTSessionBatches :: forall m. AgentMonad m => ByteString -> Int -> (SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError)) -> AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 sendTSessionBatches statCmd statBatchSize action c qs = do
   mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
   let sessRcvQs :: Map SMPTransportSession (NonEmpty RcvQueue) = foldl' (addRcvQueue mode) M.empty qs
@@ -708,14 +714,15 @@ sendTSessionBatches statCmd statBatchSize action c qs = do
       let tSess = mkSMPTSession rq mode
        in M.alter (Just . maybe [rq] (rq <|)) tSess m
     sendClientBatch :: SMPTransportSession -> NonEmpty RcvQueue -> m (BatchResponses AgentErrorType)
-    sendClientBatch tSess@(userId, srv, _) qs' = 
+    sendClientBatch tSess@(userId, srv, _) qs' =
       tryError (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map (,Left e) qs'
-        Right smp -> liftIO $ do
+        Right smp -> do
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
-          rs <- action smp qs'
+          rs <- liftIO $ action smp qs'
           let n = (length qs - 1) `div` statBatchSize + 1
-          incClientStatN c userId smp n (statCmd <> "S") "OK"
+          liftIO $ incClientStatN c userId smp n (statCmd <> "S") "OK"
+          when (any temporaryClientError . lefts . map snd $ L.toList rs) $ reconnectServer c tSess
           pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
 
 sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateSignKey, SMP.RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError)

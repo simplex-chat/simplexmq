@@ -47,6 +47,7 @@ data ServerStatsData = ServerStatsData
     _qCount :: Int,
     _msgCount :: Int
   }
+  deriving (Show)
 
 newServerStats :: UTCTime -> STM ServerStats
 newServerStats ts = do
@@ -88,7 +89,7 @@ setServerStats s d = do
   writeTVar (qDeleted s) $! _qDeleted d
   writeTVar (msgSent s) $! _msgSent d
   writeTVar (msgRecv s) $! _msgRecv d
-  setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
+  setPeriodStats (activeQueues s) (_activeQueues d)
   writeTVar (msgSentNtf s) $! _msgSentNtf d
   writeTVar (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
@@ -152,6 +153,7 @@ data PeriodStatsData a = PeriodStatsData
     _week :: Set a,
     _month :: Set a
   }
+  deriving (Show)
 
 newPeriodStatsData :: PeriodStatsData a
 newPeriodStatsData = PeriodStatsData {_day = S.empty, _week = S.empty, _month = S.empty}
