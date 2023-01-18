@@ -47,6 +47,7 @@ data ServerStatsData = ServerStatsData
     _qCount :: Int,
     _msgCount :: Int
   }
+  deriving (Show)
 
 newServerStats :: UTCTime -> STM ServerStats
 newServerStats ts = do
@@ -152,6 +153,7 @@ data PeriodStatsData a = PeriodStatsData
     _week :: Set a,
     _month :: Set a
   }
+  deriving (Show)
 
 newPeriodStatsData :: PeriodStatsData a
 newPeriodStatsData = PeriodStatsData {_day = S.empty, _week = S.empty, _month = S.empty}

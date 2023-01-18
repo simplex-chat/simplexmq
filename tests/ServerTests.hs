@@ -20,6 +20,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Set as S
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -28,6 +29,7 @@ import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
 import System.Directory (removeFile)
 import System.TimeIt (timeItT)
@@ -632,11 +634,15 @@ testRestoreMessages at@(ATransport t) =
       Resp "6" _ (ERR QUOTA) <- signSendRecv h sKey ("6", sId, _SEND "hello 6")
       pure ()
 
+    rId <- readTVarIO recipientId
+
     logSize testStoreLogFile `shouldReturn` 2
     logSize testStoreMsgsFile `shouldReturn` 5
+    logSize testServerStatsBackupFile `shouldReturn` 16
+    Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
+    checkStats stats1 [rId] 5 1
 
     withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
-      rId <- readTVarIO recipientId
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
@@ -650,9 +656,11 @@ testRestoreMessages at@(ATransport t) =
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
     logSize testStoreMsgsFile `shouldReturn` 3
+    logSize testServerStatsBackupFile `shouldReturn` 16
+    Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
+    checkStats stats2 [rId] 5 3
 
     withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
-      rId <- readTVarIO recipientId
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
@@ -667,9 +675,13 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0
+    logSize testServerStatsBackupFile `shouldReturn` 16
+    Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
+    checkStats stats3 [rId] 5 5
 
     removeFile testStoreLogFile
     removeFile testStoreMsgsFile
+    removeFile testServerStatsBackupFile
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
@@ -678,6 +690,20 @@ testRestoreMessages at@(ATransport t) =
 
     runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
+
+checkStats :: ServerStatsData -> [RecipientId] -> Int -> Int -> Expectation
+checkStats s qs sent received = do
+  _qCreated s `shouldBe` length qs
+  _qSecured s `shouldBe` length qs
+  _qDeleted s `shouldBe` 0
+  _msgSent s `shouldBe` sent
+  _msgRecv s `shouldBe` received
+  _msgSentNtf s `shouldBe` 0
+  _msgRecvNtf s `shouldBe` 0
+  let PeriodStatsData {_day, _week, _month} = _activeQueues s
+  S.toList _day `shouldBe` qs
+  S.toList _week `shouldBe` qs
+  S.toList _month `shouldBe` qs
 
 testRestoreMessagesV2 :: ATransport -> Spec
 testRestoreMessagesV2 at@(ATransport t) =
