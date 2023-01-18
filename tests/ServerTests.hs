@@ -11,6 +11,7 @@
 
 module ServerTests where
 
+import AgentTests.NotificationTests (removeFileIfExists)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
@@ -607,6 +608,10 @@ logSize f =
 testRestoreMessages :: ATransport -> Spec
 testRestoreMessages at@(ATransport t) =
   it "should store messages on exit and restore on start" $ do
+    removeFileIfExists testStoreLogFile
+    removeFileIfExists testStoreMsgsFile
+    removeFileIfExists testServerStatsBackupFile
+
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     recipientId <- newTVarIO ""
     recipientKey <- newTVarIO Nothing
