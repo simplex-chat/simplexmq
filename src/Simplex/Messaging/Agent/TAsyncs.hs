@@ -12,8 +12,8 @@ data TAsyncs = TAsyncs
     actions :: TMap Int (Async ())
   }
 
-newTAsync :: STM TAsyncs
-newTAsync = TAsyncs <$> newTVar 0 <*> TM.empty
+newTAsyncs :: STM TAsyncs
+newTAsyncs = TAsyncs <$> newTVar 0 <*> TM.empty
 
 newAsyncAction :: MonadUnliftIO m => (Int -> m ()) -> TAsyncs -> m ()
 newAsyncAction action as = do

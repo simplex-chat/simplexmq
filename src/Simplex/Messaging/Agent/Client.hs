@@ -260,8 +260,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
   reconnectLocks <- TM.empty
-  reconnections <- newTAsync
-  asyncClients <- newTAsync
+  reconnections <- newTAsyncs
+  asyncClients <- newTAsyncs
   agentStats <- TM.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, connLocks, reconnectLocks, reconnections, asyncClients, agentStats, clientId, agentEnv}
