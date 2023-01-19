@@ -882,7 +882,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
                 | primary -> internalErr "ICQDelete: cannot delete primary rcv queue"
                 | otherwise -> do
                   deleteQueue c rq'
-                  withStore' c $ \db -> deleteConnRcvQueue db connId rq'
+                  withStore' c $ \db -> deleteConnRcvQueue db rq'
                   when (enableNtfs cData) $ do
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
@@ -1211,9 +1211,10 @@ deleteConnection' c connId = withConnLock c connId "deleteConnection" $ do
     deleteConn' = withStore' c (`deleteConn` connId)
 
 deleteConnQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-deleteConnQueue c rq@RcvQueue {connId} = do
+deleteConnQueue c rq = do
   deleteQueue c rq
-  withStore' c $ \db -> deleteConnRcvQueue db connId rq
+  withStore' c $ \db -> deleteConnRcvQueue db rq
+  removeQueueSubscription c rq
 
 disableConn :: AgentMonad m => AgentClient -> ConnId -> m ()
 disableConn c connId = do
@@ -1228,8 +1229,14 @@ deleteConnections' c connIds = do
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (delRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-  rcvRs <- connResults <$> deleteQueues c (concat $ M.elems rcvQs)
-  let rs = M.unions ([errs', delRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
+  rcvRs <- deleteQueues c (concat $ M.elems rcvQs)
+  forM_ rcvRs $ \case
+    (rq, Right _) -> withStore' c (`deleteConnRcvQueue` rq) >> removeQueueSubscription c rq
+    _ -> pure ()
+  let rs = M.unions ([errs', delRs, connResults rcvRs] :: [Map ConnId (Either AgentErrorType ())])
+  forM_ (M.assocs rs) $ \case
+    (connId, Right _) -> disableConn c connId >> withStore' c (`deleteConn` connId)
+    _ -> pure ()
   notifyResultError rs
   pure rs
   where

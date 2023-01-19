@@ -57,6 +57,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueues,
     logServer,
     logSecret,
+    removeQueueSubscription,
     removeSubscription,
     hasActiveSubscription,
     agentClientStore,
@@ -739,6 +740,11 @@ addSubscription c rq@RcvQueue {connId} = atomically $ do
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
+removeQueueSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
+removeQueueSubscription c rq = atomically $ do
+  RQ.deleteQueue rq $ activeSubs c
+  RQ.deleteQueue rq $ pendingSubs c
+
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
 hasActiveSubscription c connId = RQ.hasConn connId $ activeSubs c
 
@@ -841,7 +847,6 @@ deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
   withSMPClient c rq "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
--- TODO change batch size - it is bigger for DEL
 deleteQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 deleteQueues = sendTSessionBatches "DEL" 90 $ sendBatch deleteSMPQueues
 
