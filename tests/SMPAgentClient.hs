@@ -190,17 +190,8 @@ agentCfg =
     { tcpPort = agentTestPort,
       tbqSize = 4,
       database = testDB,
-      smpCfg =
-        defaultClientConfig
-          { qSize = 1,
-            defaultTransport = (testPort, transport @TLS),
-            networkConfig = defaultNetworkConfig {tcpTimeout = 500_000}
-          },
-      ntfCfg =
-        defaultClientConfig
-          { qSize = 1,
-            defaultTransport = (ntfTestPort, transport @TLS)
-          },
+      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS)},
+      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       ntfWorkerDelay = 1000,
       ntfSMPWorkerDelay = 1000,

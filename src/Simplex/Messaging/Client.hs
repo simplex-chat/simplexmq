@@ -118,6 +118,7 @@ data PClient msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
+    pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
     sndQ :: TBQueue (NonEmpty SentRawTransmission),
@@ -165,8 +166,10 @@ data NetworkConfig = NetworkConfig
     tcpTimeout :: Int,
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
-    -- | period for SMP ping commands (microseconds)
+    -- | period for SMP ping commands (microseconds, 0 to disable)
     smpPingInterval :: Int,
+    -- | the count of PING errors after which SMP client terminates (and will be reconnected), 0 to disable
+    smpPingCount :: Int,
     logTLSErrors :: Bool
   }
   deriving (Eq, Show, Generic, FromJSON)
@@ -196,6 +199,7 @@ defaultNetworkConfig =
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPingInterval = 600_000_000, -- 10min
+      smpPingCount = 3,
       logTLSErrors = False
     }
 
@@ -279,6 +283,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
     mkProtocolClient :: TransportHost -> STM (PClient msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
+      pingErrorCount <- newTVar 0
       clientCorrId <- newTVar 0
       sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
@@ -289,6 +294,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
             transportSession,
             transportHost,
             tcpTimeout,
+            pingErrorCount,
             clientCorrId,
             sentCommands,
             sndQ,
@@ -340,9 +346,15 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
 
     ping :: ProtocolClient msg -> IO ()
-    ping c = forever $ do
+    ping c@ProtocolClient {client_ = PClient {pingErrorCount}} = do
       threadDelay smpPingInterval
-      runExceptT $ sendProtocolCommand c Nothing "" protocolPing
+      runExceptT (sendProtocolCommand c Nothing "" protocolPing) >>= \case
+        Left PCEResponseTimeout -> do
+          cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)
+          when (maxCnt == 0 || cnt < maxCnt) $ ping c
+        _ -> ping c -- sendProtocolCommand resets pingErrorCount
+      where
+        maxCnt = smpPingCount networkConfig
 
     process :: ProtocolClient msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
@@ -556,26 +568,28 @@ sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either ProtocolClientError msg))
-sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}} cs = do
+sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ}} cs = do
   ts <- mapM (runExceptT . mkTransmission c) cs
   mapM_ (atomically . writeTBQueue sndQ . L.map fst) . L.nonEmpty . rights $ L.toList ts
   forConcurrently ts $ \case
-    Right (_, r) -> withTimeout . atomically $ takeTMVar r
+    Right (_, r) -> withTimeout c $ atomically $ takeTMVar r
     Left e -> pure $ Left e
-  where
-    withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
 
 -- | Send Protocol command
 sendProtocolCommand :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT ProtocolClientError IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}} pKey qId cmd = do
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}} pKey qId cmd = do
   (t, r) <- mkTransmission c (pKey, qId, cmd)
   ExceptT $ sendRecv t r
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> TMVar (Response msg) -> IO (Response msg)
-    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout (atomically $ takeTMVar r)
-      where
-        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
+    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout c (atomically $ takeTMVar r)
+
+withTimeout :: ProtocolClient msg -> IO (Either ProtocolClientError msg) -> IO (Either ProtocolClientError msg)
+withTimeout ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} a =
+  timeout tcpTimeout a >>= \case
+    Just r -> atomically (writeTVar pingErrorCount 0) >> pure r
+    _ -> pure $ Left PCEResponseTimeout
 
 mkTransmission :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> ClientCommand msg -> ExceptT ProtocolClientError IO (SentRawTransmission, TMVar (Response msg))
 mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCorrId, sentCommands}} (pKey, qId, cmd) = do
