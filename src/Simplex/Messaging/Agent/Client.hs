@@ -202,6 +202,8 @@ data AgentClient = AgentClient
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
+    -- lock to prevent concurrency between periodic and async connection deletions
+    deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
     reconnectLocks :: TMap SMPTransportSession Lock,
     reconnections :: TAsyncs,
@@ -230,7 +232,7 @@ data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 data AgentState = ASActive | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
-data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String}
+data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
   deriving (Show, Generic)
 
 instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
@@ -273,12 +275,48 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   agentState <- newTVar ASActive
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
+  deleteLock <- createLock
   reconnectLocks <- TM.empty
   reconnections <- newTAsyncs
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, connLocks, reconnectLocks, reconnections, asyncClients, agentStats, clientId, agentEnv}
+  return
+    AgentClient
+      { active,
+        rcvQ,
+        subQ,
+        msgQ,
+        smpServers,
+        smpClients,
+        ntfServers,
+        ntfClients,
+        useNetworkConfig,
+        subscrConns,
+        activeSubs,
+        pendingSubs,
+        pendingMsgsQueued,
+        smpQueueMsgQueues,
+        smpQueueMsgDeliveries,
+        connCmdsQueued,
+        asyncCmdQueues,
+        asyncCmdProcesses,
+        ntfNetworkOp,
+        rcvNetworkOp,
+        msgDeliveryOp,
+        sndNetworkOp,
+        databaseOp,
+        agentState,
+        getMsgLocks,
+        connLocks,
+        deleteLock,
+        reconnectLocks,
+        reconnections,
+        asyncClients,
+        agentStats,
+        clientId,
+        agentEnv
+      }
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
@@ -503,7 +541,7 @@ withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
   where
-    newLock = newEmptyTMVar >>= \l -> TM.insert key l locks $> l
+    newLock = createLock >>= \l -> TM.insert key l locks $> l
 
 withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> TransportSession msg -> ByteString -> (ProtocolClient msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do

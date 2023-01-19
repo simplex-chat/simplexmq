@@ -47,6 +47,7 @@ module Simplex.Messaging.Agent
     ackMessageAsync,
     switchConnectionAsync,
     deleteConnectionAsync,
+    deleteConnectionsAsync,
     createConnection,
     joinConnection,
     allowConnection,
@@ -113,6 +114,7 @@ import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Lock (withLock)
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -146,7 +148,7 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
-      void $ race_ (subscriber c) (runNtfSupervisor c) `forkFinally` const (disconnectAgentClient c)
+      void $ raceAny_ [subscriber c, runNtfSupervisor c, deleteConns c] `forkFinally` const (disconnectAgentClient c)
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
@@ -194,6 +196,10 @@ switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 -- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
 deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ()
 deleteConnectionAsync c = withAgentEnv c .: deleteConnectionAsync' c
+
+-- -- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
+deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
@@ -462,11 +468,19 @@ deleteConnectionAsync' c@AgentClient {subQ} corrId connId = withConnLock c connI
   where
     enqueueDelete :: RcvQueue -> m ()
     enqueueDelete RcvQueue {server} = do
-      withStore' c $ \db -> setConnDeleted db connId
+      withStore' c (`setConnDeleted` connId)
       disableConn c connId
       enqueueCommand c corrId connId (Just server) $ AInternalCommand ICDeleteConn
     delete :: m ()
     delete = withStore' c (`deleteConn` connId) >> atomically (writeTBQueue subQ (corrId, connId, OK))
+
+deleteConnectionsAsync' :: AgentMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsync' _ [] = pure ()
+deleteConnectionsAsync' c connIds = do
+  withStore' c $ forM_ connIds . setConnDeleted
+  void . forkIO $
+    withLock (deleteLock c) "deleteConnectionsAsync" $
+      void $ deleteConnections' c connIds
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
@@ -851,7 +865,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
         ICDeleteConn ->
           withServer $ \srv -> tryWithLock "ICDeleteConn" $ do
-            SomeConn _ conn <- withStore c $ \db -> getAnyConn db connId True
+            SomeConn _ conn <- withStore c $ \db -> getDeletedConn db connId
             case conn of
               DuplexConnection _ (rq :| rqs) _ -> delete srv rq $ case rqs of
                 [] -> notify OK
@@ -1520,10 +1534,11 @@ execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
 execAgentStoreSQL' c sql = withStore' c (`execSQL` sql)
 
 debugAgentLocks' :: AgentMonad m => AgentClient -> m AgentLocks
-debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs} = do
+debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = d} = do
   connLocks <- getLocks cs
   srvLocks <- getLocks rs
-  pure AgentLocks {connLocks, srvLocks}
+  delLock <- atomically $ tryReadTMVar d
+  pure AgentLocks {connLocks, srvLocks, delLock}
   where
     getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 
@@ -1556,6 +1571,16 @@ subscriber c@AgentClient {msgQ} = forever $ do
     runExceptT (processSMPTransmission c t) >>= \case
       Left e -> liftIO $ print e
       Right _ -> return ()
+
+deleteConns :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+deleteConns c = do
+  threadDelay =<< asks (initialDeleteConnsDelay . config)
+  int <- asks (deleteConnsInterval . config)
+  forever $ do
+    void . runExceptT $
+      withLock (deleteLock c) "deleteConns" $
+        withStore' c getDeletedConns >>= deleteConnections' c
+    threadDelay int
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do

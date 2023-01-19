@@ -10,6 +10,10 @@ import UnliftIO.STM
 
 type Lock = TMVar String
 
+createLock :: STM Lock
+createLock = newEmptyTMVar
+{-# INLINE createLock #-}
+
 withLock :: MonadUnliftIO m => TMVar String -> String -> m a -> m a
 withLock lock name =
   E.bracket_
