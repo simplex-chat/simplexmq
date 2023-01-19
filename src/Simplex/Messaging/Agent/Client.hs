@@ -709,25 +709,31 @@ type BatchResponses e = (NonEmpty (RcvQueue, Either e ()))
 
 -- statBatchSize is not used to batch the commands, only for traffic statistics
 sendTSessionBatches :: forall m. AgentMonad m => ByteString -> Int -> (SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError)) -> AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
-sendTSessionBatches statCmd statBatchSize action c qs = do
-  mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
-  let sessRcvQs :: Map SMPTransportSession (NonEmpty RcvQueue) = foldl' (addRcvQueue mode) M.empty qs
-  concatMap L.toList <$> mapConcurrently (uncurry sendClientBatch) (M.assocs sessRcvQs)
+sendTSessionBatches statCmd statBatchSize action c qs =
+  concatMap L.toList <$> (mapConcurrently sendClientBatch =<< batchQueues)
   where
-    addRcvQueue :: TransportSessionMode -> Map SMPTransportSession (NonEmpty RcvQueue) -> RcvQueue -> Map SMPTransportSession (NonEmpty RcvQueue)
-    addRcvQueue mode m rq =
-      let tSess = mkSMPTSession rq mode
-       in M.alter (Just . maybe [rq] (rq <|)) tSess m
-    sendClientBatch :: SMPTransportSession -> NonEmpty RcvQueue -> m (BatchResponses AgentErrorType)
-    sendClientBatch tSess@(userId, srv, _) qs' =
+    batchQueues :: m [(SMPTransportSession, NonEmpty RcvQueue)]
+    batchQueues = do
+      mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
+      pure . M.assocs $ foldl' (batch mode) M.empty qs
+      where
+        batch mode m rq =
+          let tSess = mkSMPTSession rq mode
+           in M.alter (Just . maybe [rq] (rq <|)) tSess m
+    sendClientBatch :: (SMPTransportSession, NonEmpty RcvQueue) -> m (BatchResponses AgentErrorType)
+    sendClientBatch (tSess@(userId, srv, _), qs') =
       tryError (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map (,Left e) qs'
         Right smp -> liftIO $ do
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
-          rs <- action smp qs'
-          let n = (length qs - 1) `div` statBatchSize + 1
-          incClientStatN c userId smp n (statCmd <> "S") "OK"
-          pure $ L.map (second . first $ protocolClientError SMP $ clientServer smp) rs
+          rs <- L.map agentError <$> action smp qs'
+          statBatch
+          pure rs
+          where
+            agentError = second . first $ protocolClientError SMP $ clientServer smp
+            statBatch =
+              let n = (length qs - 1) `div` statBatchSize + 1
+               in incClientStatN c userId smp n (statCmd <> "S") "OK"
 
 sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateSignKey, SMP.RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses ProtocolClientError)
 sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)

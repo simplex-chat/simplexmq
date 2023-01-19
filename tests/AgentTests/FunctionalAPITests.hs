@@ -129,7 +129,7 @@ functionalAPITests t = do
       testSuspendingAgentCompleteSending t
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
-  fdescribe "Batching SMP commands" $ do
+  describe "Batching SMP commands" $ do
     it "should subscribe to multiple subscriptions with batching" $
       testBatchedSubscriptions t
   describe "Async agent commands" $ do

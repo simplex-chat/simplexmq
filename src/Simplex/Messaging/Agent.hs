@@ -629,7 +629,7 @@ subscribeConnection' c connId = do
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, if enableNtfs then NSCCreate else NSCDelete)
 
-type QSubResult = (QueueStatus, Either AgentErrorType ())
+type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
@@ -664,13 +664,13 @@ subscribeConnections' c connIds = do
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QSubResult
+        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
         addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
-        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
+        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QSubResult -> Int
+        order :: QCmdResult -> Int
         order (Active, Right _) = 1
         order (Active, _) = 2
         order (_, Right _) = 3
@@ -1251,13 +1251,13 @@ deleteConnections' c connIds = do
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QSubResult
+        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
         addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by prioritizing errors in Active queues
-        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
+        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QSubResult -> Int
+        order :: QCmdResult -> Int
         order (Active, Left _) = 1
         order (_, Left _) = 2
         order _ = 3
