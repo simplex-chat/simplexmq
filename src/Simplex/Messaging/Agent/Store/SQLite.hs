@@ -471,8 +471,8 @@ setSndQueuePrimary db connId SndQueue {dbQueueId} = do
     "UPDATE snd_queues SET snd_primary = ?, replace_snd_queue_id = ? WHERE conn_id = ? AND snd_queue_id = ?"
     (True, Nothing :: Maybe Int64, connId, dbQueueId)
 
-deleteConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO ()
-deleteConnRcvQueue db connId RcvQueue {dbQueueId} =
+deleteConnRcvQueue :: DB.Connection -> RcvQueue -> IO ()
+deleteConnRcvQueue db RcvQueue {connId, dbQueueId} =
   DB.execute db "DELETE FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
 
 deleteConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO ()

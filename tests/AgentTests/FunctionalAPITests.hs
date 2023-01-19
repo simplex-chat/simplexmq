@@ -30,6 +30,7 @@ import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (isRight)
 import Data.Int (Int64)
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
@@ -577,9 +578,9 @@ testBatchedSubscriptions t = do
   conns <- runServers $ do
     conns <- forM [1 .. 200 :: Int] . const $ makeConnection a b
     forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
-    forM_ (take 10 conns) $ \(aId, bId) -> do
-      deleteConnection a bId
-      deleteConnection b aId
+    let (aIds', bIds') = unzip $ take 10 conns
+    delete a bIds'
+    delete b aIds'
     liftIO $ threadDelay 1000000
     pure conns
   ("", "", DOWN {}) <- get a
@@ -592,17 +593,36 @@ testBatchedSubscriptions t = do
     ("", "", UP {}) <- get b
     ("", "", UP {}) <- get b
     liftIO $ threadDelay 1000000
-    subscribe a $ map snd conns
-    subscribe b $ map fst conns
-    forM_ (drop 10 conns) $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
+    let (aIds, bIds) = unzip conns
+        conns' = drop 10 conns
+        (aIds', bIds') = unzip conns'
+    subscribe a bIds
+    subscribe b aIds
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
+    delete a bIds'
+    delete b aIds'
+    deleteFail a bIds'
+    deleteFail b aIds'
   where
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
       r <- subscribeConnections c cs
       liftIO $ do
         let dc = S.fromList $ take 10 cs
-        all (== Right ()) (M.withoutKeys r dc) `shouldBe` True
+        all isRight (M.withoutKeys r dc) `shouldBe` True
         all (== Left (CONN NOT_FOUND)) (M.restrictKeys r dc) `shouldBe` True
+        M.keys r `shouldMatchList` cs
+    delete :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
+    delete c cs = do
+      r <- deleteConnections c cs
+      liftIO $ do
+        all isRight r `shouldBe` True
+        M.keys r `shouldMatchList` cs
+    deleteFail :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
+    deleteFail c cs = do
+      r <- deleteConnections c cs
+      liftIO $ do
+        all (== Left (CONN NOT_FOUND)) r `shouldBe` True
         M.keys r `shouldMatchList` cs
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do

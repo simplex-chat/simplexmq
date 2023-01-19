@@ -63,6 +63,7 @@ module Simplex.Messaging.Agent
     switchConnection,
     suspendConnection,
     deleteConnection,
+    deleteConnections,
     getConnectionServers,
     getConnectionRatchetAdHash,
     setSMPServers,
@@ -254,6 +255,10 @@ suspendConnection c = withAgentEnv c . suspendConnection' c
 -- | Delete SMP agent connection (DEL command)
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
+
+-- | Delete multiple connections, batching commands when possible
+deleteConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+deleteConnections c = withAgentEnv c . deleteConnections' c
 
 -- | get servers used for connection
 getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
@@ -624,7 +629,7 @@ subscribeConnection' c connId = do
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, if enableNtfs then NSCCreate else NSCDelete)
 
-type QSubResult = (QueueStatus, Either AgentErrorType ())
+type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
@@ -659,13 +664,13 @@ subscribeConnections' c connIds = do
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QSubResult
+        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
         addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
-        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
+        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QSubResult -> Int
+        order :: QCmdResult -> Int
         order (Active, Right _) = 1
         order (Active, _) = 2
         order (_, Right _) = 3
@@ -877,7 +882,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
                 | primary -> internalErr "ICQDelete: cannot delete primary rcv queue"
                 | otherwise -> do
                   deleteQueue c rq'
-                  withStore' c $ \db -> deleteConnRcvQueue db connId rq'
+                  withStore' c $ \db -> deleteConnRcvQueue db rq'
                   when (enableNtfs cData) $ do
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
@@ -1206,15 +1211,62 @@ deleteConnection' c connId = withConnLock c connId "deleteConnection" $ do
     deleteConn' = withStore' c (`deleteConn` connId)
 
 deleteConnQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-deleteConnQueue c rq@RcvQueue {connId} = do
+deleteConnQueue c rq = do
   deleteQueue c rq
-  withStore' c $ \db -> deleteConnRcvQueue db connId rq
+  withStore' c $ \db -> deleteConnRcvQueue db rq
+  removeQueueSubscription c rq
 
 disableConn :: AgentMonad m => AgentClient -> ConnId -> m ()
 disableConn c connId = do
   atomically $ removeSubscription c connId
   ns <- asks ntfSupervisor
   atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
+
+deleteConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+deleteConnections' _ [] = pure M.empty
+deleteConnections' c connIds = do
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
+  let (errs, cs) = M.mapEither id conns
+      errs' = M.map (Left . storeError) errs
+      (delRs, rcvQs) = M.mapEither rcvQueueOrResult cs
+  rcvRs <- deleteQueues c (concat $ M.elems rcvQs)
+  forM_ rcvRs $ \case
+    (rq, Right _) -> withStore' c (`deleteConnRcvQueue` rq) >> removeQueueSubscription c rq
+    _ -> pure ()
+  let rs = M.unions ([errs', delRs, connResults rcvRs] :: [Map ConnId (Either AgentErrorType ())])
+  forM_ (M.assocs rs) $ \case
+    (connId, Right _) -> disableConn c connId >> withStore' c (`deleteConn` connId)
+    _ -> pure ()
+  notifyResultError rs
+  pure rs
+  where
+    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
+    rcvQueueOrResult (SomeConn _ conn) = case conn of
+      DuplexConnection _ rqs _ -> Right $ L.toList rqs
+      RcvConnection _ rq -> Right [rq]
+      ContactConnection _ rq -> Right [rq]
+      SndConnection _ _ -> Left $ Right ()
+      NewConnection _ -> Left $ Right ()
+    connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
+    connResults = M.map snd . foldl' addResult M.empty
+      where
+        -- collects results by connection ID
+        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
+        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        -- combines two results for one connection, by prioritizing errors in Active queues
+        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
+        combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
+        combineRes r' _ = Just r'
+        order :: QCmdResult -> Int
+        order (Active, Left _) = 1
+        order (_, Left _) = 2
+        order _ = 3
+    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
+    notifyResultError rs = do
+      let actual = M.size rs
+          expected = length connIds
+      when (actual /= expected) . atomically $
+        writeTBQueue (subQ c) ("", "", ERR . INTERNAL $ "deleteConnections result size: " <> show actual <> ", expected " <> show expected)
 
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = do

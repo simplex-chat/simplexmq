@@ -33,6 +33,7 @@ module Simplex.Messaging.Client
     closeProtocolClient,
     clientServer,
     transportHost',
+    transportSession',
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -49,6 +50,7 @@ module Simplex.Messaging.Client
     ackSMPMessage,
     suspendSMPQueue,
     deleteSMPQueue,
+    deleteSMPQueues,
     sendProtocolCommand,
 
     -- * Supporting types and client configuration
@@ -251,6 +253,9 @@ clientServer = B.unpack . strEncode . snd3 . transportSession . client_
 
 transportHost' :: ProtocolClient msg -> TransportHost
 transportHost' = transportHost . client_
+
+transportSession' :: ProtocolClient msg -> TransportSession msg
+transportSession' = transportSession . client_
 
 type UserId = Int64
 
@@ -491,13 +496,7 @@ disableSMPQueueNotifications = okSMPCommand NDEL
 
 -- | Disable notifications for multiple queues for push notifications server.
 disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))
-disableSMPQueuesNtfs c qs = L.map response <$> sendProtocolCommands c cs
-  where
-    cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient NDEL)) qs
-    response = \case
-      Right OK -> Right ()
-      Right r -> Left . PCEUnexpectedResponse $ bshow r
-      Left e -> Left e
+disableSMPQueuesNtfs = okSMPCommands NDEL
 
 -- | Send SMP message.
 --
@@ -528,14 +527,28 @@ suspendSMPQueue = okSMPCommand OFF
 -- | Irreversibly delete SMP queue and all messages in it.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#delete-queue
-deleteSMPQueue :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
+deleteSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO ()
 deleteSMPQueue = okSMPCommand DEL
+
+-- | Delete multiple SMP queues batching commands if supported.
+deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))
+deleteSMPQueues = okSMPCommands DEL
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
     OK -> return ()
     r -> throwE . PCEUnexpectedResponse $ bshow r
+
+okSMPCommands :: PartyI p => Command p -> SMPClient -> NonEmpty (C.APrivateSignKey, QueueId) -> IO (NonEmpty (Either ProtocolClientError ()))
+okSMPCommands cmd c qs = L.map response <$> sendProtocolCommands c cs
+  where
+    aCmd = Cmd sParty cmd
+    cs = L.map (\(pKey, qId) -> (Just pKey, qId, aCmd)) qs
+    response = \case
+      Right OK -> Right ()
+      Right r -> Left . PCEUnexpectedResponse $ bshow r
+      Left e -> Left e
 
 -- | Send SMP command
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO BrokerMsg
