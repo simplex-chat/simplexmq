@@ -1266,7 +1266,7 @@ deleteConnections' c connIds = do
       let actual = M.size rs
           expected = length connIds
       when (actual /= expected) . atomically $
-        writeTBQueue (subQ c) ("", "", ERR . INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
+        writeTBQueue (subQ c) ("", "", ERR . INTERNAL $ "deleteConnections result size: " <> show actual <> ", expected " <> show expected)
 
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = do
