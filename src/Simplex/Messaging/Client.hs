@@ -316,18 +316,15 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
     ping :: ProtocolClient msg -> IO ()
     ping c@ProtocolClient {client_ = PClient {pingErrorCount}} = do
       threadDelay smpPingInterval
-      r_ <- runExceptT (sendProtocolCommand c Nothing "" protocolPing)
-      if smpPingCount networkConfig == 0
-        then ping c
-        else case r_ of
-          Right _ -> resetLoop
-          -- below is to avoid resetting connection on incorrect Ntf server responses, it can be removed after the server is updated
-          Left (PCEProtocolError AUTH) -> resetLoop
-          Left _ -> do
-            cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)
-            when (cnt < smpPingCount networkConfig) $ ping c
-      where
-        resetLoop = atomically (writeTVar pingErrorCount 0) >> ping c
+      runExceptT (sendProtocolCommand c Nothing "" protocolPing) >>= \case
+        Left PCEResponseTimeout -> do
+          cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)
+          when (maxCnt == 0 || cnt < maxCnt) $ ping c
+          where
+            maxCnt = smpPingCount networkConfig
+        _ -> do
+          atomically $ writeTVar pingErrorCount 0
+          ping c
 
     process :: ProtocolClient msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
