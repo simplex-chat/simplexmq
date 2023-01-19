@@ -320,11 +320,9 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
         Left PCEResponseTimeout -> do
           cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)
           when (maxCnt == 0 || cnt < maxCnt) $ ping c
-          where
-            maxCnt = smpPingCount networkConfig
-        _ -> do
-          atomically $ writeTVar pingErrorCount 0
-          ping c
+        _ -> ping c
+      where
+        maxCnt = smpPingCount networkConfig
 
     process :: ProtocolClient msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
