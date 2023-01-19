@@ -320,7 +320,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
         Left PCEResponseTimeout -> do
           cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)
           when (maxCnt == 0 || cnt < maxCnt) $ ping c
-        _ -> ping c
+        _ -> ping c -- sendProtocolCommand resets pingErrorCount
       where
         maxCnt = smpPingCount networkConfig
 
