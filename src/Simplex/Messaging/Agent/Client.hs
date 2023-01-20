@@ -679,7 +679,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
             primary = True,
             dbReplaceQueueId = Nothing,
             smpClientVersion = maxVersion vRange,
-            clientNtfCreds = Nothing
+            clientNtfCreds = Nothing,
+            deleteErrors = 0
           }
   pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
 
@@ -724,6 +725,7 @@ temporaryOrHostError = \case
   BROKER _ HOST -> True
   e -> temporaryAgentError e
 
+-- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs

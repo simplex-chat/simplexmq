@@ -74,7 +74,8 @@ data RcvQueue = RcvQueue
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
-    clientNtfCreds :: Maybe ClientNtfCreds
+    clientNtfCreds :: Maybe ClientNtfCreds,
+    deleteErrors :: Int
   }
   deriving (Eq, Show)
 

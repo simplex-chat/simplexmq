@@ -30,6 +30,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- * Users
     createUserRecord,
     deleteUserRecord,
+    setUserDeleted,
+    cleanupUsers,
+    checkUser,
 
     -- * Queues and connections
     createNewConn,
@@ -54,6 +57,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setRcvQueuePrimary,
     setSndQueuePrimary,
     deleteConnRcvQueue,
+    incRcvDeleteErrors,
     deleteConnSndQueue,
     getPrimaryRcvQueue,
     getRcvQueue,
@@ -307,12 +311,33 @@ createUserRecord db = do
   DB.execute_ db "INSERT INTO users DEFAULT VALUES"
   insertedRowId db
 
+checkUser :: DB.Connection -> UserId -> IO (Either StoreError ())
+checkUser db userId =
+  firstRow (\(_ :: Only Int64) -> ()) SEUserNotFound $
+    DB.query db "SELECT user_id FROM users WHERE user_id = ? AND deleted = ?" (userId, False)
+
 deleteUserRecord :: DB.Connection -> UserId -> IO (Either StoreError ())
 deleteUserRecord db userId = runExceptT $ do
-  _ :: Only Int64 <-
-    ExceptT . firstRow id SEUserNotFound $
-      DB.query db "SELECT user_id FROM users WHERE user_id = ?" (Only userId)
+  ExceptT $ checkUser db userId
   liftIO $ DB.execute db "DELETE FROM users WHERE user_id = ?" (Only userId)
+
+setUserDeleted :: DB.Connection -> UserId -> IO (Either StoreError [ConnId])
+setUserDeleted db userId = runExceptT $ do
+  ExceptT $ checkUser db userId
+  liftIO $ do
+    DB.execute db "UPDATE users SET deleted = ? WHERE user_id = ?" (True, userId)
+    map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE user_id = ?" (Only userId)
+
+cleanupUsers :: DB.Connection -> IO ()
+cleanupUsers db =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM users u 
+      WHERE u.deleted = ?
+        AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
+    |]
+    (Only True)
 
 createConn_ ::
   TVar ChaChaDRG ->
@@ -471,6 +496,10 @@ setSndQueuePrimary db connId SndQueue {dbQueueId} = do
     db
     "UPDATE snd_queues SET snd_primary = ?, replace_snd_queue_id = ? WHERE conn_id = ? AND snd_queue_id = ?"
     (True, Nothing :: Maybe Int64, connId, dbQueueId)
+
+incRcvDeleteErrors :: DB.Connection -> RcvQueue -> IO ()
+incRcvDeleteErrors db RcvQueue {connId, dbQueueId} =
+  DB.execute db "UPDATE rcv_queues SET delete_errors = delete_errors + 1 WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
 
 deleteConnRcvQueue :: DB.Connection -> RcvQueue -> IO ()
 deleteConnRcvQueue db RcvQueue {connId, dbQueueId} =
@@ -1380,7 +1409,7 @@ rcvQueueQuery =
   [sql|
     SELECT c.user_id, s.key_hash, q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
       q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
-      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.smp_client_version,
+      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.smp_client_version, q.delete_errors,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
@@ -1389,16 +1418,16 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateSignKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
-    :. (Int64, Bool, Maybe Int64, Maybe Version)
+    :. (Int64, Bool, Maybe Int64, Maybe Version, Int)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe 1 smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, smpClientVersion, clientNtfCreds}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById_ :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById_ db connId dbRcvId =

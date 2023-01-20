@@ -90,6 +90,7 @@ data AgentConfig = AgentConfig
     helloTimeout :: NominalDiffTime,
     initialDeleteConnsDelay :: Int,
     deleteConnsInterval :: Int,
+    deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
     ntfSMPWorkerDelay :: Int,
@@ -149,6 +150,7 @@ defaultAgentConfig =
       helloTimeout = 2 * nominalDay,
       initialDeleteConnsDelay = 30 * 1000000, -- 30 seconds
       deleteConnsInterval = 30 * 60 * 1000000, -- 30 minutes
+      deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds
       ntfSMPWorkerDelay = 500000, -- microseconds
