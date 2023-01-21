@@ -334,10 +334,10 @@ deleteUserWithoutConns db userId =
   DB.execute
     db
     [sql|
-      DELETE FROM users u
-      WHERE u.user_id = ?
-        AND u.deleted = ?
-        AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
+      DELETE FROM users
+        WHERE user_id = ?
+        AND deleted = ?
+        AND NOT EXISTS (SELECT * FROM connections c WHERE c.user_id = user_id)
     |]
     (userId, True)
 
@@ -346,9 +346,9 @@ deleteUsersWithoutConns db =
   DB.execute
     db
     [sql|
-      DELETE FROM users u
-      WHERE u.deleted = ?
-        AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
+      DELETE FROM users
+      WHERE deleted = ?
+        AND NOT EXISTS (SELECT * FROM connections c WHERE c.user_id = user_id)
     |]
     (Only True)
 
