@@ -57,7 +57,6 @@ module Simplex.Messaging.Agent.Client
     deleteQueues,
     logServer,
     logSecret,
-    removeQueueSubscription,
     removeSubscription,
     hasActiveSubscription,
     agentClientStore,
@@ -202,6 +201,8 @@ data AgentClient = AgentClient
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
+    -- lock to prevent concurrency between periodic and async connection deletions
+    deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
     reconnectLocks :: TMap SMPTransportSession Lock,
     reconnections :: TAsyncs,
@@ -230,7 +231,7 @@ data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 data AgentState = ASActive | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
-data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String}
+data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
   deriving (Show, Generic)
 
 instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
@@ -273,12 +274,48 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   agentState <- newTVar ASActive
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
+  deleteLock <- createLock
   reconnectLocks <- TM.empty
   reconnections <- newTAsyncs
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrConns, activeSubs, pendingSubs, pendingMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, connLocks, reconnectLocks, reconnections, asyncClients, agentStats, clientId, agentEnv}
+  return
+    AgentClient
+      { active,
+        rcvQ,
+        subQ,
+        msgQ,
+        smpServers,
+        smpClients,
+        ntfServers,
+        ntfClients,
+        useNetworkConfig,
+        subscrConns,
+        activeSubs,
+        pendingSubs,
+        pendingMsgsQueued,
+        smpQueueMsgQueues,
+        smpQueueMsgDeliveries,
+        connCmdsQueued,
+        asyncCmdQueues,
+        asyncCmdProcesses,
+        ntfNetworkOp,
+        rcvNetworkOp,
+        msgDeliveryOp,
+        sndNetworkOp,
+        databaseOp,
+        agentState,
+        getMsgLocks,
+        connLocks,
+        deleteLock,
+        reconnectLocks,
+        reconnections,
+        asyncClients,
+        agentStats,
+        clientId,
+        agentEnv
+      }
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
@@ -503,7 +540,7 @@ withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
   where
-    newLock = newEmptyTMVar >>= \l -> TM.insert key l locks $> l
+    newLock = createLock >>= \l -> TM.insert key l locks $> l
 
 withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> TransportSession msg -> ByteString -> (ProtocolClient msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do
@@ -641,7 +678,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
             primary = True,
             dbReplaceQueueId = Nothing,
             smpClientVersion = maxVersion vRange,
-            clientNtfCreds = Nothing
+            clientNtfCreds = Nothing,
+            deleteErrors = 0
           }
   pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
 
@@ -686,6 +724,7 @@ temporaryOrHostError = \case
   BROKER _ HOST -> True
   e -> temporaryAgentError e
 
+-- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
@@ -744,11 +783,6 @@ addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
 addSubscription c rq@RcvQueue {connId} = atomically $ do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
-  RQ.deleteQueue rq $ pendingSubs c
-
-removeQueueSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
-removeQueueSubscription c rq = atomically $ do
-  RQ.deleteQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool

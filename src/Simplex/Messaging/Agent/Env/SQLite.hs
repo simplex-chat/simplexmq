@@ -88,6 +88,9 @@ data AgentConfig = AgentConfig
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
+    initialCleanupDelay :: Int,
+    cleanupInterval :: Int,
+    deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
     ntfSMPWorkerDelay :: Int,
@@ -145,6 +148,9 @@ defaultAgentConfig =
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
+      initialCleanupDelay = 30 * 1000000, -- 30 seconds
+      cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
+      deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds
       ntfSMPWorkerDelay = 500000, -- microseconds

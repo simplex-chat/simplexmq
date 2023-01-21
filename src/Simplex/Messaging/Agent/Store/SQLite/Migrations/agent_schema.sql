@@ -47,6 +47,7 @@ CREATE TABLE rcv_queues(
   rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
   rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
   replace_rcv_queue_id INTEGER NULL,
+  delete_errors INTEGER DEFAULT 0 CHECK(delete_errors NOT NULL),
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -230,7 +231,11 @@ CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
   conn_id,
   snd_queue_id
 );
-CREATE TABLE users(user_id INTEGER PRIMARY KEY AUTOINCREMENT);
+CREATE TABLE users(
+  user_id INTEGER PRIMARY KEY AUTOINCREMENT
+  ,
+  deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL)
+);
 CREATE INDEX idx_connections_user ON connections(user_id);
 CREATE INDEX idx_commands_conn_id ON commands(conn_id);
 CREATE INDEX idx_commands_host_port ON commands(host, port);

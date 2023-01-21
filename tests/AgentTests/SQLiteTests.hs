@@ -168,7 +168,8 @@ rcvQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       smpClientVersion = 1,
-      clientNtfCreds = Nothing
+      clientNtfCreds = Nothing,
+      deleteErrors = 0
     }
 
 sndQueue1 :: SndQueue
@@ -357,7 +358,8 @@ testUpgradeSndConnToDuplex =
               primary = True,
               dbReplaceQueueId = Nothing,
               smpClientVersion = 1,
-              clientNtfCreds = Nothing
+              clientNtfCreds = Nothing,
+              deleteErrors = 0
             }
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
       `shouldReturn` Left (SEBadConnType CRcv)
