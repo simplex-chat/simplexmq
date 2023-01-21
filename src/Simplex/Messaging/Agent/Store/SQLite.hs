@@ -335,7 +335,7 @@ deleteUserWithoutConns db userId =
     db
     [sql|
       DELETE FROM users
-        WHERE user_id = ?
+      WHERE user_id = ?
         AND deleted = ?
         AND NOT EXISTS (SELECT * FROM connections c WHERE c.user_id = user_id)
     |]
