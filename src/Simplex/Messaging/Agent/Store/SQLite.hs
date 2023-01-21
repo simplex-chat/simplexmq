@@ -31,7 +31,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     createUserRecord,
     deleteUserRecord,
     setUserDeleted,
-    cleanupUsers,
+    deleteUserWithoutConns,
+    deleteUsersWithoutConns,
     checkUser,
 
     -- * Queues and connections
@@ -328,8 +329,20 @@ setUserDeleted db userId = runExceptT $ do
     DB.execute db "UPDATE users SET deleted = ? WHERE user_id = ?" (True, userId)
     map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE user_id = ?" (Only userId)
 
-cleanupUsers :: DB.Connection -> IO ()
-cleanupUsers db =
+deleteUserWithoutConns :: DB.Connection -> UserId -> IO ()
+deleteUserWithoutConns db userId =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM users u
+      WHERE u.deleted = ?
+        AND user_id = ?
+        AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
+    |]
+    (True, userId)
+
+deleteUsersWithoutConns :: DB.Connection -> IO ()
+deleteUsersWithoutConns db =
   DB.execute
     db
     [sql|

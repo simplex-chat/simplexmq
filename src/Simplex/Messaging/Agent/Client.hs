@@ -57,7 +57,6 @@ module Simplex.Messaging.Agent.Client
     deleteQueues,
     logServer,
     logSecret,
-    removeQueueSubscription,
     removeSubscription,
     hasActiveSubscription,
     agentClientStore,
@@ -784,11 +783,6 @@ addSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
 addSubscription c rq@RcvQueue {connId} = atomically $ do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
-  RQ.deleteQueue rq $ pendingSubs c
-
-removeQueueSubscription :: MonadIO m => AgentClient -> RcvQueue -> m ()
-removeQueueSubscription c rq = atomically $ do
-  RQ.deleteQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
