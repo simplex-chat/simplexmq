@@ -335,7 +335,7 @@ deleteUserWithoutConns db userId =
     db
     [sql|
       DELETE FROM users u
-      WHERE user_id = ?
+      WHERE u.user_id = ?
         AND u.deleted = ?
         AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
     |]
@@ -346,7 +346,7 @@ deleteUsersWithoutConns db =
   DB.execute
     db
     [sql|
-      DELETE FROM users u 
+      DELETE FROM users u
       WHERE u.deleted = ?
         AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
     |]
