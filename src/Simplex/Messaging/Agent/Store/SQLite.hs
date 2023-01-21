@@ -335,11 +335,11 @@ deleteUserWithoutConns db userId =
     db
     [sql|
       DELETE FROM users u
-      WHERE u.deleted = ?
-        AND user_id = ?
+      WHERE user_id = ?
+        AND u.deleted = ?
         AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
     |]
-    (True, userId)
+    (userId, True)
 
 deleteUsersWithoutConns :: DB.Connection -> IO ()
 deleteUsersWithoutConns db =
