@@ -272,7 +272,7 @@ data ACommand (p :: AParty) where
   SWCH :: ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
-  DEL_RCVQ :: NonEmpty (SMPServer, SMP.SenderId, Maybe AgentErrorType) -> ACommand Agent
+  DEL_RCVQ :: SMPServer -> SMP.SenderId -> Maybe AgentErrorType -> ACommand Agent
   DEL_CONN :: ACommand Agent
   DEL_USER :: Int64 -> ACommand Agent
   CHK :: ACommand Client
@@ -355,7 +355,7 @@ aCommandTag = \case
   SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
-  DEL_RCVQ _ -> DEL_RCVQ_
+  DEL_RCVQ {} -> DEL_RCVQ_
   DEL_CONN -> DEL_CONN_
   DEL_USER _ -> DEL_USER_
   CHK -> CHK_
@@ -1323,7 +1323,7 @@ commandP binaryP =
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MSG_ -> s (MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> binaryP)
-          DEL_RCVQ_ -> s (DEL_RCVQ <$> strP)
+          DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
           DEL_CONN_ -> pure DEL_CONN
           DEL_USER_ -> s (DEL_USER <$> strP)
           STAT_ -> s (STAT <$> strP)
@@ -1374,7 +1374,7 @@ serializeCommand = \case
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_
-  DEL_RCVQ qs -> s (DEL_RCVQ_, qs)
+  DEL_RCVQ srv rcvId err_ -> s (DEL_RCVQ_, srv, rcvId, err_)
   DEL_CONN -> s DEL_CONN_
   DEL_USER userId -> s (DEL_USER_, userId)
   CHK -> s CHK_

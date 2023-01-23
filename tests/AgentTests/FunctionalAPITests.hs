@@ -139,6 +139,8 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
+  -- it "should delete connections using async command" $
+  --   withSmpServer t testDeleteConnectionAsync
   describe "Queue rotation" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 t testSwitchConnection
@@ -671,7 +673,7 @@ testAsyncCommands = do
     ackMessageAsync alice "7" bobId $ baseId + 4
     ("7", _, OK) <- get alice
     deleteConnectionAsync alice bobId
-    get alice =##> \case ("", c, DEL_RCVQ _) -> c == bobId; _ -> False
+    get alice =##> \case ("", c, DEL_RCVQ {}) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
@@ -812,10 +814,10 @@ testSwitchDelete servers = do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
     deleteConnectionAsync a bId
-
--- deleteConnectionAsync a "1" bId
--- ("1", bId', OK) <- get a
--- liftIO $ bId `shouldBe` bId'
+    get a =##> \case ("", c, DEL_RCVQ {}) -> c == bId; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ {}) -> c == bId; _ -> False
+    get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False
+    liftIO $ noMessages a "nothing else should be delivered to alice"
 
 testCreateQueueAuth :: (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do

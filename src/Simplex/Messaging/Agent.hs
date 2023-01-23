@@ -1234,7 +1234,7 @@ deleteConnQueue c ntf rq = do
         withStore' c (`incRcvDeleteErrors` rq)
         throwError e
       | otherwise = notify $ Just e
-    notify e_ = when ntf $ atomically $ writeTBQueue (subQ c) ("", qConnId rq, DEL_RCVQ [(qServer rq, queueId rq, e_)])
+    notify e_ = when ntf $ atomically $ writeTBQueue (subQ c) ("", qConnId rq, DEL_RCVQ (qServer rq) (queueId rq) e_)
 
 disableConn :: AgentMonad m => AgentClient -> ConnId -> m ()
 disableConn c connId = do
@@ -1290,7 +1290,7 @@ deleteConnQueues c ntf rqs = do
             | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> withStore' c (`incRcvDeleteErrors` rq) $> r
             | otherwise -> withStore' c (`deleteConnRcvQueue` rq) >> notifyRQ rq (Just e) $> Right ()
         pure (rq, r')
-    notifyRQ rq e_ = notify ("", qConnId rq, DEL_RCVQ [(qServer rq, queueId rq, e_)])
+    notifyRQ rq e_ = notify ("", qConnId rq, DEL_RCVQ (qServer rq) (queueId rq) e_)
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
     connResults = M.map snd . foldl' addResult M.empty
