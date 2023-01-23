@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
@@ -139,8 +140,8 @@ functionalAPITests t = do
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
-  -- it "should delete connections using async command" $
-  --   withSmpServer t testDeleteConnectionAsync
+    it "should delete connections using async command when server connection fails" $
+      testDeleteConnectionAsync t
   describe "Queue rotation" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 t testSwitchConnection
@@ -734,6 +735,23 @@ testAcceptContactAsync = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testDeleteConnectionAsync :: ATransport -> IO ()
+testDeleteConnectionAsync t = do
+  a <- getSMPAgentClient agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers
+  connIds <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (bId1, _inv) <- createConnection a 1 True SCMInvitation Nothing
+    (bId2, _inv) <- createConnection a 1 True SCMInvitation Nothing
+    (bId3, _inv) <- createConnection a 1 True SCMInvitation Nothing
+    pure ([bId1, bId2, bId3] :: [ConnId])
+  runRight_ $ do
+    deleteConnectionsAsync a connIds
+    get a =##> \case ("", c, DEL_RCVQ {}) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ {}) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ {}) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
 
 testSwitchConnection :: InitialAgentServers -> IO ()
 testSwitchConnection servers = do

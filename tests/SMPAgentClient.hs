@@ -178,7 +178,7 @@ initAgentServers =
   InitialAgentServers
     { smp = userServers [noAuthSrv testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
-      netCfg = defaultNetworkConfig {tcpTimeout = 500_000}
+      netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers

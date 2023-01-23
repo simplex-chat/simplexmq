@@ -1244,10 +1244,10 @@ disableConn c connId = do
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteConnections' = deleteConnections_ getConn
+deleteConnections' = deleteConnections_ getConn False
 
 deleteDeletedConns :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteDeletedConns = deleteConnections_ getDeletedConn
+deleteDeletedConns = deleteConnections_ getDeletedConn True
 
 prepareDeleteConnections_ ::
   forall m.
@@ -1311,13 +1311,14 @@ deleteConnections_ ::
   forall m.
   AgentMonad m =>
   (DB.Connection -> ConnId -> IO (Either StoreError SomeConn)) ->
+  Bool ->
   AgentClient ->
   [ConnId] ->
   m (Map ConnId (Either AgentErrorType ()))
-deleteConnections_ _ _ [] = pure M.empty
-deleteConnections_ getConnection c connIds = do
+deleteConnections_ _ _ _ [] = pure M.empty
+deleteConnections_ getConnection ntf c connIds = do
   (rs, rqs, _) <- prepareDeleteConnections_ getConnection c connIds
-  rcvRs <- deleteConnQueues c False rqs
+  rcvRs <- deleteConnQueues c ntf rqs
   let rs' = M.union rs rcvRs
   notifyResultError rs'
   pure rs'
