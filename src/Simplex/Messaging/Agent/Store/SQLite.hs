@@ -329,28 +329,37 @@ setUserDeleted db userId = runExceptT $ do
     DB.execute db "UPDATE users SET deleted = ? WHERE user_id = ?" (True, userId)
     map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE user_id = ?" (Only userId)
 
-deleteUserWithoutConns :: DB.Connection -> UserId -> IO ()
-deleteUserWithoutConns db userId =
-  DB.execute
-    db
-    [sql|
-      DELETE FROM users u
-      WHERE user_id = ?
-        AND u.deleted = ?
-        AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
-    |]
-    (userId, True)
+deleteUserWithoutConns :: DB.Connection -> UserId -> IO Bool
+deleteUserWithoutConns db userId = do
+  userId_ :: Maybe Int64 <-
+    maybeFirstRow fromOnly $
+      DB.query
+        db
+        [sql|
+          SELECT user_id FROM users u
+          WHERE user_id = ?
+            AND u.deleted = ?
+            AND NOT EXISTS (SELECT conn_id FROM connections WHERE user_id = u.user_id)
+        |]
+        (userId, True)
+  case userId_ of
+    Just _ -> DB.execute db "DELETE FROM users WHERE user_id = ?" (Only userId) $> True
+    _ -> pure False
 
-deleteUsersWithoutConns :: DB.Connection -> IO ()
-deleteUsersWithoutConns db =
-  DB.execute
-    db
-    [sql|
-      DELETE FROM users u 
-      WHERE u.deleted = ?
-        AND NOT EXISTS (SELECT * FROM connections WHERE user_id = u.user_id)
-    |]
-    (Only True)
+deleteUsersWithoutConns :: DB.Connection -> IO [Int64]
+deleteUsersWithoutConns db = do
+  userIds <-
+    map fromOnly
+      <$> DB.query
+        db
+        [sql|
+          SELECT user_id FROM users u
+          WHERE u.deleted = ?
+            AND NOT EXISTS (SELECT conn_id FROM connections WHERE user_id = u.user_id)
+        |]
+        (Only True)
+  forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
+  pure userIds
 
 createConn_ ::
   TVar ChaChaDRG ->

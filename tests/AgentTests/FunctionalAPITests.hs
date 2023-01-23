@@ -308,7 +308,7 @@ noMessages c err = tryGet `shouldReturn` ()
   where
     tryGet =
       10000 `timeout` get c >>= \case
-        Just _ -> error err
+        Just msg -> error $ err <> ": " <> show msg
         _ -> return ()
 
 testAsyncInitiatingOffline :: IO ()
@@ -671,8 +671,8 @@ testAsyncCommands = do
     ackMessageAsync alice "7" bobId $ baseId + 4
     ("7", _, OK) <- get alice
     deleteConnectionAsync alice bobId
-    -- deleteConnectionAsync alice "8" bobId
-    -- ("8", _, OK) <- get alice
+    get alice =##> \case ("", c, DEL_RCVQ _) -> c == bobId; _ -> False
+    get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     baseId = 3
