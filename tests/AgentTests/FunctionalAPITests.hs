@@ -142,6 +142,11 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
+  describe "Users" $ do
+    it "should create and delete users with connections" $
+      withSmpServer t testUsers
+    it "should create and delete users with connections when server connection fails" $
+      testUsersNoServer t
   describe "Queue rotation" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 t testSwitchConnection
@@ -674,7 +679,7 @@ testAsyncCommands = do
     ackMessageAsync alice "7" bobId $ baseId + 4
     ("7", _, OK) <- get alice
     deleteConnectionAsync alice bobId
-    get alice =##> \case ("", c, DEL_RCVQ {}) -> c == bobId; _ -> False
+    get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
@@ -746,12 +751,55 @@ testDeleteConnectionAsync t = do
     pure ([bId1, bId2, bId3] :: [ConnId])
   runRight_ $ do
     deleteConnectionsAsync a connIds
-    get a =##> \case ("", c, DEL_RCVQ {}) -> c `elem` connIds; _ -> False
-    get a =##> \case ("", c, DEL_RCVQ {}) -> c `elem` connIds; _ -> False
-    get a =##> \case ("", c, DEL_RCVQ {}) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c `elem` connIds; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
+    liftIO $ noMessages a "nothing else should be delivered to alice"
+
+testUsers :: IO ()
+testUsers = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    auId <- createUser a [noAuthSrv testSMPServer]
+    (aId', bId') <- makeConnectionForUsers a auId b 1
+    exchangeGreetingsMsgId 4 a bId' b aId'
+    deleteUser a auId True
+    get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId'; _ -> False
+    get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
+    get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    exchangeGreetingsMsgId 6 a bId b aId
+    liftIO $ noMessages a "nothing else should be delivered to alice"
+
+testUsersNoServer :: ATransport -> IO ()
+testUsersNoServer t = do
+  a <- getSMPAgentClient agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers
+  b <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  (aId, bId, auId, _aId', bId') <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    auId <- createUser a [noAuthSrv testSMPServer]
+    (aId', bId') <- makeConnectionForUsers a auId b 1
+    exchangeGreetingsMsgId 4 a bId' b aId'
+    pure (aId, bId, auId, aId', bId')
+  get a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
+  get a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
+  get b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
+  runRight_ $ do
+    deleteUser a auId True
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c == bId'; _ -> False
+    get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
+    get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    liftIO $ noMessages a "nothing else should be delivered to alice"
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    get a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
+    get b =##> \case ("", "", UP _ cs) -> length cs == 2; _ -> False
+    exchangeGreetingsMsgId 6 a bId b aId
 
 testSwitchConnection :: InitialAgentServers -> IO ()
 testSwitchConnection servers = do
@@ -832,8 +880,8 @@ testSwitchDelete servers = do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
     deleteConnectionAsync a bId
-    get a =##> \case ("", c, DEL_RCVQ {}) -> c == bId; _ -> False
-    get a =##> \case ("", c, DEL_RCVQ {}) -> c == bId; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
 
