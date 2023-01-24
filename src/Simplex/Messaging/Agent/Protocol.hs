@@ -272,7 +272,7 @@ data ACommand (p :: AParty) where
   SWCH :: ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
-  DEL_RCVQ :: SMPServer -> SMP.SenderId -> Maybe AgentErrorType -> ACommand Agent
+  DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> ACommand Agent
   DEL_CONN :: ACommand Agent
   DEL_USER :: Int64 -> ACommand Agent
   CHK :: ACommand Client
