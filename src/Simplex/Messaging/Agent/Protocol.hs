@@ -272,6 +272,9 @@ data ACommand (p :: AParty) where
   SWCH :: ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
+  DEL_RCVQ :: SMPServer -> SMP.SenderId -> Maybe AgentErrorType -> ACommand Agent
+  DEL_CONN :: ACommand Agent
+  DEL_USER :: Int64 -> ACommand Agent
   CHK :: ACommand Client
   STAT :: ConnectionStats -> ACommand Agent
   OK :: ACommand Agent
@@ -311,6 +314,9 @@ data ACommandTag (p :: AParty) where
   SWCH_ :: ACommandTag Client
   OFF_ :: ACommandTag Client
   DEL_ :: ACommandTag Client
+  DEL_RCVQ_ :: ACommandTag Agent
+  DEL_CONN_ :: ACommandTag Agent
+  DEL_USER_ :: ACommandTag Agent
   CHK_ :: ACommandTag Client
   STAT_ :: ACommandTag Agent
   OK_ :: ACommandTag Agent
@@ -349,6 +355,9 @@ aCommandTag = \case
   SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
+  DEL_RCVQ {} -> DEL_RCVQ_
+  DEL_CONN -> DEL_CONN_
+  DEL_USER _ -> DEL_USER_
   CHK -> CHK_
   STAT _ -> STAT_
   OK -> OK_
@@ -1225,6 +1234,9 @@ instance StrEncoding ACmdTag where
       "SWCH" -> pure $ ACmdTag SClient SWCH_
       "OFF" -> pure $ ACmdTag SClient OFF_
       "DEL" -> pure $ ACmdTag SClient DEL_
+      "DEL_RCVQ" -> pure $ ACmdTag SAgent DEL_RCVQ_
+      "DEL_CONN" -> pure $ ACmdTag SAgent DEL_CONN_
+      "DEL_USER" -> pure $ ACmdTag SAgent DEL_USER_
       "CHK" -> pure $ ACmdTag SClient CHK_
       "STAT" -> pure $ ACmdTag SAgent STAT_
       "OK" -> pure $ ACmdTag SAgent OK_
@@ -1260,6 +1272,9 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     SWCH_ -> "SWCH"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
+    DEL_RCVQ_ -> "DEL_RCVQ"
+    DEL_CONN_ -> "DEL_CONN"
+    DEL_USER_ -> "DEL_USER"
     CHK_ -> "CHK"
     STAT_ -> "STAT"
     OK_ -> "OK"
@@ -1308,6 +1323,9 @@ commandP binaryP =
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MSG_ -> s (MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> binaryP)
+          DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
+          DEL_CONN_ -> pure DEL_CONN
+          DEL_USER_ -> s (DEL_USER <$> strP)
           STAT_ -> s (STAT <$> strP)
           OK_ -> pure OK
           ERR_ -> s (ERR <$> strP)
@@ -1356,6 +1374,9 @@ serializeCommand = \case
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_
+  DEL_RCVQ srv rcvId err_ -> s (DEL_RCVQ_, srv, rcvId, err_)
+  DEL_CONN -> s DEL_CONN_
+  DEL_USER userId -> s (DEL_USER_, userId)
   CHK -> s CHK_
   STAT srvs -> s (STAT_, srvs)
   CON -> s CON_
