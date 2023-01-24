@@ -337,9 +337,9 @@ deleteUserWithoutConns db userId = do
         db
         [sql|
           SELECT user_id FROM users u
-          WHERE user_id = ?
+          WHERE u.user_id = ?
             AND u.deleted = ?
-            AND NOT EXISTS (SELECT conn_id FROM connections WHERE user_id = u.user_id)
+            AND NOT EXISTS (SELECT c.conn_id FROM connections c WHERE c.user_id = u.user_id)
         |]
         (userId, True)
   case userId_ of
@@ -355,7 +355,7 @@ deleteUsersWithoutConns db = do
         [sql|
           SELECT user_id FROM users u
           WHERE u.deleted = ?
-            AND NOT EXISTS (SELECT conn_id FROM connections WHERE user_id = u.user_id)
+            AND NOT EXISTS (SELECT c.conn_id FROM connections c WHERE c.user_id = u.user_id)
         |]
         (Only True)
   forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
