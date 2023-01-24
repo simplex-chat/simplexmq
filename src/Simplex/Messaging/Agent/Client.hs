@@ -25,7 +25,6 @@ module Simplex.Messaging.Agent.Client
     closeProtocolServerClients,
     runSMPServerTest,
     newRcvQueue,
-    subscribeQueue,
     subscribeQueues,
     getQueueMessage,
     decryptSMPMessage,
@@ -682,21 +681,6 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
             deleteErrors = 0
           }
   pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
-
-subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-subscribeQueue c rq@RcvQueue {connId, server, rcvPrivateKey, rcvId} = do
-  whenM (atomically . TM.member (server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
-  atomically $ do
-    modifyTVar' (subscrConns c) $ S.insert connId
-    RQ.addQueue rq $ pendingSubs c
-  r <- withSMPClient c rq "SUB" $ \smp ->
-    liftIO $ runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq
-  case r of
-    Left e -> do
-      tSess <- mkSMPTransportSession c rq
-      when (temporaryClientError e) $ reconnectServer c tSess
-      throwError (protocolClientError SMP (B.unpack $ strEncode server) e)
-    _ -> pure ()
 
 processSubResult :: AgentClient -> RcvQueue -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
 processSubResult c rq r = do
