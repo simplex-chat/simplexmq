@@ -751,9 +751,9 @@ testDeleteConnectionAsync t = do
     pure ([bId1, bId2, bId3] :: [ConnId])
   runRight_ $ do
     deleteConnectionsAsync a connIds
-    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c `elem` connIds; _ -> False
-    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c `elem` connIds; _ -> False
-    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c `elem` connIds; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
@@ -792,7 +792,7 @@ testUsersNoServer t = do
   get b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
   runRight_ $ do
     deleteUser a auId True
-    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ TIMEOUT))) -> c == bId'; _ -> False
+    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
     get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
