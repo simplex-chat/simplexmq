@@ -143,10 +143,14 @@ functionalAPITests t = do
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
   describe "Users" $ do
-    it "should create and delete users with connections" $
+    it "should create and delete user with connections" $
       withSmpServer t testUsers
-    it "should create and delete users with connections when server connection fails" $
+    it "should create and delete user without connections" $
+      withSmpServer t testDeleteUserQuietly
+    it "should create and delete user with connections when server connection fails" $
       testUsersNoServer t
+    it "should connect two users and switch session mode" $
+      withSmpServer t testTwoUsers
   describe "Queue rotation" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 t testSwitchConnection
@@ -193,9 +197,6 @@ functionalAPITests t = do
   describe "getRatchetAdHash" $
     it "should return the same data for both peers" $
       withSmpServer t testRatchetAdHash
-  describe "multiple users" $
-    it "should connect two users and switch session mode" $
-      withSmpServer t testTwoUsers
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -776,10 +777,25 @@ testUsers = do
     exchangeGreetingsMsgId 6 a bId b aId
     liftIO $ noMessages a "nothing else should be delivered to alice"
 
+testDeleteUserQuietly :: IO ()
+testDeleteUserQuietly = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    auId <- createUser a [noAuthSrv testSMPServer]
+    (aId', bId') <- makeConnectionForUsers a auId b 1
+    exchangeGreetingsMsgId 4 a bId' b aId'
+    deleteUser a auId False
+    exchangeGreetingsMsgId 6 a bId b aId
+    liftIO $ noMessages a "nothing else should be delivered to alice"
+
 testUsersNoServer :: ATransport -> IO ()
 testUsersNoServer t = do
   a <- getSMPAgentClient agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers
   b <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  liftIO $ print 1
   (aId, bId, auId, _aId', bId') <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
@@ -787,18 +803,26 @@ testUsersNoServer t = do
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     pure (aId, bId, auId, aId', bId')
+  liftIO $ print 2
   get a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
   get a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
   get b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
+  liftIO $ print 3
   runRight_ $ do
     deleteUser a auId True
+    liftIO $ print 4
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
+    liftIO $ print 4.1
     get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
+    liftIO $ print 4.2
     get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    liftIO $ print 5
     liftIO $ noMessages a "nothing else should be delivered to alice"
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    liftIO $ print 6
     get a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
     get b =##> \case ("", "", UP _ cs) -> length cs == 2; _ -> False
+    liftIO $ print 7
     exchangeGreetingsMsgId 6 a bId b aId
 
 testSwitchConnection :: InitialAgentServers -> IO ()
@@ -837,21 +861,26 @@ phase c connId d p =
 
 testSwitchAsync :: InitialAgentServers -> IO ()
 testSwitchAsync servers = do
+  liftIO $ print 1
   (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
+  liftIO $ print 2
   let withA' = session withA bId
       withB' = session withB aId
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
+  liftIO $ print 3
   withB' $ \b -> phase b aId QDSnd SPStarted
   withA' $ \a -> phase a bId QDRcv SPConfirmed
+  liftIO $ print 4
   withB' $ \b -> do
     phase b aId QDSnd SPConfirmed
     phase b aId QDSnd SPCompleted
   withA' $ \a -> phase a bId QDRcv SPCompleted
+  liftIO $ print 5
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
