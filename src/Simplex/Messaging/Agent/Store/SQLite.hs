@@ -296,7 +296,7 @@ withConnection SQLiteStore {dbConnection} =
     (atomically . putTMVar dbConnection)
 
 withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction st action = withConnection st $ loop 500 2_000_000
+withTransaction st action = withConnection st $ loop 500 3_000_000
   where
     loop :: Int -> Int -> DB.Connection -> IO a
     loop t tLim db =
