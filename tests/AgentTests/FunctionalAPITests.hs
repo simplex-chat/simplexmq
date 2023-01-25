@@ -861,21 +861,26 @@ phase c connId d p =
 
 testSwitchAsync :: InitialAgentServers -> IO ()
 testSwitchAsync servers = do
+  liftIO $ print 1
   (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
+  liftIO $ print 2
   let withA' = session withA bId
       withB' = session withB aId
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
+  liftIO $ print 3
   withB' $ \b -> phase b aId QDSnd SPStarted
   withA' $ \a -> phase a bId QDRcv SPConfirmed
+  liftIO $ print 4
   withB' $ \b -> do
     phase b aId QDSnd SPConfirmed
     phase b aId QDSnd SPCompleted
   withA' $ \a -> phase a bId QDRcv SPCompleted
+  liftIO $ print 5
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
