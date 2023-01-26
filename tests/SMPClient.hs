@@ -57,7 +57,7 @@ testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testSMPClient client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig useHost testPort (Just testKeyHash) $ \h ->
+  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
     liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e

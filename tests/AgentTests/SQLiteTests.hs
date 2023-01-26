@@ -140,7 +140,7 @@ testForeignKeysEnabled =
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 cData1 :: ConnData
-cData1 = ConnData {connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, deleted = False}
+cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, deleted = False}
 
 testPrivateSignKey :: C.APrivateSignKey
 testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
@@ -154,7 +154,8 @@ testDhSecret = "01234567890123456789012345678901"
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
-    { connId = "conn1",
+    { userId = 1,
+      connId = "conn1",
       server = SMPServer "smp.simplex.im" "5223" testKeyHash,
       rcvId = "1234",
       rcvPrivateKey = testPrivateSignKey,
@@ -167,13 +168,15 @@ rcvQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       smpClientVersion = 1,
-      clientNtfCreds = Nothing
+      clientNtfCreds = Nothing,
+      deleteErrors = 0
     }
 
 sndQueue1 :: SndQueue
 sndQueue1 =
   SndQueue
-    { connId = "conn1",
+    { userId = 1,
+      connId = "conn1",
       server = SMPServer "smp.simplex.im" "5223" testKeyHash,
       sndId = "3456",
       sndPublicKey = Nothing,
@@ -314,7 +317,8 @@ testUpgradeRcvConnToDuplex =
     _ <- createSndConn db g cData1 sndQueue1
     let anotherSndQueue =
           SndQueue
-            { connId = "conn1",
+            { userId = 1,
+              connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
               sndPublicKey = Nothing,
@@ -340,7 +344,8 @@ testUpgradeSndConnToDuplex =
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     let anotherRcvQueue =
           RcvQueue
-            { connId = "conn1",
+            { userId = 1,
+              connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               rcvId = "3456",
               rcvPrivateKey = testPrivateSignKey,
@@ -353,7 +358,8 @@ testUpgradeSndConnToDuplex =
               primary = True,
               dbReplaceQueueId = Nothing,
               smpClientVersion = 1,
-              clientNtfCreds = Nothing
+              clientNtfCreds = Nothing,
+              deleteErrors = 0
             }
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
       `shouldReturn` Left (SEBadConnType CRcv)

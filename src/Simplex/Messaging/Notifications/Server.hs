@@ -190,7 +190,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      (srv, _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
       let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
