@@ -1,18 +1,28 @@
-{-# LANGUAGE NamedFieldPuns #-}
-
-module Simplex.Messaging.Agent.TRcvQueues where
+module Simplex.Messaging.Agent.TRcvQueues
+  ( TRcvQueues,
+    empty,
+    clear,
+    deleteConn,
+    hasConn,
+    getConns,
+    addQueue,
+    deleteQueue,
+    getSessQueues,
+    getDelSessQueues,
+  )
+where
 
 import Control.Concurrent.STM
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (ConnId)
-import Simplex.Messaging.Agent.Store (RcvQueue (..))
+import Simplex.Messaging.Agent.Store (RcvQueue (..), UserId)
 import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 
-newtype TRcvQueues = TRcvQueues (TMap (SMPServer, RecipientId) RcvQueue)
+newtype TRcvQueues = TRcvQueues (TMap (UserId, SMPServer, RecipientId) RcvQueue)
 
 empty :: STM TRcvQueues
 empty = TRcvQueues <$> TM.empty
@@ -30,19 +40,26 @@ getConns :: TRcvQueues -> STM (Set ConnId)
 getConns (TRcvQueues qs) = M.foldr' (S.insert . connId) S.empty <$> readTVar qs
 
 addQueue :: RcvQueue -> TRcvQueues -> STM ()
-addQueue rq@RcvQueue {server, rcvId} (TRcvQueues qs) = TM.insert (server, rcvId) rq qs
+addQueue rq (TRcvQueues qs) = TM.insert (qKey rq) rq qs
 
 deleteQueue :: RcvQueue -> TRcvQueues -> STM ()
-deleteQueue RcvQueue {server, rcvId} (TRcvQueues qs) = TM.delete (server, rcvId) qs
+deleteQueue rq (TRcvQueues qs) = TM.delete (qKey rq) qs
 
-getSrvQueues :: SMPServer -> TRcvQueues -> STM [RcvQueue]
-getSrvQueues srv (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
+getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
+getSessQueues tSess (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
   where
-    addQ qs' rq@RcvQueue {server} = if srv == server then rq : qs' else qs'
+    addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
-getDelSrvQueues :: SMPServer -> TRcvQueues -> STM ([RcvQueue], Set ConnId)
-getDelSrvQueues srv (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ (([], S.empty), M.empty)
+getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
+getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.empty)
   where
-    addQ (removed@(remQs, remConns), qs') rq@RcvQueue {connId, server, rcvId}
-      | srv == server = ((rq : remQs, S.insert connId remConns), qs')
-      | otherwise = (removed, M.insert (server, rcvId) rq qs')
+    addQ (removed, qs') rq
+      | rq `isSession` tSess = (rq : removed, qs')
+      | otherwise = (removed, M.insert (qKey rq) rq qs')
+
+isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
+isSession rq (uId, srv, connId_) =
+  userId rq == uId && server rq == srv && maybe True (connId rq ==) connId_
+
+qKey :: RcvQueue -> (UserId, SMPServer, ConnId)
+qKey rq = (userId rq, server rq, connId rq)

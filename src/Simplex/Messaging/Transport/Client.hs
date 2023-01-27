@@ -107,15 +107,15 @@ defaultTransportClientConfig :: TransportClientConfig
 defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors} host port keyHash client = do
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTLSTransportClient tlsParams caStore_ TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors} proxyUsername host port keyHash client = do
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash
       connectTCP = case socksProxy of
-        Just proxy -> connectSocksClient proxy $ hostAddr host
+        Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
         _ -> connectTCPClient hostName
   c <- liftIO $ do
     sock <- connectTCP port
@@ -153,10 +153,12 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
-connectSocksClient :: SocksProxy -> SocksHostAddress -> ServiceName -> IO Socket
-connectSocksClient (SocksProxy addr) hostAddr _port = do
+connectSocksClient :: SocksProxy -> Maybe ByteString -> SocksHostAddress -> ServiceName -> IO Socket
+connectSocksClient (SocksProxy addr) proxyUsername hostAddr _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
+  fst <$> case proxyUsername of
+    Just username -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) (SocksCredentials username "")
+    _ -> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
 
 defaultSocksHost :: HostAddress
 defaultSocksHost = tupleToHostAddress (127, 0, 0, 1)

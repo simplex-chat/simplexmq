@@ -338,8 +338,8 @@ testServerConnectionAfterError t _ = do
       withServer $ do
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
-        bob <# ("", "", UP server ["alice"])
-        bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+        bob <#= \case ("", "alice", Msg "hello") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
+        bob <#= \case ("", "alice", Msg "hello") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
         bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
         alice #: ("1", "bob", "SEND F 11\nhello again") #> ("1", "bob", MID 5)
         alice <# ("", "bob", SENT 5)
@@ -381,8 +381,8 @@ testMsgDeliveryAgentRestart t bob = do
           (corrId == "3" && cmd == OK)
             || (corrId == "" && cmd == SENT 5)
         _ -> False
-      bob <# ("", "", UP server ["alice"])
-      bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
+      bob <#= \case ("", "alice", Msg "hello again") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
+      bob <#= \case ("", "alice", Msg "hello again") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile

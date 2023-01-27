@@ -77,6 +77,7 @@ module Simplex.Messaging.Protocol
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
+    EntityId,
     QueueId,
     RecipientId,
     SenderId,
@@ -753,7 +754,7 @@ basicAuth s
   where
     valid c = isPrint c && not (isSpace c) && c /= '@' && c /= ':' && c /= '/'
 
-data ProtoServerWithAuth p = ProtoServerWithAuth (ProtocolServer p) (Maybe BasicAuth)
+data ProtoServerWithAuth p = ProtoServerWithAuth {protoServer :: ProtocolServer p, serverBasicAuth :: Maybe BasicAuth}
   deriving (Show)
 
 instance ProtocolTypeI p => IsString (ProtoServerWithAuth p) where
