@@ -724,7 +724,8 @@ saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
     saveMessages f = do
       logInfo $ "saving messages to file " <> T.pack f
       ms <- asks msgStore
-      liftIO . withFile f WriteMode $ \h ->
+      liftIO . withFile f WriteMode $ \h -> do
+        hSetBuffering h $ BlockBuffering $ Just 33554432
         readTVarIO ms >>= mapM_ (saveQueueMsgs ms h) . M.keys
       logInfo "messages saved"
       where

@@ -1,17 +1,20 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
+import Control.Logger.Simple (logInfo)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Data.Text as Tx
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -151,13 +154,21 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  storeLog <- liftIO $ openReadStoreLog `mapM` storeLogFile
-  s' <- restoreQueues queueStore `mapM` storeLog
+  -- storeLog <- liftIO $ openReadStoreLog `mapM` storeLogFile
+  -- s' <- restoreQueues queueStore `mapM` storeLog
+  storeLog <- restoreStoreLog queueStore `mapM` storeLogFile
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams, serverStats}
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats}
+
+restoreStoreLog :: forall m. MonadUnliftIO m => QueueStore -> FilePath -> m (StoreLog 'WriteMode)
+restoreStoreLog queueStore f = do
+  logInfo $ "restoring queues from file " <> Tx.pack f
+  l <- liftIO (openReadStoreLog f) >>= restoreQueues queueStore
+  logInfo "queues restored"
+  pure l
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} s = do
