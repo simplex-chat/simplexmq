@@ -154,8 +154,6 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  -- storeLog <- liftIO $ openReadStoreLog `mapM` storeLogFile
-  -- s' <- restoreQueues queueStore `mapM` storeLog
   storeLog <- restoreStoreLog queueStore `mapM` storeLogFile
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
