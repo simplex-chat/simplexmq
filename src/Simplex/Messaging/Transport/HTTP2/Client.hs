@@ -120,7 +120,7 @@ sendRequest HTTP2Client {reqQ, config} req = do
 
 runHTTP2Client :: T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> HostName -> ServiceName -> ((Request -> (Response -> IO ()) -> IO ()) -> IO ()) -> IO ()
 runHTTP2Client tlsParams caStore tcConfig host port client =
-  runTLSTransportClient tlsParams caStore tcConfig (THDomainName host) port Nothing $ \c ->
+  runTLSTransportClient tlsParams caStore tcConfig Nothing (THDomainName host) port Nothing $ \c ->
     withTlsConfig c 16384 (`run` client)
   where
     run = H.run $ ClientConfig "https" (B.pack host) 20

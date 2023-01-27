@@ -190,7 +190,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      (srv, _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
       let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
@@ -372,6 +372,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
             else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+    NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
       case s_ of
@@ -529,6 +530,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             incNtfStat subDeleted
             pure NROk
           PING -> pure NRPong
+      NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
     getId = getRandomBytes =<< asks (subIdBytes . config)
     getRegCode :: M NtfRegCode
