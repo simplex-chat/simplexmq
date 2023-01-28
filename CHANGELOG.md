@@ -1,3 +1,11 @@
+# 4.4.0
+
+SMP agent:
+
+- support multiple user profiles with transport session isolation.
+- support optional transport isolation per connection.
+- improve asynchronous connection deletion – it may now be completed after the client is restarted as well.
+
 # 4.3.0
 
 SMP server:
