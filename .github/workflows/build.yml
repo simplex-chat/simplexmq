@@ -42,7 +42,7 @@ jobs:
         run: cabal build --enable-tests
 
       - name: Test
-        if: matrix.os == 'ubuntu-18.04'
+        # if: matrix.os == 'ubuntu-18.04'
         timeout-minutes: 30
         shell: bash
         run: cabal test --test-show-details=direct
