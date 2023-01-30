@@ -520,7 +520,7 @@ throwWhenNoDelivery c SndQueue {server, sndId} =
 
 closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
-  readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
+  atomically (swapTVar cs M.empty) >>= mapM_ (forkIO . closeClient)
   where
     cs = clientsSel c
     closeClient cVar = do
@@ -530,7 +530,7 @@ closeProtocolServerClients c clientsSel =
         _ -> pure ()
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
-cancelActions as = readTVarIO as >>= mapM_ (forkIO . uninterruptibleCancel) >> atomically (writeTVar as mempty)
+cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterruptibleCancel)
 
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
