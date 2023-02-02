@@ -23,19 +23,20 @@ main :: IO ()
 main = do
   setLogLevel LogError -- LogInfo
   withGlobalLogging logCfg $ do
-    createDirectoryIfMissing False "tests/tmp"
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
-    hspec $ do
-      describe "Core tests" $ do
-        describe "Encoding tests" encodingTests
-        describe "Protocol error tests" protocolErrorTests
-        describe "Version range" versionRangeTests
-        describe "Encryption tests" cryptoTests
-        describe "Retry interval tests" retryIntervalTests
-      describe "SMP server via TLS" $ serverTests (transport @TLS)
-      describe "SMP server via WebSockets" $ serverTests (transport @WS)
-      describe "Notifications server" $ ntfServerTests (transport @TLS)
-      describe "SMP client agent" $ agentTests (transport @TLS)
-      describe "Server CLIs" cliTests
-    removeDirectoryRecursive "tests/tmp"
+    hspec
+      . before_ (createDirectoryIfMissing False "tests/tmp")
+      . after_ (removeDirectoryRecursive "tests/tmp")
+      $ do
+        describe "Core tests" $ do
+          describe "Encoding tests" encodingTests
+          describe "Protocol error tests" protocolErrorTests
+          describe "Version range" versionRangeTests
+          describe "Encryption tests" cryptoTests
+          describe "Retry interval tests" retryIntervalTests
+        describe "SMP server via TLS" $ serverTests (transport @TLS)
+        describe "SMP server via WebSockets" $ serverTests (transport @WS)
+        describe "Notifications server" $ ntfServerTests (transport @TLS)
+        describe "SMP client agent" $ agentTests (transport @TLS)
+        describe "Server CLIs" cliTests

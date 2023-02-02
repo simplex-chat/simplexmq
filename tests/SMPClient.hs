@@ -5,6 +5,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -91,25 +92,25 @@ cfg =
       logTLSErrors = True
     }
 
-withSmpServerStoreMsgLogOnV2 :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
+withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
 
-withSmpServerStoreMsgLogOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
+withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerStoreLogOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
+withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerConfigOn :: ATransport -> ServerConfig -> ServiceName -> (ThreadId -> IO a) -> IO a
+withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
     (pure ())
 
-withSmpServerThreadOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
+withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn t = withSmpServerConfigOn t cfg
 
-serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
+serverBracket :: (HasCallStack, MonadUnliftIO m) => (TMVar Bool -> m ()) -> m () -> (HasCallStack => ThreadId -> m a) -> m a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket
@@ -122,16 +123,16 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withSmpServerOn :: ATransport -> ServiceName -> IO a -> IO a
+withSmpServerOn :: HasCallStack => ATransport -> ServiceName -> IO a -> IO a
 withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 
-withSmpServer :: ATransport -> IO a -> IO a
+withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
-runSmpTest :: forall c a. Transport c => (THandle c -> IO a) -> IO a
+runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandle c -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
-runSmpTestN :: forall c a. Transport c => Int -> ([THandle c] -> IO a) -> IO a
+runSmpTestN :: forall c a. (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
 runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
   where
     run :: Int -> [THandle c] -> IO a
@@ -154,25 +155,25 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-smpTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+smpTest :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> IO ()) -> Expectation
 smpTest _ test' = runSmpTest test' `shouldReturn` ()
 
-smpTestN :: Transport c => Int -> ([THandle c] -> IO ()) -> Expectation
+smpTestN :: (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -> IO ()) -> Expectation
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
-smpTest2 :: Transport c => TProxy c -> (THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2 :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
 smpTest2 _ test' = smpTestN 2 _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: Transport c => TProxy c -> (THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest3 :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
 smpTest3 _ test' = smpTestN 3 _test
   where
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-smpTest4 :: Transport c => TProxy c -> (THandle c -> THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest4 :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
 smpTest4 _ test' = smpTestN 4 _test
   where
     _test [h1, h2, h3, h4] = test' h1 h2 h3 h4
