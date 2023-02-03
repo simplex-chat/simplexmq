@@ -4,7 +4,10 @@ SMP agent:
 
 - support multiple user profiles with transport session isolation.
 - support optional transport isolation per connection.
+- batch connection deletion
 - improve asynchronous connection deletion – it may now be completed after the client is restarted as well.
+- improve subscription logic to retry if initial attempt fails.
+- end SMP client connection after a number of failed PINGs (defalt is 3).
 
 # 4.3.0
 
