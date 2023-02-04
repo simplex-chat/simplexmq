@@ -43,9 +43,11 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSndConn,
     getConn,
     getDeletedConn,
+    getConns,
+    getDeletedConns,
     getConnData,
     setConnDeleted,
-    getDeletedConns,
+    getDeletedConnIds,
     getRcvConn,
     deleteConn,
     upgradeRcvConnToDuplex,
@@ -1404,6 +1406,18 @@ getAnyConn deleted' dbConn connId =
           (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
           _ -> Left SEConnNotFound
 
+getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
+getConns = getConn_ False
+
+getDeletedConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
+getDeletedConns = getConn_ True
+
+getConn_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
+getConn_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
+  where
+    handleDBError :: E.SomeException -> IO (Either StoreError SomeConn)
+    handleDBError = pure . Left . SEInternal . bshow
+
 getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData dbConn connId' =
   maybeFirstRow cData $ DB.query dbConn "SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, deleted FROM connections WHERE conn_id = ?;" (Only connId')
@@ -1413,8 +1427,8 @@ getConnData dbConn connId' =
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
-getDeletedConns :: DB.Connection -> IO [ConnId]
-getDeletedConns db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
+getDeletedConnIds :: DB.Connection -> IO [ConnId]
+getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

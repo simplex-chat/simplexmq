@@ -473,7 +473,7 @@ deleteConnectionsAsync_ :: forall m. AgentMonad m => m () -> AgentClient -> [Con
 deleteConnectionsAsync_ onSuccess c connIds = case connIds of
   [] -> onSuccess
   _ -> do
-    (_, rqs, connIds') <- prepareDeleteConnections_ getConn c connIds
+    (_, rqs, connIds') <- prepareDeleteConnections_ getConns c connIds
     withStore' c $ forM_ connIds' . setConnDeleted
     void . forkIO $
       withLock (deleteLock c) "deleteConnectionsAsync" $
@@ -629,7 +629,7 @@ type QCmdResult = (QueueStatus, Either AgentErrorType ())
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
-  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (\db -> forM connIds $ E.handle handleDBError . getConn db)
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConns` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
@@ -643,8 +643,6 @@ subscribeConnections' c connIds = do
   notifyResultError rs
   pure rs
   where
-    handleDBError :: E.SomeException -> IO (Either StoreError SomeConn)
-    handleDBError = pure . Left . SEInternal . bshow
     rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
     rcvQueueOrResult (SomeConn _ conn) = case conn of
       DuplexConnection _ rqs _ -> Right $ L.toList rqs
@@ -1196,20 +1194,20 @@ disableConn c connId = do
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteConnections' = deleteConnections_ getConn False
+deleteConnections' = deleteConnections_ getConns False
 
 deleteDeletedConns :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteDeletedConns = deleteConnections_ getDeletedConn True
+deleteDeletedConns = deleteConnections_ getDeletedConns True
 
 prepareDeleteConnections_ ::
   forall m.
   AgentMonad m =>
-  (DB.Connection -> ConnId -> IO (Either StoreError SomeConn)) ->
+  (DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]) ->
   AgentClient ->
   [ConnId] ->
   m (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId])
-prepareDeleteConnections_ getConnection c connIds = do
-  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConnection)
+prepareDeleteConnections_ getConnections c connIds = do
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (delRs, rcvQs) = M.mapEither rcvQueues cs
@@ -1262,14 +1260,14 @@ deleteConnQueues c ntf rqs = do
 deleteConnections_ ::
   forall m.
   AgentMonad m =>
-  (DB.Connection -> ConnId -> IO (Either StoreError SomeConn)) ->
+  (DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]) ->
   Bool ->
   AgentClient ->
   [ConnId] ->
   m (Map ConnId (Either AgentErrorType ()))
 deleteConnections_ _ _ _ [] = pure M.empty
-deleteConnections_ getConnection ntf c connIds = do
-  (rs, rqs, _) <- prepareDeleteConnections_ getConnection c connIds
+deleteConnections_ getConnections ntf c connIds = do
+  (rs, rqs, _) <- prepareDeleteConnections_ getConnections c connIds
   rcvRs <- deleteConnQueues c ntf rqs
   let rs' = M.union rs rcvRs
   notifyResultError rs'
@@ -1579,7 +1577,7 @@ cleanupManager c = do
   forever $ do
     void . runExceptT $
       withLock (deleteLock c) "cleanupManager" $ do
-        void $ withStore' c getDeletedConns >>= deleteDeletedConns c
+        void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
     threadDelay int
   where
