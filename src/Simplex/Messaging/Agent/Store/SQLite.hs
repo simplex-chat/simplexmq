@@ -1407,13 +1407,13 @@ getAnyConn deleted' dbConn connId =
           _ -> Left SEConnNotFound
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
-getConns = getConn_ False
+getConns = getAnyConns_ False
 
 getDeletedConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
-getDeletedConns = getConn_ True
+getDeletedConns = getAnyConns_ True
 
-getConn_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
-getConn_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
+getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
+getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
   where
     handleDBError :: E.SomeException -> IO (Either StoreError SomeConn)
     handleDBError = pure . Left . SEInternal . bshow
