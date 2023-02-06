@@ -111,6 +111,12 @@ executables:
     ghc-options:
       - -threaded
 
+  stress-test:
+    source-dirs: apps/stress-test
+    main: Main.hs
+    ghc-options:
+      - -threaded
+
 tests:
   smp-server-test:
     source-dirs: tests
