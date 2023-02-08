@@ -26,6 +26,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isAsciiLower, isDigit)
 import Data.Default (def)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -70,11 +71,14 @@ instance StrEncoding TransportHost where
   strP =
     A.choice
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
-        THOnionHost <$> ((<>) <$> A.takeTill (== '.') <*> A.string ".onion"),
-        THDomainName . B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+        THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
+        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t"))
       ]
     where
-      ipNum = A.decimal <* A.char '.'
+      ipNum = validIP <$?> (A.decimal <* A.char '.')
+      validIP :: Int -> Either String Word8
+      validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
+      notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
 instance ToJSON TransportHost where
   toEncoding = strToJEncoding
