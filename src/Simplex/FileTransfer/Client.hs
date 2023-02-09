@@ -44,7 +44,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding (strDecode))
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (QueueId, RcvPublicVerifyKey, SndPublicVerifyKey, bs)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..))
-import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, HTTP2ClientConfig (..), HTTP2ClientError, HTTP2Response (HTTP2Response), defaultHTTP2ClientConfig, getHTTP2Client, respBody, response, sendRequest)
 import Simplex.Messaging.Util (bshow)
 import System.Directory.Internal.Prelude (fromMaybe)
@@ -183,7 +183,7 @@ uploadFile http2 f = do
   req <- liftIO $ createFileHTTPS2Request f
   -- createAndSecureQueue
   sendRequest (http2 :: HTTP2Client) req >>= \case
-    Right (HTTP2Response response respBody _) -> do
+    Right (HTTP2Response response HTTP2Body {bodyHead}) -> do
       let status = H.responseStatus response
       -- decodedBody = J.decodeStrict' respBody
       logDebug $ "File response: " <> T.pack (show status)

@@ -10,10 +10,9 @@ import Control.Exception (IOException)
 import qualified Control.Exception as E
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.X509.CertificateStore as XS
-import Network.HPACK (BufferSize, HeaderTable)
+import Network.HPACK (BufferSize)
 import Network.HTTP2.Client (ClientConfig (..), Request, Response)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
@@ -23,7 +22,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (SessionId)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (http2TLSParams, withHTTP2)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body, getHTTP2Body, http2TLSParams, withHTTP2)
 import UnliftIO.STM
 import UnliftIO.Timeout
 
@@ -44,8 +43,7 @@ data HClient = HClient
 
 data HTTP2Response = HTTP2Response
   { response :: Response,
-    respBody :: ByteString,
-    respTrailers :: Maybe HeaderTable
+    respBody :: HTTP2Body
   }
 
 data HTTP2ClientConfig = HTTP2ClientConfig
@@ -53,6 +51,8 @@ data HTTP2ClientConfig = HTTP2ClientConfig
     connTimeout :: Int,
     transportConfig :: TransportClientConfig,
     bufferSize :: BufferSize,
+    bodyHeadSize :: Int,
+    -- maxBodySize :: Int,
     suportedTLSParams :: T.Supported
   }
   deriving (Show)
@@ -63,7 +63,9 @@ defaultHTTP2ClientConfig =
     { qSize = 64,
       connTimeout = 10000000,
       transportConfig = TransportClientConfig Nothing Nothing True,
-      bufferSize = 16384,
+      bufferSize = 32768,
+      bodyHeadSize = 16384,
+      -- maxBodySize = 16793600, -- 16 MB + 16kb
       suportedTLSParams = http2TLSParams
     }
 
@@ -74,7 +76,7 @@ getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2C
 getHTTP2Client host port = getVerifiedHTTP2Client Nothing (THDomainName host) port Nothing
 
 getVerifiedHTTP2Client :: Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
-getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2ClientConfig {transportConfig, bufferSize, connTimeout, suportedTLSParams} disconnected =
+getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2ClientConfig {transportConfig, bufferSize, bodyHeadSize, connTimeout, suportedTLSParams} disconnected =
   (atomically mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where
@@ -110,15 +112,8 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
       (req, respVar) <- atomically $ readTBQueue reqQ
       sendReq req $ \r -> do
-        let writeResp respBody respTrailers = atomically $ putTMVar respVar HTTP2Response {response = r, respBody, respTrailers}
-        respBody <- getResponseBody r ""
-        respTrailers <- H.getResponseTrailers r
-        writeResp respBody respTrailers
-
-    getResponseBody :: Response -> ByteString -> IO ByteString
-    getResponseBody r s =
-      H.getResponseBodyChunk r >>= \chunk ->
-        if B.null chunk then pure s else getResponseBody r $ s <> chunk
+        respBody <- getHTTP2Body r bodyHeadSize
+        atomically $ putTMVar respVar HTTP2Response {response = r, respBody}
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTP2Client :: HTTP2Client -> IO ()

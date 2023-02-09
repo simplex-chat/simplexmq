@@ -49,6 +49,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
 import Simplex.Messaging.Protocol (EncNMsgMeta)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.Environment (getEnv)
@@ -217,7 +218,7 @@ defaultAPNSPushClientConfig =
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
       apnsPort = "443",
-      http2cfg = defaultHTTP2ClientConfig,
+      http2cfg = defaultHTTP2ClientConfig {bufferSize = 16384},
       caStoreFile = "/etc/ssl/cert.pem"
     }
 
@@ -342,9 +343,9 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
+  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
-      reason' = maybe "" reason $ J.decodeStrict' respBody
+      reason' = maybe "" reason $ J.decodeStrict' bodyHead
   logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
   result status reason'
   where
