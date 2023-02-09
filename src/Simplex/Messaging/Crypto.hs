@@ -742,6 +742,7 @@ instance FromJSON Key where
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
+  deriving (Show)
 
 instance Encoding IV where
   smpEncode = unIV
