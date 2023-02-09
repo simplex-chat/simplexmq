@@ -3,11 +3,11 @@
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
-    FileChunkDescription (..),
-    FileChunkReplicaDescription (..),
-    YAMLFileDescription (..),
     FileDigest (..),
-    YAMLFilePartDescription (..),
+    FileChunk (..),
+    FileChunkReplica (..),
+    YAMLFileDescription (..),
+    YAMLFilePart (..),
   )
 where
 
@@ -27,7 +27,7 @@ data FileDescription = FileDescription
     digest :: FileDigest,
     encKey :: C.Key,
     iv :: C.IV,
-    chunks :: [FileChunkDescription]
+    chunks :: [FileChunk]
   }
   deriving (Show)
 
@@ -46,15 +46,15 @@ instance ToJSON FileDigest where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
-data FileChunkDescription = FileChunkDescription
+data FileChunk = FileChunk
   { number :: Int,
     digest :: ByteString,
     size :: Word32,
-    replicas :: [FileChunkReplicaDescription]
+    replicas :: [FileChunkReplica]
   }
   deriving (Show)
 
-data FileChunkReplicaDescription = FileChunkReplicaDescription
+data FileChunkReplica = FileChunkReplica
   { server :: String,
     rcvId :: ByteString,
     rcvKey :: C.APrivateSignKey
@@ -64,29 +64,29 @@ data FileChunkReplicaDescription = FileChunkReplicaDescription
 data YAMLFileDescription = YAMLFileDescription
   { name :: String,
     size :: Int64,
-    chunkSize :: Integer,
+    chunkSize :: Word32,
     digest :: FileDigest,
     encKey :: C.Key,
     iv :: C.IV,
-    parts :: [YAMLFilePartDescription]
+    parts :: [YAMLFilePart]
   }
   deriving (Eq, Show, Generic)
 
 instance FromJSON YAMLFileDescription
 
-data YAMLFilePartDescription = YAMLFilePartDescription
+data YAMLFilePart = YAMLFilePart
   { server :: String,
     chunks :: [String]
   }
   deriving (Eq, Show, Generic)
 
-instance FromJSON YAMLFilePartDescription
+instance FromJSON YAMLFilePart
 
-data FilePartChunkDescription = FilePartChunkDescription
+data FilePartChunk = FilePartChunk
   { number :: Int,
     rcvId :: ByteString,
     rcvKey :: C.APrivateSignKey,
     digest :: Maybe ByteString,
-    size :: Maybe Integer
+    size :: Maybe Word32
   }
   deriving (Show)
