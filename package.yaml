@@ -71,6 +71,7 @@ dependencies:
   - x509 == 1.7.*
   - x509-store == 1.6.*
   - x509-validation == 1.6.*
+  - yaml == 0.11.*
 
 flags:
   swift:

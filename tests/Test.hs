@@ -8,6 +8,7 @@ import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
 import CoreTests.RetryIntervalTests
 import CoreTests.VersionRangeTests
+import FileDescriptionTests (fileDescriptionTests)
 import NtfServerTests (ntfServerTests)
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -40,3 +41,4 @@ main = do
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "Server CLIs" cliTests
+        describe "File description" fileDescriptionTests
