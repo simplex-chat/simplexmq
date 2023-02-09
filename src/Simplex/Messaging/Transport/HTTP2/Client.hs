@@ -52,7 +52,6 @@ data HTTP2ClientConfig = HTTP2ClientConfig
     transportConfig :: TransportClientConfig,
     bufferSize :: BufferSize,
     bodyHeadSize :: Int,
-    -- maxBodySize :: Int,
     suportedTLSParams :: T.Supported
   }
   deriving (Show)
@@ -65,7 +64,6 @@ defaultHTTP2ClientConfig =
       transportConfig = TransportClientConfig Nothing Nothing True,
       bufferSize = 32768,
       bodyHeadSize = 16384,
-      -- maxBodySize = 16793600, -- 16 MB + 16kb
       suportedTLSParams = http2TLSParams
     }
 
