@@ -15,7 +15,9 @@ module Simplex.FileTransfer.Server where
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
+import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -26,17 +28,31 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.X509.Validation (HostName)
+import qualified Network.HTTP.Types as N
+import qualified Network.HTTP2.Server as H
 import Network.Socket (ServiceName)
+import Simplex.FileTransfer.Protocol (FileCmd (..), FileResponse, SFileParty (SRecipient, SSender))
+import Simplex.FileTransfer.Server.Env
+import Simplex.FileTransfer.Server.Env (FileEnv, FileServerConfig (FileServerConfig), newFileServerEnv)
+import Simplex.FileTransfer.Server.Stats
+import Simplex.FileTransfer.Server.Stats (FileServerStats (..))
+import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.StoreLog
+import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut, RecipientId, SenderId)
+import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), RecipientId, SMPServer, SenderId, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, HTTP2ClientConfig, HTTP2ClientError, getHTTP2Client)
+import Simplex.Messaging.Transport.HTTP2.Server (HTTP2Request (HTTP2Request, reqBody, sendResponse), HTTP2Server (HTTP2Server, reqQ), HTTP2ServerConfig (..), getHTTP2Server)
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
@@ -47,35 +63,19 @@ import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId, threadDelay)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
-import Simplex.FileTransfer.Server.Env
-import Simplex.FileTransfer.Server.Stats
-import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.StoreLog
-import Simplex.FileTransfer.Transport
-import Simplex.FileTransfer.Server.Env (FileServerConfig (FileServerConfig), FileEnv, newFileServerEnv)
-import Simplex.FileTransfer.Server.Stats (FileServerStats(..))
-import Simplex.FileTransfer.Protocol (FileCmd(..), FileResponse, SFileParty (SRecipient, SSender))
-import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Data.X509.Validation (HostName)
-import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, HTTP2ClientError, HTTP2ClientConfig, getHTTP2Client)
-import Simplex.Messaging.Transport.HTTP2.Server (getHTTP2Server, HTTP2ServerConfig (..), HTTP2Server (HTTP2Server), HTTP2Request (HTTP2Request, reqBody, sendResponse))
-import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
-import Simplex.Messaging.Transport.HTTP2.Server (HTTP2Server(reqQ))
-import qualified Network.HTTP2.Server as H
-import qualified Network.HTTP.Types as N
-import qualified Data.Aeson as J
 
 startServer :: IO ()
 startServer = do
-  let config = HTTP2ServerConfig {
-    qSize = 64,
-    http2Port = "1234",
-    serverSupported = http2TLSParams,
-    caCertificateFile = "tests/fixtures/ca.crt",
-    privateKeyFile = "tests/fixtures/server.key",
-    certificateFile = "tests/fixtures/server.crt",
-    logTLSErrors = True
-  }
+  let config =
+        HTTP2ServerConfig
+          { qSize = 64,
+            http2Port = "1234",
+            serverSupported = http2TLSParams,
+            caCertificateFile = "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt",
+            logTLSErrors = True
+          }
   print "Starting server"
   http2Server <- getHTTP2Server config
   qSize <- newTBQueueIO 64
@@ -87,6 +87,8 @@ startServer = do
       print "Sending response"
       sendResponse $ H.responseNoBody N.ok200 []
 
+type M a = ReaderT FileEnv IO a
+
 {-
 runFileServer :: FileServerConfig -> IO ()
 runFileServer cfg = do
@@ -95,8 +97,6 @@ runFileServer cfg = do
 
 runFileServerBlocking :: TMVar Bool -> FileServerConfig -> IO ()
 runFileServerBlocking started cfg = newFileServerEnv cfg >>= runReaderT (fileServer cfg started)
-
-type M a = ReaderT FileEnv IO a
 
 fileServer :: FileServerConfig -> TMVar Bool -> M ()
 fileServer cfg@FileServerConfig {transports, logTLSErrors} started = do
@@ -400,6 +400,7 @@ client FileServerClient {rcvQ, sndQ} =
 
 withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
+-}
 
 incFileStat :: (FileServerStats -> TVar Int) -> M ()
 incFileStat statSel = do
@@ -430,4 +431,3 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
--}
