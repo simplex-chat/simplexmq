@@ -5,17 +5,15 @@ module Simplex.FileTransfer.Description
   ( FileDescription (..),
     FileChunkDescription (..),
     FileChunkReplicaDescription (..),
-    FileChunkReplicaAddress (..),
     YAMLFileDescription (..),
     FileDigest (..),
-    FileEncKey (..),
-    FileIV (..),
     YAMLFilePartDescription (..),
   )
 where
 
 import Data.Aeson (FromJSON, ToJSON)
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import GHC.Generics (Generic)
@@ -24,9 +22,9 @@ import Simplex.Messaging.Encoding.String
 
 data FileDescription = FileDescription
   { name :: String,
-    size :: Word32,
-    chunkSize :: Integer,
-    digest :: ByteString,
+    size :: Int64,
+    chunkSize :: Word32,
+    digest :: FileDigest,
     encKey :: C.Key,
     iv :: C.IV,
     chunks :: [FileChunkDescription]
@@ -36,30 +34,25 @@ data FileDescription = FileDescription
 data FileChunkDescription = FileChunkDescription
   { number :: Int,
     digest :: ByteString,
-    size :: Integer,
+    size :: Word32,
     replicas :: [FileChunkReplicaDescription]
   }
   deriving (Show)
 
 data FileChunkReplicaDescription = FileChunkReplicaDescription
-  { address :: FileChunkReplicaAddress,
-    signKey :: C.APrivateSignKey
-  }
-  deriving (Show)
-
-data FileChunkReplicaAddress = FileChunkReplicaAddress
   { server :: String,
-    id :: ByteString
+    rcvId :: ByteString,
+    rcvKey :: C.APrivateSignKey
   }
   deriving (Show)
 
 data YAMLFileDescription = YAMLFileDescription
   { name :: String,
-    size :: Word32,
+    size :: Int64,
     chunkSize :: Integer,
     digest :: FileDigest,
-    encKey :: FileEncKey,
-    iv :: FileIV,
+    encKey :: C.Key,
+    iv :: C.IV,
     parts :: [YAMLFilePartDescription]
   }
   deriving (Eq, Show, Generic)
@@ -81,50 +74,18 @@ instance ToJSON FileDigest where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
-newtype FileEncKey = FileEncKey {unFileEncKey :: ByteString}
-  deriving (Eq, Show)
-
-instance StrEncoding FileEncKey where
-  strEncode (FileEncKey fek) = strEncode fek
-  strDecode s = FileEncKey <$> strDecode s
-  strP = FileEncKey <$> strP
-
-instance FromJSON FileEncKey where
-  parseJSON = strParseJSON "FileEncKey"
-
-instance ToJSON FileEncKey where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
-
-newtype FileIV = FileIV {unFileIV :: ByteString}
-  deriving (Eq, Show)
-
-instance StrEncoding FileIV where
-  strEncode (FileIV fiv) = strEncode fiv
-  strDecode s = FileIV <$> strDecode s
-  strP = FileIV <$> strP
-
-instance FromJSON FileIV where
-  parseJSON = strParseJSON "FileIV"
-
-instance ToJSON FileIV where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
-
 data YAMLFilePartDescription = YAMLFilePartDescription
   { server :: String,
-    chunks :: [YAMLFileChunkString]
+    chunks :: [String]
   }
   deriving (Eq, Show, Generic)
 
 instance FromJSON YAMLFilePartDescription
 
-type YAMLFileChunkString = String
-
 data FilePartChunkDescription = FilePartChunkDescription
   { number :: Int,
-    id :: ByteString,
-    signKey :: C.APrivateSignKey,
+    rcvId :: ByteString,
+    rcvKey :: C.APrivateSignKey,
     digest :: Maybe ByteString,
     size :: Maybe Integer
   }

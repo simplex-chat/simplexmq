@@ -742,11 +742,18 @@ instance FromJSON Key where
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
-  deriving (Show)
+  deriving (Eq, Show)
 
 instance Encoding IV where
   smpEncode = unIV
   smpP = IV <$> A.take (ivSize @AES256)
+
+instance ToJSON IV where
+  toJSON = strToJSON . unIV
+  toEncoding = strToJEncoding . unIV
+
+instance FromJSON IV where
+  parseJSON = fmap IV . strParseJSON "IV"
 
 newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
 
