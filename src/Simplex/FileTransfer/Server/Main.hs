@@ -7,6 +7,9 @@
 
 module Simplex.FileTransfer.Server.Main where
 
+-- import Simplex.FileTransfer.Server (runFileServer)
+
+import Control.Concurrent (threadDelay)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -14,10 +17,10 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
-import qualified Simplex.Messaging.Crypto as C
--- import Simplex.FileTransfer.Server (runFileServer)
+import Simplex.FileTransfer.Client (processUpload)
+import Simplex.FileTransfer.Server (startServer)
 import Simplex.FileTransfer.Server.Env (FileServerConfig (..))
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern FileServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -25,16 +28,13 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-import Simplex.FileTransfer.Server (startServer)
-import Simplex.FileTransfer.Client (processUpload)
-import Control.Concurrent (threadDelay)
 
 fileServerCLI :: FilePath -> FilePath -> IO ()
 fileServerCLI cfgPath logPath = do
   startServer
   threadDelay 10000000
   processUpload
-  
+
 fileServerCLIOrig :: FilePath -> FilePath -> IO ()
 fileServerCLIOrig cfgPath logPath = do
   startServer
@@ -98,22 +98,17 @@ fileServerCLIOrig cfgPath logPath = do
           srv = ProtoServerWithAuth (FileServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
       printServerConfig transports storeLogFile
-      -- runFileServer cfg
       where
+        -- runFileServer cfg
+
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
         serverConfig =
           FileServerConfig
             { transports = iniTransports ini,
-              subIdBytes = 24,
-              regCodeBytes = 32,
-              clientQSize = 16,
-              subQSize = 64,
-              smpAgentCfg = defaultSMPClientAgentConfig,
-              inactiveClientExpiration = Nothing,
+              fileIdSize = 16,
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              resubscribeDelay = 50000, -- 50ms
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,

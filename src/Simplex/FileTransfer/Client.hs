@@ -1,57 +1,54 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.FileTransfer.Client where
 
-import Control.Monad.Except
-import Control.Monad.Trans.Except
-import Data.Word (Word16)
-import Simplex.Messaging.Client hiding (qSize)
-import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Util (bshow)
-import Simplex.FileTransfer.Protocol (FileResponse(..), FilePartyI, FileCommand (FPUT), FileChunkId, FileCmd (FileCmd), SFileParty (SSender))
-import Network.TLS (HostName)
-import Network.Socket (ServiceName)
-import Simplex.Messaging.Transport.HTTP2.Client (HTTP2ClientConfig (..), HTTP2Client, HTTP2ClientError, getHTTP2Client, HTTP2Response (HTTP2Response), response, respBody, defaultHTTP2ClientConfig, sendRequest)
-import Control.Concurrent.STM (TVar)
-import Control.Monad.STM (atomically)
-import Control.Concurrent.STM.TVar (writeTVar)
-import Data.ByteString (ByteString)
-import Network.HTTP2.Client (Request)
-import qualified Network.HTTP.Types as N
-import qualified Network.HTTP2.Client as H
-import qualified Data.Aeson as J
-import Simplex.Messaging.Protocol (QueueId, SndPublicVerifyKey, RcvPublicVerifyKey, bs)
-import Network.HTTP2.Server (Response)
-import Simplex.FileTransfer.Server.Env (FileRequest (..))
-import Data.ByteString.Builder (lazyByteString)
-import qualified Data.Text as T
-import Network.HTTP.Types (Status)
-import Data.Text (Text)
-import Control.Concurrent.STM (newTVarIO, readTVar, readTVarIO)
-import Data.Maybe (isNothing)
-import Simplex.FileTransfer.Server.Store (NewFileRec(..))
-import Control.Logger.Simple (logDebug)
 import Control.Arrow (first)
-import Simplex.Messaging.Crypto (APrivateSignKey)
-import Data.List.NonEmpty (NonEmpty, nonEmpty, fromList)
-import Foreign (Word32)
-import qualified Data.ByteString as B
-import Simplex.Messaging.Encoding.String (StrEncoding(strDecode))
-import Network.HTTP2.Client (FileSpec(..))
-import Control.Exception (SomeException)
-import GHC.IO.Handle (hFileSize)
+import Control.Concurrent.STM (TVar, newTVarIO, readTVar, readTVarIO)
+import Control.Concurrent.STM.TVar (writeTVar)
+import Control.Exception (SomeException, bracket)
 import Control.Exception.Base (handle)
-import Control.Exception (bracket)
-import GHC.IO.IOMode (IOMode(..))
-import System.IO (withFile)
-import System.Directory.Internal.Prelude (fromMaybe)
-import Simplex.Messaging.Transport.Client (TransportClientConfig(..))
+import Control.Logger.Simple (logDebug)
+import Control.Monad.Except
+import Control.Monad.STM (atomically)
+import Control.Monad.Trans.Except
+import qualified Data.Aeson as J
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
+import Data.ByteString.Builder (lazyByteString)
+import Data.List.NonEmpty (NonEmpty, fromList, nonEmpty)
+import Data.Maybe (isNothing)
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Word (Word16)
+import Foreign (Word32)
+import GHC.IO.Handle (hFileSize)
+import GHC.IO.IOMode (IOMode (..))
+import Network.HTTP.Types (Status)
+import qualified Network.HTTP.Types as N
+import Network.HTTP2.Client (FileSpec (..), Request)
+import qualified Network.HTTP2.Client as H
+import Network.HTTP2.Server (Response)
+import Network.Socket (ServiceName)
+import Network.TLS (HostName)
+import Simplex.FileTransfer.Protocol (FileCmd (FileCmd), FileCommand (FPUT), FilePartyI, FileResponse (..), SFileParty (SSender))
+import Simplex.FileTransfer.Server.Env (FileRequest (..))
+-- import Simplex.FileTransfer.Server.Store (NewFileRec (..))
+import Simplex.Messaging.Client hiding (qSize)
+import Simplex.Messaging.Crypto (APrivateSignKey)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String (StrEncoding (strDecode))
+import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Protocol (QueueId, RcvPublicVerifyKey, SndPublicVerifyKey, bs)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..))
 import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, HTTP2ClientConfig (..), HTTP2ClientError, HTTP2Response (HTTP2Response), defaultHTTP2ClientConfig, getHTTP2Client, respBody, response, sendRequest)
+import Simplex.Messaging.Util (bshow)
+import System.Directory.Internal.Prelude (fromMaybe)
+import System.IO (withFile)
 
 type FileClient = ProtocolClient FileResponse
 
@@ -92,9 +89,15 @@ createFileHTTPS2Request f = do
     headers = []
 
 getFileSize :: FilePath -> IO (Maybe Integer)
-getFileSize path = handle handler $ withFile path ReadMode (\h -> do
-  size <- hFileSize h
-  return $ Just size)
+getFileSize path =
+  handle handler $
+    withFile
+      path
+      ReadMode
+      ( \h -> do
+          size <- hFileSize h
+          return $ Just size
+      )
   where
     handler :: SomeException -> IO (Maybe Integer)
     handler _ = return Nothing
@@ -157,12 +160,16 @@ uploadFile http2 chunkId (_senderPubKey, senderPrivKey) file = do
 
 processUpload :: IO ()
 processUpload = do
-  client <- createFileClient "localhost" HTTP2ClientConfig{ qSize = 64,
-      connTimeout = 10000000,
-      transportConfig = TransportClientConfig Nothing Nothing True,
-      caStoreFile = "tests/fixtures/ca.crt",
-      suportedTLSParams = http2TLSParams
-    }
+  client <-
+    createFileClient
+      "localhost"
+      HTTP2ClientConfig
+        { qSize = 64,
+          connTimeout = 10000000,
+          transportConfig = TransportClientConfig Nothing Nothing True,
+          caStoreFile = "tests/fixtures/ca.crt",
+          suportedTLSParams = http2TLSParams
+        }
   c <- readTVarIO (https2Client client)
   case c of
     Just http2 -> do
@@ -178,10 +185,9 @@ uploadFile http2 f = do
   sendRequest (http2 :: HTTP2Client) req >>= \case
     Right (HTTP2Response response respBody _) -> do
       let status = H.responseStatus response
-          -- decodedBody = J.decodeStrict' respBody
+      -- decodedBody = J.decodeStrict' respBody
       logDebug $ "File response: " <> T.pack (show status)
       print "Done"
     Left _ -> do
       print "Error"
   pure Nothing
-
