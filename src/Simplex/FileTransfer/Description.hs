@@ -23,7 +23,6 @@ import Simplex.Messaging.Encoding.String
 data FileDescription = FileDescription
   { name :: String,
     size :: Int64,
-    chunkSize :: Word32,
     digest :: FileDigest,
     encKey :: C.Key,
     iv :: C.IV,
@@ -49,7 +48,7 @@ instance ToJSON FileDigest where
 data FileChunk = FileChunk
   { number :: Int,
     digest :: ByteString,
-    size :: Word32,
+    chunkSize :: Word32,
     replicas :: [FileChunkReplica]
   }
   deriving (Show)
@@ -87,6 +86,6 @@ data FilePartChunk = FilePartChunk
     rcvId :: ByteString,
     rcvKey :: C.APrivateSignKey,
     digest :: Maybe ByteString,
-    size :: Maybe Word32
+    chunkSize :: Maybe Word32
   }
   deriving (Show)
