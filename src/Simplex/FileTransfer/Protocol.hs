@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -107,8 +108,7 @@ instance Protocol FileResponse where
     _ -> Nothing
 
 data FileCommand (p :: FileParty) where
-  -- Sender key, recipients keys, chunk size
-  FNEW :: SndPublicVerifyKey -> NonEmpty RcvPublicVerifyKey -> Word32 -> FileCommand Sender
+  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> FileCommand Sender
   FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
   FPUT :: FileCommand Sender
   FDEL :: FileCommand Sender
@@ -122,14 +122,21 @@ data FileCmd = forall p. FilePartyI p => FileCmd (SFileParty p) (FileCommand p)
 
 deriving instance Show FileCmd
 
+data FileInfo = FileInfo
+  { sndKey :: SndPublicVerifyKey,
+    size :: Word32,
+    digest :: ByteString
+  }
+  deriving (Eq, Show)
+
 instance FilePartyI p => ProtocolEncoding (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
   encodeProtocol _v = \case
-    FNEW sKey dhKeys chunkSize -> e (FNEW_, ' ', sKey, dhKeys, chunkSize)
-    FADD dhKeys -> e (FADD_, ' ', dhKeys)
+    FNEW file rKeys -> e (FNEW_, ' ', file, rKeys)
+    FADD rKeys -> e (FADD_, ' ', rKeys)
     FPUT -> e FPUT_
     FDEL -> e FDEL_
-    FGET dhKey -> e (FGET_, ' ', dhKey)
+    FGET rKey -> e (FGET_, ' ', rKey)
     FACK -> e FACK_
     PING -> e PING_
     where
@@ -155,7 +162,7 @@ instance ProtocolEncoding FileCmd where
   protocolP _v = \case
     FCT SSender tag ->
       FileCmd SSender <$> case tag of
-        FNEW_ -> FNEW <$> _smpP <*> smpP <*> smpP
+        FNEW_ -> FNEW <$> _smpP <*> smpP
         FADD_ -> FADD <$> _smpP
         FPUT_ -> pure FPUT
         FDEL_ -> pure FDEL
@@ -166,6 +173,10 @@ instance ProtocolEncoding FileCmd where
         PING_ -> pure PING
 
   checkCredentials t (FileCmd p c) = FileCmd p <$> checkCredentials t c
+
+instance Encoding FileInfo where
+  smpEncode FileInfo {sndKey, size, digest} = smpEncode (sndKey, size, digest)
+  smpP = FileInfo <$> smpP <*> smpP <*> smpP
 
 data FileResponseTag
   = FRChunkIds_
