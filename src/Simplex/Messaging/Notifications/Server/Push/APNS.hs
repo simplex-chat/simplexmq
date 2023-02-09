@@ -32,10 +32,12 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.System
 import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
 import GHC.Generics (Generic)
 import Network.HTTP.Types (HeaderName, Status)
 import qualified Network.HTTP.Types as N
@@ -97,8 +99,8 @@ readECPrivateKey f = do
 data PushNotification
   = PNVerification NtfRegCode
   | PNMessage PNMessageData
-  -- | PNAlert Text
-  | PNCheckMessages
+  | -- | PNAlert Text
+    PNCheckMessages
   deriving (Show)
 
 data PNMessageData = PNMessageData
@@ -194,9 +196,9 @@ data APNSPushClientConfig = APNSPushClientConfig
     appName :: ByteString,
     appTeamId :: Text,
     apnsPort :: ServiceName,
-    http2cfg :: HTTP2ClientConfig
+    http2cfg :: HTTP2ClientConfig,
+    caStoreFile :: FilePath
   }
-  deriving (Show)
 
 apnsProviderHost :: PushProvider -> HostName
 apnsProviderHost = \case
@@ -215,7 +217,8 @@ defaultAPNSPushClientConfig =
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
       apnsPort = "443",
-      http2cfg = defaultHTTP2ClientConfig
+      http2cfg = defaultHTTP2ClientConfig,
+      caStoreFile = "/etc/ssl/cert.pem"
     }
 
 data APNSPushClient = APNSPushClient
@@ -259,8 +262,10 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
   pure (jwt, signedJWT)
 
 connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
-connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg} https2Client = do
-  r <- getHTTP2Client apnsHost apnsPort http2cfg disconnected
+connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg, caStoreFile} https2Client = do
+  caStore_ <- XS.readCertificateStore caStoreFile
+  when (isNothing caStore_) $ putStrLn $ "Error loading CertificateStore from " <> caStoreFile
+  r <- getHTTP2Client apnsHost apnsPort caStore_ http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
     Left e -> putStrLn $ "Error connecting to APNS: " <> show e
@@ -294,7 +299,8 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
-    -- apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
+
+-- apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
 
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
 apnsRequest c tkn ntf@APNSNotification {aps} = do

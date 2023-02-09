@@ -42,7 +42,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
-import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.Server
 import Test.Hspec
 import UnliftIO.Async
@@ -87,7 +86,7 @@ ntfServerCfg =
       apnsConfig =
         defaultAPNSPushClientConfig
           { apnsPort = apnsTestPort,
-            http2cfg = defaultHTTP2ClientConfig {caStoreFile = "tests/fixtures/ca.crt"}
+            caStoreFile = "tests/fixtures/ca.crt"
           },
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,

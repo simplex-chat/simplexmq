@@ -11,7 +11,6 @@ import qualified Control.Exception as E
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Maybe (isNothing)
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.X509.CertificateStore as XS
 import Network.HPACK (BufferSize, HeaderTable)
@@ -54,7 +53,6 @@ data HTTP2ClientConfig = HTTP2ClientConfig
     connTimeout :: Int,
     transportConfig :: TransportClientConfig,
     bufferSize :: BufferSize,
-    caStoreFile :: FilePath,
     suportedTLSParams :: T.Supported
   }
   deriving (Show)
@@ -66,18 +64,17 @@ defaultHTTP2ClientConfig =
       connTimeout = 10000000,
       transportConfig = TransportClientConfig Nothing Nothing True,
       bufferSize = 16384,
-      caStoreFile = "/etc/ssl/cert.pem",
       suportedTLSParams = http2TLSParams
     }
 
 data HTTP2ClientError = HCResponseTimeout | HCNetworkError | HCIOError IOException
   deriving (Show)
 
-getHTTP2Client :: HostName -> ServiceName -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
+getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
 getHTTP2Client host port = getVerifiedHTTP2Client Nothing (THDomainName host) port Nothing
 
-getVerifiedHTTP2Client :: Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
-getVerifiedHTTP2Client proxyUsername host port keyHash config@HTTP2ClientConfig {transportConfig, bufferSize, connTimeout, caStoreFile, suportedTLSParams} disconnected =
+getVerifiedHTTP2Client :: Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
+getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2ClientConfig {transportConfig, bufferSize, connTimeout, suportedTLSParams} disconnected =
   (atomically mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where
@@ -90,8 +87,6 @@ getVerifiedHTTP2Client proxyUsername host port keyHash config@HTTP2ClientConfig 
     runClient :: HClient -> IO (Either HTTP2ClientError HTTP2Client)
     runClient c = do
       cVar <- newEmptyTMVarIO
-      caStore <- XS.readCertificateStore caStoreFile
-      when (isNothing caStore) . putStrLn $ "Error loading CertificateStore from " <> caStoreFile
       action <-
         async $
           runHTTP2Client suportedTLSParams caStore transportConfig bufferSize proxyUsername host port keyHash (client c cVar)
