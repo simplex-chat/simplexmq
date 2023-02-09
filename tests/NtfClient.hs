@@ -41,7 +41,7 @@ import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
-import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Test.Hspec
 import UnliftIO.Async
@@ -175,6 +175,7 @@ apnsMockServerConfig =
     { qSize = 1,
       http2Port = apnsTestPort,
       bufferSize = 16384,
+      bodyHeadSize = 16384,
       serverSupported = http2TLSParams,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
@@ -210,16 +211,16 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
   pure APNSMockServer {action, apnsQ, http2Server}
   where
     runAPNSMockServer apnsQ HTTP2Server {reqQ} = forever $ do
-      HTTP2Request {reqBody, sendResponse} <- atomically $ readTBQueue reqQ
+      HTTP2Request {reqBody = HTTP2Body {bodyHead}, sendResponse} <- atomically $ readTBQueue reqQ
       let sendApnsResponse = \case
             APNSRespOk -> sendResponse $ H.responseNoBody N.ok200 []
             APNSRespError status reason ->
               sendResponse . H.responseBuilder status [] . lazyByteString $ J.encode APNSErrorResponse {reason}
-      case J.decodeStrict' reqBody of
+      case J.decodeStrict' bodyHead of
         Just notification ->
           atomically $ writeTBQueue apnsQ APNSMockRequest {notification, sendApnsResponse}
         _ -> do
-          putStrLn $ "runAPNSMockServer J.decodeStrict' error, reqBody: " <> show reqBody
+          putStrLn $ "runAPNSMockServer J.decodeStrict' error, reqBody: " <> show bodyHead
           sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 closeAPNSMockServer :: APNSMockServer -> IO ()
