@@ -46,7 +46,7 @@ instance ToJSON FileDigest where
   toEncoding = strToJEncoding
 
 data FileChunk = FileChunk
-  { number :: Int,
+  { chunkNo :: Int,
     digest :: ByteString,
     chunkSize :: Word32,
     replicas :: [FileChunkReplica]
@@ -82,7 +82,7 @@ data YAMLFilePart = YAMLFilePart
 instance FromJSON YAMLFilePart
 
 data FilePartChunk = FilePartChunk
-  { number :: Int,
+  { chunkNo :: Int,
     rcvId :: ByteString,
     rcvKey :: C.APrivateSignKey,
     digest :: Maybe ByteString,
