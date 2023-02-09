@@ -31,6 +31,21 @@ data FileDescription = FileDescription
   }
   deriving (Show)
 
+newtype FileDigest = FileDigest {unFileDigest :: ByteString}
+  deriving (Eq, Show)
+
+instance StrEncoding FileDigest where
+  strEncode (FileDigest fd) = strEncode fd
+  strDecode s = FileDigest <$> strDecode s
+  strP = FileDigest <$> strP
+
+instance FromJSON FileDigest where
+  parseJSON = strParseJSON "FileDigest"
+
+instance ToJSON FileDigest where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 data FileChunkDescription = FileChunkDescription
   { number :: Int,
     digest :: ByteString,
@@ -58,21 +73,6 @@ data YAMLFileDescription = YAMLFileDescription
   deriving (Eq, Show, Generic)
 
 instance FromJSON YAMLFileDescription
-
-newtype FileDigest = FileDigest {unFileDigest :: ByteString}
-  deriving (Eq, Show)
-
-instance StrEncoding FileDigest where
-  strEncode (FileDigest fd) = strEncode fd
-  strDecode s = FileDigest <$> strDecode s
-  strP = FileDigest <$> strP
-
-instance FromJSON FileDigest where
-  parseJSON = strParseJSON "FileDigest"
-
-instance ToJSON FileDigest where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
 
 data YAMLFilePartDescription = YAMLFilePartDescription
   { server :: String,
