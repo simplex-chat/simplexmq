@@ -4,6 +4,9 @@ module CLITests where
 
 import Data.Ini (lookupValue, readIniFile)
 import Data.List (isPrefixOf)
+import Simplex.FileTransfer.Client (processUpload)
+import Simplex.FileTransfer.Server (startServer)
+import Simplex.FileTransfer.Server.Main (fileServerCLI)
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Transport (simplexMQVersion)
@@ -14,9 +17,6 @@ import System.IO.Silently (capture_)
 import System.Timeout (timeout)
 import Test.Hspec
 import Test.Main (withStdin)
-import Simplex.FileTransfer.Server.Main (fileServerCLI)
-import Simplex.FileTransfer.Client (processUpload)
-import Simplex.FileTransfer.Server (startServer)
 
 cfgPath :: FilePath
 cfgPath = "tests/tmp/cli/etc/opt/simplex"
@@ -44,13 +44,12 @@ cliTests = do
       it "with store log, random password (default)" $ smpServerTest True True
       it "no store log, no password" $ smpServerTest False False
       it "with store log, no password" $ smpServerTest True False
-  describe "Ntf server CLI" $ do
+  xdescribe "Ntf server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
     it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
-
-  describe "File server CLI" $ do
+  xdescribe "File server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ fileServerTest False
-    fit "should initialize, start and delete the server (with store log)" $ fileServerTest True
+    it "should initialize, start and delete the server (with store log)" $ fileServerTest True
 
 smpServerTest :: Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do

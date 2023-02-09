@@ -175,6 +175,7 @@ apnsMockServerConfig =
   HTTP2ServerConfig
     { qSize = 1,
       http2Port = apnsTestPort,
+      bufferSize = 16384,
       serverSupported = http2TLSParams,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
