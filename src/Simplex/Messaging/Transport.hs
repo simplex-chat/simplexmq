@@ -56,9 +56,6 @@ module Simplex.Messaging.Transport
     transportErrorP,
     sendHandshake,
     getHandshake,
-
-    -- * Trim trailing CR
-    trimCR,
   )
 where
 
@@ -86,6 +83,7 @@ import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
+import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -152,8 +150,7 @@ data TLS = TLS
   { tlsContext :: T.Context,
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
-    buffer :: TVar ByteString,
-    getLock :: TMVar ()
+    tlsBuffer :: TBuffer
   }
 
 connectTLS :: T.TLSParams p => Maybe HostName -> Bool -> p -> Socket -> IO T.Context
@@ -169,9 +166,8 @@ getTLS :: TransportPeer -> T.Context -> IO TLS
 getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
-      buffer <- newTVarIO ""
-      getLock <- newTMVarIO ()
-      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
+      tlsBuffer <- atomically newTBuffer
+      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -209,51 +205,21 @@ instance Transport TLS where
   closeConnection tls = closeTLS $ tlsContext tls
 
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, buffer, getLock} n =
-    E.bracket_
-      (atomically $ takeTMVar getLock)
-      (atomically $ putTMVar getLock ())
-      $ do
-        b <- readChunks =<< readTVarIO buffer
-        let (s, b') = B.splitAt n b
-        atomically $ writeTVar buffer $! b'
-        pure s
-    where
-      readChunks :: ByteString -> IO ByteString
-      readChunks b
-        | B.length b >= n = pure b
-        | otherwise =
-          T.recvData tlsContext >>= \case
-            -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
-            "" -> ioe_EOF
-            s -> readChunks $ b <> s
+  cGet TLS {tlsContext, tlsBuffer} n = do
+    s <- getBuffered tlsBuffer n (T.recvData tlsContext)
+    -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
+    if B.length s == n then pure s else ioe_EOF
 
   cPut :: TLS -> ByteString -> IO ()
   cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
 
   getLn :: TLS -> IO ByteString
-  getLn TLS {tlsContext, buffer, getLock} = do
-    E.bracket_
-      (atomically $ takeTMVar getLock)
-      (atomically $ putTMVar getLock ())
-      $ do
-        b <- readChunks =<< readTVarIO buffer
-        let (s, b') = B.break (== '\n') b
-        atomically $ writeTVar buffer $! B.drop 1 b' -- drop '\n' we made a break at
-        pure $ trimCR s
+  getLn TLS {tlsContext, tlsBuffer} = do
+    getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catch` handleEOF
     where
-      readChunks :: ByteString -> IO ByteString
-      readChunks b
-        | B.elem '\n' b = pure b
-        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
       handleEOF = \case
         T.Error_EOF -> E.throwIO TEBadBlock
         e -> E.throwIO e
-
--- | Trim trailing CR from ByteString.
-trimCR :: ByteString -> ByteString
-trimCR "" = ""
-trimCR s = if B.last s == '\r' then B.init s else s
 
 -- * SMP transport
 
