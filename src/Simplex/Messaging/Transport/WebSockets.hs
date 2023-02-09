@@ -19,9 +19,9 @@ import Simplex.Messaging.Transport
     TransportPeer (..),
     closeTLS,
     smpBlockSize,
-    trimCR,
     withTlsUnique,
   )
+import Simplex.Messaging.Transport.Buffer (trimCR)
 
 data WS = WS
   { wsPeer :: TransportPeer,

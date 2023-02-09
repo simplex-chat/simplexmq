@@ -38,7 +38,7 @@ import qualified Data.Map.Strict as M
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..), ServerQueueStatus (..))
-import Simplex.Messaging.Transport (trimCR)
+import Simplex.Messaging.Transport.Buffer (trimCR)
 import System.Directory (doesFileExist)
 import System.IO
 

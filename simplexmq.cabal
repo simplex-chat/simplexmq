@@ -92,6 +92,7 @@ library
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.TMap
       Simplex.Messaging.Transport
+      Simplex.Messaging.Transport.Buffer
       Simplex.Messaging.Transport.Client
       Simplex.Messaging.Transport.HTTP2
       Simplex.Messaging.Transport.HTTP2.Client
