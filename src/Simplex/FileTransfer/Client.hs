@@ -64,7 +64,7 @@ createFileClient host cfg = do
 
 connectHTTPS2 :: HostName -> ServiceName -> HTTP2ClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
 connectHTTPS2 host port http2cfg https2Client = do
-  r <- getHTTP2Client host port http2cfg disconnected
+  r <- getHTTP2Client host port Nothing http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
     Left e -> putStrLn $ "Error connecting to host: " <> show e
@@ -167,7 +167,7 @@ processUpload = do
         { qSize = 64,
           connTimeout = 10000000,
           transportConfig = TransportClientConfig Nothing Nothing True,
-          caStoreFile = "tests/fixtures/ca.crt",
+          bufferSize = 16384,
           suportedTLSParams = http2TLSParams
         }
   c <- readTVarIO (https2Client client)
