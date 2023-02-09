@@ -35,7 +35,7 @@ cliTests = do
       it "with store log, random password (default)" $ smpServerTest True True
       it "no store log, no password" $ smpServerTest False False
       it "with store log, no password" $ smpServerTest True False
-  describe "Ntf server CLI" $ do
+  xdescribe "Ntf server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
     it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
 

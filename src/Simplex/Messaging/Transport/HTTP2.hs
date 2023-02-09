@@ -7,14 +7,14 @@ import Network.HPACK (BufferSize)
 import Network.HTTP2.Client (Config (..), defaultPositionReadMaker, freeSimpleConfig)
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
-import Simplex.Messaging.Transport (TLS, Transport (cGet, cPut))
+import Simplex.Messaging.Transport (SessionId, TLS (tlsUniq), Transport (cGet, cPut))
 import qualified System.TimeManager as TI
 
-withTlsConfig :: TLS -> BufferSize -> (Config -> IO ()) -> IO ()
-withTlsConfig c sz = E.bracket (allocTlsConfig c sz) freeSimpleConfig
+withHTTP2 :: BufferSize -> (Config -> SessionId -> IO ()) -> TLS -> IO ()
+withHTTP2 sz run c = E.bracket (allocHTTP2Config c sz) freeSimpleConfig (`run` tlsUniq c)
 
-allocTlsConfig :: TLS -> BufferSize -> IO Config
-allocTlsConfig c sz = do
+allocHTTP2Config :: TLS -> BufferSize -> IO Config
+allocHTTP2Config c sz = do
   buf <- mallocBytes sz
   tm <- TI.initialize $ 30 * 1000000
   pure
