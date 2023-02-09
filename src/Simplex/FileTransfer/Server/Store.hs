@@ -17,6 +17,7 @@ import Control.Concurrent.STM
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
+import Simplex.FileTransfer.Protocol (FileInfo)
 import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -29,9 +30,9 @@ data FileStore = FileStore
 
 data FileRec = FileRec
   { senderId :: SenderId,
-    senderKey :: SndPublicVerifyKey,
-    recipientIds :: TVar (Set RecipientId),
-    filepath :: TVar (Maybe FilePath)
+    fileInfo :: FileInfo,
+    filePath :: TVar (Maybe FilePath),
+    recipientIds :: TVar (Set RecipientId)
   }
   deriving (Eq)
 
@@ -41,23 +42,23 @@ newQueueStore = do
   recipients <- TM.empty
   pure FileStore {files, recipients}
 
-addFile :: FileStore -> SenderId -> SndPublicVerifyKey -> STM (Either ErrorType ())
-addFile FileStore {files} sId sKey =
+addFile :: FileStore -> SenderId -> FileInfo -> STM (Either ErrorType ())
+addFile FileStore {files} sId fileInfo =
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
-    f <- newFileRec sId sKey
+    f <- newFileRec sId fileInfo
     TM.insert sId f files
     pure $ Right ()
 
-newFileRec :: SenderId -> SndPublicVerifyKey -> STM FileRec
-newFileRec senderId senderKey = do
+newFileRec :: SenderId -> FileInfo -> STM FileRec
+newFileRec senderId fileInfo = do
   recipientIds <- newTVar S.empty
-  filepath <- newTVar Nothing
-  pure FileRec {senderId, senderKey, recipientIds, filepath}
+  filePath <- newTVar Nothing
+  pure FileRec {senderId, fileInfo, filePath, recipientIds}
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either ErrorType ())
 setFilePath st sId fPath =
-  withFile st sId $ \FileRec {filepath} ->
-    writeTVar filepath (Just fPath) $> Right ()
+  withFile st sId $ \FileRec {filePath} ->
+    writeTVar filePath (Just fPath) $> Right ()
 
 addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either ErrorType ())
 addRecipient st@FileStore {recipients} senderId recipient@(rId, _) =
@@ -82,8 +83,6 @@ deleteFile FileStore {files, recipients} senderId = do
 getFile :: FileStore -> SenderId -> STM (Either ErrorType FileRec)
 getFile st sId = withFile st sId $ pure . Right
 
--- TODO possibly, if acknowledgement of file reception by the last recipient
--- is going to lead to deleting the file this has to be updated and return some value to delete the actual file
 ackFile :: FileStore -> RecipientId -> STM (Either ErrorType ())
 ackFile st@FileStore {recipients} recipientId = do
   TM.lookupDelete recipientId recipients >>= \case
