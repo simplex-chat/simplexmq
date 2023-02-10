@@ -1,4 +1,6 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -28,22 +30,40 @@ yamlFileDesc =
       parts =
         [ YAMLFilePart
             { server = "xftp://abc=@example1.com",
-              chunks = ["1:abc=:def=:ghi=", "3:abc=:def=:ghi="]
+              chunks =
+                [ YAMLFilePartChunk {c = 1, r, k, d = Just d, s = Nothing},
+                  YAMLFilePartChunk {c = 3, r, k, d = Just d, s = Nothing}
+                ]
             },
           YAMLFilePart
             { server = "xftp://abc=@example2.com",
-              chunks = ["2:abc=:def=:ghi=", "4:abc=:def=:ghi=:2mb"]
+              chunks =
+                [ YAMLFilePartChunk {c = 2, r, k, d = Just d, s = Nothing},
+                  YAMLFilePartChunk {c = 4, r, k, d = Just d, s = Just "2mb"}
+                ]
             },
           YAMLFilePart
             { server = "xftp://abc=@example3.com",
-              chunks = ["1:abc=:def=", "4:abc=:def="]
+              chunks =
+                [ YAMLFilePartChunk {c = 1, r, k, d = Nothing, s = Nothing},
+                  YAMLFilePartChunk {c = 4, r, k, d = Nothing, s = Nothing}
+                ]
             },
           YAMLFilePart
             { server = "xftp://abc=@example4.com",
-              chunks = ["2:abc=:def=", "3:abc=:def="]
+              chunks =
+                [ YAMLFilePartChunk {c = 2, r, k, d = Nothing, s = Nothing},
+                  YAMLFilePartChunk {c = 3, r, k, d = Nothing, s = Nothing}
+                ]
             }
         ]
     }
+  where
+    r = FileChunkRcvId "i\183"
+    -- rk :: C.PrivateKey 'C.Ed25519
+    -- rk = "i\183"
+    k = C.Key "i\183"
+    d = FileDigest "i\183"
 
 fileDescriptionTests :: Spec
 fileDescriptionTests =

@@ -5,19 +5,40 @@ iv: abc=
 name: file.ext
 parts:
 - chunks:
-  - 1:abc=:def=:ghi=
-  - 3:abc=:def=:ghi=
+  - c: 1
+    d: abc=
+    k: abc=
+    r: abc=
+  - c: 3
+    d: abc=
+    k: abc=
+    r: abc=
   server: xftp://abc=@example1.com
 - chunks:
-  - 2:abc=:def=:ghi=
-  - 4:abc=:def=:ghi=:2mb
+  - c: 2
+    d: abc=
+    k: abc=
+    r: abc=
+  - c: 4
+    d: abc=
+    k: abc=
+    r: abc=
+    s: 2mb
   server: xftp://abc=@example2.com
 - chunks:
-  - 1:abc=:def=
-  - 4:abc=:def=
+  - c: 1
+    k: abc=
+    r: abc=
+  - c: 4
+    k: abc=
+    r: abc=
   server: xftp://abc=@example3.com
 - chunks:
-  - 2:abc=:def=
-  - 3:abc=:def=
+  - c: 2
+    k: abc=
+    r: abc=
+  - c: 3
+    k: abc=
+    r: abc=
   server: xftp://abc=@example4.com
 size: 33200000

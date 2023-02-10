@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -7,8 +8,10 @@ module Simplex.FileTransfer.Description
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
+    FileChunkRcvId (..),
     YAMLFileDescription (..),
     YAMLFilePart (..),
+    YAMLFilePartChunk (..),
   )
 where
 
@@ -37,7 +40,7 @@ newtype FileDigest = FileDigest {unFileDigest :: ByteString}
 
 instance StrEncoding FileDigest where
   strEncode (FileDigest fd) = strEncode fd
-  strDecode s = FileDigest <$> strDecode s
+  strDecode str = FileDigest <$> strDecode str
   strP = FileDigest <$> strP
 
 instance FromJSON FileDigest where
@@ -57,10 +60,25 @@ data FileChunk = FileChunk
 
 data FileChunkReplica = FileChunkReplica
   { server :: String,
-    rcvId :: ByteString,
+    rcvId :: FileChunkRcvId,
     rcvKey :: C.APrivateSignKey
   }
   deriving (Show)
+
+newtype FileChunkRcvId = FileChunkRcvId {unFileChunkRcvId :: ByteString}
+  deriving (Eq, Show)
+
+instance StrEncoding FileChunkRcvId where
+  strEncode (FileChunkRcvId fid) = strEncode fid
+  strDecode str = FileChunkRcvId <$> strDecode str
+  strP = FileChunkRcvId <$> strP
+
+instance FromJSON FileChunkRcvId where
+  parseJSON = strParseJSON "FileChunkRcvId"
+
+instance ToJSON FileChunkRcvId where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 data YAMLFileDescription = YAMLFileDescription
   { name :: String,
@@ -79,7 +97,7 @@ instance ToJSON YAMLFileDescription where
 
 data YAMLFilePart = YAMLFilePart
   { server :: String,
-    chunks :: [String]
+    chunks :: [YAMLFilePartChunk]
   }
   deriving (Eq, Show, Generic, FromJSON)
 
@@ -87,11 +105,25 @@ instance ToJSON YAMLFilePart where
   toJSON = J.genericToJSON J.defaultOptions
   toEncoding = J.genericToEncoding J.defaultOptions
 
-data FilePartChunk = FilePartChunk
-  { chunkNo :: Int,
-    rcvId :: ByteString,
-    rcvKey :: C.APrivateSignKey,
-    digest :: Maybe ByteString,
-    chunkSize :: Maybe Word32
+data YAMLFilePartChunk = YAMLFilePartChunk
+  { c :: Int, -- chunkNo
+    r :: FileChunkRcvId, -- rcvId
+    -- k :: C.PrivateKey 'C.Ed25519, -- rcvKey
+    k :: C.Key, -- rcvKey
+    d :: Maybe FileDigest, -- digest
+    s :: Maybe String -- chunkSize
   }
-  deriving (Show)
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance ToJSON YAMLFilePartChunk where
+  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
+  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+-- data FilePartChunk = FilePartChunk
+--   { chunkNo :: Int,
+--     rcvId :: ByteString,
+--     rcvKey :: C.APrivateSignKey,
+--     digest :: Maybe ByteString,
+--     chunkSize :: Maybe Word32
+--   }
+--   deriving (Show)
