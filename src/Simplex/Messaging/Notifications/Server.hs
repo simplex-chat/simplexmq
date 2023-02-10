@@ -319,7 +319,7 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: Transport c => THandle c -> NtfServerClient -> M ()
 receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
-  ts <- tGet th
+  ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
     atomically . writeTVar activeAt =<< liftIO getSystemTime
     logDebug "received transmission"
