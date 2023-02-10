@@ -91,7 +91,7 @@ tPut1 h t = do
 
 tGet1 :: (ProtocolEncoding cmd, Transport c, MonadIO m, MonadFail m) => THandle c -> m (SignedTransmission cmd)
 tGet1 h = do
-  [r] <- tGet h
+  [r] <- liftIO $ tGet h
   pure r
 
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion

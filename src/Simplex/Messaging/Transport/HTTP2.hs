@@ -19,6 +19,9 @@ import Simplex.Messaging.Transport (SessionId, TLS (tlsUniq), Transport (cGet, c
 import Simplex.Messaging.Transport.Buffer
 import qualified System.TimeManager as TI
 
+defaultHTTP2BufferSize :: BufferSize
+defaultHTTP2BufferSize = 32768
+
 withHTTP2 :: BufferSize -> (Config -> SessionId -> IO ()) -> TLS -> IO ()
 withHTTP2 sz run c = E.bracket (allocHTTP2Config c sz) freeSimpleConfig (`run` tlsUniq c)
 
