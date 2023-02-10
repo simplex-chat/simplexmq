@@ -15,8 +15,7 @@ module Simplex.FileTransfer.Description
     FileChunkRcvId (..),
     YAMLFileDescription (..),
     YAMLFilePart (..),
-    YAMLFilePartChunk (..),
-    processFileDescription,
+    -- processFileDescription,
     serializeFileDescription,
   )
 where
@@ -107,7 +106,7 @@ instance ToJSON YAMLFileDescription where
 
 data YAMLFilePart = YAMLFilePart
   { server :: String,
-    chunks :: [YAMLFilePartChunk]
+    chunks :: [String]
   }
   deriving (Eq, Show, Generic, FromJSON)
 
@@ -115,64 +114,50 @@ instance ToJSON YAMLFilePart where
   toJSON = J.genericToJSON J.defaultOptions
   toEncoding = J.genericToEncoding J.defaultOptions
 
-data YAMLFilePartChunk = YAMLFilePartChunk
-  { c :: Int, -- chunkNo
-    r :: FileChunkRcvId, -- rcvId
-    -- k :: C.PrivateKey 'C.Ed25519, -- rcvKey
-    k :: C.Key, -- rcvKey
-    d :: Maybe FileDigest, -- digest
-    s :: Maybe String -- chunkSize
+data FilePartChunk = FilePartChunk
+  { chunkNo :: Int,
+    rcvId :: FileChunkRcvId,
+    rcvKey :: C.Key, -- C.APrivateSignKey -- ? C.PrivateKey 'C.Ed25519
+    digest :: Maybe FileDigest,
+    chunkSize :: Maybe Word32
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Show)
 
-instance ToJSON YAMLFilePartChunk where
-  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
-  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
-
--- data FilePartChunk = FilePartChunk
---   { chunkNo :: Int,
---     rcvId :: ByteString,
---     rcvKey :: C.APrivateSignKey,
---     digest :: Maybe ByteString,
---     chunkSize :: Maybe Word32
---   }
---   deriving (Show)
-
-processFileDescription :: ByteString -> IO FileDescription
-processFileDescription bs = do
-  YAMLFileDescription {name, size, chunkSize, digest, encKey, iv, parts} <- Y.decodeThrow bs
-  let chunks = partsToChunks chunkSize parts
-  pure FileDescription {name, size, digest, encKey, iv, chunks}
-  where
-    partsToChunks :: String -> [YAMLFilePart] -> [FileChunk]
-    partsToChunks fChunkSize parts =
-      map
-        (\fc@FileChunk {replicas} -> fc {replicas = reverse replicas})
-        (M.elems $ processParts M.empty parts)
-      where
-        processParts :: Map Int FileChunk -> [YAMLFilePart] -> Map Int FileChunk
-        processParts cm [] = cm
-        processParts cm (YAMLFilePart {server, chunks} : ps) = processParts (processChunks cm chunks) ps
-          where
-            processChunks :: Map Int FileChunk -> [YAMLFilePartChunk] -> Map Int FileChunk
-            processChunks cm' [] = cm'
-            processChunks cm' (c : cs) = processChunks (processChunk cm' c) cs
-            processChunk :: Map Int FileChunk -> YAMLFilePartChunk -> Map Int FileChunk
-            processChunk cm' YAMLFilePartChunk {c = chunkNo, r = rcvId, k = rcvKey, d = digest_, s = chunkSize_} =
-              case M.lookup chunkNo cm' of
-                Nothing ->
-                  let digest = fromMaybe (FileDigest "") digest_ -- throw?
-                      chunkSize = processChunkSize (fromMaybe fChunkSize chunkSize_)
-                      replicas = [FileChunkReplica {server, rcvId, rcvKey}]
-                   in M.insert chunkNo FileChunk {chunkNo, digest, chunkSize, replicas} cm'
-                Just fc@FileChunk {replicas} ->
-                  let replicas' = FileChunkReplica {server, rcvId, rcvKey} : replicas
-                   in M.insert chunkNo fc {replicas = replicas'} cm'
-            processChunkSize :: String -> Word32
-            processChunkSize = \case
-              "8mb" -> 8 * 1024 * 1024
-              "2mb" -> 2 * 1024 * 1024
-              _ -> 0
+-- processFileDescription :: ByteString -> IO FileDescription
+-- processFileDescription bs = do
+--   YAMLFileDescription {name, size, chunkSize, digest, encKey, iv, parts} <- Y.decodeThrow bs
+--   let chunks = partsToChunks chunkSize parts
+--   pure FileDescription {name, size, digest, encKey, iv, chunks}
+--   where
+--     partsToChunks :: String -> [YAMLFilePart] -> [FileChunk]
+--     partsToChunks fChunkSize parts =
+--       map
+--         (\fc@FileChunk {replicas} -> fc {replicas = reverse replicas})
+--         (M.elems $ processParts M.empty parts)
+--       where
+--         processParts :: Map Int FileChunk -> [YAMLFilePart] -> Map Int FileChunk
+--         processParts cm [] = cm
+--         processParts cm (YAMLFilePart {server, chunks} : ps) = processParts (processChunks cm chunks) ps
+--           where
+--             processChunks :: Map Int FileChunk -> [YAMLFilePartChunk] -> Map Int FileChunk
+--             processChunks cm' [] = cm'
+--             processChunks cm' (c : cs) = processChunks (processChunk cm' c) cs
+--             processChunk :: Map Int FileChunk -> YAMLFilePartChunk -> Map Int FileChunk
+--             processChunk cm' YAMLFilePartChunk {c = chunkNo, r = rcvId, k = rcvKey, d = digest_, s = chunkSize_} =
+--               case M.lookup chunkNo cm' of
+--                 Nothing ->
+--                   let digest = fromMaybe (FileDigest "") digest_ -- throw?
+--                       chunkSize = processChunkSize (fromMaybe fChunkSize chunkSize_)
+--                       replicas = [FileChunkReplica {server, rcvId, rcvKey}]
+--                    in M.insert chunkNo FileChunk {chunkNo, digest, chunkSize, replicas} cm'
+--                 Just fc@FileChunk {replicas} ->
+--                   let replicas' = FileChunkReplica {server, rcvId, rcvKey} : replicas
+--                    in M.insert chunkNo fc {replicas = replicas'} cm'
+--             processChunkSize :: String -> Word32
+--             processChunkSize = \case
+--               "8mb" -> 8 * 1024 * 1024
+--               "2mb" -> 2 * 1024 * 1024
+--               _ -> 0
 
 serializeFileDescription :: FileDescription -> ByteString
 serializeFileDescription _fd = ""

@@ -5,40 +5,19 @@ iv: Z2hp
 name: file.ext
 parts:
 - chunks:
-  - c: 1
-    d: Z2hp
-    k: ZGVm
-    r: YWJj
-  - c: 3
-    d: Z2hp
-    k: ZGVm
-    r: YWJj
+  - 1:YWJj:ZGVm:Z2hp
+  - 3:YWJj:ZGVm:Z2hp
   server: xftp://abc=@example1.com
 - chunks:
-  - c: 2
-    d: Z2hp
-    k: ZGVm
-    r: YWJj
-  - c: 4
-    d: Z2hp
-    k: ZGVm
-    r: YWJj
-    s: 2mb
+  - 2:YWJj:ZGVm:Z2hp
+  - 4:YWJj:ZGVm:Z2hp:2mb
   server: xftp://abc=@example2.com
 - chunks:
-  - c: 1
-    k: ZGVm
-    r: YWJj
-  - c: 4
-    k: ZGVm
-    r: YWJj
+  - 1:YWJj:ZGVm
+  - 4:YWJj:ZGVm
   server: xftp://abc=@example3.com
 - chunks:
-  - c: 2
-    k: ZGVm
-    r: YWJj
-  - c: 3
-    k: ZGVm
-    r: YWJj
+  - 2:YWJj:ZGVm
+  - 3:YWJj:ZGVm
   server: xftp://abc=@example4.com
 size: 33200000
