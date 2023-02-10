@@ -19,14 +19,14 @@ import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (RcvPublicVerifyKey, Transmission)
-import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
-data FileServerConfig = FileServerConfig
-  { transports :: [(ServiceName, ATransport)],
+data XFTPServerConfig = XFTPServerConfig
+  { xftpPort :: ServiceName,
     fileIdSize :: Int,
     storeLogFile :: Maybe FilePath,
     -- CA certificate private key is not needed for initialization
@@ -41,16 +41,8 @@ data FileServerConfig = FileServerConfig
     logTLSErrors :: Bool
   }
 
-defaultInactiveClientExpiration :: ExpirationConfig
-defaultInactiveClientExpiration =
-  ExpirationConfig
-    { ttl = 7200, -- 2 hours
-      checkInterval = 3600 -- seconds, 1 hour
-    }
-
-data FileEnv = FileEnv
-  { config :: FileServerConfig,
-    -- subscriber :: FileSubscriber,
+data XFTPEnv = XFTPEnv
+  { config :: XFTPServerConfig,
     store :: FileStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
     idsDrg :: TVar ChaChaDRG,
@@ -59,16 +51,16 @@ data FileEnv = FileEnv
     serverStats :: FileServerStats
   }
 
-newFileServerEnv :: (MonadUnliftIO m, MonadRandom m) => FileServerConfig -> m FileEnv
-newFileServerEnv config@FileServerConfig {storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
+newXFTPServerEnv :: (MonadUnliftIO m, MonadRandom m) => XFTPServerConfig -> m XFTPEnv
+newXFTPServerEnv config@XFTPServerConfig {storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- drgNew >>= newTVarIO
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
-  pure FileEnv {config, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
-data FileRequest
-  = FileReqNew FileInfo (NonEmpty RcvPublicVerifyKey)
-  | forall e. FilePartyI e => FileReqCmd (Transmission (FileCommand e))
+data XFTPRequest
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey)
+  | forall e. FilePartyI e => XFTPReqCmd (Transmission (FileCommand e))

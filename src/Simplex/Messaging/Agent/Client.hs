@@ -695,6 +695,7 @@ temporaryClientError :: ProtocolClientError -> Bool
 temporaryClientError = \case
   PCENetworkError -> True
   PCEResponseTimeout -> True
+  PCEIOError _ -> True
   _ -> False
 
 temporaryAgentError :: AgentErrorType -> Bool

@@ -15,11 +15,11 @@ import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Network.Socket (HostName)
+import Network.Socket (HostName, ServiceName)
 import Options.Applicative
-import Simplex.FileTransfer.Client (processUpload)
-import Simplex.FileTransfer.Server (startServer)
-import Simplex.FileTransfer.Server.Env (FileServerConfig (..))
+-- import Simplex.FileTransfer.Client (processUpload)
+-- import Simplex.FileTransfer.Server (startServer)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern FileServer)
 import Simplex.Messaging.Server.CLI
@@ -31,14 +31,15 @@ import Text.Read (readMaybe)
 
 fileServerCLI :: FilePath -> FilePath -> IO ()
 fileServerCLI cfgPath logPath = do
-  startServer
+  -- startServer
   threadDelay 10000000
-  processUpload
+
+-- processUpload
 
 fileServerCLIOrig :: FilePath -> FilePath -> IO ()
 fileServerCLIOrig cfgPath logPath = do
-  startServer
-  processUpload
+  -- startServer
+  -- processUpload
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -86,27 +87,32 @@ fileServerCLIOrig cfgPath logPath = do
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n\
-               \websockets: off\n"
+            <> "log_tls_errors: off\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@FileServerConfig {transports, storeLogFile} = serverConfig
+          cfg@XFTPServerConfig {xftpPort, storeLogFile} = serverConfig
           srv = ProtoServerWithAuth (FileServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
-      printServerConfig transports storeLogFile
+      printXFTPConfig xftpPort storeLogFile
       where
         -- runFileServer cfg
 
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        printXFTPConfig xftpPort logFile = do
+          putStrLn $ case logFile of
+            Just f -> "Store log: " <> f
+            _ -> "Store log disabled."
+          putStrLn $ "Listening on port " <> xftpPort <> "..."
+
         serverConfig =
-          FileServerConfig
-            { transports = iniTransports ini,
+          XFTPServerConfig
+            { xftpPort = T.unpack $ strictIni "TRANSPORT" "port" ini,
               fileIdSize = 16,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               caCertificateFile = c caCrtFile,

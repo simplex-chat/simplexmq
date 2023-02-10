@@ -37,6 +37,13 @@ import Simplex.Messaging.Protocol
     _smpP,
   )
 import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Version
+
+currentXFTPVersion :: Version
+currentXFTPVersion = 1
+
+xftpBlockSize :: Int
+xftpBlockSize = 16384
 
 -- | File protocol clients
 data FileParty = Recipient | Sender
@@ -131,6 +138,8 @@ data FileInfo = FileInfo
     digest :: ByteString
   }
   deriving (Eq, Show)
+
+type XFTPFileId = ByteString
 
 instance FilePartyI p => ProtocolEncoding (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
