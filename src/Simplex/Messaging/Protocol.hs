@@ -126,6 +126,10 @@ module Simplex.Messaging.Protocol
     -- * TCP transport functions
     tPut,
     tGet,
+    tParse,
+    tDecodeParseValidate,
+    tEncode,
+    tEncodeBatch,
 
     -- * exports for tests
     CommandTag (..),
@@ -1169,7 +1173,7 @@ tPut th trs
     tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO [Either TransportError ()]
     tPutBatch rs ts = do
       let (n, s, ts_) = encodeBatch 0 "" ts
-      r <- if n == 0 then largeMsg else replicate n <$> tPutLog (lenEncode n `B.cons` s)
+      r <- if n == 0 then largeMsg else replicate n <$> tPutLog (tEncodeBatch n s)
       let rs' = rs <> r
       case ts_ of
         Just ts' -> tPutBatch rs' ts'
@@ -1192,7 +1196,12 @@ tPut th trs
               else case L.nonEmpty ts_ of
                 Just ts' -> encodeBatch n' s' ts'
                 _ -> (n', s', Nothing)
-    tEncode (sig, tr) = smpEncode (C.signatureBytes sig) <> tr
+
+tEncode :: C.CryptoSignature s => (s, ByteString) -> ByteString
+tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
+
+tEncodeBatch :: Int -> ByteString -> ByteString
+tEncodeBatch n s = lenEncode n `B.cons` s
 
 encodeTransmission :: ProtocolEncoding c => Version -> ByteString -> Transmission c -> ByteString
 encodeTransmission v sessionId (CorrId corrId, queueId, command) =
@@ -1200,33 +1209,36 @@ encodeTransmission v sessionId (CorrId corrId, queueId, command) =
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (NonEmpty (Either TransportError RawTransmission))
-tGetParse th
-  | batch th = either ((:| []) . Left) id <$> runExceptT getBatch
-  | otherwise = (:| []) . (parse transmissionP TEBadBlock =<<) <$> tGetBlock th
+tGetParse th = eitherList (tParse $ batch th) <$> tGetBlock th
+
+tParse :: Bool -> ByteString -> NonEmpty (Either TransportError RawTransmission)
+tParse batch s
+  | batch = eitherList (L.map (\(Large t) -> tParse1 t)) ts
+  | otherwise = [tParse1 s]
   where
-    getBatch :: ExceptT TransportError IO (NonEmpty (Either TransportError RawTransmission))
-    getBatch = do
-      s <- ExceptT $ tGetBlock th
-      ts <- liftEither $ parse smpP TEBadBlock s
-      pure $ L.map (\(Large t) -> parse transmissionP TEBadBlock t) ts
+    tParse1 = parse transmissionP TEBadBlock
+    ts = parse smpP TEBadBlock s
+
+eitherList :: (a -> NonEmpty (Either e b)) -> Either e a -> NonEmpty (Either e b)
+eitherList = either (\e -> [Left e])
 
 -- | Receive client and server transmissions (determined by `cmd` type).
 tGet :: forall cmd c m. (ProtocolEncoding cmd, Transport c, MonadIO m) => THandle c -> m (NonEmpty (SignedTransmission cmd))
-tGet th@THandle {sessionId, thVersion = v} = liftIO (tGetParse th) >>= mapM decodeParseValidate
+tGet th@THandle {sessionId, thVersion = v} = liftIO $ L.map (tDecodeParseValidate sessionId v) <$> tGetParse th
+
+tDecodeParseValidate :: forall cmd. ProtocolEncoding cmd => SessionId -> Version -> Either TransportError RawTransmission -> SignedTransmission cmd
+tDecodeParseValidate sessionId v = \case
+  Right RawTransmission {signature, signed, sessId, corrId, entityId, command}
+    | sessId == sessionId ->
+      let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
+       in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
+    | otherwise -> (Nothing, "", (CorrId corrId, "", Left SESSION))
+  Left _ -> tError ""
   where
-    decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
-    decodeParseValidate = \case
-      Right RawTransmission {signature, signed, sessId, corrId, entityId, command}
-        | sessId == sessionId ->
-          let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
-           in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
-        | otherwise -> pure (Nothing, "", (CorrId corrId, "", Left SESSION))
-      Left _ -> tError ""
+    tError :: ByteString -> SignedTransmission cmd
+    tError corrId = (Nothing, "", (CorrId corrId, "", Left BLOCK))
 
-    tError :: ByteString -> m (SignedTransmission cmd)
-    tError corrId = pure (Nothing, "", (CorrId corrId, "", Left BLOCK))
-
-    tParseValidate :: ByteString -> SignedRawTransmission -> m (SignedTransmission cmd)
-    tParseValidate signed t@(sig, corrId, entityId, command) = do
+    tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission cmd
+    tParseValidate signed t@(sig, corrId, entityId, command) =
       let cmd = parseProtocol v command >>= checkCredentials t
-      pure (sig, signed, (CorrId corrId, entityId, cmd))
+       in (sig, signed, (CorrId corrId, entityId, cmd))

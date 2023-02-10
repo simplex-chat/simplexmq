@@ -13,7 +13,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Transport (SessionId)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body, getHTTP2Body, withHTTP2)
+import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (loadSupportedTLSServerParams, runTransportServer)
 
 type HTTP2ServerFunc = SessionId -> Request -> (Response -> IO ()) -> IO ()
@@ -43,6 +43,7 @@ data HTTP2Server = HTTP2Server
     reqQ :: TBQueue HTTP2Request
   }
 
+-- This server is for testing only, it processes all requests in a single queue.
 getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
 getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, caCertificateFile, certificateFile, privateKeyFile, logTLSErrors} = do
   tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile
