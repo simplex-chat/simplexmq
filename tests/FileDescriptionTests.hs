@@ -140,6 +140,6 @@ testSerializeFileDescription = do
 
 testProcessFileDescription :: IO ()
 testProcessFileDescription = do
-  fds <- B.readFile fileDescPath
-  fd <- processFileDescription fds
+  fdStr <- B.readFile fileDescPath
+  fd <- processFileDescription fdStr
   fd `shouldBe` fileDesc
