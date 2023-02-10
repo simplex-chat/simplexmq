@@ -160,8 +160,12 @@ instance FilePartyI p => ProtocolEncoding (FileCommand p) where
   checkCredentials (sig, _, fileId, _) cmd = case cmd of
     -- FNEW must not have signature and chunk ID
     FNEW {}
-      | isJust sig || not (B.null fileId) -> Left $ CMD HAS_AUTH
+      | isNothing sig -> Left $ CMD NO_AUTH
+      | not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
+    PING
+      | isNothing sig && B.null fileId -> Right cmd
+      | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
     _
       | isNothing sig || B.null fileId -> Left $ CMD NO_AUTH

@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE StrictData #-}
 
 module Simplex.FileTransfer.Server.Env where
 
@@ -13,12 +14,12 @@ import Data.Time.Clock (getCurrentTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.FileTransfer.Protocol (FileCommand, FileInfo, FilePartyI)
+import Simplex.FileTransfer.Protocol (FileCmd, FileCommand, FileInfo, FilePartyI, SFileParty, XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (RcvPublicVerifyKey, Transmission)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicVerifyKey, Transmission)
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
@@ -63,4 +64,5 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, caCertificateFile, certi
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey)
-  | forall e. FilePartyI e => XFTPReqCmd (Transmission (FileCommand e))
+  | XFTPReqCmd FileRec FileCmd
+  | XFTPReqPing

@@ -1,5 +1,7 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.FileTransfer.Server.Store
   ( FileStore (..),
@@ -18,7 +20,7 @@ import Control.Concurrent.STM
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
-import Simplex.FileTransfer.Protocol (FileInfo)
+import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
 import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -81,8 +83,13 @@ deleteFile FileStore {files, recipients} senderId = do
       pure $ Right ()
     _ -> pure $ Left AUTH
 
-getFile :: FileStore -> SenderId -> STM (Either ErrorType FileRec)
-getFile st sId = withFile st sId $ pure . Right
+getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either ErrorType (FileRec, SndPublicVerifyKey))
+getFile st party fId = case party of
+  SSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
+  SRecipient ->
+    TM.lookup fId (recipients st) >>= \case
+      Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
+      _ -> pure $ Left AUTH
 
 ackFile :: FileStore -> RecipientId -> STM (Either ErrorType ())
 ackFile st@FileStore {recipients} recipientId = do

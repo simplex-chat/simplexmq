@@ -8,6 +8,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.FileTransfer.Server where
 
@@ -18,6 +19,7 @@ import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List (intercalate)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -27,10 +29,13 @@ import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
+import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol (CorrId, ErrorType (..), SignedTransmission, tDecodeParseValidate, tParse)
+import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.HTTP2
@@ -138,101 +143,46 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
               ]
         threadDelay interval
 
--- runFileClientTransport :: Transport c => THandle c -> M ()
--- runFileClientTransport th@THandle {sessionId} = do
---   qSize <- asks $ clientQSize . config
---   ts <- liftIO getSystemTime
---   c <- atomically $ newFileServerClient qSize sessionId ts
---   expCfg <- asks $ inactiveClientExpiration . config
---   raceAny_ ([liftIO $ send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
---     `finally` liftIO (clientDisconnected c)
---   where
---     disconnectThread_ c expCfg = maybe [] ((: []) . liftIO . disconnectTransport th c activeAt) expCfg
-
--- clientDisconnected :: FileServerClient -> IO ()
--- clientDisconnected FileServerClient {connected} = atomically $ writeTVar connected False
-
--- receive :: Transport c => THandle c -> FileServerClient -> M ()
--- receive th FileServerClient {rcvQ, sndQ, activeAt} = forever $ do
---   ts <- tGet th
---   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
---     atomically . writeTVar activeAt =<< liftIO getSystemTime
---     logDebug "received transmission"
---     case cmdOrError of
---       Left e -> write sndQ (corrId, entId, NRErr e)
---       Right cmd ->
---         verifyFileTransmission t cmd >>= \case
---           VRVerified req -> write rcvQ req
---           VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
---   where
---     write q t = atomically $ writeTBQueue q t
-
--- send :: Transport c => THandle c -> FileServerClient -> IO ()
--- send h@THandle {thVersion = v} FileServerClient {sndQ, sessionId, activeAt} = forever $ do
---   t <- atomically $ readTBQueue sndQ
---   void . liftIO $ tPut h [(Nothing, encodeTransmission v sessionId t)]
---   atomically . writeTVar activeAt =<< liftIO getSystemTime
-
--- instance Show a => Show (TVar a) where
---   show x = unsafePerformIO $ show <$> readTVarIO x
-
 processRequest :: HTTP2Request -> M ()
-processRequest _ = pure ()
+processRequest HTTP2Request {sessionId, request, reqBody = body@HTTP2Body {bodyHead, bodySize}, sendResponse}
+  | bodySize < xftpBlockSize || B.length bodyHead /= xftpBlockSize = pure ()
+  | otherwise =
+    case tParse True bodyHead of
+      resp :| [] ->
+        -- TODO validate that the file ID is the same as in the request?
+        let (sig_, signed, (corrId, fId, cmdOrErr)) = tDecodeParseValidate sessionId currentXFTPVersion resp
+         in case cmdOrErr of
+              Right cmd ->
+                verifyXFTPTransmission sig_ signed fId cmd >>= \case
+                  VRVerified req -> sendXFTPResponse . (corrId,fId,) =<< processXFTPRequest req
+                  VRFailed -> sendXFTPResponse (corrId, fId, FRErr AUTH)
+              Left e -> sendXFTPResponse (corrId, fId, FRErr e)
+      _ -> sendXFTPResponse ("", "", FRErr BLOCK)
+  where
+    sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> M ()
+    sendXFTPResponse _ = pure ()
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
--- verifyFileTransmission :: SignedTransmission FileCmd -> FileCmd -> M VerificationResult
--- verifyFileTransmission (sig_, signed, (corrId, entId, _)) cmd = do
---   st <- asks store
---   case cmd of
---     FileCmd SToken c@(TNEW tkn@(NewFileTkn _ k _)) -> do
---       r_ <- atomically $ getFileTokenRegistration st tkn
---       pure $
---         if verifyCmdSignature sig_ signed k
---           then case r_ of
---             Just t@FileTknData {tknVerifyKey}
---               | k == tknVerifyKey -> verifiedTknCmd t c
---               | otherwise -> VRFailed
---             _ -> VRVerified (FileReqNew corrId (ANE SToken tkn))
---           else VRFailed
---     FileCmd SToken c -> do
---       t_ <- atomically $ getFileToken st entId
---       verifyToken t_ (`verifiedTknCmd` c)
---     FileCmd SSubscription c@(SNEW sub@(NewFileSub tknId smpQueue _)) -> do
---       s_ <- atomically $ findFileSubscription st smpQueue
---       case s_ of
---         Nothing -> do
---           -- TODO move active token check here to differentiate error
---           t_ <- atomically $ getActiveFileToken st tknId
---           verifyToken' t_ $ VRVerified (FileReqNew corrId (ANE SSubscription sub))
---         Just s@FileSubData {tokenId = subTknId} ->
---           if subTknId == tknId
---             then do
---               -- TODO move active token check here to differentiate error
---               t_ <- atomically $ getActiveFileToken st subTknId
---               verifyToken' t_ $ verifiedSubCmd s c
---             else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
---     FileCmd SSubscription c -> do
---       s_ <- atomically $ getFileSubscription st entId
---       case s_ of
---         Just s@FileSubData {tokenId = subTknId} -> do
---           -- TODO move active token check here to differentiate error
---           t_ <- atomically $ getActiveFileToken st subTknId
---           verifyToken' t_ $ verifiedSubCmd s c
---         _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
---   where
---     verifiedTknCmd t c = VRVerified (FileReqCmd SToken (FileTkn t) (corrId, entId, c))
---     verifiedSubCmd s c = VRVerified (FileReqCmd SSubscription (FileSub s) (corrId, entId, c))
---     verifyToken :: Maybe FileTknData -> (FileTknData -> VerificationResult) -> M VerificationResult
---     verifyToken t_ positiveVerificationResult =
---       pure $ case t_ of
---         Just t@FileTknData {tknVerifyKey} ->
---           if verifyCmdSignature sig_ signed tknVerifyKey
---             then positiveVerificationResult t
---             else VRFailed
---         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
---     verifyToken' :: Maybe FileTknData -> VerificationResult -> M VerificationResult
---     verifyToken' t_ = verifyToken t_ . const
+verifyXFTPTransmission :: Maybe C.ASignature -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission sig_ signed fId cmd =
+  case cmd of
+    FileCmd SSender (FNEW file rcps) -> pure $ XFTPReqNew file rcps `verifyWith` sndKey file
+    FileCmd SRecipient PING -> pure $ VRVerified XFTPReqPing
+    FileCmd party _ -> verifyCmd party
+  where
+    verifyCmd :: SFileParty p -> M VerificationResult
+    verifyCmd party = do
+      st <- asks store
+      atomically $ verify <$> getFile st party fId
+      where
+        verify = \case
+          Right (fr, k) -> XFTPReqCmd fr cmd `verifyWith` k
+          _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+    req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
+
+processXFTPRequest :: XFTPRequest -> M FileResponse
+processXFTPRequest _req = pure FROk
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do
