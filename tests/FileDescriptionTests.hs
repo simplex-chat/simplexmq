@@ -18,6 +18,60 @@ fileDescPath = "tests/fixtures/file_description.yaml"
 tmpFileDescPath :: FilePath
 tmpFileDescPath = "tests/tmp/file_description.yaml"
 
+fileDesc :: FileDescription
+fileDesc =
+  FileDescription
+    { name = "file.ext",
+      size = 33200000,
+      digest = FileDigest "i\183",
+      encKey = C.Key "i\183",
+      iv = C.IV "i\183",
+      chunks =
+        [ FileChunk
+            { chunkNo = 1,
+              digest = chunkDigest,
+              chunkSize = 8 * 1024 * 1024,
+              replicas =
+                [ FileChunkReplica {server = "xftp://abc=@example1.com", rcvId, rcvKey},
+                  FileChunkReplica {server = "xftp://abc=@example3.com", rcvId, rcvKey}
+                ]
+            },
+          FileChunk
+            { chunkNo = 2,
+              digest = chunkDigest,
+              chunkSize = 8 * 1024 * 1024,
+              replicas =
+                [ FileChunkReplica {server = "xftp://abc=@example2.com", rcvId, rcvKey},
+                  FileChunkReplica {server = "xftp://abc=@example4.com", rcvId, rcvKey}
+                ]
+            },
+          FileChunk
+            { chunkNo = 3,
+              digest = chunkDigest,
+              chunkSize = 8 * 1024 * 1024,
+              replicas =
+                [ FileChunkReplica {server = "xftp://abc=@example1.com", rcvId, rcvKey},
+                  FileChunkReplica {server = "xftp://abc=@example4.com", rcvId, rcvKey}
+                ]
+            },
+          FileChunk
+            { chunkNo = 4,
+              digest = chunkDigest,
+              chunkSize = 2 * 1024 * 1024,
+              replicas =
+                [ FileChunkReplica {server = "xftp://abc=@example2.com", rcvId, rcvKey},
+                  FileChunkReplica {server = "xftp://abc=@example3.com", rcvId, rcvKey}
+                ]
+            }
+        ]
+    }
+  where
+    rcvId = FileChunkRcvId "i\183"
+    -- rcvKey :: C.PrivateKey 'C.Ed25519
+    -- rcvKey = "i\183"
+    rcvKey = C.Key "i\183"
+    chunkDigest = FileDigest "i\183"
+
 yamlFileDesc :: YAMLFileDescription
 yamlFileDesc =
   YAMLFileDescription
@@ -67,23 +121,25 @@ yamlFileDesc =
 
 fileDescriptionTests :: Spec
 fileDescriptionTests =
-  fdescribe "file description parsing / serializing" $ do
+  describe "file description parsing / serializing" $ do
     it "parse file description" testParseFileDescription
     it "serialize file description" testSerializeFileDescription
     it "process file description" testProcessFileDescription
 
 testParseFileDescription :: IO ()
 testParseFileDescription = do
-  fd <- Y.decodeFileThrow fileDescPath
-  fd `shouldBe` yamlFileDesc
+  yfd <- Y.decodeFileThrow fileDescPath
+  yfd `shouldBe` yamlFileDesc
 
 testSerializeFileDescription :: IO ()
 testSerializeFileDescription = do
   Y.encodeFile tmpFileDescPath yamlFileDesc
-  fdSerialized <- B.readFile tmpFileDescPath
-  fdExpected <- B.readFile fileDescPath
-  fdSerialized `shouldBe` fdExpected
+  fdSer <- B.readFile tmpFileDescPath
+  fdExp <- B.readFile fileDescPath
+  fdSer `shouldBe` fdExp
 
 testProcessFileDescription :: IO ()
 testProcessFileDescription = do
-  pure ()
+  fds <- B.readFile fileDescPath
+  fd <- processFileDescription fds
+  fd `shouldBe` fileDesc
