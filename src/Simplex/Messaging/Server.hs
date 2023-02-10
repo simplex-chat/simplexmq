@@ -260,7 +260,7 @@ cancelSub sub =
 
 receive :: Transport c => THandle c -> Client -> M ()
 receive th Client {rcvQ, sndQ, activeAt} = forever $ do
-  ts <- L.toList <$> tGet th
+  ts <- L.toList <$> liftIO (tGet th)
   atomically . writeTVar activeAt =<< liftIO getSystemTime
   as <- partitionEithers <$> mapM cmdAction ts
   write sndQ $ fst as

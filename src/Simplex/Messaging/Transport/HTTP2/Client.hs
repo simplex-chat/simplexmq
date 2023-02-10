@@ -22,7 +22,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (SessionId)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body, getHTTP2Body, http2TLSParams, withHTTP2)
+import Simplex.Messaging.Transport.HTTP2
 import UnliftIO.STM
 import UnliftIO.Timeout
 
@@ -62,7 +62,7 @@ defaultHTTP2ClientConfig =
     { qSize = 64,
       connTimeout = 10000000,
       transportConfig = TransportClientConfig Nothing Nothing True,
-      bufferSize = 32768,
+      bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,
       suportedTLSParams = http2TLSParams
     }

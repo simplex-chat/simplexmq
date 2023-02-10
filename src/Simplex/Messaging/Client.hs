@@ -62,7 +62,9 @@ module Simplex.Messaging.Client
     defaultNetworkConfig,
     transportClientConfig,
     chooseTransportHost,
+    proxyUsername,
     ServerTransmission,
+    ClientCommand,
   )
 where
 
@@ -317,9 +319,6 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
         Just (Left e) -> Left e
         Nothing -> Left PCENetworkError
 
-    proxyUsername :: TransportSession msg -> ByteString
-    proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
-
     useTransport :: (ServiceName, ATransport)
     useTransport = case port srv of
       "" -> defaultTransport cfg
@@ -381,6 +380,9 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
         sendMsg = \case
           Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c qId msg) msgQ
           Left e -> putStrLn $ "SMP client error: " <> show e
+
+proxyUsername :: TransportSession msg -> ByteString
+proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
 
 -- | Disconnects client from the server and terminates client threads.
 closeProtocolClient :: ProtocolClient msg -> IO ()
