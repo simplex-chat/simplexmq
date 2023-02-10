@@ -1,44 +1,44 @@
 chunkSize: 8mb
-digest: abc=
-encKey: abc=
-iv: abc=
+digest: YWJj
+encKey: ZGVm
+iv: Z2hp
 name: file.ext
 parts:
 - chunks:
   - c: 1
-    d: abc=
-    k: abc=
-    r: abc=
+    d: Z2hp
+    k: ZGVm
+    r: YWJj
   - c: 3
-    d: abc=
-    k: abc=
-    r: abc=
+    d: Z2hp
+    k: ZGVm
+    r: YWJj
   server: xftp://abc=@example1.com
 - chunks:
   - c: 2
-    d: abc=
-    k: abc=
-    r: abc=
+    d: Z2hp
+    k: ZGVm
+    r: YWJj
   - c: 4
-    d: abc=
-    k: abc=
-    r: abc=
+    d: Z2hp
+    k: ZGVm
+    r: YWJj
     s: 2mb
   server: xftp://abc=@example2.com
 - chunks:
   - c: 1
-    k: abc=
-    r: abc=
+    k: ZGVm
+    r: YWJj
   - c: 4
-    k: abc=
-    r: abc=
+    k: ZGVm
+    r: YWJj
   server: xftp://abc=@example3.com
 - chunks:
   - c: 2
-    k: abc=
-    r: abc=
+    k: ZGVm
+    r: YWJj
   - c: 3
-    k: abc=
-    r: abc=
+    k: ZGVm
+    r: YWJj
   server: xftp://abc=@example4.com
 size: 33200000

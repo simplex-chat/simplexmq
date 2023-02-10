@@ -23,9 +23,9 @@ fileDesc =
   FileDescription
     { name = "file.ext",
       size = 33200000,
-      digest = FileDigest "i\183",
-      encKey = C.Key "i\183",
-      iv = C.IV "i\183",
+      digest = FileDigest "abc",
+      encKey = C.Key "def",
+      iv = C.IV "ghi",
       chunks =
         [ FileChunk
             { chunkNo = 1,
@@ -66,11 +66,11 @@ fileDesc =
         ]
     }
   where
-    rcvId = FileChunkRcvId "i\183"
+    rcvId = FileChunkRcvId "abc"
     -- rcvKey :: C.PrivateKey 'C.Ed25519
-    -- rcvKey = "i\183"
-    rcvKey = C.Key "i\183"
-    chunkDigest = FileDigest "i\183"
+    -- rcvKey = "def"
+    rcvKey = C.Key "def"
+    chunkDigest = FileDigest "ghi"
 
 yamlFileDesc :: YAMLFileDescription
 yamlFileDesc =
@@ -78,9 +78,9 @@ yamlFileDesc =
     { name = "file.ext",
       size = 33200000,
       chunkSize = "8mb",
-      digest = FileDigest "i\183",
-      encKey = C.Key "i\183",
-      iv = C.IV "i\183",
+      digest = FileDigest "abc",
+      encKey = C.Key "def",
+      iv = C.IV "ghi",
       parts =
         [ YAMLFilePart
             { server = "xftp://abc=@example1.com",
@@ -113,15 +113,15 @@ yamlFileDesc =
         ]
     }
   where
-    r = FileChunkRcvId "i\183"
+    r = FileChunkRcvId "abc"
     -- rk :: C.PrivateKey 'C.Ed25519
-    -- rk = "i\183"
-    k = C.Key "i\183"
-    d = FileDigest "i\183"
+    -- rk = "def"
+    k = C.Key "def"
+    d = FileDigest "ghi"
 
 fileDescriptionTests :: Spec
 fileDescriptionTests =
-  describe "file description parsing / serializing" $ do
+  fdescribe "file description parsing / serializing" $ do
     it "parse file description" testParseFileDescription
     it "serialize file description" testSerializeFileDescription
     it "process file description" testProcessFileDescription

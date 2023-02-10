@@ -17,6 +17,7 @@ module Simplex.FileTransfer.Description
     YAMLFilePart (..),
     YAMLFilePartChunk (..),
     processFileDescription,
+    serializeFileDescription,
   )
 where
 
@@ -172,3 +173,6 @@ processFileDescription bs = do
               "8mb" -> 8 * 1024 * 1024
               "2mb" -> 2 * 1024 * 1024
               _ -> 0
+
+serializeFileDescription :: FileDescription -> ByteString
+serializeFileDescription _fd = ""
