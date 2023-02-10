@@ -592,7 +592,7 @@ protocolClientError protocolError_ host = \case
   PCEIncompatibleHost -> BROKER host HOST
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCESignatureError {} -> INTERNAL $ show e
-  e@PCEIOError {} -> INTERNAL $ show e
+  PCEIOError {} -> BROKER host NETWORK
 
 data SMPTestStep = TSConnect | TSCreateQueue | TSSecureQueue | TSDeleteQueue | TSDisconnect
   deriving (Eq, Show, Generic)
