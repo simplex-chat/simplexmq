@@ -1,9 +1,9 @@
 chunkSize: 8mb
 digest: YWJj
-encKey: ZGVm
+key: ZGVm
 iv: Z2hp
 name: file.ext
-parts:
+replicas:
 - chunks:
   - 1:YWJj:ZGVm:Z2hp
   - 3:YWJj:ZGVm:Z2hp

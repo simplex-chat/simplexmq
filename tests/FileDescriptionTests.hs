@@ -11,6 +11,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Description
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (removeFile)
 import Test.Hspec
 
@@ -26,8 +27,9 @@ fileDesc =
     { name = "file.ext",
       size = 33200000,
       digest = FileDigest "abc",
-      encKey = C.Key "def",
+      key = C.Key "def",
       iv = C.IV "ghi",
+      chunkSize = 8 * 1024 * 1024,
       chunks =
         [ FileChunk
             { chunkNo = 1,
@@ -68,10 +70,10 @@ fileDesc =
         ]
     }
   where
-    rcvId = FileChunkRcvId "abc"
+    rcvId = ChunkReplicaId "abc"
     -- rcvKey :: C.PrivateKey 'C.Ed25519
     -- rcvKey = "def"
-    rcvKey = C.Key "def"
+    rcvKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
 
 yamlFileDesc :: YAMLFileDescription
@@ -81,22 +83,22 @@ yamlFileDesc =
       size = 33200000,
       chunkSize = "8mb",
       digest = FileDigest "abc",
-      encKey = C.Key "def",
+      key = C.Key "def",
       iv = C.IV "ghi",
-      parts =
-        [ YAMLFilePart
+      replicas =
+        [ YAMLServerReplicas
             { server = "xftp://abc=@example1.com",
               chunks = ["1:YWJj:ZGVm:Z2hp", "3:YWJj:ZGVm:Z2hp"]
             },
-          YAMLFilePart
+          YAMLServerReplicas
             { server = "xftp://abc=@example2.com",
               chunks = ["2:YWJj:ZGVm:Z2hp", "4:YWJj:ZGVm:Z2hp:2mb"]
             },
-          YAMLFilePart
+          YAMLServerReplicas
             { server = "xftp://abc=@example3.com",
               chunks = ["1:YWJj:ZGVm", "4:YWJj:ZGVm"]
             },
-          YAMLFilePart
+          YAMLServerReplicas
             { server = "xftp://abc=@example4.com",
               chunks = ["2:YWJj:ZGVm", "3:YWJj:ZGVm"]
             }
@@ -125,14 +127,14 @@ testSerializeYAMLFileDescription = withRemoveTmpFile $ do
 
 testParseFileDescription :: IO ()
 testParseFileDescription = do
-  r <- parseFileDescription <$> B.readFile fileDescPath
+  r <- strDecode <$> B.readFile fileDescPath
   case r of
     Left e -> expectationFailure $ show e
     Right fd -> fd `shouldBe` fileDesc
 
 testSerializeFileDescription :: IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
-  B.writeFile tmpFileDescPath $ serializeFileDescription fileDesc
+  B.writeFile tmpFileDescPath $ strEncode fileDesc
   fdSer <- B.readFile tmpFileDescPath
   fdExp <- B.readFile fileDescPath
   fdSer `shouldBe` fdExp

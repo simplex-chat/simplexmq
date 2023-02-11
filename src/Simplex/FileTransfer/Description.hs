@@ -11,23 +11,24 @@ module Simplex.FileTransfer.Description
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
-    FileChunkRcvId (..),
+    ChunkReplicaId (..),
     YAMLFileDescription (..), -- for tests
-    YAMLFilePart (..), -- for tests
-    parseFileDescription,
-    serializeFileDescription,
+    YAMLServerReplicas (..), -- for tests
   )
 where
 
-import Control.Applicative (optional)
+import Control.Applicative (Alternative ((<|>)), optional)
+import Control.Monad ((<=<))
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.ByteString.Base64 as B64
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Function (on)
 import Data.Int (Int64)
+import Data.List (foldl', groupBy, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
@@ -36,14 +37,17 @@ import qualified Data.Yaml as Y
 import GHC.Generics (Generic)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (base64P)
+import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Util (bshow, (<$?>))
 
 data FileDescription = FileDescription
   { name :: String,
     size :: Int64,
     digest :: FileDigest,
-    encKey :: C.Key,
+    key :: C.Key,
     iv :: C.IV,
+    chunkSize :: Word32,
     chunks :: [FileChunk]
   }
   deriving (Eq, Show)
@@ -72,36 +76,34 @@ data FileChunk = FileChunk
   deriving (Eq, Show)
 
 data FileChunkReplica = FileChunkReplica
-  { server :: String,
-    rcvId :: FileChunkRcvId,
-    -- rcvKey :: C.APrivateSignKey
-    rcvKey :: C.Key
+  { server :: XFTPServer,
+    rcvId :: ChunkReplicaId,
+    rcvKey :: C.APrivateSignKey
   }
   deriving (Eq, Show)
 
-newtype FileChunkRcvId = FileChunkRcvId {unFileChunkRcvId :: ByteString}
+newtype ChunkReplicaId = ChunkReplicaId {unChunkReplicaId :: ByteString}
   deriving (Eq, Show)
 
-instance StrEncoding FileChunkRcvId where
-  strEncode (FileChunkRcvId fid) = strEncode fid
-  strDecode s = FileChunkRcvId <$> strDecode s
-  strP = FileChunkRcvId <$> strP
+instance StrEncoding ChunkReplicaId where
+  strEncode (ChunkReplicaId fid) = strEncode fid
+  strP = ChunkReplicaId <$> strP
 
-instance FromJSON FileChunkRcvId where
-  parseJSON = strParseJSON "FileChunkRcvId"
+instance FromJSON ChunkReplicaId where
+  parseJSON = strParseJSON "ChunkReplicaId"
 
-instance ToJSON FileChunkRcvId where
+instance ToJSON ChunkReplicaId where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
 data YAMLFileDescription = YAMLFileDescription
   { name :: String,
     size :: Int64,
-    chunkSize :: String,
     digest :: FileDigest,
-    encKey :: C.Key,
+    key :: C.Key,
     iv :: C.IV,
-    parts :: [YAMLFilePart]
+    chunkSize :: String,
+    replicas :: [YAMLServerReplicas]
   }
   deriving (Eq, Show, Generic, FromJSON)
 
@@ -109,132 +111,220 @@ instance ToJSON YAMLFileDescription where
   toJSON = J.genericToJSON J.defaultOptions
   toEncoding = J.genericToEncoding J.defaultOptions
 
-data YAMLFilePart = YAMLFilePart
-  { server :: String,
+data YAMLServerReplicas = YAMLServerReplicas
+  { server :: XFTPServer,
     chunks :: [String]
   }
   deriving (Eq, Show, Generic, FromJSON)
 
-instance ToJSON YAMLFilePart where
+instance ToJSON YAMLServerReplicas where
   toJSON = J.genericToJSON J.defaultOptions
   toEncoding = J.genericToEncoding J.defaultOptions
 
-data FilePartChunk = FilePartChunk
+data FileServerReplica = FileServerReplica
   { chunkNo :: Int,
-    rcvId :: FileChunkRcvId,
-    rcvKey :: C.Key, -- C.APrivateSignKey -- ? C.PrivateKey 'C.Ed25519
+    server :: XFTPServer,
+    rcvId :: ChunkReplicaId,
+    rcvKey :: C.APrivateSignKey,
     digest :: Maybe FileDigest,
     chunkSize :: Maybe Word32
   }
   deriving (Show)
 
-parseFileDescription :: ByteString -> Either String FileDescription
-parseFileDescription bs = do
-  YAMLFileDescription {name, size, chunkSize = fChunkSizeS, digest = fDigest, encKey, iv, parts} <- Y.decodeEither' bs
-  fChunkSize <- parseFileChunkSize fChunkSizeS
-  cm <- parseParts M.empty parts
-  let chunks = map (\fc@FileChunk {replicas} -> fc {replicas = reverse replicas}) (M.elems cm)
-  pure FileDescription {name, size, digest = fDigest, encKey, iv, chunks}
+instance StrEncoding FileDescription where
+  strEncode = Y.encode . encodeFileDescription
+  strDecode = decodeFileDescription <=< first show . Y.decodeEither'
+  strP = strDecode <$?> A.takeByteString
+
+encodeFileDescription :: FileDescription -> YAMLFileDescription
+encodeFileDescription FileDescription {name, size, digest, key, iv, chunkSize, chunks} =
+  YAMLFileDescription
+    { name,
+      size,
+      digest,
+      key,
+      iv,
+      chunkSize = B.unpack $ encodeChunkSize chunkSize,
+      replicas = encodeFileReplicas chunkSize chunks
+    }
+
+encodeChunkSize :: Word32 -> ByteString
+encodeChunkSize b
+  | b' /= 0 = bshow b
+  | kb' /= 0 = bshow kb <> "kb"
+  | otherwise = bshow mb <> "mb"
   where
-    parseParts :: Map Int FileChunk -> [YAMLFilePart] -> Either String (Map Int FileChunk)
-    parseParts cm [] = Right cm
-    parseParts cm (YAMLFilePart {server, chunks} : ps) = case parseChunks cm chunks of
-      Left e -> Left e
-      Right cm' -> parseParts cm' ps
-      where
-        parseChunks :: Map Int FileChunk -> [String] -> Either String (Map Int FileChunk)
-        parseChunks cm' [] = Right cm'
-        parseChunks cm' (c : cs) = case parseChunk cm' c of
-          Left e -> Left e
-          Right cm'' -> parseChunks cm'' cs
-        parseChunk :: Map Int FileChunk -> String -> Either String (Map Int FileChunk)
-        parseChunk cm' chunkStr = do
-          case parseFilePartChunk chunkStr of
-            Left e -> Left $ "Failed to parse chunk: " <> e
-            Right FilePartChunk {chunkNo, rcvId, rcvKey, digest = digest_, chunkSize = chunkSize_} ->
-              case M.lookup chunkNo cm' of
-                Nothing ->
-                  case digest_ of
-                    Nothing -> Left $ "First chunk replica has no digest: " <> chunkStr
-                    Just digest ->
-                      let chunkSize = fromMaybe fChunkSize chunkSize_
-                          replicas = [FileChunkReplica {server, rcvId, rcvKey}]
-                       in Right $ M.insert chunkNo FileChunk {chunkNo, digest, chunkSize, replicas} cm'
-                Just fc@FileChunk {replicas} ->
-                  let replicas' = FileChunkReplica {server, rcvId, rcvKey} : replicas
-                   in Right $ M.insert chunkNo fc {replicas = replicas'} cm'
+    (kb, b') = b `divMod` 1024
+    (mb, kb') = kb `divMod` 1024
 
-parseFileChunkSize :: String -> Either String Word32
-parseFileChunkSize = A.parseOnly fileChunkSizeP . B.pack
-
-parseFilePartChunk :: String -> Either String FilePartChunk
-parseFilePartChunk = A.parseOnly filePartChunkP . B.pack
-
-filePartChunkP :: Parser FilePartChunk
-filePartChunkP =
-  FilePartChunk
-    <$> A.decimal <* A.char ':'
-      <*> fileChunkRcvIdP <* A.char ':'
-      <*> fileChunkRcvKeyP
-      <*> optional (A.char ':' *> fileChunkDigestP)
-      <*> optional (A.char ':' *> fileChunkSizeP) <* A.endOfInput
+chunkSizeP :: Parser Word32
+chunkSizeP =
+  ((mb *) <$> A.decimal <* "mb")
+    <|> ((kb *) <$> A.decimal <* "kb")
+    <|> A.decimal
   where
-    fileChunkRcvIdP = FileChunkRcvId <$> base64P
-    fileChunkRcvKeyP = C.Key <$> base64P
-    fileChunkDigestP = FileDigest <$> base64P
+    kb = 1024
+    mb = 1024 * kb
 
-fileChunkSizeP :: Parser Word32
-fileChunkSizeP = do
-  n <- A.decimal
-  _ <- A.char 'm'
-  _ <- A.char 'b'
-  pure $ n * 1024 * 1024
-
-serializeFileDescription :: FileDescription -> ByteString
-serializeFileDescription FileDescription {name, size, digest = fDigest, encKey, iv, chunks = fChunks} = do
-  let fChunkSize = case fChunks of
-        [] -> 0
-        FileChunk {chunkSize} : _ -> chunkSize
-      parts = serializeChunks fChunkSize
-      yfd = YAMLFileDescription {name, size, chunkSize = serializeChunkSize fChunkSize, digest = fDigest, encKey, iv, parts}
-  Y.encode yfd
+encodeFileReplicas :: Word32 -> [FileChunk] -> [YAMLServerReplicas]
+encodeFileReplicas defChunkSize = map encodeServerReplicas . groupBy ((==) `on` server') . unfoldChunksToReplicas defChunkSize
   where
-    serializeChunks :: Word32 -> [YAMLFilePart]
-    serializeChunks fChunkSize =
-      map
-        (\fp@YAMLFilePart {chunks} -> fp {chunks = reverse chunks} :: YAMLFilePart)
-        (M.elems $ serializeChunks' M.empty fChunks)
-      where
-        serializeChunks' :: Map String YAMLFilePart -> [FileChunk] -> Map String YAMLFilePart
-        serializeChunks' pm [] = pm
-        serializeChunks' pm (FileChunk {chunkNo, digest, chunkSize, replicas} : cs) = do
-          let pm' = serializeReplicas False pm replicas
-          serializeChunks' pm' cs
-          where
-            serializeReplicas :: Bool -> Map String YAMLFilePart -> [FileChunkReplica] -> Map String YAMLFilePart
-            serializeReplicas _ pm' [] = pm'
-            serializeReplicas aReplSerd pm' (r : rs) = serializeReplicas True (serializeReplica aReplSerd pm' r) rs
-            serializeReplica :: Bool -> Map String YAMLFilePart -> FileChunkReplica -> Map String YAMLFilePart
-            serializeReplica aReplSerd pm' FileChunkReplica {server, rcvId, rcvKey} = do
-              let fpcDigest = if not aReplSerd then Just digest else Nothing
-                  fpcSize = if not aReplSerd && chunkSize /= fChunkSize then Just chunkSize else Nothing
-                  fpc = FilePartChunk {chunkNo, rcvId, rcvKey, digest = fpcDigest, chunkSize = fpcSize}
-                  chunkStr = serializeFilePartChunk fpc
-              case M.lookup server pm' of
-                Nothing -> M.insert server (YAMLFilePart {server, chunks = [chunkStr]}) pm'
-                Just fp@YAMLFilePart {chunks} -> M.insert server (fp {chunks = chunkStr : chunks} :: YAMLFilePart) pm'
+    server' = server :: FileServerReplica -> XFTPServer
+    encodeServerReplicas fs =
+      YAMLServerReplicas
+        { server = server' $ head fs, -- groupBy guarantees that fs is not empty
+          chunks = map (B.unpack . encodeServerReplica) fs
+        }
 
-serializeFilePartChunk :: FilePartChunk -> String
-serializeFilePartChunk FilePartChunk {chunkNo, rcvId = FileChunkRcvId rId, rcvKey = C.Key rKey, digest = digest_, chunkSize = chunkSize_} =
-  show chunkNo
+decodeFileDescription :: YAMLFileDescription -> Either String FileDescription
+decodeFileDescription YAMLFileDescription {name, size, digest, key, iv, chunkSize, replicas} = do
+  chunkSize' <- parseAll chunkSizeP $ B.pack chunkSize
+  replicas' <- decodeFileParts replicas
+  chunks <- foldReplicasToChunks chunkSize' replicas'
+  pure FileDescription {name, size, digest, key, iv, chunkSize = chunkSize', chunks}
+  where
+    decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
+
+encodeServerReplica :: FileServerReplica -> ByteString
+encodeServerReplica FileServerReplica {chunkNo, rcvId, rcvKey, digest, chunkSize} =
+  bshow chunkNo
     <> ":"
-    <> serB64 rId
+    <> strEncode rcvId
     <> ":"
-    <> serB64 rKey
-    <> maybe "" (\(FileDigest digest) -> ":" <> serB64 digest) digest_
-    <> maybe "" (\chunkSize -> ":" <> serializeChunkSize chunkSize) chunkSize_
-  where
-    serB64 = B.unpack . B64.encode
+    <> strEncode rcvKey
+    <> maybe "" ((":" <>) . strEncode) digest
+    <> maybe "" ((":" <>) . encodeChunkSize) chunkSize
 
-serializeChunkSize :: Word32 -> String
-serializeChunkSize n = show (n `div` 1024 `div` 1024) <> "mb"
+serverReplicaP :: XFTPServer -> Parser FileServerReplica
+serverReplicaP server = do
+  chunkNo <- A.decimal
+  rcvId <- A.char ':' *> strP
+  rcvKey <- A.char ':' *> strP
+  digest <- optional (A.char ':' *> strP)
+  chunkSize <- optional (A.char ':' *> chunkSizeP)
+  pure FileServerReplica {chunkNo, server, rcvId, rcvKey, digest, chunkSize}
+
+decodeYAMLServerReplicas :: YAMLServerReplicas -> Either String [FileServerReplica]
+decodeYAMLServerReplicas YAMLServerReplicas {server, chunks} =
+  mapM (parseAll (serverReplicaP server) . B.pack) chunks
+
+-- this function should fail if:
+-- 1. no replica has digest or two replicas have different digests
+-- 2. two replicas have different chunk sizes
+foldReplicasToChunks :: Word32 -> [FileServerReplica] -> Either String [FileChunk]
+foldReplicasToChunks defChunkSize fs = do
+  sd <- foldSizesDigests fs
+  -- TODO validate (check that chunks match) or in separate function
+  sortOn (chunkNo :: FileChunk -> Int) . map reverseReplicas . M.elems <$> foldChunks sd fs
+  where
+    foldSizesDigests :: [FileServerReplica] -> Either String (Map Int Word32, Map Int FileDigest)
+    foldSizesDigests = foldl' addSizeDigest $ Right (M.empty, M.empty)
+    addSizeDigest :: Either String (Map Int Word32, Map Int FileDigest) -> FileServerReplica -> Either String (Map Int Word32, Map Int FileDigest)
+    addSizeDigest (Left e) _ = Left e
+    addSizeDigest (Right (ms, md)) FileServerReplica {chunkNo, chunkSize, digest} =
+      (,) <$> combineChunk ms chunkNo chunkSize <*> combineChunk md chunkNo digest
+    combineChunk :: Eq a => Map Int a -> Int -> Maybe a -> Either String (Map Int a)
+    combineChunk m _ Nothing = Right m
+    combineChunk m chunkNo (Just value) = case M.lookup chunkNo m of
+      Nothing -> Right $ M.insert chunkNo value m
+      Just v -> if v == value then Right m else Left "different size or digest in chunk replicas"
+    foldChunks :: (Map Int Word32, Map Int FileDigest) -> [FileServerReplica] -> Either String (Map Int FileChunk)
+    foldChunks sd = foldl' (addReplica sd) (Right M.empty)
+    addReplica :: (Map Int Word32, Map Int FileDigest) -> Either String (Map Int FileChunk) -> FileServerReplica -> Either String (Map Int FileChunk)
+    addReplica _ (Left e) _ = Left e
+    addReplica (ms, md) (Right cs) FileServerReplica {chunkNo, server, rcvId, rcvKey} = do
+      case M.lookup chunkNo cs of
+        Just chunk@FileChunk {replicas} ->
+          let replica = FileChunkReplica {server, rcvId, rcvKey}
+           in Right $ M.insert chunkNo ((chunk :: FileChunk) {replicas = replica : replicas}) cs
+        _ -> do
+          case M.lookup chunkNo md of
+            Just digest' ->
+              let replica = FileChunkReplica {server, rcvId, rcvKey}
+                  chunkSize' = fromMaybe defChunkSize $ M.lookup chunkNo ms
+                  chunk = FileChunk {chunkNo, digest = digest', chunkSize = chunkSize', replicas = [replica]}
+               in Right $ M.insert chunkNo chunk cs
+            _ -> Left "no digest for chunk"
+    reverseReplicas c@FileChunk {replicas} = (c :: FileChunk) {replicas = reverse replicas}
+
+unfoldChunksToReplicas :: Word32 -> [FileChunk] -> [FileServerReplica]
+unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
+  where
+    chunkReplicas c@FileChunk {replicas} = zipWith (replicaToServerReplica c) [1 ..] replicas
+    replicaToServerReplica :: FileChunk -> Int -> FileChunkReplica -> FileServerReplica
+    replicaToServerReplica FileChunk {chunkNo, digest, chunkSize} replicaNo FileChunkReplica {server, rcvId, rcvKey} =
+      let chunkSize' = if chunkSize /= defChunkSize && replicaNo == 1 then Just chunkSize else Nothing
+          digest' = if replicaNo == 1 then Just digest else Nothing
+       in FileServerReplica {chunkNo, server, rcvId, rcvKey, digest = digest', chunkSize = chunkSize'}
+
+-- parseFileDescription :: ByteString -> Either String FileDescription
+-- parseFileDescription bs = do
+--   YAMLFileDescription {name, size, chunkSize = fChunkSizeS, digest = fDigest, key, iv, replicas} <- Y.decodeEither' bs
+--   fChunkSize <- parseFileChunkSize fChunkSizeS
+--   -- foldl' (b -> a -> b) -> b -> t a -> b
+
+--   cm <- parseParts M.empty parts
+--   let chunks = map (\fc@FileChunk {replicas} -> fc {replicas = reverse replicas}) (M.elems cm)
+--   pure FileDescription {name, size, digest = fDigest, key, iv, chunks}
+--   where
+--     parseParts :: Map Int FileChunk -> [YAMLServerReplicas] -> Either String (Map Int FileChunk)
+--     parseParts cm [] = Right cm
+--     parseParts cm (YAMLServerReplicas {server, chunks} : ps) = case parseChunks cm chunks of
+--       Left e -> Left e
+--       Right cm' -> parseParts cm' ps
+--       where
+--         parseChunks :: Map Int FileChunk -> [String] -> Either String (Map Int FileChunk)
+--         parseChunks cm' [] = Right cm'
+--         parseChunks cm' (c : cs) = case parseChunk cm' c of
+--           Left e -> Left e
+--           Right cm'' -> parseChunks cm'' cs
+--         parseChunk :: Map Int FileChunk -> String -> Either String (Map Int FileChunk)
+--         parseChunk cm' chunkStr = do
+--           case parseFilePartChunk chunkStr of
+--             Left e -> Left $ "Failed to parse chunk: " <> e
+--             Right FileServerReplica {chunkNo, rcvId, rcvKey, digest = digest_, chunkSize = chunkSize_} ->
+--               case M.lookup chunkNo cm' of
+--                 Nothing ->
+--                   case digest_ of
+--                     Nothing -> Left $ "First chunk replica has no digest: " <> chunkStr
+--                     Just digest ->
+--                       let chunkSize = fromMaybe fChunkSize chunkSize_
+--                           replicas = [FileChunkReplica {server, rcvId, rcvKey}]
+--                        in Right $ M.insert chunkNo FileChunk {chunkNo, digest, chunkSize, replicas} cm'
+--                 Just fc@FileChunk {replicas} ->
+--                   let replicas' = FileChunkReplica {server, rcvId, rcvKey} : replicas
+--                    in Right $ M.insert chunkNo fc {replicas = replicas'} cm'
+
+-- serializeFileDescription :: FileDescription -> ByteString
+-- serializeFileDescription FileDescription {name, size, digest = fDigest, encKey, iv, chunks = fChunks} = do
+--   let fChunkSize = case fChunks of
+--         [] -> 0
+--         FileChunk {chunkSize} : _ -> chunkSize
+--       parts = serializeChunks fChunkSize
+--       yfd = YAMLFileDescription {name, size, chunkSize = serializeChunkSize fChunkSize, digest = fDigest, encKey, iv, parts}
+--   Y.encode yfd
+--   where
+--     serializeChunks :: Word32 -> [YAMLServerReplicas]
+--     serializeChunks fChunkSize =
+--       map
+--         (\fp@YAMLServerReplicas {chunks} -> fp {chunks = reverse chunks} :: YAMLServerReplicas)
+--         (M.elems $ serializeChunks' M.empty fChunks)
+--       where
+--         serializeChunks' :: Map String YAMLServerReplicas -> [FileChunk] -> Map String YAMLServerReplicas
+--         serializeChunks' pm [] = pm
+--         serializeChunks' pm (FileChunk {chunkNo, digest, chunkSize, replicas} : cs) = do
+--           let pm' = serializeReplicas False pm replicas
+--           serializeChunks' pm' cs
+--           where
+--             serializeReplicas :: Bool -> Map String YAMLServerReplicas -> [FileChunkReplica] -> Map String YAMLServerReplicas
+--             serializeReplicas _ pm' [] = pm'
+--             serializeReplicas aReplSerd pm' (r : rs) = serializeReplicas True (serializeReplica aReplSerd pm' r) rs
+--             serializeReplica :: Bool -> Map String YAMLServerReplicas -> FileChunkReplica -> Map String YAMLServerReplicas
+--             serializeReplica aReplSerd pm' FileChunkReplica {server, rcvId, rcvKey} = do
+--               let fpcDigest = if not aReplSerd then Just digest else Nothing
+--                   fpcSize = if not aReplSerd && chunkSize /= fChunkSize then Just chunkSize else Nothing
+--                   fpc = FileServerReplica {chunkNo, rcvId, rcvKey, digest = fpcDigest, chunkSize = fpcSize}
+--                   chunkStr = serializeFilePartChunk fpc
+--               case M.lookup server pm' of
+--                 Nothing -> M.insert server (YAMLServerReplicas {server, chunks = [chunkStr]}) pm'
+--                 Just fp@YAMLServerReplicas {chunks} -> M.insert server (fp {chunks = chunkStr : chunks} :: YAMLServerReplicas) pm'
