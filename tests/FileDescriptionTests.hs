@@ -71,8 +71,6 @@ fileDesc =
     }
   where
     rcvId = ChunkReplicaId "abc"
-    -- rcvKey :: C.PrivateKey 'C.Ed25519
-    -- rcvKey = "def"
     rcvKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
 
