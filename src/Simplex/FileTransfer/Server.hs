@@ -16,10 +16,14 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
+import Crypto.Random (getRandomBytes)
+import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -34,7 +38,7 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, ErrorType (..), SignedTransmission, tDecodeParseValidate, tParse)
+import Simplex.Messaging.Protocol (CorrId, ErrorType (..), SignedTransmission, encodeTransmission, tDecodeParseValidate, tEncode, tEncodeBatch, tParse)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..))
@@ -43,7 +47,7 @@ import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
-import UnliftIO (IOMode (..), async, withFile)
+import UnliftIO (IOMode (..), withFile)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -148,19 +152,21 @@ processRequest HTTP2Request {sessionId, request, reqBody = body@HTTP2Body {bodyH
   | bodySize < xftpBlockSize || B.length bodyHead /= xftpBlockSize = pure ()
   | otherwise =
     case tParse True bodyHead of
-      resp :| [] ->
-        -- TODO validate that the file ID is the same as in the request?
+      resp :| [] -> do
         let (sig_, signed, (corrId, fId, cmdOrErr)) = tDecodeParseValidate sessionId currentXFTPVersion resp
-         in case cmdOrErr of
-              Right cmd ->
-                verifyXFTPTransmission sig_ signed fId cmd >>= \case
-                  VRVerified req -> sendXFTPResponse . (corrId,fId,) =<< processXFTPRequest req
-                  VRFailed -> sendXFTPResponse (corrId, fId, FRErr AUTH)
-              Left e -> sendXFTPResponse (corrId, fId, FRErr e)
+        case cmdOrErr of
+          Right cmd ->
+            verifyXFTPTransmission sig_ signed fId cmd >>= \case
+              VRVerified req -> sendXFTPResponse . (corrId,fId,) =<< processXFTPRequest req
+              VRFailed -> sendXFTPResponse (corrId, fId, FRErr AUTH)
+          Left e -> sendXFTPResponse (corrId, fId, FRErr e)
       _ -> sendXFTPResponse ("", "", FRErr BLOCK)
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> M ()
-    sendXFTPResponse _ = pure ()
+    sendXFTPResponse (corrId, fId, resp) = do
+      let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, resp)
+          t' = tEncodeBatch 1 $ tEncode (Nothing, t)
+      liftIO $ sendResponse $ H.responseBuilder N.ok200 [] $ lazyByteString $ LB.fromStrict t'
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
@@ -182,157 +188,35 @@ verifyXFTPTransmission sig_ signed fId cmd =
     req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
 
 processXFTPRequest :: XFTPRequest -> M FileResponse
-processXFTPRequest _req = pure FROk
+processXFTPRequest = \case
+  XFTPReqNew file rcps -> do
+    st <- asks store
+    -- TODO retry on duplicate IDs?
+    sId <- getFileId
+    rIds <- replicateM (length rcps) getFileId
+    r <- runExceptT $ do
+      ExceptT $ atomically $ addFile st sId file
+      forM (zip rIds $ L.toList rcps) $ \rcp ->
+        ExceptT $ atomically $ addRecipient st sId rcp
+    pure $ either FRErr (const FROk) r
+  XFTPReqCmd _fr (FileCmd _ cmd) -> case cmd of
+    FADD _rcps -> pure FROk
+    FPUT -> pure FROk
+    FDEL -> pure FROk
+    FGET _dhKey -> pure FROk
+    FACK -> pure FROk
+    -- it should never get to the options below, they are passed in other constructors of XFTPRequest
+    FNEW _ _ -> pure $ FRErr INTERNAL
+    PING -> pure FRPong
+  XFTPReqPing -> pure FRPong
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do
   gVar <- asks idsDrg
   atomically (C.pseudoRandomBytes n gVar)
 
--- getIds :: m (RecipientId, SenderId)
--- getIds = do
---   n <- asks $ queueIdBytes . config
---   liftM2 (,) (randomId n) (randomId n)
-
--- client :: FileServerClient -> M ()
--- client FileServerClient {rcvQ, sndQ} =
---   forever $
---     atomically (readTBQueue rcvQ)
---       >>= processCommand
---       >>= atomically . writeTBQueue sndQ
---   where
---     processCommand :: FileRequest -> M (Transmission FileResponse)
---     processCommand = \case
---       FileReqNew newFile@(NewFileRec {senderPubKey, recipientKeys, fileSize}) -> do
---         logDebug "FNEW - new file"
---         let sId = randomId
---         withFileLog (`logAddFile` (asks storeLog) "" senderPubKey)
---         -- incFileStat tknCreated
---         pure ("", NRTknId tknId srvDhPubKey)
-{- FileReqCmd SRecipient (FileTkn tkn@FileTknData {fileTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
-  status <- readTVarIO tknStatus
-  (corrId,tknId,) <$> case cmd of
-    TNEW (NewFileTkn _ _ dhPubKey) -> do
-      logDebug "TNEW - registered token"
-      let dhSecret = C.dh' dhPubKey srvDhPrivKey
-      -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
-      if tknDhSecret == dhSecret
-        then do
-          atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
-          pure $ NRTknId fileTknId srvDhPubKey
-        else pure $ NRErr AUTH
-    TVFY code -- this allows repeated verification for cases when client connection dropped before server response
-      | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
-        logDebug "TVFY - token verified"
-        st <- asks store
-        atomically $ writeTVar tknStatus NTActive
-        tIds <- atomically $ removeInactiveTokenRegistrations st tkn
-        forM_ tIds cancelInvervalNotifications
-        withFileLog $ \s -> logTokenStatus s tknId NTActive
-        incFileStat tknVerified
-        pure NROk
-      | otherwise -> do
-        logDebug "TVFY - incorrect code or token status"
-        pure $ NRErr AUTH
-    TCHK -> do
-      logDebug "TCHK"
-      pure $ NRTkn status
-    TRPL token' -> do
-      logDebug "TRPL - replace token"
-      st <- asks store
-      regCode <- getRegCode
-      atomically $ do
-        removeTokenRegistration st tkn
-        writeTVar tknStatus NTRegistered
-        let tkn' = tkn {token = token', tknRegCode = regCode}
-        addFileToken st tknId tkn'
-        writeTBQueue pushQ (tkn', PNVerification regCode)
-      withFileLog $ \s -> logUpdateToken s tknId token' regCode
-      incFileStat tknDeleted
-      incFileStat tknCreated
-      pure NROk
-    TDEL -> do
-      logDebug "TDEL"
-      st <- asks store
-      qs <- atomically $ deleteFileToken st tknId
-      forM_ qs $ \SMPQueueFile {smpServer, notifierId} ->
-        atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
-      cancelInvervalNotifications tknId
-      withFileLog (`logDeleteToken` tknId)
-      incFileStat tknDeleted
-      pure NROk
-    TCRN 0 -> do
-      logDebug "TCRN 0"
-      atomically $ writeTVar tknCronInterval 0
-      cancelInvervalNotifications tknId
-      withFileLog $ \s -> logTokenCron s tknId 0
-      pure NROk
-    TCRN int
-      | int < 20 -> pure $ NRErr QUOTA
-      | otherwise -> do
-        logDebug "TCRN"
-        atomically $ writeTVar tknCronInterval int
-        atomically (TM.lookup tknId intervalNotifiers) >>= \case
-          Nothing -> runIntervalNotifier int
-          Just IntervalNotifier {interval, action} ->
-            unless (interval == int) $ do
-              uninterruptibleCancel action
-              runIntervalNotifier int
-        withFileLog $ \s -> logTokenCron s tknId int
-        pure NROk
-      where
-        runIntervalNotifier interval = do
-          action <- async . intervalNotifier $ fromIntegral interval * 1000000 * 60
-          let notifier = IntervalNotifier {action, token = tkn, interval}
-          atomically $ TM.insert tknId notifier intervalNotifiers
-          where
-            intervalNotifier delay = forever $ do
-              threadDelay delay
-              atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
-{- FileReqNew corrId (ANE SSubscription newSub) -> do
-  logDebug "SNEW - new subscription"
-  st <- asks store
-  subId <- getId
-  sub <- atomically $ mkFileSubData subId newSub
-  resp <-
-    atomically (addFileSubscription st subId sub) >>= \case
-      Just _ -> atomically (writeTBQueue newSubQ $ FileSub sub) $> NRSubId subId
-      _ -> pure $ NRErr AUTH
-  withFileLog (`logCreateSubscription` sub)
-  incFileStat subCreated
-  pure (corrId, "", resp) -}
-FileReqCmd SSubscription (FileSub FileSubData {smpQueue = SMPQueueFile {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
-  status <- readTVarIO subStatus
-  (corrId,subId,) <$> case cmd of
-    SNEW (NewFileSub _ _ notifierKey) -> do
-      logDebug "SNEW - existing subscription"
-      -- TODO retry if subscription failed, if pending or AUTH do nothing
-      pure $
-        if notifierKey == registeredNKey
-          then NRSubId subId
-          else NRErr AUTH
-    SCHK -> do
-      logDebug "SCHK"
-      pure $ NRSub status
-    SDEL -> do
-      logDebug "SDEL"
-      st <- asks store
-      atomically $ deleteFileSubscription st subId
-      atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
-      withFileLog (`logDeleteSubscription` subId)
-      incFileStat subDeleted
-      pure NROk
-    PING -> pure NRPong -}
-{- getId :: M FileEntityId
-getId = getRandomBytes =<< asks (subIdBytes . config)
-getRegCode :: M FileRegCode
-getRegCode = FileRegCode <$> (getRandomBytes =<< asks (regCodeBytes . config)) -}
---     getRandomBytes :: Int -> M ByteString
---     getRandomBytes n = do
---       gVar <- asks idsDrg
---       atomically (C.pseudoRandomBytes n gVar)
-
--- -}
+getFileId :: M XFTPFileId
+getFileId = liftIO . getRandomBytes =<< asks (fileIdSize . config)
 
 withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog

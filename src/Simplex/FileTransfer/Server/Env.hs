@@ -14,14 +14,12 @@ import Data.Time.Clock (getCurrentTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.FileTransfer.Protocol (FileCmd, FileCommand, FileInfo, FilePartyI, SFileParty, XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileCmd, FileInfo)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (CorrId, RcvPublicVerifyKey, Transmission)
-import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Transport.HTTP2.Server
+import Simplex.Messaging.Protocol (RcvPublicVerifyKey)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM

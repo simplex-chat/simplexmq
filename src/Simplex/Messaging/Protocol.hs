@@ -1214,7 +1214,7 @@ tPut th trs
                 Just ts' -> encodeBatch n' s' ts'
                 _ -> (n', s', Nothing)
 
-tEncode :: C.CryptoSignature s => (s, ByteString) -> ByteString
+tEncode :: (Maybe C.ASignature, ByteString) -> ByteString
 tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
 
 tEncodeBatch :: Int -> ByteString -> ByteString

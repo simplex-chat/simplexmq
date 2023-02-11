@@ -71,12 +71,12 @@ sendXFTPCommand c@XFTPClient {http2Client = http2@HTTP2Client {sessionId}, confi
   HTTP2Response {respBody = body@HTTP2Body {bodyHead, bodySize}} <- liftEitherError xftpClientError $ sendRequest http2 req
   when (bodySize < blockSize || B.length bodyHead /= blockSize) $ throwError $ PCEResponseError BLOCK
   case tParse True bodyHead of
-    resp :| [] ->
+    resp :| [] -> do
       -- TODO validate that the file ID is the same as in the request?
       let (_, _, (_, _fId, respOrErr)) = tDecodeParseValidate sessionId currentXFTPVersion resp
-       in case respOrErr of
-            Right r -> pure (r, body)
-            Left e -> throwError $ PCEResponseError e
+      case respOrErr of
+        Right r -> pure (r, body)
+        Left e -> throwError $ PCEResponseError e
     _ -> throwError $ PCEResponseError BLOCK
 
 xftpTransmission :: XFTPClient -> ClientCommand FileResponse -> ExceptT ProtocolClientError IO ByteString

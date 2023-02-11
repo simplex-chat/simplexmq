@@ -7,18 +7,14 @@
 
 module Simplex.FileTransfer.Server.Main where
 
--- import Simplex.FileTransfer.Server (runFileServer)
-
-import Control.Concurrent (threadDelay)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Network.Socket (HostName, ServiceName)
+import Network.Socket (HostName)
 import Options.Applicative
--- import Simplex.FileTransfer.Client (processUpload)
--- import Simplex.FileTransfer.Server (startServer)
+import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern FileServer)
@@ -29,17 +25,11 @@ import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
-fileServerCLI :: FilePath -> FilePath -> IO ()
-fileServerCLI cfgPath logPath = do
-  -- startServer
-  threadDelay 10000000
+xftpServerVersion :: String
+xftpServerVersion = "0.1.0"
 
--- processUpload
-
-fileServerCLIOrig :: FilePath -> FilePath -> IO ()
-fileServerCLIOrig cfgPath logPath = do
-  -- startServer
-  -- processUpload
+xftpServerCLI :: FilePath -> FilePath -> IO ()
+xftpServerCLI cfgPath logPath = do
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -56,7 +46,7 @@ fileServerCLIOrig cfgPath logPath = do
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "file-server.ini"
-    serverVersion = "SMP file server v1.0.0"
+    serverVersion = "SimpleX XFTP server v" <> xftpServerVersion
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
@@ -98,9 +88,8 @@ fileServerCLIOrig cfgPath logPath = do
           srv = ProtoServerWithAuth (FileServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
       printXFTPConfig xftpPort storeLogFile
+      runXFTPServer cfg
       where
-        -- runFileServer cfg
-
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
