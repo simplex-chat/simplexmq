@@ -167,7 +167,11 @@ chunkSizeP =
     mb = 1024 * kb
 
 encodeFileReplicas :: Word32 -> [FileChunk] -> [YAMLServerReplicas]
-encodeFileReplicas defChunkSize = map encodeServerReplicas . groupBy ((==) `on` server') . unfoldChunksToReplicas defChunkSize
+encodeFileReplicas defChunkSize =
+  map encodeServerReplicas
+    . groupBy ((==) `on` server')
+    . sortOn server'
+    . unfoldChunksToReplicas defChunkSize
   where
     server' = server :: FileServerReplica -> XFTPServer
     encodeServerReplicas fs =
