@@ -180,15 +180,6 @@ encodeFileReplicas defChunkSize =
           chunks = map (B.unpack . encodeServerReplica) fs
         }
 
-decodeFileDescription :: YAMLFileDescription -> Either String FileDescription
-decodeFileDescription YAMLFileDescription {name, size, digest, key, iv, chunkSize, replicas} = do
-  chunkSize' <- parseAll chunkSizeP $ B.pack chunkSize
-  replicas' <- decodeFileParts replicas
-  chunks <- foldReplicasToChunks chunkSize' replicas'
-  pure FileDescription {name, size, digest, key, iv, chunkSize = chunkSize', chunks}
-  where
-    decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
-
 encodeServerReplica :: FileServerReplica -> ByteString
 encodeServerReplica FileServerReplica {chunkNo, rcvId, rcvKey, digest, chunkSize} =
   bshow chunkNo
@@ -207,6 +198,25 @@ serverReplicaP server = do
   digest <- optional (A.char ':' *> strP)
   chunkSize <- optional (A.char ':' *> chunkSizeP)
   pure FileServerReplica {chunkNo, server, rcvId, rcvKey, digest, chunkSize}
+
+unfoldChunksToReplicas :: Word32 -> [FileChunk] -> [FileServerReplica]
+unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
+  where
+    chunkReplicas c@FileChunk {replicas} = zipWith (replicaToServerReplica c) [1 ..] replicas
+    replicaToServerReplica :: FileChunk -> Int -> FileChunkReplica -> FileServerReplica
+    replicaToServerReplica FileChunk {chunkNo, digest, chunkSize} replicaNo FileChunkReplica {server, rcvId, rcvKey} =
+      let chunkSize' = if chunkSize /= defChunkSize && replicaNo == 1 then Just chunkSize else Nothing
+          digest' = if replicaNo == 1 then Just digest else Nothing
+       in FileServerReplica {chunkNo, server, rcvId, rcvKey, digest = digest', chunkSize = chunkSize'}
+
+decodeFileDescription :: YAMLFileDescription -> Either String FileDescription
+decodeFileDescription YAMLFileDescription {name, size, digest, key, iv, chunkSize, replicas} = do
+  chunkSize' <- parseAll chunkSizeP $ B.pack chunkSize
+  replicas' <- decodeFileParts replicas
+  chunks <- foldReplicasToChunks chunkSize' replicas'
+  pure FileDescription {name, size, digest, key, iv, chunkSize = chunkSize', chunks}
+  where
+    decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 
 decodeYAMLServerReplicas :: YAMLServerReplicas -> Either String [FileServerReplica]
 decodeYAMLServerReplicas YAMLServerReplicas {server, chunks} =
@@ -250,13 +260,3 @@ foldReplicasToChunks defChunkSize fs = do
                in Right $ M.insert chunkNo chunk cs
             _ -> Left "no digest for chunk"
     reverseReplicas c@FileChunk {replicas} = (c :: FileChunk) {replicas = reverse replicas}
-
-unfoldChunksToReplicas :: Word32 -> [FileChunk] -> [FileServerReplica]
-unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
-  where
-    chunkReplicas c@FileChunk {replicas} = zipWith (replicaToServerReplica c) [1 ..] replicas
-    replicaToServerReplica :: FileChunk -> Int -> FileChunkReplica -> FileServerReplica
-    replicaToServerReplica FileChunk {chunkNo, digest, chunkSize} replicaNo FileChunkReplica {server, rcvId, rcvKey} =
-      let chunkSize' = if chunkSize /= defChunkSize && replicaNo == 1 then Just chunkSize else Nothing
-          digest' = if replicaNo == 1 then Just digest else Nothing
-       in FileServerReplica {chunkNo, server, rcvId, rcvKey, digest = digest', chunkSize = chunkSize'}
