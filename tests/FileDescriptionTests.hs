@@ -6,10 +6,12 @@
 
 module FileDescriptionTests where
 
+import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Description
 import qualified Simplex.Messaging.Crypto as C
+import System.Directory (removeFile)
 import Test.Hspec
 
 fileDescPath :: FilePath
@@ -104,25 +106,39 @@ yamlFileDesc =
 fileDescriptionTests :: Spec
 fileDescriptionTests =
   fdescribe "file description parsing / serializing" $ do
+    it "parse YAML file description" testParseYAMLFileDescription
+    it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
     it "serialize file description" testSerializeFileDescription
-    it "process file description" testProcessFileDescription
 
-testParseFileDescription :: IO ()
-testParseFileDescription = do
+testParseYAMLFileDescription :: IO ()
+testParseYAMLFileDescription = do
   yfd <- Y.decodeFileThrow fileDescPath
   yfd `shouldBe` yamlFileDesc
 
-testSerializeFileDescription :: IO ()
-testSerializeFileDescription = do
+testSerializeYAMLFileDescription :: IO ()
+testSerializeYAMLFileDescription = withRemoveTmpFile $ do
   Y.encodeFile tmpFileDescPath yamlFileDesc
   fdSer <- B.readFile tmpFileDescPath
   fdExp <- B.readFile fileDescPath
   fdSer `shouldBe` fdExp
 
-testProcessFileDescription :: IO ()
-testProcessFileDescription = do
-  -- fdStr <- B.readFile fileDescPath
-  -- fd <- processFileDescription fdStr
-  -- fd `shouldBe` fileDesc
-  pure ()
+testParseFileDescription :: IO ()
+testParseFileDescription = do
+  r <- parseFileDescription <$> B.readFile fileDescPath
+  case r of
+    Left e -> expectationFailure $ show e
+    Right fd -> fd `shouldBe` fileDesc
+
+testSerializeFileDescription :: IO ()
+testSerializeFileDescription = withRemoveTmpFile $ do
+  B.writeFile tmpFileDescPath $ serializeFileDescription fileDesc
+  fdSer <- B.readFile tmpFileDescPath
+  fdExp <- B.readFile fileDescPath
+  fdSer `shouldBe` fdExp
+
+withRemoveTmpFile :: IO () -> IO ()
+withRemoveTmpFile =
+  bracket_
+    (pure ())
+    (removeFile tmpFileDescPath)
