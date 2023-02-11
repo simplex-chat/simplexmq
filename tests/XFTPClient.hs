@@ -32,7 +32,7 @@ xftpTestPort :: ServiceName
 xftpTestPort = "7000"
 
 testXFTPServer :: XFTPServer
-testXFTPServer = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
+testXFTPServer = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
 
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =

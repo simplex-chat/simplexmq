@@ -22,26 +22,22 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (intercalate)
-import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
-import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
-import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, ErrorType (..), SignedTransmission, encodeTransmission, tDecodeParseValidate, tEncode, tEncodeBatch, tParse)
+import Simplex.Messaging.Protocol (CorrId, ErrorType (..))
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Util
@@ -148,25 +144,25 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
         threadDelay interval
 
 processRequest :: HTTP2Request -> M ()
-processRequest HTTP2Request {sessionId, request, reqBody = body@HTTP2Body {bodyHead, bodySize}, sendResponse}
-  | bodySize < xftpBlockSize || B.length bodyHead /= xftpBlockSize = pure ()
-  | otherwise =
-    case tParse True bodyHead of
-      resp :| [] -> do
-        let (sig_, signed, (corrId, fId, cmdOrErr)) = tDecodeParseValidate sessionId currentXFTPVersion resp
+processRequest HTTP2Request {sessionId, reqBody = HTTP2Body {bodyHead}, sendResponse}
+  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK)
+  | otherwise = do
+    case xftpDecodeTransmission sessionId bodyHead of
+      Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
         case cmdOrErr of
-          Right cmd ->
+          Right cmd -> do
             verifyXFTPTransmission sig_ signed fId cmd >>= \case
               VRVerified req -> sendXFTPResponse . (corrId,fId,) =<< processXFTPRequest req
               VRFailed -> sendXFTPResponse (corrId, fId, FRErr AUTH)
           Left e -> sendXFTPResponse (corrId, fId, FRErr e)
-      _ -> sendXFTPResponse ("", "", FRErr BLOCK)
+      Left e -> sendXFTPResponse ("", "", FRErr e)
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> M ()
-    sendXFTPResponse (corrId, fId, resp) = do
-      let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, resp)
-          t' = tEncodeBatch 1 $ tEncode (Nothing, t)
-      liftIO $ sendResponse $ H.responseBuilder N.ok200 [] $ lazyByteString $ LB.fromStrict t'
+    sendXFTPResponse (corrId, fId, resp) =
+      liftIO . sendResponse . H.responseBuilder N.ok200 [] . lazyByteString . LB.fromStrict $
+        case xftpEncodeTransmission sessionId Nothing (corrId, fId, resp) of
+          Right t' -> t'
+          Left _ -> "padding error" -- TODO respond with BLOCK error
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
@@ -193,12 +189,12 @@ processXFTPRequest = \case
     st <- asks store
     -- TODO retry on duplicate IDs?
     sId <- getFileId
-    rIds <- replicateM (length rcps) getFileId
+    rIds <- mapM (const getFileId) rcps
     r <- runExceptT $ do
       ExceptT $ atomically $ addFile st sId file
-      forM (zip rIds $ L.toList rcps) $ \rcp ->
+      forM (L.zip rIds rcps) $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
-    pure $ either FRErr (const FROk) r
+    pure $ either FRErr (const $ FRSndIds sId rIds) r
   XFTPReqCmd _fr (FileCmd _ cmd) -> case cmd of
     FADD _rcps -> pure FROk
     FPUT -> pure FROk

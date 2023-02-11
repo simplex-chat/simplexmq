@@ -11,7 +11,6 @@ module Simplex.FileTransfer.Client where
 
 import Control.Monad.Except
 import Data.Bifunctor (first)
-import Data.ByteString (ByteString)
 import Data.ByteString.Builder (lazyByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict)
@@ -20,8 +19,7 @@ import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
 import Simplex.Messaging.Client
-  ( ClientCommand,
-    NetworkConfig (..),
+  ( NetworkConfig (..),
     ProtocolClientError (..),
     TransportSession,
     chooseTransportHost,
@@ -35,14 +33,8 @@ import Simplex.Messaging.Protocol
     ProtocolServer (ProtocolServer),
     RecipientId,
     SenderId,
-    SentRawTransmission,
-    encodeTransmission,
-    tDecodeParseValidate,
-    tEncode,
-    tEncodeBatch,
-    tParse,
   )
-import Simplex.Messaging.Transport (TransportError (..), supportedParameters)
+import Simplex.Messaging.Transport (supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -86,29 +78,19 @@ xftpClientError = \case
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> Maybe C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe FilePath -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand c@XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd filePath_ = do
-  t <- xftpTransmission c (pKey, fId, FileCmd (sFileParty @p) cmd)
+sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd _filePath = do
+  t <-
+    liftEither . first PCETransportError $
+      xftpEncodeTransmission sessionId pKey ("", fId, FileCmd (sFileParty @p) cmd)
   -- TODO add file to request body, as lazy bytestring
   let req = H.requestBuilder N.methodPost "/" [] (lazyByteString $ fromStrict t)
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead, bodySize}} <- liftEitherError xftpClientError $ sendRequest http2 req
-  when (bodySize < xftpBlockSize || B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
-  case tParse True bodyHead of
-    resp :| [] -> do
-      -- TODO validate that the file ID is the same as in the request?
-      let (_, _, (_, _fId, respOrErr)) = tDecodeParseValidate sessionId currentXFTPVersion resp
-      case respOrErr of
-        Right r -> pure (r, body)
-        Left e -> throwError $ PCEResponseError e
-    _ -> throwError $ PCEResponseError BLOCK
-
-xftpTransmission :: XFTPClient -> ClientCommand FileResponse -> ExceptT ProtocolClientError IO ByteString
-xftpTransmission XFTPClient {http2Client = HTTP2Client {sessionId}} (pKey, fId, cmd) = do
-  let t = encodeTransmission currentXFTPVersion sessionId ("", fId, cmd)
-      t' = tEncodeBatch 1 . tEncode $ signTransmission t
-  liftEither . first (const $ PCETransportError TELargeMsg) $ C.pad t' xftpBlockSize
-  where
-    signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req
+  when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
+  -- TODO validate that the file ID is the same as in the request?
+  (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
+  case respOrErr of
+    Right r -> pure (r, body)
+    Left e -> throwError $ PCEResponseError e
 
 createXFTPChunk ::
   XFTPClient ->

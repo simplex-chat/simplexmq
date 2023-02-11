@@ -42,6 +42,6 @@ main = do
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "XFTP" $ do
-          fdescribe "XFTP server" xftpServerTests
+          describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
         describe "Server CLIs" cliTests

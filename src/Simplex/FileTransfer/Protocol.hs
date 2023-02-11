@@ -11,13 +11,15 @@
 
 module Simplex.FileTransfer.Protocol where
 
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
-import Data.List.NonEmpty (NonEmpty)
-import Data.Maybe (isJust, isNothing)
+import Data.List.NonEmpty (NonEmpty (..))
+import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
@@ -32,10 +34,19 @@ import Simplex.Messaging.Protocol
     RcvPublicVerifyKey,
     RecipientId,
     SenderId,
+    SentRawTransmission,
+    SignedTransmission,
     SndPublicVerifyKey,
+    Transmission,
+    encodeTransmission,
     messageTagP,
+    tDecodeParseValidate,
+    tEncode,
+    tEncodeBatch,
+    tParse,
     _smpP,
   )
+import Simplex.Messaging.Transport (SessionId, TransportError (..))
 import Simplex.Messaging.Util ((<$?>))
 import Simplex.Messaging.Version
 
@@ -275,3 +286,24 @@ checkParty' :: forall t p p'. (FilePartyI p, FilePartyI p') => t p' -> Maybe (t 
 checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
+
+xftpEncodeTransmission :: ProtocolEncoding c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
+  let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
+  xftpEncodeBatch1 $ signTransmission t
+  where
+    signTransmission :: ByteString -> SentRawTransmission
+    signTransmission t = ((`C.sign` t) <$> pKey, t)
+
+-- this function uses batch syntax but puts only one transmission in the batch
+xftpEncodeBatch1 :: (Maybe C.ASignature, ByteString) -> Either TransportError ByteString
+xftpEncodeBatch1 (sig, t) =
+  let t' = tEncodeBatch 1 . smpEncode . Large $ tEncode (sig, t)
+   in first (const TELargeMsg) $ C.pad t' xftpBlockSize
+
+xftpDecodeTransmission :: ProtocolEncoding c => SessionId -> ByteString -> Either ErrorType (SignedTransmission c)
+xftpDecodeTransmission sessionId t = do
+  t' <- first (const LARGE_MSG) $ C.unPad t
+  case tParse True t' of
+    t'' :| [] -> Right $ tDecodeParseValidate sessionId currentXFTPVersion t''
+    _ -> Left BLOCK

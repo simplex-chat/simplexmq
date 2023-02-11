@@ -19,8 +19,8 @@ testFileChunkDelivery :: Spec
 testFileChunkDelivery =
   it "should create, upload and receive file chunk" $ do
     (sndKey, spKey) <- C.generateSignatureKeyPair C.SEd25519
-    (rcvKey, rpKey) <- C.generateSignatureKeyPair C.SEd25519
+    (rcvKey, _rpKey) <- C.generateSignatureKeyPair C.SEd25519
     xftpTest $ \c -> runRight_ $ do
       let file = FileInfo {sndKey, size = 2 * 1024 * 1024, digest = "abc="}
-      (sId, rIds) <- createXFTPChunk c spKey file [rcvKey]
+      (_sId, _rIds) <- createXFTPChunk c spKey file [rcvKey]
       pure ()

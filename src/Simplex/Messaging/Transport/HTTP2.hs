@@ -56,25 +56,25 @@ data HTTP2Body = HTTP2Body
 
 class HTTP2BodyChunk a where
   getBodyChunk :: a -> IO ByteString
-  getBodeSize :: a -> Maybe Int
+  getBodySize :: a -> Maybe Int
 
 instance HTTP2BodyChunk HC.Response where
   getBodyChunk = HC.getResponseBodyChunk
   {-# INLINE getBodyChunk #-}
-  getBodeSize = HC.responseBodySize
-  {-# INLINE getBodeSize #-}
+  getBodySize = HC.responseBodySize
+  {-# INLINE getBodySize #-}
 
 instance HTTP2BodyChunk HS.Request where
   getBodyChunk = HS.getRequestBodyChunk
   {-# INLINE getBodyChunk #-}
-  getBodeSize = HS.requestBodySize
-  {-# INLINE getBodeSize #-}
+  getBodySize = HS.requestBodySize
+  {-# INLINE getBodySize #-}
 
 getHTTP2Body :: HTTP2BodyChunk a => a -> Int -> IO HTTP2Body
 getHTTP2Body r n = do
   bodyBuffer <- atomically newTBuffer
   let getPart n' = getBuffered bodyBuffer n' $ getBodyChunk r
   bodyHead <- getPart n
-  let bodySize = fromMaybe 0 $ getBodeSize r
+  let bodySize = fromMaybe 0 $ getBodySize r
       bodyPart = if bodySize > n && B.length bodyHead == n then Just getPart else Nothing
   pure HTTP2Body {bodyHead, bodySize, bodyPart, bodyBuffer}
