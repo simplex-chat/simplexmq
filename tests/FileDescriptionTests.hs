@@ -88,19 +88,31 @@ yamlFileDesc =
       replicas =
         [ YAMLServerReplicas
             { server = "xftp://abc=@example1.com",
-              chunks = ["1:YWJj:ZGVm:Z2hp", "3:YWJj:ZGVm:Z2hp"]
+              chunks =
+                [ "1:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp",
+                  "3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp"
+                ]
             },
           YAMLServerReplicas
             { server = "xftp://abc=@example2.com",
-              chunks = ["2:YWJj:ZGVm:Z2hp", "4:YWJj:ZGVm:Z2hp:2mb"]
+              chunks =
+                [ "2:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp",
+                  "4:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp:2mb"
+                ]
             },
           YAMLServerReplicas
             { server = "xftp://abc=@example3.com",
-              chunks = ["1:YWJj:ZGVm", "4:YWJj:ZGVm"]
+              chunks =
+                [ "1:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe",
+                  "4:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+                ]
             },
           YAMLServerReplicas
             { server = "xftp://abc=@example4.com",
-              chunks = ["2:YWJj:ZGVm", "3:YWJj:ZGVm"]
+              chunks =
+                [ "2:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe",
+                  "3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+                ]
             }
         ]
     }
