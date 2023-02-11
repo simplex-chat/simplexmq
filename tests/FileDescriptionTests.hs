@@ -119,7 +119,7 @@ yamlFileDesc =
 
 fileDescriptionTests :: Spec
 fileDescriptionTests =
-  fdescribe "file description parsing / serializing" $ do
+  describe "file description parsing / serializing" $ do
     it "parse YAML file description" testParseYAMLFileDescription
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
