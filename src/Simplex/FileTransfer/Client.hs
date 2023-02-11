@@ -19,9 +19,29 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
-import Simplex.Messaging.Client (ClientCommand, NetworkConfig (..), ProtocolClientError (..), TransportSession, chooseTransportHost, proxyUsername, transportClientConfig)
+import Simplex.Messaging.Client
+  ( ClientCommand,
+    NetworkConfig (..),
+    ProtocolClientError (..),
+    TransportSession,
+    chooseTransportHost,
+    defaultNetworkConfig,
+    proxyUsername,
+    transportClientConfig,
+  )
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (ProtocolServer), RecipientId, SenderId, SentRawTransmission, encodeTransmission, tDecodeParseValidate, tEncode, tEncodeBatch, tParse)
+import Simplex.Messaging.Protocol
+  ( ErrorType (..),
+    ProtocolServer (ProtocolServer),
+    RecipientId,
+    SenderId,
+    SentRawTransmission,
+    encodeTransmission,
+    tDecodeParseValidate,
+    tEncode,
+    tEncodeBatch,
+    tParse,
+  )
 import Simplex.Messaging.Transport (TransportError (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
@@ -34,24 +54,26 @@ data XFTPClient = XFTPClient
   }
 
 data XFTPClientConfig = XFTPClientConfig
-  { networkConfig :: NetworkConfig,
-    blockSize :: Int
+  { networkConfig :: NetworkConfig
   }
+
+defaultXFTPClientConfig :: XFTPClientConfig
+defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either ProtocolClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfig} disconnected = runExceptT $ do
   let tcConfig = transportClientConfig networkConfig
-      http2Config = xftpHTTP2Config networkConfig tcConfig config
+      http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost networkConfig host
   http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost port (Just keyHash) Nothing http2Config disconnected
   pure XFTPClient {http2Client, config}
 
-xftpHTTP2Config :: NetworkConfig -> TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
-xftpHTTP2Config NetworkConfig {tcpConnectTimeout} transportConfig XFTPClientConfig {blockSize} =
+xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
+xftpHTTP2Config transportConfig XFTPClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} =
   defaultHTTP2ClientConfig
-    { bodyHeadSize = blockSize,
+    { bodyHeadSize = xftpBlockSize,
       suportedTLSParams = supportedParameters,
       connTimeout = tcpConnectTimeout,
       transportConfig
@@ -64,12 +86,12 @@ xftpClientError = \case
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> Maybe C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe FilePath -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand c@XFTPClient {http2Client = http2@HTTP2Client {sessionId}, config = XFTPClientConfig {blockSize}} pKey fId cmd filePath_ = do
+sendXFTPCommand c@XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd filePath_ = do
   t <- xftpTransmission c (pKey, fId, FileCmd (sFileParty @p) cmd)
   -- TODO add file to request body, as lazy bytestring
   let req = H.requestBuilder N.methodPost "/" [] (lazyByteString $ fromStrict t)
   HTTP2Response {respBody = body@HTTP2Body {bodyHead, bodySize}} <- liftEitherError xftpClientError $ sendRequest http2 req
-  when (bodySize < blockSize || B.length bodyHead /= blockSize) $ throwError $ PCEResponseError BLOCK
+  when (bodySize < xftpBlockSize || B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   case tParse True bodyHead of
     resp :| [] -> do
       -- TODO validate that the file ID is the same as in the request?
@@ -80,10 +102,10 @@ sendXFTPCommand c@XFTPClient {http2Client = http2@HTTP2Client {sessionId}, confi
     _ -> throwError $ PCEResponseError BLOCK
 
 xftpTransmission :: XFTPClient -> ClientCommand FileResponse -> ExceptT ProtocolClientError IO ByteString
-xftpTransmission XFTPClient {http2Client = HTTP2Client {sessionId}, config = XFTPClientConfig {blockSize}} (pKey, fId, cmd) = do
+xftpTransmission XFTPClient {http2Client = HTTP2Client {sessionId}} (pKey, fId, cmd) = do
   let t = encodeTransmission currentXFTPVersion sessionId ("", fId, cmd)
       t' = tEncodeBatch 1 . tEncode $ signTransmission t
-  liftEither . first (const $ PCETransportError TELargeMsg) $ C.pad t' blockSize
+  liftEither . first (const $ PCETransportError TELargeMsg) $ C.pad t' xftpBlockSize
   where
     signTransmission :: ByteString -> SentRawTransmission
     signTransmission t = ((`C.sign` t) <$> pKey, t)

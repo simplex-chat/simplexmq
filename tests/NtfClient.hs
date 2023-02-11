@@ -30,6 +30,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
+import SMPClient (serverBracket)
 import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -48,7 +49,6 @@ import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import UnliftIO.Timeout (timeout)
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -114,19 +114,6 @@ withNtfServerCfg t cfg =
   serverBracket
     (\started -> runNtfServerBlocking started cfg {transports = [(ntfTestPort, t)]})
     (pure ())
-
-serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
-serverBracket process afterProcess f = do
-  started <- newEmptyTMVarIO
-  E.bracket
-    (forkIOWithUnmask ($ process started))
-    (\t -> killThread t >> afterProcess >> waitFor started "stop")
-    (\t -> waitFor started "start" >> f t)
-  where
-    waitFor started s =
-      5_000_000 `timeout` atomically (takeTMVar started) >>= \case
-        Nothing -> error $ "server did not " <> s
-        _ -> pure ()
 
 withNtfServerOn :: ATransport -> ServiceName -> IO a -> IO a
 withNtfServerOn t port' = withNtfServerThreadOn t port' . const

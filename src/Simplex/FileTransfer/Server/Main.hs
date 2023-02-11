@@ -17,7 +17,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern FileServer)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -58,7 +58,7 @@ xftpServerCLI cfgPath logPath = do
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
-          srv = ProtoServerWithAuth (FileServer [THDomainName host] "" (C.KeyHash fp)) Nothing
+          srv = ProtoServerWithAuth (XFTPServer [THDomainName host] "" (C.KeyHash fp)) Nothing
       writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
@@ -85,7 +85,7 @@ xftpServerCLI cfgPath logPath = do
       let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@XFTPServerConfig {xftpPort, storeLogFile} = serverConfig
-          srv = ProtoServerWithAuth (FileServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
+          srv = ProtoServerWithAuth (XFTPServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
       printXFTPConfig xftpPort storeLogFile
       runXFTPServer cfg

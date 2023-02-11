@@ -16,6 +16,7 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
+import XFTPServerTests (xftpServerTests)
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
@@ -40,5 +41,7 @@ main = do
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
+        describe "XFTP" $ do
+          fdescribe "XFTP server" xftpServerTests
+          describe "XFTP file description" fileDescriptionTests
         describe "Server CLIs" cliTests
-        describe "File description" fileDescriptionTests

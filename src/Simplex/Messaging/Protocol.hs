@@ -73,8 +73,8 @@ module Simplex.Messaging.Protocol
     SMPServerWithAuth,
     NtfServer,
     pattern NtfServer,
-    FileServer,
-    pattern FileServer,
+    XFTPServer,
+    pattern XFTPServer,
     ProtoServerWithAuth (..),
     BasicAuth (..),
     SrvLoc (..),
@@ -624,12 +624,12 @@ pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
 
-type FileServer = ProtocolServer 'PXFTP
+type XFTPServer = ProtocolServer 'PXFTP
 
-pattern FileServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
-pattern FileServer host port keyHash = ProtocolServer SPXFTP host port keyHash
+pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
+pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash
 
-{-# COMPLETE FileServer #-}
+{-# COMPLETE XFTPServer #-}
 
 sameSrvAddr' :: ProtoServerWithAuth p -> ProtoServerWithAuth p -> Bool
 sameSrvAddr' (ProtoServerWithAuth srv _) (ProtoServerWithAuth srv' _) = sameSrvAddr srv srv'

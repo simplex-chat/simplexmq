@@ -442,11 +442,14 @@ test-suite smp-server-test
       CoreTests.ProtocolErrorTests
       CoreTests.RetryIntervalTests
       CoreTests.VersionRangeTests
+      FileDescriptionTests
       NtfClient
       NtfServerTests
       ServerTests
       SMPAgentClient
       SMPClient
+      XFTPClient
+      XFTPServerTests
       Paths_simplexmq
   hs-source-dirs:
       tests
