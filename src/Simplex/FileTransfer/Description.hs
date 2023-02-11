@@ -65,8 +65,8 @@ instance ToJSON FileDigest where
 
 data FileChunk = FileChunk
   { chunkNo :: Int,
-    digest :: FileDigest,
     chunkSize :: Word32,
+    digest :: FileDigest,
     replicas :: [FileChunkReplica]
   }
   deriving (Eq, Show)
@@ -129,45 +129,40 @@ data FilePartChunk = FilePartChunk
   deriving (Show)
 
 parseFileDescription :: ByteString -> Either String FileDescription
-parseFileDescription bs =
-  case Y.decodeEither' bs of
-    Left e -> Left $ "Failed to parse file description: " <> show e
-    Right YAMLFileDescription {name, size, chunkSize = fChunkSizeS, digest = fDigest, encKey, iv, parts} -> do
-      case parseFileChunkSize fChunkSizeS of
-        Left e -> Left $ "Failed to parse file chunk size: " <> e
-        Right fChunkSize -> case parseParts M.empty parts of
-          Left e -> Left $ "Failed to parse file parts: " <> e
-          Right cm -> do
-            let chunks = map (\fc@FileChunk {replicas} -> fc {replicas = reverse replicas}) (M.elems cm)
-            pure FileDescription {name, size, digest = fDigest, encKey, iv, chunks}
-          where
-            parseParts :: Map Int FileChunk -> [YAMLFilePart] -> Either String (Map Int FileChunk)
-            parseParts cm [] = Right cm
-            parseParts cm (YAMLFilePart {server, chunks} : ps) = case parseChunks cm chunks of
-              Left e -> Left e
-              Right cm' -> parseParts cm' ps
-              where
-                parseChunks :: Map Int FileChunk -> [String] -> Either String (Map Int FileChunk)
-                parseChunks cm' [] = Right cm'
-                parseChunks cm' (c : cs) = case parseChunk cm' c of
-                  Left e -> Left e
-                  Right cm'' -> parseChunks cm'' cs
-                parseChunk :: Map Int FileChunk -> String -> Either String (Map Int FileChunk)
-                parseChunk cm' chunkStr = do
-                  case parseFilePartChunk chunkStr of
-                    Left e -> Left $ "Failed to parse chunk: " <> e
-                    Right FilePartChunk {chunkNo, rcvId, rcvKey, digest = digest_, chunkSize = chunkSize_} ->
-                      case M.lookup chunkNo cm' of
-                        Nothing ->
-                          case digest_ of
-                            Nothing -> Left $ "First chunk replica has no digest: " <> chunkStr
-                            Just digest ->
-                              let chunkSize = fromMaybe fChunkSize chunkSize_
-                                  replicas = [FileChunkReplica {server, rcvId, rcvKey}]
-                               in Right $ M.insert chunkNo FileChunk {chunkNo, digest, chunkSize, replicas} cm'
-                        Just fc@FileChunk {replicas} ->
-                          let replicas' = FileChunkReplica {server, rcvId, rcvKey} : replicas
-                           in Right $ M.insert chunkNo fc {replicas = replicas'} cm'
+parseFileDescription bs = do
+  YAMLFileDescription {name, size, chunkSize = fChunkSizeS, digest = fDigest, encKey, iv, parts} <- Y.decodeEither' bs
+  fChunkSize <- parseFileChunkSize fChunkSizeS
+  cm <- parseParts M.empty parts
+  let chunks = map (\fc@FileChunk {replicas} -> fc {replicas = reverse replicas}) (M.elems cm)
+  pure FileDescription {name, size, digest = fDigest, encKey, iv, chunks}
+  where
+    parseParts :: Map Int FileChunk -> [YAMLFilePart] -> Either String (Map Int FileChunk)
+    parseParts cm [] = Right cm
+    parseParts cm (YAMLFilePart {server, chunks} : ps) = case parseChunks cm chunks of
+      Left e -> Left e
+      Right cm' -> parseParts cm' ps
+      where
+        parseChunks :: Map Int FileChunk -> [String] -> Either String (Map Int FileChunk)
+        parseChunks cm' [] = Right cm'
+        parseChunks cm' (c : cs) = case parseChunk cm' c of
+          Left e -> Left e
+          Right cm'' -> parseChunks cm'' cs
+        parseChunk :: Map Int FileChunk -> String -> Either String (Map Int FileChunk)
+        parseChunk cm' chunkStr = do
+          case parseFilePartChunk chunkStr of
+            Left e -> Left $ "Failed to parse chunk: " <> e
+            Right FilePartChunk {chunkNo, rcvId, rcvKey, digest = digest_, chunkSize = chunkSize_} ->
+              case M.lookup chunkNo cm' of
+                Nothing ->
+                  case digest_ of
+                    Nothing -> Left $ "First chunk replica has no digest: " <> chunkStr
+                    Just digest ->
+                      let chunkSize = fromMaybe fChunkSize chunkSize_
+                          replicas = [FileChunkReplica {server, rcvId, rcvKey}]
+                       in Right $ M.insert chunkNo FileChunk {chunkNo, digest, chunkSize, replicas} cm'
+                Just fc@FileChunk {replicas} ->
+                  let replicas' = FileChunkReplica {server, rcvId, rcvKey} : replicas
+                   in Right $ M.insert chunkNo fc {replicas = replicas'} cm'
 
 parseFileChunkSize :: String -> Either String Word32
 parseFileChunkSize = A.parseOnly fileChunkSizeP . B.pack
