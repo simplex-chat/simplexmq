@@ -377,6 +377,7 @@ test-suite smp-server-test
       CoreTests.ProtocolErrorTests
       CoreTests.RetryIntervalTests
       CoreTests.VersionRangeTests
+      FileDescriptionTests
       NtfClient
       NtfServerTests
       ServerTests
