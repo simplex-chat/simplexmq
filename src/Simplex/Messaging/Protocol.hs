@@ -73,6 +73,8 @@ module Simplex.Messaging.Protocol
     SMPServerWithAuth,
     NtfServer,
     pattern NtfServer,
+    XFTPServer,
+    pattern XFTPServer,
     ProtoServerWithAuth (..),
     BasicAuth (..),
     SrvLoc (..),
@@ -622,6 +624,13 @@ pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
 
+type XFTPServer = ProtocolServer 'PXFTP
+
+pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
+pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash
+
+{-# COMPLETE NtfServer #-}
+
 sameSrvAddr' :: ProtoServerWithAuth p -> ProtoServerWithAuth p -> Bool
 sameSrvAddr' (ProtoServerWithAuth srv _) (ProtoServerWithAuth srv' _) = sameSrvAddr srv srv'
 {-# INLINE sameSrvAddr' #-}
@@ -737,6 +746,9 @@ instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
 instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
+  parseJSON = strParseJSON "ProtocolServer"
 
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
   deriving (Eq, Show)
