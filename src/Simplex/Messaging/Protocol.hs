@@ -747,6 +747,9 @@ instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
+  parseJSON = strParseJSON "ProtocolServer"
+
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
   deriving (Eq, Show)
 
