@@ -68,25 +68,20 @@ cliCommandP =
     sendP :: Parser SendOptions
     sendP =
       SendOptions
-        <$> argument str (metavar "FILE" <> help "File path to send")
-        <*> optional outputP
-        <*> option auto (short 'n' <> metavar "COUNT" <> help "Number of recipients" <> value 1)
-        <*> optional (strOption $ long "temp" <> metavar "TEMP" <> help "Directory for temporary encrypted file")
+        <$> argument str (metavar "FILE" <> help "File to send")
+        <*> optional (argument str $ metavar "DIR" <> help "Directory to save file descriptions (default: current directory)")
+        <*> option auto (short 'n' <> metavar "COUNT" <> help "Number of recipients" <> value 1 <> showDefault)
+        <*> optional (strOption $ long "temp" <> metavar "TEMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
     receiveP :: Parser ReceiveOptions
     receiveP =
       ReceiveOptions
         <$> argument str (metavar "FILE" <> help "File description file")
-        <*> optional outputP
+        <*> optional (argument str $ metavar "DIR" <> help "Directory to save file (default: system Downloads directory)")
     randomP :: Parser RandomFileOptions
     randomP =
       RandomFileOptions
         <$> argument str (metavar "FILE" <> help "Path to save file")
-        <*> ( option strDec (long "size" <> short 's' <> metavar "SIZE" <> help "File size (bytes/kb/mb)")
-                <|> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
-            )
-    outputP =
-      strOption (long "output" <> short 'o' <> metavar "DIR" <> help "Directory to save file descriptions")
-        <|> argument str (metavar "DIR" <> help "Directory to save file descriptions")
+        <*> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
     strDec = eitherReader $ strDecode . B.pack
 
 xftpClientCLI :: IO ()
