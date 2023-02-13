@@ -13,6 +13,7 @@ where
 import Control.Concurrent.STM (atomically)
 import Control.Monad
 import Control.Monad.Except (runExceptT)
+import Crypto.Random (getRandomBytes)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -24,6 +25,10 @@ import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (RecipientId, SenderId)
+import Simplex.Messaging.Server.CLI (getCliCommand')
+
+xftpClientVersion :: String
+xftpClientVersion = "0.1.0"
 
 data CliCommand
   = UploadFile UploadOptions
@@ -44,22 +49,48 @@ data DownloadOptions = DownloadOptions
   deriving (Show)
 
 data RandomFileOptions = RandomFileOptions
-  { size :: Int
+  { size :: Int,
+    path :: FilePath
   }
   deriving (Show)
 
 cliCommandP :: Parser CliCommand
-cliCommandP = undefined
-
-getCliCommand :: IO CliCommand
-getCliCommand = execParser $ info (cliCommandP <**> helper) fullDesc
+cliCommandP =
+  hsubparser
+    ( command "upload" (info (UploadFile <$> uploadP) (progDesc "Upload file"))
+        <> command "download" (info (DownloadFile <$> downloadP) (progDesc "Download file"))
+        <> command "random" (info (RandomFile <$> randomP) (progDesc "Generate a random file"))
+    )
+  where
+    uploadP :: Parser UploadOptions
+    uploadP =
+      UploadOptions
+        <$> strOption (long "file" <> short 'f' <> metavar "FILE" <> help "File to upload")
+        <*> option
+          auto
+          (long "num" <> short 'n' <> metavar "NUM" <> help "Number of recipients" <> value 1)
+        <*> strOption (long "desc-dir" <> short 'd' <> metavar "DIR" <> help "Directory to save file descriptions")
+    downloadP :: Parser DownloadOptions
+    downloadP =
+      DownloadOptions
+        <$> strOption (long "desc" <> short 'd' <> metavar "DESC" <> help "File description")
+        <*> strOption (long "output" <> short 'o' <> metavar "FILE" <> help "Path to save file")
+    randomP :: Parser RandomFileOptions
+    randomP =
+      RandomFileOptions
+        <$> option
+          auto
+          (long "size" <> short 's' <> metavar "SIZE" <> help "File size in megabytes" <> value 8)
+        <*> strOption (long "output" <> short 'o' <> metavar "FILE" <> help "Path to save file" <> value "./random.bin")
 
 xftpClientCLI :: IO ()
 xftpClientCLI =
-  getCliCommand >>= \case
+  getCliCommand' cliCommandP clientVersion >>= \case
     UploadFile UploadOptions {file, numRecipients, fileDescriptionsDest} -> cliUploadFile file numRecipients fileDescriptionsDest
     DownloadFile DownloadOptions {fileDescription, fileDest} -> cliDownloadFile fileDescription fileDest
-    RandomFile RandomFileOptions {size} -> cliRandomFile size
+    RandomFile RandomFileOptions {size, path} -> cliRandomFile size path
+  where
+    clientVersion = "SimpleX XFTP client v" <> xftpClientVersion
 
 cliUploadFile :: FilePath -> Int -> FilePath -> IO ()
 cliUploadFile file numRecipients fileDescriptionsDest = do
@@ -135,5 +166,7 @@ downloadFileChunk c writeLock FileDescription {key, iv} FileChunk {replicas = Fi
     writeChunk = undefined
 downloadFileChunk _ _ _ _ _ = pure ()
 
-cliRandomFile :: Int -> IO ()
-cliRandomFile size = undefined
+cliRandomFile :: Int -> FilePath -> IO ()
+cliRandomFile size path = do
+  bytes <- getRandomBytes (size * 1024 * 1024)
+  B.writeFile path bytes
