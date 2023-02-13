@@ -14,11 +14,12 @@ import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
-import GHC.IO.IOMode (IOMode (ReadMode))
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
+import Simplex.FileTransfer.Transport (receveFile, sendFile)
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
     ProtocolClientError (..),
@@ -41,7 +42,8 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (bshow, liftEitherError)
-import UnliftIO.IO (withFile)
+import System.IO (IOMode (..), SeekMode (..))
+import UnliftIO.IO (hSeek, withFile)
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -56,6 +58,12 @@ data XFTPChunkBody = XFTPChunkBody
   { chunkSize :: Int,
     chunkPart :: Int -> IO ByteString,
     http2Body :: HTTP2Body
+  }
+
+data XFTPChunkSpec = XFTPChunkSpec
+  { filePath :: FilePath,
+    chunkOffset :: Int64,
+    chunkSize :: Int
   }
 
 defaultXFTPClientConfig :: XFTPClientConfig
@@ -86,8 +94,8 @@ xftpClientError = \case
   HCNetworkError -> PCENetworkError
   HCIOError e -> PCEIOError e
 
-sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe FilePath -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd filePath_ = do
+sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
+sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
@@ -101,15 +109,13 @@ sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fI
     Left e -> throwError $ PCEResponseError e
   where
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
-    streamBody t sendChunk done = do
-      sendChunk $ byteString t
-      forM_ filePath_ $ \path -> withFile path ReadMode sendFile
+    streamBody t send done = do
+      send $ byteString t
+      forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
+        withFile filePath ReadMode $ \h -> do
+          hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+          sendFile h send chunkSize
       done
-      where
-        sendFile h =
-          B.hGet h xftpBlockSize >>= \case
-            "" -> pure ()
-            bs -> sendChunk (byteString bs) >> sendFile h
 
 createXFTPChunk ::
   XFTPClient ->
@@ -123,143 +129,32 @@ createXFTPChunk c spKey file rsps =
     (FRSndIds sId rIds, _body) -> pure (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FilePath -> ExceptT ProtocolClientError IO ()
-uploadXFTPChunk c spKey fId filePath =
-  sendXFTPCommand c spKey fId FPUT (Just filePath) >>= \case
+uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
+uploadXFTPChunk c spKey fId chunkSpec =
+  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= \case
     -- TODO check that body is empty
     (FROk, _body) -> pure ()
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT ProtocolClientError IO XFTPChunkBody
-downloadXFTPChunk c rpKey fId dhKey =
-  sendXFTPCommand c rpKey fId (FGET dhKey) Nothing >>= \case
-    (FROk, http2Body@HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT ProtocolClientError IO (RcvPublicDhKey, XFTPChunkBody)
+downloadXFTPChunk c rpKey fId rKey =
+  sendXFTPCommand c rpKey fId (FGET rKey) Nothing >>= \case
+    (FRFile sKey, http2Body@HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect
-      Just chunkPart -> pure XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
+      Just chunkPart -> do
+        let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
+        pure (sKey, chunk)
       _ -> throwError $ PCEResponseError NO_MSG
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
+receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset, chunkSize} = liftIO $ do
+  withFile filePath WriteMode $ \h -> do
+    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+    -- TODO chunk decryption
+    void $ receveFile h chunkPart 0
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender
 -- FACK :: FileCommand Recipient
 -- PING :: FileCommand Recipient
-
-{- createHTTPS2Request :: FileRequest -> IO Request
-createHTTPS2Request fileReq = do
-  pure $ H.requestBuilder N.methodPost path headers (lazyByteString $ J.encode fileReq)
-  where
-    path = "/file/"
-    headers = []
- -}
--- createFileHTTPS2Request :: FilePath -> IO Request
--- createFileHTTPS2Request f = do
---   fileSize <- getFileSize f
---   let fileSizeInt64 = fromInteger (fromMaybe 0 fileSize)
---   pure $ H.requestFile N.methodPost path headers (FileSpec f 0 fileSizeInt64)
---   where
---     path = "/file/"
---     headers = []
-
--- getFileSize :: FilePath -> IO (Maybe Integer)
--- getFileSize path =
---   handle handler $
---     withFile
---       path
---       ReadMode
---       ( \h -> do
---           size <- hFileSize h
---           return $ Just size
---       )
---   where
---     handler :: SomeException -> IO (Maybe Integer)
---     handler _ = return Nothing
-
--- {-
-
--- processUpload :: IO ()
--- processUpload = do
---   client <- createFileClient "localhost" defaultHTTP2ClientConfig
---   c <- readTVarIO (https2Client client)
---   case c of
---     Just http2 -> do
---       (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
---       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd25519
---       let fileSize = 10000
---       resp <- addFile http2 (sPub, sKey) (fromList [rPub]) fileSize
---       case resp of
---         Just (FRChunkIds sChunkId rChunkIds)  ->  do
---           file <- readFileToUpload "tempFile"
---           _ <- uploadFile http2 sChunkId (sPub, sKey) file
---           print "Done all"
---         _ -> pure ()
---       print "Done"
---     _ -> print "No client"
---   pure ()
-
--- addFile :: HTTP2Client -> (SndPublicVerifyKey, APrivateSignKey) -> NonEmpty RcvPublicVerifyKey -> Word32 -> IO (Maybe FileResponse)
--- addFile http2 (senderPubKey, _senderPrivKey) recipientKeys fileSize = do
---   let new = FileReqNew NewFileRec {senderPubKey, recipientKeys, fileSize}
---   req <- liftIO $ createHTTPS2Request new
---   -- createAndSecureQueue
---   sendRequest (http2 :: HTTP2Client) req >>= \case
---     Right (HTTP2Response response respBody _) -> do
---       let status = H.responseStatus response
---           -- decodedBody = J.decodeStrict' respBody
---       logDebug $ "File response: " <> T.pack (show status)
---       print "Done"
---     Left _ -> do
---       print "Error"
---   pure Nothing
-
--- readFileToUpload :: FilePath -> IO ByteString
--- readFileToUpload = B.readFile
-
---  uploadFile :: HTTP2Client -> FileChunkId -> (SndPublicVerifyKey, APrivateSignKey) -> ByteString -> IO (Maybe FileResponse)
--- uploadFile http2 chunkId (_senderPubKey, senderPrivKey) file = do
---   let upload = FileReqCmd (bs chunkId) chunkId FPUT
---   req <- liftIO $ createHTTPS2Request upload
---   -- createAndSecureQueue
---   sendRequest (http2 :: HTTP2Client) req >>= \case
---     Right (HTTP2Response response respBody _) -> do
---       let status = H.responseStatus response
---           -- decodedBody = J.decodeStrict' respBody
---       logDebug $ "File response: " <> T.pack (show status)
---       print "Done"
---     Left _ -> do
---       print "Error"
---   pure Nothing
---  -}
-
--- processUpload :: IO ()
--- processUpload = do
---   client <-
---     createFileClient
---       "localhost"
---       HTTP2ClientConfig
---         { qSize = 64,
---           connTimeout = 10000000,
---           transportConfig = TransportClientConfig Nothing Nothing True,
---           bufferSize = 16384,
---           suportedTLSParams = http2TLSParams
---         }
---   c <- readTVarIO (https2Client client)
---   case c of
---     Just http2 -> do
---       _ <- uploadFile http2 "tempFile"
---       print "Done"
---     _ -> print "No client"
---   pure ()
-
--- uploadFile :: HTTP2Client -> FilePath -> IO (Maybe FileResponse)
--- uploadFile http2 f = do
---   req <- liftIO $ createFileHTTPS2Request f
---   -- createAndSecureQueue
---   sendRequest (http2 :: HTTP2Client) req >>= \case
---     Right (HTTP2Response response HTTP2Body {bodyHead}) -> do
---       let status = H.responseStatus response
---       -- decodedBody = J.decodeStrict' respBody
---       logDebug $ "File response: " <> T.pack (show status)
---       print "Done"
---     Left _ -> do
---       print "Error"
---   pure Nothing

@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -24,7 +25,7 @@ xftpServerTests =
   before_ (createDirectoryIfMissing False "tests/xftp-files")
     . after_ (removeDirectoryRecursive "tests/xftp-files")
     $ do
-      fdescribe "XFTP file chunk delivery" testFileChunkDelivery
+      describe "XFTP file chunk delivery" testFileChunkDelivery
 
 chSize :: Num n => n
 chSize = 256 * 1024
@@ -42,11 +43,15 @@ testFileChunkDelivery :: Spec
 testFileChunkDelivery =
   it "should create, upload and receive file chunk" $ do
     (sndKey, spKey) <- C.generateSignatureKeyPair C.SEd25519
-    (rcvKey, _rpKey) <- C.generateSignatureKeyPair C.SEd25519
+    (rcvKey, rpKey) <- C.generateSignatureKeyPair C.SEd25519
+    (rDhKey, _rpDhKey) <- C.generateKeyPair'
     bytes <- createTestChunk "tests/tmp/chunk1"
     xftpTest $ \c -> runRight_ $ do
       let file = FileInfo {sndKey, size = chSize, digest = "abc="}
-      (sId, _rIds) <- createXFTPChunk c spKey file [rcvKey]
-      uploadXFTPChunk c spKey sId "tests/tmp/chunk1"
+      (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey]
+      uploadXFTPChunk c spKey sId $ XFTPChunkSpec {filePath = "tests/tmp/chunk1", chunkOffset = 0, chunkSize = chSize}
       liftIO $ readChunk sId `shouldReturn` bytes
+      (_sDhKey, chunkBody) <- downloadXFTPChunk c rpKey rId rDhKey
+      receiveXFTPChunk chunkBody XFTPChunkSpec {filePath = "tests/tmp/received_chunk1", chunkOffset = 0, chunkSize = chSize}
+      liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
       pure ()

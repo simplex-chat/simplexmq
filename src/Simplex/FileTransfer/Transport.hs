@@ -1,15 +1,22 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Transport where
 
 import Control.Monad.Except
+import Data.ByteString.Builder (Builder, byteString)
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import GHC.IO.Handle.Internals (ioe_EOF)
+import Simplex.FileTransfer.Protocol (xftpBlockSize)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version
+import System.IO (Handle)
 
 fileBlockSize :: Int
 fileBlockSize = 512
@@ -70,3 +77,22 @@ fileClientHandshake c keyHash fileVRange = do
 
 fileTHandle :: Transport c => c -> THandle c
 fileTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = fileBlockSize, thVersion = 0, batch = False}
+
+sendFile :: Handle -> (Builder -> IO ()) -> Int -> IO ()
+sendFile _ _ 0 = pure ()
+sendFile h send sz = do
+  B.hGet h xftpBlockSize >>= \case
+    "" -> when (sz /= 0) ioe_EOF
+    ch -> do
+      let ch' = B.take sz ch -- sz >= xftpBlockSize
+      send (byteString ch')
+      sendFile h send $ sz - B.length ch'
+
+-- TODO instead of receiving the whole file this function should stop at size and return error if file is larger
+receveFile :: Handle -> (Int -> IO ByteString) -> Int -> IO Int
+receveFile h receive sz = do
+  ch <- receive xftpBlockSize
+  let chSize = B.length ch
+  if chSize > 0
+    then B.hPut h ch >> receveFile h receive (sz + chSize)
+    else pure sz

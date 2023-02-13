@@ -212,6 +212,7 @@ instance StrEncoding FileInfo where
 data FileResponseTag
   = FRSndIds_
   | FRRcvIds_
+  | FRFile_
   | FROk_
   | FRErr_
   | FRPong_
@@ -221,6 +222,7 @@ instance Encoding FileResponseTag where
   smpEncode = \case
     FRSndIds_ -> "SIDS"
     FRRcvIds_ -> "RIDS"
+    FRFile_ -> "FILE"
     FROk_ -> "OK"
     FRErr_ -> "ERR"
     FRPong_ -> "PONG"
@@ -230,6 +232,7 @@ instance ProtocolMsgTag FileResponseTag where
   decodeTag = \case
     "SIDS" -> Just FRSndIds_
     "RIDS" -> Just FRRcvIds_
+    "FILE" -> Just FRFile_
     "OK" -> Just FROk_
     "ERR" -> Just FRErr_
     "PONG" -> Just FRPong_
@@ -238,6 +241,7 @@ instance ProtocolMsgTag FileResponseTag where
 data FileResponse
   = FRSndIds SenderId (NonEmpty RecipientId)
   | FRRcvIds (NonEmpty RecipientId)
+  | FRFile RcvPublicDhKey
   | FROk
   | FRErr ErrorType
   | FRPong
@@ -248,6 +252,7 @@ instance ProtocolEncoding FileResponse where
   encodeProtocol _v = \case
     FRSndIds fId rIds -> e (FRSndIds_, ' ', fId, rIds)
     FRRcvIds rIds -> e (FRRcvIds_, ' ', rIds)
+    FRFile rKey -> e (FRFile_, ' ', rKey)
     FROk -> e FROk_
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
@@ -258,6 +263,7 @@ instance ProtocolEncoding FileResponse where
   protocolP _v = \case
     FRSndIds_ -> FRSndIds <$> _smpP <*> smpP
     FRRcvIds_ -> FRRcvIds <$> _smpP
+    FRFile_ -> FRFile <$> _smpP
     FROk_ -> pure FROk
     FRErr_ -> FRErr <$> _smpP
     FRPong_ -> pure FRPong

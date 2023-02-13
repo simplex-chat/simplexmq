@@ -21,6 +21,7 @@ import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -64,7 +65,7 @@ setFilePath st sId fPath =
     writeTVar filePath (Just fPath) $> Right ()
 
 addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either ErrorType ())
-addRecipient st@FileStore {recipients} senderId recipient@(rId, _) =
+addRecipient st@FileStore {recipients} senderId (rId, rKey) =
   withFile st senderId $ \FileRec {recipientIds} -> do
     rIds <- readTVar recipientIds
     mem <- TM.member rId recipients
@@ -72,7 +73,7 @@ addRecipient st@FileStore {recipients} senderId recipient@(rId, _) =
       then pure $ Left DUPLICATE_
       else do
         writeTVar recipientIds $! S.insert rId rIds
-        TM.insert rId recipient recipients
+        TM.insert rId (senderId, rKey) recipients
         pure $ Right ()
 
 deleteFile :: FileStore -> SenderId -> STM (Either ErrorType ())
@@ -83,7 +84,7 @@ deleteFile FileStore {files, recipients} senderId = do
       pure $ Right ()
     _ -> pure $ Left AUTH
 
-getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either ErrorType (FileRec, SndPublicVerifyKey))
+getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either ErrorType (FileRec, C.APublicVerifyKey))
 getFile st party fId = case party of
   SSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
   SRecipient ->

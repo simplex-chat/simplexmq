@@ -17,7 +17,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (getRandomBytes)
-import Data.ByteString (hPut)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -35,48 +34,24 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.StoreLog
+import Simplex.FileTransfer.Transport (receveFile, sendFile)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, ErrorType (..))
+import Simplex.Messaging.Protocol (CorrId, ErrorType (..), RcvPublicDhKey)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
-import System.IO (BufferMode (..), Handle, hPutStrLn, hSetBuffering)
+import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
 import UnliftIO (IOMode (..), withFile)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
-
--- startServer :: IO ()
--- startServer = do
---   let config =
---         HTTP2ServerConfig
---           { qSize = 64,
---             http2Port = "1234",
---             bufferSize = 32768,
---             bodyHeadSize = 16384,
---             serverSupported = http2TLSParams,
---             caCertificateFile = "tests/fixtures/ca.crt",
---             privateKeyFile = "tests/fixtures/server.key",
---             certificateFile = "tests/fixtures/server.crt",
---             logTLSErrors = True
---           }
---   print "Starting server"
---   http2Server <- getHTTP2Server config
---   qSize <- newTBQueueIO 64
---   action <- async $ runServer qSize http2Server
---   pure ()
---   where
---     runServer qSize HTTP2Server {reqQ} = forever $ do
---       HTTP2Request {reqBody, sendResponse} <- atomically $ readTBQueue reqQ
---       print "Sending response"
---       sendResponse $ H.responseNoBody N.ok200 []
 
 type M a = ReaderT XFTPEnv IO a
 
@@ -147,26 +122,44 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
               ]
         threadDelay interval
 
+-- TODO add client DH secret
+data ServerFile = ServerFile
+  { filePath :: FilePath,
+    fileSize :: Word32,
+    fileDhSecret :: C.DhSecretX25519
+  }
+
 processRequest :: HTTP2Request -> M ()
 processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
-  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK)
+  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
   | otherwise = do
     case xftpDecodeTransmission sessionId bodyHead of
       Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
         case cmdOrErr of
           Right cmd -> do
             verifyXFTPTransmission sig_ signed fId cmd >>= \case
-              VRVerified req -> sendXFTPResponse . (corrId,fId,) =<< processXFTPRequest body req
-              VRFailed -> sendXFTPResponse (corrId, fId, FRErr AUTH)
-          Left e -> sendXFTPResponse (corrId, fId, FRErr e)
-      Left e -> sendXFTPResponse ("", "", FRErr e)
+              VRVerified req -> uncurry send =<< processXFTPRequest body req
+              VRFailed -> send (FRErr AUTH) Nothing
+          Left e -> send (FRErr e) Nothing
+        where
+          send resp = sendXFTPResponse (corrId, fId, resp)
+      Left e -> sendXFTPResponse ("", "", FRErr e) Nothing
   where
-    sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> M ()
-    sendXFTPResponse (corrId, fId, resp) =
-      liftIO . sendResponse . H.responseBuilder N.ok200 [] . byteString $
-        case xftpEncodeTransmission sessionId Nothing (corrId, fId, resp) of
-          Right t' -> t'
-          Left _ -> "padding error" -- TODO respond with BLOCK error
+    sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
+    sendXFTPResponse (corrId, fId, resp) serverFile_ = do
+      -- liftIO . sendResponse . H.responseBuilder N.ok200 [] . byteString $
+      let t_ = xftpEncodeTransmission sessionId Nothing (corrId, fId, resp)
+      liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
+      where
+        streamBody t_ send done = do
+          case t_ of
+            Left _ -> send "padding error" -- TODO respond with BLOCK error?
+            Right t -> do
+              send $ byteString t
+              -- TODO chunk encryption
+              forM_ serverFile_ $ \ServerFile {filePath, fileSize, fileDhSecret} -> do
+                withFile filePath ReadMode $ \h -> sendFile h send $ fromIntegral fileSize
+          done
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
@@ -187,7 +180,7 @@ verifyXFTPTransmission sig_ signed fId cmd =
           _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
 
-processXFTPRequest :: HTTP2Body -> XFTPRequest -> M FileResponse
+processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
   XFTPReqNew file rcps -> do
     st <- asks store
@@ -199,38 +192,39 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       ExceptT $ atomically $ addFile st sId file
       forM (L.zip rIds rcps) $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
-    pure $ either FRErr (const $ FRSndIds sId rIds) r
+    noFile $ either FRErr (const $ FRSndIds sId rIds) r
   XFTPReqCmd fr (FileCmd _ cmd) -> case cmd of
-    FADD _rcps -> pure FROk
-    FPUT -> downloadFile fr
-    FDEL -> pure FROk
-    FGET _dhKey -> pure FROk
-    FACK -> pure FROk
+    FADD _rcps -> noFile FROk
+    FPUT -> (,Nothing) <$> receiveServerFile fr
+    FDEL -> noFile FROk
+    FGET dhKey -> sendServerFile fr dhKey
+    FACK -> noFile FROk
     -- it should never get to the options below, they are passed in other constructors of XFTPRequest
-    FNEW _ _ -> pure $ FRErr INTERNAL
-    PING -> pure FRPong
-  XFTPReqPing -> pure FRPong
+    FNEW _ _ -> noFile $ FRErr INTERNAL
+    PING -> noFile FRPong
+  XFTPReqPing -> noFile FRPong
   where
-    downloadFile :: FileRec -> M FileResponse
-    downloadFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
+    noFile resp = pure (resp, Nothing)
+    receiveServerFile :: FileRec -> M FileResponse
+    receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
       Nothing -> pure $ FRErr QUOTA -- TODO file specific errors?
       Just getBody -> do
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
-        size' <- liftIO . withFile fPath WriteMode $ saveFile 0
-        if size' == size -- TODO check digest
+        size' <- liftIO . withFile fPath WriteMode $ \h -> receveFile h getBody 0
+        if size' == fromIntegral size -- TODO check digest
           then atomically $ writeTVar filePath (Just fPath) $> FROk
           else whenM (doesFileExist fPath) (removeFile fPath) $> FRErr QUOTA
-        where
-          saveFile :: Word32 -> Handle -> IO Word32
-          saveFile sz h = do
-            ch <- getBody xftpBlockSize
-            let chSize = B.length ch
-            if chSize > 0
-              then hPut h ch >> saveFile (sz + fromIntegral chSize) h
-              else pure sz
+    sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
+    sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
+      readTVarIO filePath >>= \case
+        Just path -> do
+          (sKey, spKey) <- liftIO C.generateKeyPair'
+          let fileDhSecret = C.dh' rKey spKey
+          pure (FRFile sKey, Just ServerFile {filePath = path, fileSize = size, fileDhSecret})
+        _ -> pure (FRErr AUTH, Nothing) -- TODO file-specific errors?
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do
