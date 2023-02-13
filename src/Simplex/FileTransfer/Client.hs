@@ -19,7 +19,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Transport (receveFile, sendFile)
+import Simplex.FileTransfer.Transport (receiveFile, sendFile)
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
     ProtocolClientError (..),
@@ -152,7 +152,7 @@ receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset,
   withFile filePath WriteMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
     -- TODO chunk decryption
-    void $ receveFile h chunkPart 0
+    void $ receiveFile h chunkPart 0
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

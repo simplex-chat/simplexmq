@@ -34,7 +34,7 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Transport (receveFile, sendFile)
+import Simplex.FileTransfer.Transport (receiveFile, sendFile)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, ErrorType (..), RcvPublicDhKey)
@@ -213,7 +213,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
-        size' <- liftIO . withFile fPath WriteMode $ \h -> receveFile h getBody 0
+        size' <- liftIO . withFile fPath WriteMode $ \h -> receiveFile h getBody 0
         if size' == fromIntegral size -- TODO check digest
           then atomically $ writeTVar filePath (Just fPath) $> FROk
           else whenM (doesFileExist fPath) (removeFile fPath) $> FRErr QUOTA

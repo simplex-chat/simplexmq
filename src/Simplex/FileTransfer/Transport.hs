@@ -6,7 +6,7 @@
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
     sendFile,
-    receveFile,
+    receiveFile,
   )
 where
 
