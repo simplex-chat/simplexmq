@@ -28,6 +28,7 @@ data XFTPServerConfig = XFTPServerConfig
   { xftpPort :: ServiceName,
     fileIdSize :: Int,
     storeLogFile :: Maybe FilePath,
+    filesPath :: FilePath,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,

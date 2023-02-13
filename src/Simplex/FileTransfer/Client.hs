@@ -11,10 +11,11 @@ module Simplex.FileTransfer.Client where
 
 import Control.Monad.Except
 import Data.Bifunctor (first)
-import Data.ByteString.Builder (lazyByteString)
+import Data.ByteString.Builder (Builder, byteString)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.ByteString.Lazy (fromStrict)
 import Data.List.NonEmpty (NonEmpty (..))
+import GHC.IO.IOMode (IOMode (ReadMode))
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
@@ -31,6 +32,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
   ( ErrorType (..),
     ProtocolServer (ProtocolServer),
+    RcvPublicDhKey,
     RecipientId,
     SenderId,
   )
@@ -39,6 +41,7 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (bshow, liftEitherError)
+import UnliftIO.IO (withFile)
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -47,6 +50,12 @@ data XFTPClient = XFTPClient
 
 data XFTPClientConfig = XFTPClientConfig
   { networkConfig :: NetworkConfig
+  }
+
+data XFTPChunkBody = XFTPChunkBody
+  { chunkSize :: Int,
+    chunkPart :: Int -> IO ByteString,
+    http2Body :: HTTP2Body
   }
 
 defaultXFTPClientConfig :: XFTPClientConfig
@@ -77,20 +86,30 @@ xftpClientError = \case
   HCNetworkError -> PCENetworkError
   HCIOError e -> PCEIOError e
 
-sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> Maybe C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe FilePath -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd _filePath = do
+sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe FilePath -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
+sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd filePath_ = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission sessionId pKey ("", fId, FileCmd (sFileParty @p) cmd)
-  -- TODO add file to request body, as lazy bytestring
-  let req = H.requestBuilder N.methodPost "/" [] (lazyByteString $ fromStrict t)
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req
+      xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
+  let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequestDirect http2 req
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
   case respOrErr of
     Right r -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
+  where
+    streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
+    streamBody t sendChunk done = do
+      sendChunk $ byteString t
+      forM_ filePath_ $ \path -> withFile path ReadMode sendFile
+      done
+      where
+        sendFile h =
+          B.hGet h xftpBlockSize >>= \case
+            "" -> pure ()
+            bs -> sendChunk (byteString bs) >> sendFile h
 
 createXFTPChunk ::
   XFTPClient ->
@@ -99,16 +118,29 @@ createXFTPChunk ::
   NonEmpty C.APublicVerifyKey ->
   ExceptT ProtocolClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rsps =
-  sendXFTPCommand c (Just spKey) "" (FNEW file rsps) Nothing >>= \case
+  sendXFTPCommand c spKey "" (FNEW file rsps) Nothing >>= \case
     -- TODO check that body is empty
     (FRSndIds sId rIds, _body) -> pure (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
--- FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> FileCommand Sender
+uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FilePath -> ExceptT ProtocolClientError IO ()
+uploadXFTPChunk c spKey fId filePath =
+  sendXFTPCommand c spKey fId FPUT (Just filePath) >>= \case
+    -- TODO check that body is empty
+    (FROk, _body) -> pure ()
+    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT ProtocolClientError IO XFTPChunkBody
+downloadXFTPChunk c rpKey fId dhKey =
+  sendXFTPCommand c rpKey fId (FGET dhKey) Nothing >>= \case
+    (FROk, http2Body@HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+      -- TODO atm bodySize is set to 0, so chunkSize will be incorrect
+      Just chunkPart -> pure XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
+      _ -> throwError $ PCEResponseError NO_MSG
+    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
--- FPUT :: FileCommand Sender
 -- FDEL :: FileCommand Sender
--- FGET :: RcvPublicDhKey -> FileCommand Recipient
 -- FACK :: FileCommand Recipient
 -- PING :: FileCommand Recipient
 

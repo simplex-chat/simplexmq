@@ -40,6 +40,7 @@ testXFTPServerConfig =
     { xftpPort = xftpTestPort,
       fileIdSize = 16,
       storeLogFile = Nothing,
+      filesPath = "tests/xftp-files",
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",

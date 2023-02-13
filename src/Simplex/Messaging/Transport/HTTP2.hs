@@ -22,7 +22,7 @@ import qualified System.TimeManager as TI
 defaultHTTP2BufferSize :: BufferSize
 defaultHTTP2BufferSize = 32768
 
-withHTTP2 :: BufferSize -> (Config -> SessionId -> IO ()) -> TLS -> IO ()
+withHTTP2 :: BufferSize -> (Config -> SessionId -> IO a) -> TLS -> IO a
 withHTTP2 sz run c = E.bracket (allocHTTP2Config c sz) freeSimpleConfig (`run` tlsUniq c)
 
 allocHTTP2Config :: TLS -> BufferSize -> IO Config
@@ -76,5 +76,6 @@ getHTTP2Body r n = do
   let getPart n' = getBuffered bodyBuffer n' $ getBodyChunk r
   bodyHead <- getPart n
   let bodySize = fromMaybe 0 $ getBodySize r
-      bodyPart = if bodySize > n && B.length bodyHead == n then Just getPart else Nothing
+      -- TODO check bodySize once it is set
+      bodyPart = if B.length bodyHead == n then Just getPart else Nothing
   pure HTTP2Body {bodyHead, bodySize, bodyPart, bodyBuffer}

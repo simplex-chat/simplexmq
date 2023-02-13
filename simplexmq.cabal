@@ -142,7 +142,7 @@ library
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
+    , http2 ==4.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
@@ -204,7 +204,7 @@ executable ntf-server
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
+    , http2 ==4.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
@@ -267,7 +267,7 @@ executable smp-agent
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
+    , http2 ==4.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
@@ -330,7 +330,7 @@ executable smp-server
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
+    , http2 ==4.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
@@ -393,7 +393,7 @@ executable xftp-server
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
+    , http2 ==4.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
@@ -480,7 +480,7 @@ test-suite smp-server-test
     , hspec ==2.7.*
     , hspec-core ==2.7.*
     , http-types ==0.12.*
-    , http2 ==3.0.*
+    , http2 ==4.0.*
     , ini ==0.4.1
     , iso8601-time ==0.1.*
     , main-tester ==0.2.*

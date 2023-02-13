@@ -343,6 +343,7 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
+  -- TODO if HTTP2 client is thread-safe, we can use sendRequestDirect (the tests pass)
   HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead

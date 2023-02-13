@@ -91,7 +91,7 @@ ntfServerTest storeLog = do
 
 xftpServerTest :: Bool -> IO ()
 xftpServerTest storeLog = do
-  capture_ (withArgs (["init"] <> ["-l" | storeLog]) $ xftpServerCLI fileCfgPath fileLogPath)
+  capture_ (withArgs (["init", "-p tests/tmp"] <> ["-l" | storeLog]) $ xftpServerCLI fileCfgPath fileLogPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> fileCfgPath <> "/file-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ fileCfgPath <> "/file-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")

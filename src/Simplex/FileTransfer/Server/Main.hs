@@ -50,7 +50,7 @@ xftpServerCLI cfgPath logPath = do
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
-    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
+    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath} = do
       clearDirIfExists cfgPath
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
@@ -77,7 +77,9 @@ xftpServerCLI cfgPath logPath = do
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n"
+            <> "log_tls_errors: off\n\n\
+               \[FILES]\n"
+            <> ("path: " <> filesPath <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -104,6 +106,7 @@ xftpServerCLI cfgPath logPath = do
             { xftpPort = T.unpack $ strictIni "TRANSPORT" "port" ini,
               fileIdSize = 16,
               storeLogFile = enableStoreLog $> storeLogFilePath,
+              filesPath = T.unpack $ strictIni "FILES" "path" ini,
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,
@@ -123,7 +126,8 @@ data InitOptions = InitOptions
   { enableStoreLog :: Bool,
     signAlgorithm :: SignAlgorithm,
     ip :: HostName,
-    fqdn :: Maybe HostName
+    fqdn :: Maybe HostName,
+    filesPath :: FilePath
   }
   deriving (Show)
 
@@ -166,4 +170,10 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Server FQDN used as Common Name for TLS online certificate"
               <> showDefault
               <> metavar "FQDN"
+          )
+        <*> strOption
+          ( long "path"
+              <> short 'p'
+              <> help "Path to the directory to store files"
+              <> metavar "PATH"
           )
