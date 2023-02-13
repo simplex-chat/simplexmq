@@ -4,6 +4,7 @@ module CLITests where
 
 import Data.Ini (lookupValue, readIniFile)
 import Data.List (isPrefixOf)
+import Simplex.FileTransfer.Server.Main (xftpServerCLI, xftpServerVersion)
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Transport (simplexMQVersion)
@@ -27,6 +28,12 @@ ntfCfgPath = "tests/tmp/cli/etc/opt/simplex-notifications"
 ntfLogPath :: FilePath
 ntfLogPath = "tests/tmp/cli/etc/var/simplex-notifications"
 
+fileCfgPath :: FilePath
+fileCfgPath = "tests/tmp/cli/etc/opt/simplex-files"
+
+fileLogPath :: FilePath
+fileLogPath = "tests/tmp/cli/etc/var/simplex-files"
+
 cliTests :: Spec
 cliTests = do
   describe "SMP server CLI" $ do
@@ -38,6 +45,9 @@ cliTests = do
   describe "Ntf server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
     it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
+  describe "XFTP server CLI" $ do
+    it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
+    it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
 
 smpServerTest :: Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -76,5 +86,22 @@ ntfServerTest storeLog = do
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
+    >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
+  doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
+
+xftpServerTest :: Bool -> IO ()
+xftpServerTest storeLog = do
+  capture_ (withArgs (["init", "-p tests/tmp"] <> ["-l" | storeLog]) $ xftpServerCLI fileCfgPath fileLogPath)
+    >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> fileCfgPath <> "/file-server.ini") `isPrefixOf`))
+  Right ini <- readIniFile $ fileCfgPath <> "/file-server.ini"
+  lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
+  lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"
+  lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
+  doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` True
+  r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
+  r `shouldContain` ["SimpleX XFTP server v" <> xftpServerVersion]
+  r `shouldContain` (if storeLog then ["Store log: " <> fileLogPath <> "/file-server-store.log"] else ["Store log disabled."])
+  r `shouldContain` ["Listening on port 443..."]
+  capture_ (withStdin "Y" . withArgs ["delete"] $ xftpServerCLI fileCfgPath fileLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False

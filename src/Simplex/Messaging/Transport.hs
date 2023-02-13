@@ -303,7 +303,7 @@ transportErrorP =
   "BLOCK" $> TEBadBlock
     <|> "LARGE_MSG" $> TELargeMsg
     <|> "SESSION" $> TEBadSession
-    <|> TEHandshake <$> parseRead1
+    <|> "HANDSHAKE " *> (TEHandshake <$> parseRead1)
 
 -- | Serialize SMP encrypted transport error.
 serializeTransportError :: TransportError -> ByteString
@@ -311,7 +311,7 @@ serializeTransportError = \case
   TEBadBlock -> "BLOCK"
   TELargeMsg -> "LARGE_MSG"
   TEBadSession -> "SESSION"
-  TEHandshake e -> bshow e
+  TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())

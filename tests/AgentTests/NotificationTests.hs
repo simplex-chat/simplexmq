@@ -3,6 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.NotificationTests where
@@ -464,7 +465,7 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
     liftIO $ killThread threadId
     pure (aliceId, bobId)
 
-  runRight_ $ do
+  runRight_ @AgentErrorType $ do
     get alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
     get bob =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
 
