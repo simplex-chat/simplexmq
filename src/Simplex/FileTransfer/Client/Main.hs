@@ -5,8 +5,8 @@
 
 module Simplex.FileTransfer.Client.Main
   ( xftpClientCLI,
-    uploadFile,
-    downloadFile,
+    sendFile,
+    receiveFile,
   )
 where
 
@@ -18,6 +18,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List.NonEmpty (NonEmpty)
+import Data.Maybe (fromMaybe)
 import Options.Applicative
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
@@ -26,97 +27,98 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (RecipientId, SenderId)
 import Simplex.Messaging.Server.CLI (getCliCommand')
+import System.IO (IOMode (..), withFile)
 
 xftpClientVersion :: String
 xftpClientVersion = "0.1.0"
 
 data CliCommand
-  = UploadFile UploadOptions
-  | DownloadFile DownloadOptions
+  = SendFile SendOptions
+  | ReceiveFile ReceiveOptions
   | RandomFile RandomFileOptions
 
-data UploadOptions = UploadOptions
+data SendOptions = SendOptions
   { filePath :: FilePath,
-    tmpPath :: FilePath,
+    outputDir :: Maybe FilePath,
     numRecipients :: Int,
-    fileDescriptionsDest :: FilePath
+    tempPath :: Maybe FilePath
   }
   deriving (Show)
 
-data DownloadOptions = DownloadOptions
+data ReceiveOptions = ReceiveOptions
   { fileDescription :: FilePath,
-    fileDest :: FilePath
+    filePath :: Maybe FilePath
   }
   deriving (Show)
 
 data RandomFileOptions = RandomFileOptions
-  { size :: Int,
-    path :: FilePath
+  { filePath :: FilePath,
+    fileSize :: FileSize Int
   }
   deriving (Show)
 
 cliCommandP :: Parser CliCommand
 cliCommandP =
   hsubparser
-    ( command "upload" (info (UploadFile <$> uploadP) (progDesc "Upload file"))
-        <> command "download" (info (DownloadFile <$> downloadP) (progDesc "Download file"))
-        <> command "random" (info (RandomFile <$> randomP) (progDesc "Generate a random file"))
+    ( command "send" (info (SendFile <$> sendP) (progDesc "Send file"))
+        <> command "recv" (info (ReceiveFile <$> receiveP) (progDesc "Receive file"))
+        <> command "rand" (info (RandomFile <$> randomP) (progDesc "Generate a random file of a given size"))
     )
   where
-    uploadP :: Parser UploadOptions
-    uploadP =
-      UploadOptions
-        <$> strOption (long "file" <> short 'f' <> metavar "FILE" <> help "File to upload")
-        <*> strOption (long "tmp" <> short 't' <> metavar "DIR" <> help "Directory to save temporary encrypted file" <> value "/tmp")
-        <*> option
-          auto
-          (long "num" <> short 'n' <> metavar "NUM" <> help "Number of recipients" <> value 1)
-        <*> strOption (long "desc-dir" <> short 'd' <> metavar "DIR" <> help "Directory to save file descriptions")
-    downloadP :: Parser DownloadOptions
-    downloadP =
-      DownloadOptions
-        <$> strOption (long "desc" <> short 'd' <> metavar "DESC" <> help "File description")
-        <*> strOption (long "output" <> short 'o' <> metavar "FILE" <> help "Path to save file")
+    sendP :: Parser SendOptions
+    sendP =
+      SendOptions
+        <$> argument str (metavar "FILE" <> help "File path to send")
+        <*> optional outputP
+        <*> option auto (short 'n' <> metavar "COUNT" <> help "Number of recipients" <> value 1)
+        <*> optional (strOption $ long "temp" <> metavar "TEMP" <> help "Directory for temporary encrypted file")
+    receiveP :: Parser ReceiveOptions
+    receiveP =
+      ReceiveOptions
+        <$> argument str (metavar "FILE" <> help "File description file")
+        <*> optional outputP
     randomP :: Parser RandomFileOptions
     randomP =
       RandomFileOptions
-        <$> option
-          auto
-          (long "size" <> short 's' <> metavar "SIZE" <> help "File size in megabytes" <> value 8)
-        <*> strOption (long "output" <> short 'o' <> metavar "FILE" <> help "Path to save file" <> value "./random.bin")
+        <$> argument str (metavar "FILE" <> help "Path to save file")
+        <*> ( option strDec (long "size" <> short 's' <> metavar "SIZE" <> help "File size (bytes/kb/mb)")
+                <|> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
+            )
+    outputP =
+      strOption (long "output" <> short 'o' <> metavar "DIR" <> help "Directory to save file descriptions")
+        <|> argument str (metavar "DIR" <> help "Directory to save file descriptions")
+    strDec = eitherReader $ strDecode . B.pack
 
 xftpClientCLI :: IO ()
 xftpClientCLI =
   getCliCommand' cliCommandP clientVersion >>= \case
-    UploadFile UploadOptions {filePath, tmpPath, numRecipients, fileDescriptionsDest} -> cliUploadFile filePath tmpPath numRecipients fileDescriptionsDest
-    DownloadFile DownloadOptions {fileDescription, fileDest} -> cliDownloadFile fileDescription fileDest
-    RandomFile RandomFileOptions {size, path} -> cliRandomFile size path
+    SendFile opts -> cliSendFile opts
+    ReceiveFile opts -> cliReceiveFile opts
+    RandomFile opts -> cliRandomFile opts
   where
     clientVersion = "SimpleX XFTP client v" <> xftpClientVersion
 
-cliUploadFile :: FilePath -> FilePath -> Int -> FilePath -> IO ()
-cliUploadFile filePath tmpPath numRecipients fileDescriptionsDest = do
-  fds <- uploadFile filePath tmpPath numRecipients
-  writeFileDescriptions fileDescriptionsDest fds
+cliSendFile :: SendOptions -> IO ()
+cliSendFile SendOptions {filePath, numRecipients, tempPath, outputDir} = do
+  fds <- sendFile filePath tempPath numRecipients
+  writeFileDescriptions outputDir fds
 
-writeFileDescriptions :: FilePath -> [FileDescription] -> IO ()
-writeFileDescriptions fileDescriptionsDest fds = do
+writeFileDescriptions :: Maybe FilePath -> [FileDescription] -> IO ()
+writeFileDescriptions outputDir fds = do
   forM_ fds $ \fd -> do
-    let fdPath = fileDescriptionsDest <> "/" <> "..."
+    let fdPath = fromMaybe "." outputDir <> "/" <> "..."
     B.writeFile fdPath (strEncode fd)
 
-uploadFile :: FilePath -> FilePath -> Int -> IO [FileDescription]
-uploadFile filePath tmpPath numRecipients = do
-  digest <- computeFileDigest
+sendFile :: FilePath -> Maybe FilePath -> Int -> IO [FileDescription]
+sendFile filePath tempPath numRecipients = do
+  digest <- C.sha512Hashlazy <$> LB.readFile filePath
   (encPath, key, iv) <- encryptFile
-  c <- atomically newXFTPAgent
+  c <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
   -- concurrently: register and upload chunks to servers, get sndIds & rcvIds
   -- create/pivot n file descriptions with rcvIds
   -- save descriptions as files
   pure []
   where
-    computeFileDigest :: IO ByteString
-    computeFileDigest = C.sha256Hashlazy <$> LB.readFile filePath
     encryptFile :: IO (FilePath, C.Key, C.IV)
     encryptFile = undefined
     uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, NonEmpty RecipientId)
@@ -126,17 +128,17 @@ uploadFile filePath tmpPath numRecipients = do
       -- upload chunk to server - uploadXFTPChunk
       undefined
 
-cliDownloadFile :: FilePath -> FilePath -> IO ()
-cliDownloadFile fileDescription fileDest = do
+cliReceiveFile :: ReceiveOptions -> IO ()
+cliReceiveFile ReceiveOptions {fileDescription, filePath} = do
   r <- strDecode <$> B.readFile fileDescription
   case r of
     Left e -> putStrLn $ "Failed to parse file description: " <> e
-    Right fd -> downloadFile fd fileDest
+    Right fd -> receiveFile fd filePath
 
-downloadFile :: FileDescription -> FilePath -> IO ()
-downloadFile fd@FileDescription {chunks} fileDest = do
+receiveFile :: FileDescription -> Maybe FilePath -> IO ()
+receiveFile fd@FileDescription {chunks} filePath = do
   -- create empty file
-  c <- atomically newXFTPAgent
+  c <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
   writeLock <- atomically createLock
   -- download chunks concurrently - accept write lock
   -- forM_ chunks $ \fc -> downloadFileChunk fd fc fileDest
@@ -145,7 +147,7 @@ downloadFile fd@FileDescription {chunks} fileDest = do
   pure ()
 
 createDownloadFile :: FileDescription -> FilePath -> IO ()
-createDownloadFile FileDescription {size} fileDest = do
+createDownloadFile FileDescription {size} filePath = do
   -- create empty file
   -- can fail if no space or path does not exist
   pure ()
@@ -168,7 +170,12 @@ downloadFileChunk c writeLock FileDescription {key, iv} FileChunk {replicas = Fi
     writeChunk = undefined
 downloadFileChunk _ _ _ _ _ = pure ()
 
-cliRandomFile :: Int -> FilePath -> IO ()
-cliRandomFile size path = do
-  bytes <- getRandomBytes (size * 1024 * 1024)
-  B.writeFile path bytes
+cliRandomFile :: RandomFileOptions -> IO ()
+cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} =
+  withFile filePath WriteMode (`saveRandomFile` size)
+  where
+    mb = 1024 * 1024
+    saveRandomFile h sz = do
+      bytes <- getRandomBytes $ min mb sz
+      B.hPut h bytes
+      when (sz > mb) $ saveRandomFile h (sz - mb)

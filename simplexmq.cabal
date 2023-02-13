@@ -364,12 +364,12 @@ executable smp-server
   if flag(swift)
     cpp-options: -DswiftJSON
 
-executable xftp-client
+executable xftp
   main-is: Main.hs
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
-      apps/xftp-client
+      apps/xftp
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*

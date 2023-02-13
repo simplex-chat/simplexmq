@@ -113,9 +113,9 @@ module Simplex.Messaging.Crypto
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
-    -- * SHA256 hash
+    -- * hash
     sha256Hash,
-    sha256Hashlazy,
+    sha512Hashlazy,
 
     -- * Message padding / un-padding
     pad,
@@ -141,7 +141,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), hash, hashlazy)
+import Crypto.Hash (Digest, SHA256, SHA512, hash, hashlazy)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -787,9 +787,9 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
--- | SHA256 digest of a lazy bytestring.
-sha256Hashlazy :: LB.ByteString -> ByteString
-sha256Hashlazy = BA.convert . (hashlazy :: LB.ByteString -> Digest SHA256)
+-- | SHA512 digest of a lazy bytestring.
+sha512Hashlazy :: LB.ByteString -> ByteString
+sha512Hashlazy = BA.convert . (hashlazy :: LB.ByteString -> Digest SHA512)
 
 -- | AEAD-GCM encryption with empty associated data.
 --

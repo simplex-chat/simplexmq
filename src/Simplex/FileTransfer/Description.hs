@@ -11,13 +11,14 @@ module Simplex.FileTransfer.Description
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
+    FileSize (..),
     ChunkReplicaId (..),
     YAMLFileDescription (..), -- for tests
     YAMLServerReplicas (..), -- for tests
   )
 where
 
-import Control.Applicative (Alternative ((<|>)), optional)
+import Control.Applicative (optional)
 import Control.Monad ((<=<))
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
@@ -43,11 +44,11 @@ import Simplex.Messaging.Util (bshow, (<$?>))
 
 data FileDescription = FileDescription
   { name :: String,
-    size :: Int64,
+    size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.Key,
     iv :: C.IV,
-    chunkSize :: Word32,
+    chunkSize :: FileSize Word32,
     chunks :: [FileChunk]
   }
   deriving (Eq, Show)
@@ -69,7 +70,7 @@ instance ToJSON FileDigest where
 
 data FileChunk = FileChunk
   { chunkNo :: Int,
-    chunkSize :: Word32,
+    chunkSize :: FileSize Word32,
     digest :: FileDigest,
     replicas :: [FileChunkReplica]
   }
@@ -127,7 +128,7 @@ data FileServerReplica = FileServerReplica
     rcvId :: ChunkReplicaId,
     rcvKey :: C.APrivateSignKey,
     digest :: Maybe FileDigest,
-    chunkSize :: Maybe Word32
+    chunkSize :: Maybe (FileSize Word32)
   }
   deriving (Show)
 
@@ -140,33 +141,37 @@ encodeFileDescription :: FileDescription -> YAMLFileDescription
 encodeFileDescription FileDescription {name, size, digest, key, iv, chunkSize, chunks} =
   YAMLFileDescription
     { name,
-      size,
+      size = unFileSize size,
       digest,
       key,
       iv,
-      chunkSize = B.unpack $ encodeChunkSize chunkSize,
+      chunkSize = B.unpack $ strEncode chunkSize,
       replicas = encodeFileReplicas chunkSize chunks
     }
 
-encodeChunkSize :: Word32 -> ByteString
-encodeChunkSize b
-  | b' /= 0 = bshow b
-  | kb' /= 0 = bshow kb <> "kb"
-  | otherwise = bshow mb <> "mb"
-  where
-    (kb, b') = b `divMod` 1024
-    (mb, kb') = kb `divMod` 1024
+newtype FileSize a = FileSize {unFileSize :: a}
+  deriving (Eq, Show)
 
-chunkSizeP :: Parser Word32
-chunkSizeP =
-  ((mb *) <$> A.decimal <* "mb")
-    <|> ((kb *) <$> A.decimal <* "kb")
-    <|> A.decimal
-  where
-    kb = 1024
-    mb = 1024 * kb
+instance (Integral a, Show a) => StrEncoding (FileSize a) where
+  strEncode (FileSize b)
+    | b' /= 0 = bshow b
+    | kb' /= 0 = bshow kb <> "kb"
+    | otherwise = bshow mb <> "mb"
+    where
+      (kb, b') = b `divMod` 1024
+      (mb, kb') = kb `divMod` 1024
+  strP =
+    FileSize
+      <$> A.choice
+        [ (mb *) <$> A.decimal <* "mb",
+          (kb *) <$> A.decimal <* "kb",
+          A.decimal
+        ]
+    where
+      kb = 1024
+      mb = 1024 * kb
 
-encodeFileReplicas :: Word32 -> [FileChunk] -> [YAMLServerReplicas]
+encodeFileReplicas :: FileSize Word32 -> [FileChunk] -> [YAMLServerReplicas]
 encodeFileReplicas defChunkSize =
   map encodeServerReplicas
     . groupBy ((==) `on` server')
@@ -188,7 +193,7 @@ encodeServerReplica FileServerReplica {chunkNo, rcvId, rcvKey, digest, chunkSize
     <> ":"
     <> strEncode rcvKey
     <> maybe "" ((":" <>) . strEncode) digest
-    <> maybe "" ((":" <>) . encodeChunkSize) chunkSize
+    <> maybe "" ((":" <>) . strEncode) chunkSize
 
 serverReplicaP :: XFTPServer -> Parser FileServerReplica
 serverReplicaP server = do
@@ -196,10 +201,10 @@ serverReplicaP server = do
   rcvId <- A.char ':' *> strP
   rcvKey <- A.char ':' *> strP
   digest <- optional (A.char ':' *> strP)
-  chunkSize <- optional (A.char ':' *> chunkSizeP)
+  chunkSize <- optional (A.char ':' *> strP)
   pure FileServerReplica {chunkNo, server, rcvId, rcvKey, digest, chunkSize}
 
-unfoldChunksToReplicas :: Word32 -> [FileChunk] -> [FileServerReplica]
+unfoldChunksToReplicas :: FileSize Word32 -> [FileChunk] -> [FileServerReplica]
 unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
   where
     chunkReplicas c@FileChunk {replicas} = zipWith (replicaToServerReplica c) [1 ..] replicas
@@ -211,10 +216,10 @@ unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
 
 decodeFileDescription :: YAMLFileDescription -> Either String FileDescription
 decodeFileDescription YAMLFileDescription {name, size, digest, key, iv, chunkSize, replicas} = do
-  chunkSize' <- parseAll chunkSizeP $ B.pack chunkSize
+  chunkSize' <- strDecode $ B.pack chunkSize
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
-  pure FileDescription {name, size, digest, key, iv, chunkSize = chunkSize', chunks}
+  pure FileDescription {name, size = FileSize size, digest, key, iv, chunkSize = chunkSize', chunks}
   where
     decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 
@@ -225,15 +230,15 @@ decodeYAMLServerReplicas YAMLServerReplicas {server, chunks} =
 -- this function should fail if:
 -- 1. no replica has digest or two replicas have different digests
 -- 2. two replicas have different chunk sizes
-foldReplicasToChunks :: Word32 -> [FileServerReplica] -> Either String [FileChunk]
+foldReplicasToChunks :: FileSize Word32 -> [FileServerReplica] -> Either String [FileChunk]
 foldReplicasToChunks defChunkSize fs = do
   sd <- foldSizesDigests fs
   -- TODO validate (check that chunks match) or in separate function
   sortOn (chunkNo :: FileChunk -> Int) . map reverseReplicas . M.elems <$> foldChunks sd fs
   where
-    foldSizesDigests :: [FileServerReplica] -> Either String (Map Int Word32, Map Int FileDigest)
+    foldSizesDigests :: [FileServerReplica] -> Either String (Map Int (FileSize Word32), Map Int FileDigest)
     foldSizesDigests = foldl' addSizeDigest $ Right (M.empty, M.empty)
-    addSizeDigest :: Either String (Map Int Word32, Map Int FileDigest) -> FileServerReplica -> Either String (Map Int Word32, Map Int FileDigest)
+    addSizeDigest :: Either String (Map Int (FileSize Word32), Map Int FileDigest) -> FileServerReplica -> Either String (Map Int (FileSize Word32), Map Int FileDigest)
     addSizeDigest (Left e) _ = Left e
     addSizeDigest (Right (ms, md)) FileServerReplica {chunkNo, chunkSize, digest} =
       (,) <$> combineChunk ms chunkNo chunkSize <*> combineChunk md chunkNo digest
@@ -242,9 +247,9 @@ foldReplicasToChunks defChunkSize fs = do
     combineChunk m chunkNo (Just value) = case M.lookup chunkNo m of
       Nothing -> Right $ M.insert chunkNo value m
       Just v -> if v == value then Right m else Left "different size or digest in chunk replicas"
-    foldChunks :: (Map Int Word32, Map Int FileDigest) -> [FileServerReplica] -> Either String (Map Int FileChunk)
+    foldChunks :: (Map Int (FileSize Word32), Map Int FileDigest) -> [FileServerReplica] -> Either String (Map Int FileChunk)
     foldChunks sd = foldl' (addReplica sd) (Right M.empty)
-    addReplica :: (Map Int Word32, Map Int FileDigest) -> Either String (Map Int FileChunk) -> FileServerReplica -> Either String (Map Int FileChunk)
+    addReplica :: (Map Int (FileSize Word32), Map Int FileDigest) -> Either String (Map Int FileChunk) -> FileServerReplica -> Either String (Map Int FileChunk)
     addReplica _ (Left e) _ = Left e
     addReplica (ms, md) (Right cs) FileServerReplica {chunkNo, server, rcvId, rcvKey} = do
       case M.lookup chunkNo cs of
