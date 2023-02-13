@@ -36,7 +36,8 @@ data CliCommand
   | RandomFile RandomFileOptions
 
 data UploadOptions = UploadOptions
-  { file :: FilePath,
+  { filePath :: FilePath,
+    tmpPath :: FilePath,
     numRecipients :: Int,
     fileDescriptionsDest :: FilePath
   }
@@ -66,6 +67,7 @@ cliCommandP =
     uploadP =
       UploadOptions
         <$> strOption (long "file" <> short 'f' <> metavar "FILE" <> help "File to upload")
+        <*> strOption (long "tmp" <> short 't' <> metavar "DIR" <> help "Directory to save temporary encrypted file" <> value "/tmp")
         <*> option
           auto
           (long "num" <> short 'n' <> metavar "NUM" <> help "Number of recipients" <> value 1)
@@ -86,15 +88,15 @@ cliCommandP =
 xftpClientCLI :: IO ()
 xftpClientCLI =
   getCliCommand' cliCommandP clientVersion >>= \case
-    UploadFile UploadOptions {file, numRecipients, fileDescriptionsDest} -> cliUploadFile file numRecipients fileDescriptionsDest
+    UploadFile UploadOptions {filePath, tmpPath, numRecipients, fileDescriptionsDest} -> cliUploadFile filePath tmpPath numRecipients fileDescriptionsDest
     DownloadFile DownloadOptions {fileDescription, fileDest} -> cliDownloadFile fileDescription fileDest
     RandomFile RandomFileOptions {size, path} -> cliRandomFile size path
   where
     clientVersion = "SimpleX XFTP client v" <> xftpClientVersion
 
-cliUploadFile :: FilePath -> Int -> FilePath -> IO ()
-cliUploadFile file numRecipients fileDescriptionsDest = do
-  fds <- uploadFile file "/tmp" numRecipients
+cliUploadFile :: FilePath -> FilePath -> Int -> FilePath -> IO ()
+cliUploadFile filePath tmpPath numRecipients fileDescriptionsDest = do
+  fds <- uploadFile filePath tmpPath numRecipients
   writeFileDescriptions fileDescriptionsDest fds
 
 writeFileDescriptions :: FilePath -> [FileDescription] -> IO ()
