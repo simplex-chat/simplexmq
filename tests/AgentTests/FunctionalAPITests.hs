@@ -85,7 +85,7 @@ agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = vr11}
 vr11 :: VersionRange
 vr11 = mkVersionRange 1 1
 
-runRight_ :: HasCallStack => ExceptT AgentErrorType IO () -> Expectation
+runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
 
 runRight :: HasCallStack => ExceptT AgentErrorType IO a -> IO a

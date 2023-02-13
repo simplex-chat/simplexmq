@@ -629,7 +629,7 @@ type XFTPServer = ProtocolServer 'PXFTP
 pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
 pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash
 
-{-# COMPLETE NtfServer #-}
+{-# COMPLETE XFTPServer #-}
 
 sameSrvAddr' :: ProtoServerWithAuth p -> ProtoServerWithAuth p -> Bool
 sameSrvAddr' (ProtoServerWithAuth srv _) (ProtoServerWithAuth srv' _) = sameSrvAddr srv srv'
@@ -1217,7 +1217,7 @@ tPut th trs
                 Just ts' -> encodeBatch n' s' ts'
                 _ -> (n', s', Nothing)
 
-tEncode :: C.CryptoSignature s => (s, ByteString) -> ByteString
+tEncode :: (Maybe C.ASignature, ByteString) -> ByteString
 tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
 
 tEncodeBatch :: Int -> ByteString -> ByteString
