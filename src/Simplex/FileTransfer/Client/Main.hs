@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.FileTransfer.Client.Main
-  ( fileClientCLI,
+  ( xftpClientCLI,
     uploadFile,
     downloadFile,
   )
@@ -12,9 +12,10 @@ where
 
 import Control.Concurrent.STM (atomically)
 import Control.Monad
-import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
+import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List.NonEmpty (NonEmpty)
 import Options.Applicative
 import Simplex.FileTransfer.Client.Agent
@@ -53,8 +54,8 @@ cliCommandP = undefined
 getCliCommand :: IO CliCommand
 getCliCommand = execParser $ info (cliCommandP <**> helper) fullDesc
 
-fileClientCLI :: IO ()
-fileClientCLI =
+xftpClientCLI :: IO ()
+xftpClientCLI =
   getCliCommand >>= \case
     UploadFile UploadOptions {file, numRecipients, fileDescriptionsDest} -> cliUploadFile file numRecipients fileDescriptionsDest
     DownloadFile DownloadOptions {fileDescription, fileDest} -> cliDownloadFile fileDescription fileDest
@@ -82,7 +83,7 @@ uploadFile filePath tmpPath numRecipients = do
   pure []
   where
     computeFileDigest :: IO ByteString
-    computeFileDigest = undefined
+    computeFileDigest = C.sha256Hashlazy <$> LB.readFile filePath
     encryptFile :: IO (FilePath, C.Key, C.IV)
     encryptFile = undefined
     uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, NonEmpty RecipientId)
