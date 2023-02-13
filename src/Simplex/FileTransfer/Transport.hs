@@ -33,10 +33,10 @@ sendFile h send sz = do
       sendFile h send $ sz - B.length ch'
 
 -- TODO instead of receiving the whole file this function should stop at size and return error if file is larger
-receveFile :: Handle -> (Int -> IO ByteString) -> Int -> IO Int
-receveFile h receive sz = do
+receiveFile :: Handle -> (Int -> IO ByteString) -> Int -> IO Int
+receiveFile h receive sz = do
   ch <- receive xftpBlockSize
   let chSize = B.length ch
   if chSize > 0
-    then B.hPut h ch >> receveFile h receive (sz + chSize)
+    then B.hPut h ch >> receiveFile h receive (sz + chSize)
     else pure sz
