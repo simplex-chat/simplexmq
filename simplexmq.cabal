@@ -36,6 +36,7 @@ library
   exposed-modules:
       Simplex.FileTransfer
       Simplex.FileTransfer.Client
+      Simplex.FileTransfer.Client.Agent
       Simplex.FileTransfer.Client.Main
       Simplex.FileTransfer.Description
       Simplex.FileTransfer.Protocol
@@ -421,6 +422,7 @@ executable xftp-server
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+    , yaml ==0.11.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON

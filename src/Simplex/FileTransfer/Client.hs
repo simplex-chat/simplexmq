@@ -148,7 +148,7 @@ downloadXFTPChunk c rpKey fId rKey =
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
 receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset, chunkSize} = liftIO $ do
+receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset} = liftIO $ do
   withFile filePath WriteMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
     -- TODO chunk decryption

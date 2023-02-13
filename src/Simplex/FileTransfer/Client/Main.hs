@@ -17,10 +17,16 @@ import qualified Data.ByteString.Char8 as B
 import Options.Applicative
 import Simplex.FileTransfer.Description
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Agent.Lock
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Protocol (SenderId, RecipientId)
+import Data.List.NonEmpty (NonEmpty)
+import Simplex.FileTransfer.Client.Agent
 
 data CliCommand
   = UploadFile UploadOptions
   | DownloadFile DownloadOptions
+  | RandomFile RandomFileOptions
 
 data UploadOptions = UploadOptions
   { file :: FilePath,
@@ -32,6 +38,11 @@ data UploadOptions = UploadOptions
 data DownloadOptions = DownloadOptions
   { fileDescription :: FilePath,
     fileDest :: FilePath
+  }
+  deriving (Show)
+
+data RandomFileOptions = RandomFileOptions
+  { size :: Int
   }
   deriving (Show)
 
@@ -58,22 +69,25 @@ writeFileDescriptions fileDescriptionsDest fds = do
     let fdPath = fileDescriptionsDest <> "/" <> "..."
     B.writeFile fdPath (strEncode fd)
 
-uploadFile :: FilePath -> Int -> IO [FileDescription]
-uploadFile file numRecipients = do
-  r <- runExceptT $ uploadFile' file numRecipients
-  case r of
-    Left e -> putStrLn ("Failed to upload file: " <> e) >> pure []
-    Right fds -> pure fds
-
-uploadFile' :: FilePath -> Int -> ExceptT String IO [FileDescription]
-uploadFile' file numRecipients = do
-  -- create XFTPClient for upload
-  -- encrypt file
-  -- split file into chunks
-  -- create chunks on servers, get sndIds & rcvIds
-  -- upload chunks to servers via sndIds
-  -- create n file descriptions with rcvIds
+uploadFile :: FilePath -> FilePath -> Int -> IO [FileDescription]
+uploadFile filePath tmpPath numRecipients = do
+  digest <- computeFileDigest
+  (encPath, key, iv) <- encryptFile
+  c <- atomically newXFTPAgent
+  -- concurrently: register and upload chunks to servers, get sndIds & rcvIds
+  -- create/pivot n file descriptions with rcvIds
+  -- save descriptions as files
   pure []
+  where
+    computeFileDigest :: IO ByteString
+    computeFileDigest = undefined
+    encryptFile :: IO (FilePath, C.Key, C.IV)
+    encryptFile = undefined
+    uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, NonEmpty RecipientId)
+    uploadFileChunk c chunkNo = do
+      -- generate recipient keys
+      -- register chunk on the server - createXFTPChunk
+      -- upload chunk to server - uploadXFTPChunk
 
 cliDownloadFile :: FilePath -> FilePath -> IO ()
 cliDownloadFile fileDescription fileDest = do
@@ -83,30 +97,35 @@ cliDownloadFile fileDescription fileDest = do
     Right fd -> downloadFile fd fileDest
 
 downloadFile :: FileDescription -> FilePath -> IO ()
-downloadFile fd fileDest = do
-  r <- runExceptT $ downloadFile' fd fileDest
-  case r of
-    Left e -> putStrLn $ "Failed to download file: " <> e
-    Right () -> putStrLn "File downloaded successfully"
+downloadFile fd@FileDescription {chunks} fileDest = do
+  -- create empty file
+  c <- atomically newXFTPAgent
+  writeLock <- atomically createLock
+  -- download chunks concurrently - accept write lock
+  -- forM_ chunks $ \fc -> downloadFileChunk fd fc fileDest
+  -- decrypt file
+  -- verify file digest
+  pure ()
 
-downloadFile' :: FileDescription -> FilePath -> ExceptT String IO ()
-downloadFile' fd@FileDescription {chunks} fileDest = do
-  -- create XFTPClient for download
-  forM_ chunks $ \fc -> downloadFileChunk fd fc fileDest
+createDownloadFile :: FileDescription -> FilePath -> IO ()
+createDownloadFile FileDescription {size} fileDest = do
+  -- create empty file
+  -- can fail if no space or path does not exist
+  pure ()
 
-downloadFileChunk :: FileDescription -> FileChunk -> FilePath -> ExceptT String IO ()
-downloadFileChunk FileDescription {key, iv} FileChunk {replicas = replica : _} fileDest = do
-  chunk <- downloadReplica replica
-  chunk' <- decryptChunk chunk
-  verifyChunkDigest chunk'
-  writeChunk chunk'
+downloadFileChunk :: XFTPClientAgent -> Lock -> FileDescription -> FileChunk -> FilePath -> IO ()
+downloadFileChunk c writeLock FileDescription {key, iv} FileChunk {replicas = FileChunkReplica {server} : _} fileDest = do
+  xftp <- getXFTPServerClient c server
+  -- create XFTPClient for download, put it to map, disconnect should remove from map
+  -- download and decrypt (DH) chunk from server using XFTPClient
+  -- verify chunk digest - in the client
+  withLock writeLock "save" $ pure ()
+  --   save to correct location in file - also in the client
   where
-    downloadReplica :: FileChunkReplica -> ExceptT String IO ByteString
+    downloadReplica :: FileChunkReplica -> IO ByteString
     downloadReplica FileChunkReplica {server, rcvId, rcvKey} = undefined -- download chunk from server using XFTPClient
-    decryptChunk :: ByteString -> ExceptT String IO ByteString
-    decryptChunk = undefined
-    verifyChunkDigest :: ByteString -> ExceptT String IO ()
+    verifyChunkDigest :: ByteString -> IO ()
     verifyChunkDigest = undefined
-    writeChunk :: ByteString -> ExceptT String IO ()
+    writeChunk :: ByteString -> IO ()
     writeChunk = undefined
 downloadFileChunk _ _ _ = throwError "No replicas"
