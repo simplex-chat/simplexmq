@@ -16,7 +16,10 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
+import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map (Map)
+import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import Options.Applicative
@@ -25,7 +28,7 @@ import Simplex.FileTransfer.Description
 import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (RecipientId, SenderId, XFTPServer)
+import Simplex.Messaging.Protocol (RecipientId, SenderId, SndPrivateSignKey, XFTPServer)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (ifM)
 import System.Exit (exitFailure)
@@ -99,6 +102,30 @@ cliCommandP =
     strDec = eitherReader $ strDecode . B.pack
     temp = optional (strOption $ long "temp" <> metavar "TEMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
 
+data SentFileChunk = SentFileChunk
+  { chunkNo :: Int,
+    chunkSize :: FileSize Word32,
+    digest :: FileDigest,
+    replicas :: [SentFileChunkReplica]
+  }
+  deriving (Eq, Show)
+
+data SentFileChunkReplica = SentFileChunkReplica
+  { server :: XFTPServer,
+    recipients :: [(ChunkReplicaId, C.APrivateSignKey)]
+  }
+  deriving (Eq, Show)
+
+data SentRecipientReplica = SentRecipientReplica
+  { chunkNo :: Int,
+    server :: XFTPServer,
+    rcvNo :: Int,
+    rcvId :: ChunkReplicaId,
+    rcvKey :: C.APrivateSignKey,
+    digest :: FileDigest,
+    chunkSize :: FileSize Word32
+  }
+
 xftpClientCLI :: IO ()
 xftpClientCLI =
   getCliCommand' cliCommandP clientVersion >>= \case
@@ -133,7 +160,7 @@ sendFile filePath tempPath numRecipients = do
   -- let fileSize = FileSize (fromIntegral fsz)
   fileSize :: FileSize Int64 <- FileSize . fromInteger <$> getFileSize filePath
   let chunkSize = defaultChunkSize
-  chunksData <- uploadFile -- pass fileSize and chunkSize for splitting to chunks?
+  sentChunks <- uploadFile -- pass fileSize and chunkSize for splitting to chunks?
   -- concurrently: register and upload chunks to servers, get sndIds & rcvIds
   -- create/pivot n file descriptions with rcvIds
   -- save descriptions as files
@@ -141,25 +168,55 @@ sendFile filePath tempPath numRecipients = do
   where
     encryptFile :: IO (FilePath, C.Key, C.IV)
     encryptFile = undefined
-    uploadFile :: IO [(Int, FileSize Word32, XFTPServer, SenderId, NonEmpty (RecipientId, C.APrivateSignKey))]
+    uploadFile :: IO [SentFileChunk]
     uploadFile = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-      c <- runExceptT $ getXFTPServerClient a "srv"
+
       -- for each chunk uploadFileChunk
       undefined
-    uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, NonEmpty (RecipientId, C.APrivateSignKey))
-    uploadFileChunk c chunkNo = do
+    uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, SndPrivateSignKey, SentFileChunk)
+    uploadFileChunk a chunkNo = do
+      c <- runExceptT $ getXFTPServerClient a "srv"
       -- generate recipient keys
       -- register chunk on the server - createXFTPChunk
       -- upload chunk to server - uploadXFTPChunk
       undefined
-    createFileDescriptions :: FileSize Int64 -> ByteString -> C.Key -> C.IV -> FileSize Word32 -> [(Int, FileSize Word32, XFTPServer, SenderId, NonEmpty (RecipientId, C.APrivateSignKey))] -> IO [FileDescription]
-    createFileDescriptions size digest key iv chunkSize chunksData = do
-      let name = takeFileName filePath
-      -- pivot chunksData - 1 recipient id per chunk per server?
-      -- create receiver index list to zip chunks replicas data with in uploadFileChunk?
-      --   (Int, NonEmpty (RecipientId, C.APrivateSignKey))
-      undefined
+
+    -- M chunks, R replicas, N recipients
+    -- rcvReplicas: M[SentFileChunk] -> M * R * N [SentRecipientReplica]
+    -- rcvChunks: M * R * N [SentRecipientReplica] -> N[ M[FileChunk] ]
+    createFileDescriptions :: FileDescription -> [SentFileChunk] -> [FileDescription]
+    createFileDescriptions fd sentChunks = map (\chunks -> (fd :: FileDescription) {chunks}) rcvChunks
+      where
+        rcvReplicas :: [SentRecipientReplica]
+        rcvReplicas =
+          concatMap
+            ( \SentFileChunk {chunkNo, digest, chunkSize, replicas} ->
+                concatMap
+                  ( \SentFileChunkReplica {server, recipients} ->
+                      zipWith (\rcvNo (rcvId, rcvKey) -> SentRecipientReplica {chunkNo, server, rcvNo, rcvId, rcvKey, digest, chunkSize}) [1 ..] recipients
+                  )
+                  replicas
+            )
+            sentChunks
+        rcvChunks :: [[FileChunk]]
+        rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
+        sortChunks :: [FileChunk] -> [FileChunk]
+        sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
+        reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
+        addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
+        addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, rcvId, rcvKey, digest, chunkSize} =
+          M.alter (Just . addOrChangeRecipient) rcvNo m
+          where
+            addOrChangeRecipient :: Maybe (Map Int FileChunk) -> Map Int FileChunk
+            addOrChangeRecipient = \case
+              Just m' -> M.alter (Just . addOrChangeChunk) chunkNo m'
+              _ -> M.singleton chunkNo $ FileChunk {digest, chunkSize, replicas = [replica]}
+            addOrChangeChunk :: Maybe FileChunk -> FileChunk
+            addOrChangeChunk = \case
+              Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
+              _ -> FileChunk {digest, chunkSize, replicas = [replica]}
+            replica = FileChunkReplica {server, rcvId, rcvKey}
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, tempPath} = do
