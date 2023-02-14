@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Client.Main
   ( xftpClientCLI,
@@ -17,16 +18,20 @@ import Crypto.Random (getRandomBytes)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (fromMaybe)
+import Data.Word (Word32)
 import Options.Applicative
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (RecipientId, SenderId)
+import Simplex.Messaging.Protocol (RecipientId, SenderId, XFTPServer)
 import Simplex.Messaging.Server.CLI (getCliCommand')
+import System.Directory (getFileSize)
+import System.FilePath (takeFileName)
 import System.IO (IOMode (..), withFile)
 
 xftpClientVersion :: String
@@ -108,7 +113,11 @@ sendFile :: FilePath -> Maybe FilePath -> Int -> IO [FileDescription]
 sendFile filePath tempPath numRecipients = do
   digest <- C.sha512Hashlazy <$> LB.readFile filePath
   (encPath, key, iv) <- encryptFile
-  c <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+  -- fsz <- getFileSize filePath
+  -- let fileSize = FileSize (fromIntegral fsz)
+  fileSize :: FileSize Int64 <- FileSize . fromInteger <$> getFileSize filePath
+  let chunkSize = defChunkSize
+  chunksData <- uploadFile -- pass fileSize and chunkSize for splitting to chunks?
   -- concurrently: register and upload chunks to servers, get sndIds & rcvIds
   -- create/pivot n file descriptions with rcvIds
   -- save descriptions as files
@@ -116,11 +125,24 @@ sendFile filePath tempPath numRecipients = do
   where
     encryptFile :: IO (FilePath, C.Key, C.IV)
     encryptFile = undefined
-    uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, NonEmpty RecipientId)
+    uploadFile :: IO [(Int, FileSize Word32, XFTPServer, SenderId, NonEmpty (RecipientId, C.APrivateSignKey))]
+    uploadFile = do
+      a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+      c <- runExceptT $ getXFTPServerClient a "srv"
+      -- for each chunk uploadFileChunk
+      undefined
+    uploadFileChunk :: XFTPClientAgent -> Int -> IO (SenderId, NonEmpty (RecipientId, C.APrivateSignKey))
     uploadFileChunk c chunkNo = do
       -- generate recipient keys
       -- register chunk on the server - createXFTPChunk
       -- upload chunk to server - uploadXFTPChunk
+      undefined
+    createFileDescriptions :: FileSize Int64 -> ByteString -> C.Key -> C.IV -> FileSize Word32 -> [(Int, FileSize Word32, XFTPServer, SenderId, NonEmpty (RecipientId, C.APrivateSignKey))] -> IO [FileDescription]
+    createFileDescriptions size digest key iv chunkSize chunksData = do
+      let name = takeFileName filePath
+      -- pivot chunksData - 1 recipient id per chunk per server?
+      -- create receiver index list to zip chunks replicas data with in uploadFileChunk?
+      --   (Int, NonEmpty (RecipientId, C.APrivateSignKey))
       undefined
 
 cliReceiveFile :: ReceiveOptions -> IO ()

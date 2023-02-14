@@ -30,9 +30,6 @@ fileDescPath = "tests/fixtures/file_description.yaml"
 tmpFileDescPath :: FilePath
 tmpFileDescPath = "tests/tmp/file_description.yaml"
 
-defChunkSize :: FileSize Word32
-defChunkSize = FileSize $ 8 * 1024 * 1024
-
 fileDesc :: FileDescription
 fileDesc =
   FileDescription

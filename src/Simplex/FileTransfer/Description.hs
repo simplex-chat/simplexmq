@@ -7,7 +7,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Description
-  ( FileDescription (..),
+  ( defChunkSize,
+    FileDescription (..),
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
@@ -41,6 +42,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Util (bshow, (<$?>))
+
+defChunkSize :: FileSize Word32
+defChunkSize = FileSize $ 8 * 1024 * 1024
 
 data FileDescription = FileDescription
   { name :: String,
