@@ -8,7 +8,6 @@ module FileDescriptionTests where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
-import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Description
 import qualified Simplex.Messaging.Crypto as C
@@ -38,12 +37,12 @@ fileDesc =
       digest = FileDigest "abc",
       key = C.Key "def",
       iv = C.IV "ghi",
-      chunkSize = defChunkSize,
+      chunkSize = defaultChunkSize,
       chunks =
         [ FileChunk
             { chunkNo = 1,
               digest = chunkDigest,
-              chunkSize = defChunkSize,
+              chunkSize = defaultChunkSize,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example1.com", rcvId, rcvKey},
                   FileChunkReplica {server = "xftp://abc=@example3.com", rcvId, rcvKey}
@@ -52,7 +51,7 @@ fileDesc =
           FileChunk
             { chunkNo = 2,
               digest = chunkDigest,
-              chunkSize = defChunkSize,
+              chunkSize = defaultChunkSize,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example2.com", rcvId, rcvKey},
                   FileChunkReplica {server = "xftp://abc=@example4.com", rcvId, rcvKey}
@@ -61,7 +60,7 @@ fileDesc =
           FileChunk
             { chunkNo = 3,
               digest = chunkDigest,
-              chunkSize = defChunkSize,
+              chunkSize = defaultChunkSize,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example1.com", rcvId, rcvKey},
                   FileChunkReplica {server = "xftp://abc=@example4.com", rcvId, rcvKey}
@@ -79,6 +78,7 @@ fileDesc =
         ]
     }
   where
+    defaultChunkSize = FileSize $ 8 * 1024 * 1024
     rcvId = ChunkReplicaId "abc"
     rcvKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"

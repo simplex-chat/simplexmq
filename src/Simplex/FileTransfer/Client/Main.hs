@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -16,13 +17,14 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
-import Data.List (foldl', sortOn)
+import Data.List (find, findIndex, foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import Options.Applicative
+import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.Messaging.Agent.Lock
@@ -41,8 +43,17 @@ import UnliftIO.Directory
 xftpClientVersion :: String
 xftpClientVersion = "0.1.0"
 
-defaultChunkSize :: FileSize Word32
-defaultChunkSize = FileSize $ 8 * 1024 * 1024
+defaultChunkSize :: Word32
+defaultChunkSize = 8 * mb
+
+secondChunkSize :: Word32
+secondChunkSize = 1 * mb
+
+fileSizeEncodingLength :: Int64
+fileSizeEncodingLength = 8
+
+mb :: Word32
+mb = 1024 * 1024
 
 newtype CLIError = CLIError String
   deriving (Eq, Show, Exception)
@@ -153,21 +164,69 @@ writeFileDescriptions outputDir fds = do
     B.writeFile fdPath (strEncode fd)
 
 sendFile :: FilePath -> Maybe FilePath -> Int -> IO [FileDescription]
-sendFile filePath tempPath numRecipients = do
+sendFile filePath tempPath_ numRecipients = do
   digest <- C.sha512Hashlazy <$> LB.readFile filePath
-  (encPath, key, iv) <- encryptFile
-  -- fsz <- getFileSize filePath
-  -- let fileSize = FileSize (fromIntegral fsz)
-  fileSize :: FileSize Int64 <- FileSize . fromInteger <$> getFileSize filePath
-  let chunkSize = defaultChunkSize
+  (encPath, size, key, iv, chunkSpecs) <- encryptFile
   sentChunks <- uploadFile -- pass fileSize and chunkSize for splitting to chunks?
   -- concurrently: register and upload chunks to servers, get sndIds & rcvIds
   -- create/pivot n file descriptions with rcvIds
   -- save descriptions as files
   pure []
   where
-    encryptFile :: IO (FilePath, C.Key, C.IV)
-    encryptFile = undefined
+    encryptFile :: IO (FilePath, FileSize Int64, C.Key, C.IV, [XFTPChunkSpec])
+    encryptFile = do
+      tempFile <- getTempFilePath
+      key <- C.randomAesKey
+      iv <- C.randomIV
+      fileSize <- fromInteger <$> getFileSize filePath
+      let chunkSizes = prepareChunkSizes (fileSize + fileSizeEncodingLength)
+          paddedSize = fromIntegral $ sum chunkSizes
+      encrypt key iv paddedSize tempFile
+      let chunkSpecs = prepareChunkSpecs tempFile chunkSizes
+      pure (tempFile, FileSize paddedSize, key, iv, chunkSpecs)
+      where
+        getTempFilePath :: IO FilePath
+        getTempFilePath = do
+          tempPath <- case tempPath_ of
+            Just p -> pure p
+            Nothing -> do
+              tmpDir <- (</> "xftp") <$> getTemporaryDirectory
+              createDirectoryIfMissing False tmpDir
+              pure tmpDir
+          uniqueCombine tempPath "xftp-enc"
+        prepareChunkSizes :: Int64 -> [Word32]
+        prepareChunkSizes requiredSize = do
+          let defSz :: Int64 = fromIntegral defaultChunkSize
+              secSz :: Int64 = fromIntegral secondChunkSize
+          if
+              | requiredSize >= defSz -> do
+                let (n1', remSz') = requiredSize `divMod` defSz
+                    (n1, remSz) =
+                      if remSz' > defSz `div` 2
+                        then (n1' + 1, 0)
+                        else (n1', remSz')
+                    n2 =
+                      if remSz > 0
+                        then
+                          let (n2', remSz'') = remSz `divMod` secSz
+                           in if remSz'' > 0 then n2' + 1 else n2'
+                        else 0
+                replicate (fromIntegral n1) defaultChunkSize <> replicate (fromIntegral n2) secondChunkSize
+              | requiredSize > defSz `div` 2 -> [defaultChunkSize]
+              | otherwise -> do
+                let (n2', remSz') = requiredSize `divMod` secSz
+                    n2 = if remSz' > 0 then n2' + 1 else n2'
+                replicate (fromIntegral n2) secondChunkSize
+        encrypt :: C.Key -> C.IV -> Int64 -> FilePath -> IO ()
+        encrypt key iv paddedSize tempFile = undefined
+        prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
+        prepareChunkSpecs encPath chunkSizes = reverse $ prepareChunkSpecs' 0 [] chunkSizes -- start with 1?
+          where
+            prepareChunkSpecs' :: Int64 -> [XFTPChunkSpec] -> [Word32] -> [XFTPChunkSpec]
+            prepareChunkSpecs' _ specs [] = specs
+            prepareChunkSpecs' offset specs (sz : szs) = do
+              let spec = XFTPChunkSpec {filePath = encPath, chunkOffset = offset, chunkSize = fromIntegral sz}
+              prepareChunkSpecs' (offset + fromIntegral sz + 1) (spec : specs) szs
     uploadFile :: IO [SentFileChunk]
     uploadFile = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
