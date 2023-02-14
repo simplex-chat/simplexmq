@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -167,25 +166,25 @@ runE a =
 
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} = do
-  (encPath, size, key, iv, chunkSpecs) <- liftIO encryptFile
-  digest <- liftIO $ C.sha512Hashlazy <$> LB.readFile encPath
+  (encPath, fd, chunkSpecs) <- liftIO encryptFile
   sentChunks <- uploadFile chunkSpecs
   whenM (doesFileExist encPath) $ removeFile encPath
   -- TODO if only small chunks, use different default size
-  let fd = FileDescription {name = "", size, digest = FileDigest digest, key, iv, chunkSize = FileSize defaultChunkSize, chunks = []}
   liftIO $ writeFileDescriptions $ createFileDescriptions fd sentChunks
   where
-    encryptFile :: IO (FilePath, FileSize Int64, C.Key, C.IV, [XFTPChunkSpec])
+    encryptFile :: IO (FilePath, FileDescription, [XFTPChunkSpec])
     encryptFile = do
-      tempFile <- getEncPath tempPath "xftp"
+      encPath <- getEncPath tempPath "xftp"
       key <- C.randomAesKey
       iv <- C.randomIV
       fileSize <- fromInteger <$> getFileSize filePath
       let chunkSizes = prepareChunkSizes (fileSize + fileSizeEncodingLength)
           paddedSize = fromIntegral $ sum chunkSizes
-      encrypt key iv fileSize paddedSize tempFile
-      let chunkSpecs = prepareChunkSpecs tempFile chunkSizes
-      pure (tempFile, FileSize paddedSize, key, iv, chunkSpecs)
+      encrypt key iv fileSize paddedSize encPath
+      digest <- C.sha512Hashlazy <$> LB.readFile encPath
+      let chunkSpecs = prepareChunkSpecs encPath chunkSizes
+          fd = FileDescription {size = FileSize paddedSize, digest = FileDigest digest, key, iv, chunkSize = FileSize defaultChunkSize, chunks = []}
+      pure (encPath, fd, chunkSpecs)
       where
         prepareChunkSizes :: Int64 -> [Word32]
         prepareChunkSizes 0 = []
@@ -283,7 +282,8 @@ cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, te
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, tempPath} = do
   fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile fileDescription
-  ValidFileDescription encSize FileDescription {name, chunks} <- liftEither . first CLIError $ validateFileDescription fd
+  ValidFileDescription encSize FileDescription {chunks} <- liftEither . first CLIError $ validateFileDescription fd
+  let name = "test" -- TODO
   filePath' <- getFilePath name
   encPath' <- getEncPath tempPath name
   withFile encPath' WriteMode $ \h -> do

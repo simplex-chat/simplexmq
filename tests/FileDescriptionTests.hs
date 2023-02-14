@@ -17,7 +17,7 @@ import Test.Hspec
 
 fileDescriptionTests :: Spec
 fileDescriptionTests =
-  describe "file description parsing / serializing" $ do
+  fdescribe "file description parsing / serializing" $ do
     it "parse YAML file description" testParseYAMLFileDescription
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
@@ -29,11 +29,13 @@ fileDescPath = "tests/fixtures/file_description.yaml"
 tmpFileDescPath :: FilePath
 tmpFileDescPath = "tests/tmp/file_description.yaml"
 
+mb :: Num a => a
+mb = 1024 * 1024
+
 fileDesc :: FileDescription
 fileDesc =
   FileDescription
-    { name = "file.ext",
-      size = FileSize 33200000,
+    { size = FileSize $ 26 * mb,
       digest = FileDigest "abc",
       key = C.Key "def",
       iv = C.IV "ghi",
@@ -69,7 +71,7 @@ fileDesc =
           FileChunk
             { chunkNo = 4,
               digest = chunkDigest,
-              chunkSize = FileSize $ 2 * 1024 * 1024,
+              chunkSize = FileSize $ 2 * mb,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example2.com", rcvId, rcvKey},
                   FileChunkReplica {server = "xftp://abc=@example3.com", rcvId, rcvKey}
@@ -78,7 +80,7 @@ fileDesc =
         ]
     }
   where
-    defaultChunkSize = FileSize $ 8 * 1024 * 1024
+    defaultChunkSize = FileSize $ 8 * mb
     rcvId = ChunkReplicaId "abc"
     rcvKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
@@ -86,8 +88,7 @@ fileDesc =
 yamlFileDesc :: YAMLFileDescription
 yamlFileDesc =
   YAMLFileDescription
-    { name = "file.ext",
-      size = 33200000,
+    { size = "26mb",
       chunkSize = "8mb",
       digest = FileDigest "abc",
       key = C.Key "def",

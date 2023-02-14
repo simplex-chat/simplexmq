@@ -47,8 +47,7 @@ import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Util (bshow, (<$?>))
 
 data FileDescription = FileDescription
-  { name :: String,
-    size :: FileSize Int64,
+  { size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.Key,
     iv :: C.IV,
@@ -107,8 +106,7 @@ instance ToJSON ChunkReplicaId where
   toEncoding = strToJEncoding
 
 data YAMLFileDescription = YAMLFileDescription
-  { name :: String,
-    size :: Int64,
+  { size :: String,
     digest :: FileDigest,
     key :: C.Key,
     iv :: C.IV,
@@ -158,10 +156,9 @@ validateFileDescription fd@FileDescription {size, chunks}
     chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription -> YAMLFileDescription
-encodeFileDescription FileDescription {name, size, digest, key, iv, chunkSize, chunks} =
+encodeFileDescription FileDescription {size, digest, key, iv, chunkSize, chunks} =
   YAMLFileDescription
-    { name,
-      size = unFileSize size,
+    { size = B.unpack $ strEncode size,
       digest,
       key,
       iv,
@@ -235,11 +232,12 @@ unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
        in FileServerReplica {chunkNo, server, rcvId, rcvKey, digest = digest', chunkSize = chunkSize'}
 
 decodeFileDescription :: YAMLFileDescription -> Either String FileDescription
-decodeFileDescription YAMLFileDescription {name, size, digest, key, iv, chunkSize, replicas} = do
+decodeFileDescription YAMLFileDescription {size, digest, key, iv, chunkSize, replicas} = do
+  size' <- strDecode $ B.pack size
   chunkSize' <- strDecode $ B.pack chunkSize
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
-  pure FileDescription {name, size = FileSize size, digest, key, iv, chunkSize = chunkSize', chunks}
+  pure FileDescription {size = size', digest, key, iv, chunkSize = chunkSize', chunks}
   where
     decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 

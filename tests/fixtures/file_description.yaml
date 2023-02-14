@@ -2,7 +2,6 @@ chunkSize: 8mb
 digest: YWJj
 iv: Z2hp
 key: ZGVm
-name: file.ext
 replicas:
 - chunks:
   - 1:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp
@@ -20,4 +19,4 @@ replicas:
   - 2:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe
   - 3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe
   server: xftp://abc=@example4.com
-size: 33200000
+size: 26mb
