@@ -56,10 +56,10 @@ data FileDescription = FileDescription
   }
   deriving (Eq, Show)
 
-data ValidFileDescription = ValidFD Int64 FileDescription
+newtype ValidFileDescription = ValidFD FileDescription
 
-pattern ValidFileDescription :: Int64 -> FileDescription -> ValidFileDescription
-pattern ValidFileDescription es fd = ValidFD es fd
+pattern ValidFileDescription :: FileDescription -> ValidFileDescription
+pattern ValidFileDescription fd = ValidFD fd
 
 newtype FileDigest = FileDigest {unFileDigest :: ByteString}
   deriving (Eq, Show)
@@ -147,12 +147,10 @@ instance StrEncoding FileDescription where
 validateFileDescription :: FileDescription -> Either String ValidFileDescription
 validateFileDescription fd@FileDescription {size, chunks}
   | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
-  | encryptedSize < unFileSize size = Left "chunks total size is smaller than file size"
-  | chunksSize (init chunks) >= unFileSize size = Left "too many chunks for file size"
-  | otherwise = Right $ ValidFD encryptedSize fd
+  | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
+  | otherwise = Right $ ValidFD fd
   where
     chunkNos = map (chunkNo :: FileChunk -> Int) chunks
-    encryptedSize = chunksSize chunks
     chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription -> YAMLFileDescription

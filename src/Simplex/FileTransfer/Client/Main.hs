@@ -10,6 +10,7 @@ module Simplex.FileTransfer.Client.Main (xftpClientCLI) where
 import Control.Monad
 import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -177,11 +178,11 @@ instance Encoding FileHeader where
     pure FileHeader {fileSize, fileName}
 
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
-cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} = do
+cliSendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} = do
   let (_, fileName) = splitFileName filePath
   (encPath, fd, chunkSpecs) <- liftIO $ encryptFile fileName
   sentChunks <- uploadFile chunkSpecs
-  whenM (doesFileExist encPath) $ removeFile encPath
+  -- whenM (doesFileExist encPath) $ removeFile encPath
   -- TODO if only small chunks, use different default size
   liftIO $ writeFileDescriptions fileName $ createFileDescriptions fd sentChunks
   where
@@ -191,40 +192,23 @@ cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, te
       key <- C.randomAesKey
       iv <- C.randomIV
       fileSize <- fromInteger <$> getFileSize filePath
-      let header = smpEncode FileHeader {fileSize, fileName = Just fileName}
-          chunkSizes = prepareChunkSizes (fileSize + fromIntegral (B.length header))
+      let fileHdr = smpEncode FileHeader {fileSize, fileName = Just fileName}
+          chunkSizes = prepareChunkSizes (fileSize + fromIntegral (B.length fileHdr))
           paddedSize = fromIntegral $ sum chunkSizes
-      encrypt header key iv fileSize paddedSize encPath
+      encrypt fileHdr key iv fileSize paddedSize encPath
       digest <- C.sha512Hashlazy <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
           fd = FileDescription {size = FileSize paddedSize, digest = FileDigest digest, key, iv, chunkSize = FileSize defaultChunkSize, chunks = []}
       pure (encPath, fd, chunkSpecs)
       where
-        prepareChunkSizes :: Int64 -> [Word32]
-        prepareChunkSizes 0 = []
-        prepareChunkSizes size
-          | size >= defSz = replicate (fromIntegral n1) defaultChunkSize <> prepareChunkSizes remSz
-          | size > defSz `div` 2 = [defaultChunkSize]
-          | otherwise = replicate (fromIntegral n2') smallChunkSize
-          where
-            (n1, remSz) = size `divMod` defSz
-            n2' = let (n2, rem) = (size `divMod` fromIntegral smallChunkSize) in if rem == 0 then n2 else n2 + 1
-            defSz = fromIntegral defaultChunkSize :: Int64
         encrypt :: ByteString -> C.Key -> C.IV -> Int64 -> Int64 -> FilePath -> IO ()
-        encrypt header key iv fileSize paddedSize encFile = do
+        encrypt fileHdr key iv fileSize paddedSize encFile = do
           f <- LB.readFile filePath
           withFile encFile WriteMode $ \h -> do
-            B.hPut h header
+            B.hPut h fileHdr
             LB.hPut h f
-            let padSize = paddedSize - fileSize - fromIntegral (B.length header)
+            let padSize = paddedSize - fileSize - fromIntegral (B.length fileHdr)
             when (padSize > 0) . LB.hPut h $ LB.replicate padSize '#'
-        prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
-        prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
-          where
-            addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
-            addSpec (chunkOffset, specs) sz =
-              let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = fromIntegral sz}
-               in (chunkOffset + fromIntegral sz, spec : specs)
     uploadFile :: [XFTPChunkSpec] -> ExceptT CLIError IO [SentFileChunk]
     uploadFile chunks = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
@@ -293,22 +277,48 @@ cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, te
         B.writeFile fdPath $ strEncode fd
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
-cliReceiveFile ReceiveOptions {fileDescription, filePath, tempPath} = do
+cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
   fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile fileDescription
-  ValidFileDescription encSize FileDescription {chunks} <- liftEither . first CLIError $ validateFileDescription fd
-  let name = "test" -- TODO
-  filePath' <- getFilePath name
-  encPath' <- getEncPath tempPath name
-  withFile encPath' WriteMode $ \h -> do
-    liftIO $ LB.hPut h $ LB.replicate encSize '#'
-    c <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-    writeLock <- atomically createLock
-    -- download chunks concurrently - accept write lock
-    -- forM_ chunks $ \fc -> downloadFileChunk fd fc fileDest
-    -- decrypt file
-    -- verify file digest
-    pure ()
+  ValidFileDescription FileDescription {size, chunks} <- liftEither . first CLIError $ validateFileDescription fd
+  encPath <- getEncPath tempPath "xftp"
+  withFile encPath WriteMode $ \h -> do
+    liftIO $ LB.hPut h $ LB.replicate (unFileSize size) '#'
+  a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+  writeLock <- atomically createLock
+  let chunkSizes = prepareChunkSizes $ unFileSize size
+      chunkSpecs = prepareChunkSpecs encPath chunkSizes
+  forM_ (zip chunkSpecs chunks) $ \(chunkSpec, chunk) -> do
+    downloadFileChunk a writeLock chunk chunkSpec
+  -- verify file digest
+  decryptFile encPath
   where
+    downloadFileChunk :: XFTPClientAgent -> Lock -> FileChunk -> XFTPChunkSpec -> ExceptT CLIError IO ()
+    downloadFileChunk a writeLock FileChunk {replicas = replica : _} chunkSpec = do
+      let FileChunkReplica {server, rcvId, rcvKey} = replica
+      c <- withRetry retryCount $ withExceptT (CLIError . show) $ getXFTPServerClient a server
+      (rKey, rpKey) <- liftIO C.generateKeyPair'
+      (sKey, body) <- withRetry retryCount $ withExceptT (CLIError . show) $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rKey
+      -- download and decrypt (DH) chunk from server using XFTPClient
+      -- verify chunk digest - in the client
+      -- save to correct location in file - also in the client
+      withRetry retryCount $ withExceptT (CLIError . show) $ withLock writeLock "save" $ receiveXFTPChunk body chunkSpec
+    downloadFileChunk _ _ _ _ = pure ()
+    decryptFile :: FilePath -> ExceptT CLIError IO ()
+    decryptFile encPath = do
+      withFile encPath ReadMode $ \r -> do
+        fileHdr <- liftIO $ B.hGet r 1024
+        case A.parse smpP fileHdr of
+          A.Fail _ _ e -> throwError $ CLIError $ "Invalid file header: " <> e
+          A.Partial _ -> throwError $ CLIError "Invalid file header"
+          A.Done rest FileHeader {fileSize, fileName} -> do
+            -- TODO use timestamp when name not specified?
+            path <- getFilePath $ fromMaybe "received_file" fileName
+            withFile path WriteMode $ \w -> liftIO $ do
+              -- TODO handle small files when rest contains padding to be removed
+              B.hPut w rest
+              -- TODO handle large files as size is Int here
+              f <- LB.hGet r $ fromIntegral fileSize - B.length rest
+              LB.hPut w f
     getFilePath :: String -> ExceptT CLIError IO FilePath
     getFilePath name =
       case filePath of
@@ -316,6 +326,25 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, tempPath} = do
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
+
+prepareChunkSizes :: Int64 -> [Word32]
+prepareChunkSizes 0 = []
+prepareChunkSizes size
+  | size >= defSz = replicate (fromIntegral n1) defaultChunkSize <> prepareChunkSizes remSz
+  | size > defSz `div` 2 = [defaultChunkSize]
+  | otherwise = replicate (fromIntegral n2') smallChunkSize
+  where
+    (n1, remSz) = size `divMod` defSz
+    n2' = let (n2, rem) = (size `divMod` fromIntegral smallChunkSize) in if rem == 0 then n2 else n2 + 1
+    defSz = fromIntegral defaultChunkSize :: Int64
+
+prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
+prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
+  where
+    addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
+    addSpec (chunkOffset, specs) sz =
+      let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = fromIntegral sz}
+       in (chunkOffset + fromIntegral sz, spec : specs)
 
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
 getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
@@ -333,30 +362,6 @@ withRetry :: Int -> ExceptT CLIError IO a -> ExceptT CLIError IO a
 withRetry 0 _ = throwError $ CLIError "internal: no retry attempts"
 withRetry 1 a = a
 withRetry n a = a `catchError` \_ -> withRetry (n - 1) a
-
-createDownloadFile :: FileDescription -> FilePath -> IO ()
-createDownloadFile FileDescription {size} filePath = do
-  -- create empty file
-  -- can fail if no space or path does not exist
-  pure ()
-
-downloadFileChunk :: XFTPClientAgent -> Lock -> FileDescription -> FileChunk -> FilePath -> IO ()
-downloadFileChunk c writeLock FileDescription {key, iv} FileChunk {replicas = FileChunkReplica {server} : _} fileDest = do
-  xftp <- runExceptT $ getXFTPServerClient c server
-  -- create XFTPClient for download, put it to map, disconnect should remove from map
-  -- download and decrypt (DH) chunk from server using XFTPClient
-  -- verify chunk digest - in the client
-  withLock writeLock "save" $ pure ()
-  where
-    --   save to correct location in file - also in the client
-
-    downloadReplica :: FileChunkReplica -> IO ByteString
-    downloadReplica FileChunkReplica {server, rcvId, rcvKey} = undefined -- download chunk from server using XFTPClient
-    verifyChunkDigest :: ByteString -> IO ()
-    verifyChunkDigest = undefined
-    writeChunk :: ByteString -> IO ()
-    writeChunk = undefined
-downloadFileChunk _ _ _ _ _ = pure ()
 
 cliRandomFile :: RandomFileOptions -> IO ()
 cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} =
