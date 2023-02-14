@@ -222,7 +222,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPat
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}) = do
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519)
-          chInfo@FileInfo {digest} <- getChunkInfo sndKey chunkSpec
+          chInfo@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
           -- TODO choose server randomly
           c <- retries $ withExceptT (CLIError . show) $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- retries $ withExceptT (CLIError . show) $ createXFTPChunk c spKey chInfo $ L.map fst rKeys
@@ -230,8 +230,12 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPat
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
           pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
-        getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> ExceptT CLIError IO FileInfo
-        getChunkInfo sndKey XFTPChunkSpec {chunkSize} = pure FileInfo {sndKey, size = fromIntegral chunkSize, digest = ""}
+        getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> IO FileInfo
+        getChunkInfo sndKey XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
+          withFile chunkPath ReadMode $ \h -> do
+            hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+            digest <- C.sha512Hashlazy <$> LB.hGet h (fromIntegral chunkSize)
+            pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
 
     -- M chunks, R replicas, N recipients
     -- rcvReplicas: M[SentFileChunk] -> M * R * N [SentRecipientReplica]
