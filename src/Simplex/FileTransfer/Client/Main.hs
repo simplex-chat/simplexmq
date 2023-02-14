@@ -33,7 +33,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SenderId, SndPrivateSignKey, SndPublicVerifyKey, XFTPServer)
 import Simplex.Messaging.Server.CLI (getCliCommand')
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitExtensions, splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
@@ -167,26 +167,13 @@ runE a =
 
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} = do
-  fds <- sendFile opts
-  liftIO $ writeFileDescriptions filePath outputDir fds
-
-writeFileDescriptions :: FilePath -> Maybe FilePath -> [FileDescription] -> IO ()
-writeFileDescriptions filePath outputDir fds = do
-  let (_, fileName) = splitFileName filePath
-  outDir <- uniqueCombine (fromMaybe "./" outputDir) (fileName <> ".xftp/")
-  createDirectoryIfMissing True outDir
-  forM_ (zip [1 ..] fds) $ \(i, fd) -> do
-    let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
-    B.writeFile fdPath $ strEncode fd
-
-sendFile :: SendOptions -> ExceptT CLIError IO [FileDescription]
-sendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} = do
   (encPath, size, key, iv, chunkSpecs) <- liftIO encryptFile
   digest <- liftIO $ C.sha512Hashlazy <$> LB.readFile encPath
   sentChunks <- uploadFile chunkSpecs
+  whenM (doesFileExist encPath) $ removeFile encPath
   -- TODO if only small chunks, use different default size
   let fd = FileDescription {name = "", size, digest = FileDigest digest, key, iv, chunkSize = FileSize defaultChunkSize, chunks = []}
-  pure $ createFileDescriptions fd $ map snd sentChunks
+  liftIO $ writeFileDescriptions $ createFileDescriptions fd sentChunks
   where
     encryptFile :: IO (FilePath, FileSize Int64, C.Key, C.IV, [XFTPChunkSpec])
     encryptFile = do
@@ -225,11 +212,13 @@ sendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} 
             addSpec (chunkOffset, specs) sz =
               let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = fromIntegral sz}
                in (chunkOffset + fromIntegral sz, spec : specs)
-    uploadFile :: [XFTPChunkSpec] -> ExceptT CLIError IO [(Int, SentFileChunk)]
+    uploadFile :: [XFTPChunkSpec] -> ExceptT CLIError IO [SentFileChunk]
     uploadFile chunks = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       -- TODO shuffle chunks
-      forM (zip [1 ..] chunks) $ uploadFileChunk a
+      sentChunks <- forM (zip [1 ..] chunks) $ uploadFileChunk a
+      -- TODO unshuffle chunks
+      pure $ map snd sentChunks
       where
         retries = withRetry retryCount
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec) -> ExceptT CLIError IO (Int, SentFileChunk)
@@ -282,6 +271,14 @@ sendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} 
               Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
               _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
             replica = FileChunkReplica {server, rcvId, rcvKey}
+    writeFileDescriptions :: [FileDescription] -> IO ()
+    writeFileDescriptions fds = do
+      let (_, fileName) = splitFileName filePath
+      outDir <- uniqueCombine (fromMaybe "." outputDir) (fileName <> ".xftp")
+      createDirectoryIfMissing True outDir
+      forM_ (zip [1 ..] fds) $ \(i, fd) -> do
+        let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
+        B.writeFile fdPath $ strEncode fd
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, tempPath} = do
