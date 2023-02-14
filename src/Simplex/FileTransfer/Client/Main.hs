@@ -51,7 +51,7 @@ smallChunkSize = 1 * mb
 fileSizeEncodingLength :: Int64
 fileSizeEncodingLength = 8
 
-mb :: Word32
+mb :: Num a => a
 mb = 1024 * 1024
 
 newtype CLIError = CLIError String
@@ -229,7 +229,7 @@ cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, te
     uploadFile chunks = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       -- TODO shuffle chunks
-      sentChunks <- forM (zip [1 ..] chunks) $ uploadFileChunk a
+      sentChunks <- pooledForConcurrentlyN 32 (zip [1 ..] chunks) $ uploadFileChunk a
       -- TODO unshuffle chunks
       pure $ map snd sentChunks
       where
@@ -362,7 +362,6 @@ cliRandomFile :: RandomFileOptions -> IO ()
 cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} =
   withFile filePath WriteMode (`saveRandomFile` size)
   where
-    mb = 1024 * 1024
     saveRandomFile h sz = do
       bytes <- getRandomBytes $ min mb sz
       B.hPut h bytes
