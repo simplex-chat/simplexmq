@@ -164,23 +164,37 @@ runE a =
     Left (CLIError e) -> putStrLn e >> exitFailure
     _ -> pure ()
 
+data FileHeader = FileHeader
+  { fileSize :: Int64,
+    fileName :: Maybe String
+  }
+  deriving (Eq, Show)
+
+instance Encoding FileHeader where
+  smpEncode FileHeader {fileSize, fileName} = smpEncode (fileSize, fileName)
+  smpP = do
+    (fileSize, fileName) <- smpP
+    pure FileHeader {fileSize, fileName}
+
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, tempPath} = do
-  (encPath, fd, chunkSpecs) <- liftIO encryptFile
+  let (_, fileName) = splitFileName filePath
+  (encPath, fd, chunkSpecs) <- liftIO $ encryptFile fileName
   sentChunks <- uploadFile chunkSpecs
   whenM (doesFileExist encPath) $ removeFile encPath
   -- TODO if only small chunks, use different default size
-  liftIO $ writeFileDescriptions $ createFileDescriptions fd sentChunks
+  liftIO $ writeFileDescriptions fileName $ createFileDescriptions fd sentChunks
   where
-    encryptFile :: IO (FilePath, FileDescription, [XFTPChunkSpec])
-    encryptFile = do
+    encryptFile :: String -> IO (FilePath, FileDescription, [XFTPChunkSpec])
+    encryptFile fileName = do
       encPath <- getEncPath tempPath "xftp"
       key <- C.randomAesKey
       iv <- C.randomIV
       fileSize <- fromInteger <$> getFileSize filePath
-      let chunkSizes = prepareChunkSizes (fileSize + fileSizeEncodingLength)
+      let header = smpEncode FileHeader {fileSize, fileName = Just fileName}
+          chunkSizes = prepareChunkSizes (fileSize + fromIntegral (B.length header))
           paddedSize = fromIntegral $ sum chunkSizes
-      encrypt key iv fileSize paddedSize encPath
+      encrypt header key iv fileSize paddedSize encPath
       digest <- C.sha512Hashlazy <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
           fd = FileDescription {size = FileSize paddedSize, digest = FileDigest digest, key, iv, chunkSize = FileSize defaultChunkSize, chunks = []}
@@ -196,14 +210,14 @@ cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, te
             (n1, remSz) = size `divMod` defSz
             n2' = let (n2, rem) = (size `divMod` fromIntegral smallChunkSize) in if rem == 0 then n2 else n2 + 1
             defSz = fromIntegral defaultChunkSize :: Int64
-        encrypt :: C.Key -> C.IV -> Int64 -> Int64 -> FilePath -> IO ()
-        encrypt key iv fileSize paddedSize encFile = do
+        encrypt :: ByteString -> C.Key -> C.IV -> Int64 -> Int64 -> FilePath -> IO ()
+        encrypt header key iv fileSize paddedSize encFile = do
           f <- LB.readFile filePath
           withFile encFile WriteMode $ \h -> do
-            B.hPut h (smpEncode fileSize)
+            B.hPut h header
             LB.hPut h f
-            when (paddedSize > fileSize) $
-              LB.hPut h (LB.replicate (fromIntegral $ paddedSize - fileSize - fileSizeEncodingLength) '#')
+            let padSize = paddedSize - fileSize - fromIntegral (B.length header)
+            when (padSize > 0) . LB.hPut h $ LB.replicate padSize '#'
         prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
         prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
           where
@@ -270,9 +284,8 @@ cliSendFile opts@SendOptions {filePath, outputDir, numRecipients, retryCount, te
               Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
               _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
             replica = FileChunkReplica {server, rcvId, rcvKey}
-    writeFileDescriptions :: [FileDescription] -> IO ()
-    writeFileDescriptions fds = do
-      let (_, fileName) = splitFileName filePath
+    writeFileDescriptions :: String -> [FileDescription] -> IO ()
+    writeFileDescriptions fileName fds = do
       outDir <- uniqueCombine (fromMaybe "." outputDir) (fileName <> ".xftp")
       createDirectoryIfMissing True outDir
       forM_ (zip [1 ..] fds) $ \(i, fd) -> do
