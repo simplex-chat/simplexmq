@@ -4,11 +4,13 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Description
-  ( defChunkSize,
-    FileDescription (..),
+  ( FileDescription (..),
+    ValidFileDescription,
+    pattern ValidFileDescription,
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
@@ -16,6 +18,7 @@ module Simplex.FileTransfer.Description
     ChunkReplicaId (..),
     YAMLFileDescription (..), -- for tests
     YAMLServerReplicas (..), -- for tests
+    validateFileDescription,
   )
 where
 
@@ -43,9 +46,6 @@ import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Util (bshow, (<$?>))
 
-defChunkSize :: FileSize Word32
-defChunkSize = FileSize $ 8 * 1024 * 1024
-
 data FileDescription = FileDescription
   { name :: String,
     size :: FileSize Int64,
@@ -56,6 +56,11 @@ data FileDescription = FileDescription
     chunks :: [FileChunk]
   }
   deriving (Eq, Show)
+
+data ValidFileDescription = ValidFD Int64 FileDescription
+
+pattern ValidFileDescription :: Int64 -> FileDescription -> ValidFileDescription
+pattern ValidFileDescription es fd = ValidFD es fd
 
 newtype FileDigest = FileDigest {unFileDigest :: ByteString}
   deriving (Eq, Show)
@@ -140,6 +145,17 @@ instance StrEncoding FileDescription where
   strEncode = Y.encode . encodeFileDescription
   strDecode = decodeFileDescription <=< first show . Y.decodeEither'
   strP = strDecode <$?> A.takeByteString
+
+validateFileDescription :: FileDescription -> Either String ValidFileDescription
+validateFileDescription fd@FileDescription {size, chunks}
+  | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
+  | encryptedSize < unFileSize size = Left "chunks total size is smaller than file size"
+  | chunksSize (init chunks) >= unFileSize size = Left "too many chunks for file size"
+  | otherwise = Right $ ValidFD encryptedSize fd
+  where
+    chunkNos = map (chunkNo :: FileChunk -> Int) chunks
+    encryptedSize = chunksSize chunks
+    chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription -> YAMLFileDescription
 encodeFileDescription FileDescription {name, size, digest, key, iv, chunkSize, chunks} =

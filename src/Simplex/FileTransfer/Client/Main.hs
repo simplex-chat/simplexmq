@@ -1,20 +1,17 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Client.Main
-  ( xftpClientCLI,
-    sendFile,
-    receiveFile,
-  )
-where
+module Simplex.FileTransfer.Client.Main (xftpClientCLI) where
 
-import Control.Concurrent.STM (atomically)
+import Control.Exception (Exception)
 import Control.Monad
-import Control.Monad.Except (runExceptT)
+import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -30,12 +27,22 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (RecipientId, SenderId, XFTPServer)
 import Simplex.Messaging.Server.CLI (getCliCommand')
-import System.Directory (getFileSize)
-import System.FilePath (takeFileName)
-import System.IO (IOMode (..), withFile)
+import Simplex.Messaging.Util (ifM)
+import System.Exit (exitFailure)
+import System.FilePath (splitExtensions, takeFileName, (</>))
+import System.IO (IOMode (..))
+import System.IO.Temp (getCanonicalTemporaryDirectory)
+import UnliftIO
+import UnliftIO.Directory
 
 xftpClientVersion :: String
 xftpClientVersion = "0.1.0"
+
+defaultChunkSize :: FileSize Word32
+defaultChunkSize = FileSize $ 8 * 1024 * 1024
+
+newtype CLIError = CLIError String
+  deriving (Eq, Show, Exception)
 
 data CliCommand
   = SendFile SendOptions
@@ -52,7 +59,8 @@ data SendOptions = SendOptions
 
 data ReceiveOptions = ReceiveOptions
   { fileDescription :: FilePath,
-    filePath :: Maybe FilePath
+    filePath :: Maybe FilePath,
+    tempPath :: Maybe FilePath
   }
   deriving (Show)
 
@@ -76,27 +84,35 @@ cliCommandP =
         <$> argument str (metavar "FILE" <> help "File to send")
         <*> optional (argument str $ metavar "DIR" <> help "Directory to save file descriptions (default: current directory)")
         <*> option auto (short 'n' <> metavar "COUNT" <> help "Number of recipients" <> value 1 <> showDefault)
-        <*> optional (strOption $ long "temp" <> metavar "TEMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
+        <*> temp
     receiveP :: Parser ReceiveOptions
     receiveP =
       ReceiveOptions
         <$> argument str (metavar "FILE" <> help "File description file")
         <*> optional (argument str $ metavar "DIR" <> help "Directory to save file (default: system Downloads directory)")
+        <*> temp
     randomP :: Parser RandomFileOptions
     randomP =
       RandomFileOptions
         <$> argument str (metavar "FILE" <> help "Path to save file")
         <*> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
     strDec = eitherReader $ strDecode . B.pack
+    temp = optional (strOption $ long "temp" <> metavar "TEMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
 
 xftpClientCLI :: IO ()
 xftpClientCLI =
   getCliCommand' cliCommandP clientVersion >>= \case
     SendFile opts -> cliSendFile opts
-    ReceiveFile opts -> cliReceiveFile opts
+    ReceiveFile opts -> runE $ cliReceiveFile opts
     RandomFile opts -> cliRandomFile opts
   where
     clientVersion = "SimpleX XFTP client v" <> xftpClientVersion
+
+runE :: ExceptT CLIError IO () -> IO ()
+runE a =
+  runExceptT a >>= \case
+    Left (CLIError e) -> putStrLn e >> exitFailure
+    _ -> pure ()
 
 cliSendFile :: SendOptions -> IO ()
 cliSendFile SendOptions {filePath, numRecipients, tempPath, outputDir} = do
@@ -116,7 +132,7 @@ sendFile filePath tempPath numRecipients = do
   -- fsz <- getFileSize filePath
   -- let fileSize = FileSize (fromIntegral fsz)
   fileSize :: FileSize Int64 <- FileSize . fromInteger <$> getFileSize filePath
-  let chunkSize = defChunkSize
+  let chunkSize = defaultChunkSize
   chunksData <- uploadFile -- pass fileSize and chunkSize for splitting to chunks?
   -- concurrently: register and upload chunks to servers, get sndIds & rcvIds
   -- create/pivot n file descriptions with rcvIds
@@ -145,23 +161,41 @@ sendFile filePath tempPath numRecipients = do
       --   (Int, NonEmpty (RecipientId, C.APrivateSignKey))
       undefined
 
-cliReceiveFile :: ReceiveOptions -> IO ()
-cliReceiveFile ReceiveOptions {fileDescription, filePath} = do
-  r <- strDecode <$> B.readFile fileDescription
-  case r of
-    Left e -> putStrLn $ "Failed to parse file description: " <> e
-    Right fd -> receiveFile fd filePath
+cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
+cliReceiveFile ReceiveOptions {fileDescription, filePath, tempPath} = do
+  fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile fileDescription
+  ValidFileDescription encSize FileDescription {name, chunks} <- liftEither . first CLIError $ validateFileDescription fd
+  filePath' <- getFilePath name
+  encPath' <- getEncPath tempPath name
+  withFile encPath' WriteMode $ \h -> do
+    liftIO $ LB.hPut h $ LB.replicate encSize '#'
+    c <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+    writeLock <- atomically createLock
+    -- download chunks concurrently - accept write lock
+    -- forM_ chunks $ \fc -> downloadFileChunk fd fc fileDest
+    -- decrypt file
+    -- verify file digest
+    pure ()
+  where
+    getFilePath :: String -> ExceptT CLIError IO FilePath
+    getFilePath name =
+      case filePath of
+        Just path ->
+          ifM (doesDirectoryExist path) (uniqueCombine path name) $
+            ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
+        _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
 
-receiveFile :: FileDescription -> Maybe FilePath -> IO ()
-receiveFile fd@FileDescription {chunks} filePath = do
-  -- create empty file
-  c <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-  writeLock <- atomically createLock
-  -- download chunks concurrently - accept write lock
-  -- forM_ chunks $ \fc -> downloadFileChunk fd fc fileDest
-  -- decrypt file
-  -- verify file digest
-  pure ()
+getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
+getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
+
+uniqueCombine :: MonadIO m => FilePath -> String -> m FilePath
+uniqueCombine filePath fileName = tryCombine (0 :: Int)
+  where
+    tryCombine n =
+      let (name, ext) = splitExtensions fileName
+          suffix = if n == 0 then "" else "_" <> show n
+          f = filePath </> (name <> suffix <> ext)
+       in ifM (doesFileExist f) (tryCombine $ n + 1) (pure f)
 
 createDownloadFile :: FileDescription -> FilePath -> IO ()
 createDownloadFile FileDescription {size} filePath = do
