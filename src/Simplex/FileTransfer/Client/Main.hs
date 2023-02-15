@@ -90,7 +90,7 @@ defaultRetryCount :: Int
 defaultRetryCount = 3
 
 xftpServer :: XFTPServer
-xftpServer = "xftp://vr0bXzm4iKkLvleRMxLznTS-lHjXEyXunxn_7VJckk4=@localhost:443"
+xftpServer = "xftp://REtkthsvCPmtp8V3RyiwgSvblZYmqZ8iONZysMcclcY=@localhost:443"
 
 cliCommandP :: Parser CliCommand
 cliCommandP =
@@ -285,12 +285,13 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
   fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile fileDescription
   ValidFileDescription FileDescription {size, chunks} <- liftEither . first CLIError $ validateFileDescription fd
   encPath <- getEncPath tempPath "xftp"
-  withFile encPath WriteMode $ \h -> do
-    liftIO $ LB.hPut h $ LB.replicate (unFileSize size) '#'
+  -- withFile encPath WriteMode $ \h -> do
+  --   liftIO $ LB.hPut h $ LB.replicate (unFileSize size) '#'
   a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
   writeLock <- atomically createLock
   let chunkSizes = prepareChunkSizes $ unFileSize size
       chunkSpecs = prepareChunkSpecs encPath chunkSizes
+  -- chunks have to be ordered because of AppendMode
   forM_ (zip chunkSpecs chunks) $ \(chunkSpec, chunk) -> do
     downloadFileChunk a writeLock chunk chunkSpec
   -- verify file digest

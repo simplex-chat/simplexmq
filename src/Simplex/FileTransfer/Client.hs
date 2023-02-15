@@ -65,6 +65,7 @@ data XFTPChunkSpec = XFTPChunkSpec
     chunkOffset :: Int64,
     chunkSize :: Int
   }
+  deriving (Show)
 
 defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
@@ -149,8 +150,8 @@ downloadXFTPChunk c rpKey fId rKey =
 
 receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
 receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset} = liftIO $ do
-  withFile filePath WriteMode $ \h -> do
-    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+  withFile filePath AppendMode $ \h -> do
+    -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset
     -- TODO chunk decryption
     void $ receiveFile h chunkPart 0
 
