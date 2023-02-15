@@ -162,6 +162,7 @@ import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
 import Network.Socket (ServiceName)
+import Simplex.FileTransfer.Description (FileDescription)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
@@ -185,6 +186,7 @@ import System.IO (hFlush, stdout)
 import UnliftIO.Exception (bracket, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Simplex.FileTransfer.Types
 
 -- * SQLite Store implementation
 
@@ -1693,3 +1695,39 @@ randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerat
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
 ntfSubAndSMPAction (NtfSubSMPAction action) = (Nothing, Just action)
+
+createRcvFile :: FileDescription -> IO ()
+createRcvFile fd = do
+  -- insert into rcv_file_chunk_replicas
+  -- insert into rcv_file_chunks
+  -- insert into rcv_files
+  undefined
+
+getRcvFile :: Int64 -> IO (Either StoreError RcvFileDescription)
+getRcvFile fileId = do
+  -- select from rcv_file_chunk_replicas
+  -- select from rcv_file_chunks
+  -- select from rcv_files
+  -- / join?
+  undefined
+
+updateRcvFileChunkReplicaReceived :: Int64 -> IO ()
+updateRcvFileChunkReplicaReceived replicaId = do
+  -- update rcv_file_chunk_replicas
+  undefined
+
+updateRcvFileChunkReplicaRetries :: Int64 -> IO ()
+updateRcvFileChunkReplicaRetries replicaId = do
+  -- update rcv_file_chunk_replicas
+  undefined
+
+updateRcvFile :: Int64 -> IO ()
+updateRcvFile replicaId = do
+  -- update rcv_files - completed, temp_path, save_path
+  undefined
+
+getUnreceivedRcvFiles :: IO [RcvFileDescription]
+getUnreceivedRcvFiles = do
+  -- get unique file ids from rcv_files where complete = false
+  -- getRcvFile for each file id
+  undefined
