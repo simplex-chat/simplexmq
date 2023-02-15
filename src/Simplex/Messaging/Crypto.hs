@@ -103,6 +103,7 @@ module Simplex.Messaging.Crypto
 
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
+    pattern CbNonce,
     cbEncrypt,
     cbEncryptMaxLenBS,
     cbDecrypt,
@@ -112,6 +113,7 @@ module Simplex.Messaging.Crypto
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
+    pattern SbKey,
     sbEncrypt,
     sbDecrypt,
     sbKey,
@@ -698,6 +700,8 @@ data CryptoError
     AESDecryptError
   | -- CryptoBox decryption error
     CBDecryptError
+  | -- Poly1305 initialization error
+    CryptoPoly1305Error CE.CryptoError
   | -- | message is larger that allowed padded length minus 2 (to prepend message length)
     -- (or required un-padded length is larger than the message length)
     CryptoLargeMsgError
@@ -969,8 +973,13 @@ sbDecrypt_ secret (CbNonce nonce) packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
-newtype CbNonce = CbNonce {unCbNonce :: ByteString}
+newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)
+
+pattern CbNonce :: ByteString -> CbNonce
+pattern CbNonce s <- CryptoBoxNonce s
+
+{-# COMPLETE CbNonce #-}
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s
@@ -982,23 +991,32 @@ instance ToJSON CbNonce where
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s
-  | len == 24 = CbNonce s
-  | len > 24 = CbNonce . fst $ B.splitAt 24 s
-  | otherwise = CbNonce $ s <> B.replicate (24 - len) (toEnum 0)
+  | len == 24 = CryptoBoxNonce s
+  | len > 24 = CryptoBoxNonce . fst $ B.splitAt 24 s
+  | otherwise = CryptoBoxNonce $ s <> B.replicate (24 - len) (toEnum 0)
   where
     len = B.length s
 
 randomCbNonce :: IO CbNonce
-randomCbNonce = CbNonce <$> getRandomBytes 24
+randomCbNonce = CryptoBoxNonce <$> getRandomBytes 24
 
 pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
-pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
+pseudoRandomCbNonce gVar = CryptoBoxNonce <$> pseudoRandomBytes 24 gVar
 
 pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
-newtype SbKey = SbKey {unSbKey :: ByteString}
+instance Encoding CbNonce where
+  smpEncode = unCbNonce
+  smpP = CryptoBoxNonce <$> A.take 24
+
+newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
   deriving (Eq, Show)
+
+pattern SbKey :: ByteString -> SbKey
+pattern SbKey s <- SecretBoxKey s
+
+{-# COMPLETE SbKey #-}
 
 instance StrEncoding SbKey where
   strEncode (SbKey s) = strEncode s
@@ -1010,25 +1028,21 @@ instance ToJSON SbKey where
 
 sbKey :: ByteString -> SbKey
 sbKey s
-  | len == 32 = SbKey s
-  | len > 32 = SbKey . fst $ B.splitAt 32 s
-  | otherwise = SbKey $ s <> B.replicate (32 - len) (toEnum 0)
+  | len == 32 = SecretBoxKey s
+  | len > 32 = SecretBoxKey . fst $ B.splitAt 32 s
+  | otherwise = SecretBoxKey $ s <> B.replicate (32 - len) (toEnum 0)
   where
     len = B.length s
 
 randomSbKey :: IO SbKey
-randomSbKey = SbKey <$> getRandomBytes 32
-
-instance Encoding CbNonce where
-  smpEncode = unCbNonce
-  smpP = CbNonce <$> A.take 24
+randomSbKey = SecretBoxKey <$> getRandomBytes 32
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
-xSalsa20 shared nonce msg = (rs, msg')
+xSalsa20 secret nonce msg = (rs, msg')
   where
     zero = B.replicate 16 $ toEnum 0
     (iv0, iv1) = B.splitAt 8 nonce
-    state0 = XSalsa.initialize 20 shared (zero `B.append` iv0)
+    state0 = XSalsa.initialize 20 secret (zero `B.append` iv0)
     state1 = XSalsa.derive state0 iv1
     (rs, state2) = XSalsa.generate state1 32
     (msg', _) = XSalsa.combine state2 msg
