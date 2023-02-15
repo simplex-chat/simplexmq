@@ -112,7 +112,7 @@ executables:
       - -threaded
 
 tests:
-  smp-server-test:
+  simplexmq-test:
     source-dirs: tests
     main: Test.hs
     dependencies:
