@@ -63,6 +63,7 @@ library
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
@@ -347,7 +348,7 @@ executable smp-server
   if flag(swift)
     cpp-options: -DswiftJSON
 
-test-suite smp-server-test
+test-suite simplexmq-test
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
