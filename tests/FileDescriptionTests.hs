@@ -37,8 +37,8 @@ fileDesc =
   FileDescription
     { size = FileSize $ 26 * mb,
       digest = FileDigest "abc",
-      key = C.Key "def",
-      iv = C.IV "ghi",
+      key = C.sbKey "def",
+      nonce = C.cbNonce "ghi",
       chunkSize = defaultChunkSize,
       chunks =
         [ FileChunk
@@ -91,8 +91,8 @@ yamlFileDesc =
     { size = "26mb",
       chunkSize = "8mb",
       digest = FileDigest "abc",
-      key = C.Key "def",
-      iv = C.IV "ghi",
+      key = C.sbKey "def",
+      nonce = C.cbNonce "ghi",
       replicas =
         [ YAMLServerReplicas
             { server = "xftp://abc=@example1.com",

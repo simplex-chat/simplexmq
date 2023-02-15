@@ -118,13 +118,13 @@ module Simplex.Messaging.Crypto
     sbDecrypt,
     sbKey,
     randomSbKey,
+    cbAuthTagSize,
 
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
     -- * hash
     sha256Hash,
-    sha512Hashlazy,
 
     -- * Message padding / un-padding
     pad,
@@ -150,7 +150,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256, SHA512, hash, hashlazy)
+import Crypto.Hash (Digest, SHA256, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -171,7 +171,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
@@ -799,10 +798,6 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
--- | SHA512 digest of a lazy bytestring.
-sha512Hashlazy :: LB.ByteString -> ByteString
-sha512Hashlazy = BA.convert . (hashlazy :: LB.ByteString -> Digest SHA512)
-
 -- | AEAD-GCM encryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
@@ -979,6 +974,9 @@ sbDecrypt_ secret (CbNonce nonce) packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
+cbAuthTagSize :: Int
+cbAuthTagSize = 16
+
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)
 
@@ -994,6 +992,9 @@ instance StrEncoding CbNonce where
 instance ToJSON CbNonce where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance FromJSON CbNonce where
+  parseJSON = strParseJSON "CbNonce"
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s
@@ -1031,6 +1032,9 @@ instance StrEncoding SbKey where
 instance ToJSON SbKey where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance FromJSON SbKey where
+  parseJSON = strParseJSON "SbKey"
 
 sbKey :: ByteString -> SbKey
 sbKey s
