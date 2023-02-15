@@ -365,7 +365,7 @@ uniqueCombine filePath fileName = tryCombine (0 :: Int)
       let (name, ext) = splitExtensions fileName
           suffix = if n == 0 then "" else "_" <> show n
           f = filePath </> (name <> suffix <> ext)
-       in ifM (liftIO (print f) >> doesPathExist f) (tryCombine $ n + 1) (pure f)
+       in ifM (doesPathExist f) (tryCombine $ n + 1) (pure f)
 
 withRetry :: Int -> ExceptT CLIError IO a -> ExceptT CLIError IO a
 withRetry 0 _ = throwError $ CLIError "internal: no retry attempts"
