@@ -39,8 +39,9 @@ cryptoTests = do
   describe "Ed signatures" $ do
     describe "Ed25519" $ testSignature C.SEd25519
     describe "Ed448" $ testSignature C.SEd448
-  describe "DH X25519 + cryptobox" $
+  describe "DH X25519 + cryptobox" $ do
     testDHCryptoBox
+    testSecretBox
   describe "X509 key encoding" $ do
     describe "Ed25519" $ testEncoding C.SEd25519
     describe "Ed448" $ testEncoding C.SEd448
@@ -53,7 +54,7 @@ testSignature alg = it "should sign / verify string" . ioProperty $ do
   pure $ \s -> let b = encodeUtf8 $ T.pack s in C.verify k (C.sign pk b) b
 
 testDHCryptoBox :: Spec
-testDHCryptoBox = it "should encrypt / decrypt string" . ioProperty $ do
+testDHCryptoBox = it "should encrypt / decrypt string with asymmetric DH keys" . ioProperty $ do
   (sk, spk) <- C.generateKeyPair'
   (rk, rpk) <- C.generateKeyPair'
   nonce <- C.randomCbNonce
@@ -62,6 +63,17 @@ testDHCryptoBox = it "should encrypt / decrypt string" . ioProperty $ do
         paddedLen = B.length b + abs pad + 2
         cipher = C.cbEncrypt (C.dh' rk spk) nonce b paddedLen
         plain = C.cbDecrypt (C.dh' sk rpk) nonce =<< cipher
+     in isRight cipher && cipher /= plain && Right b == plain
+
+testSecretBox :: Spec
+testSecretBox = it "should encrypt / decrypt string with a random symmetric key" . ioProperty $ do
+  k <- C.randomSbKey
+  nonce <- C.randomCbNonce
+  pure $ \(s, pad) ->
+    let b = encodeUtf8 $ T.pack s
+        paddedLen = B.length b + abs pad + 2
+        cipher = C.sbEncrypt k nonce b paddedLen
+        plain = C.sbDecrypt k nonce =<< cipher
      in isRight cipher && cipher /= plain && Right b == plain
 
 testEncoding :: (C.AlgorithmI a) => C.SAlgorithm a -> Spec

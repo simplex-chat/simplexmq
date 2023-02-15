@@ -110,6 +110,13 @@ module Simplex.Messaging.Crypto
     randomCbNonce,
     pseudoRandomCbNonce,
 
+    -- * NaCl crypto_secretbox
+    SbKey (unSbKey),
+    sbEncrypt,
+    sbDecrypt,
+    sbKey,
+    randomSbKey,
+
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
@@ -153,6 +160,7 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
@@ -915,13 +923,20 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
-cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
+cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
+
+-- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
+sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+sbEncrypt (SbKey key) = sbEncrypt_ key
+
+sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
-cbEncryptMaxLenBS secret (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
 
-cryptoBox :: DhSecret 'X25519 -> ByteString -> ByteString -> ByteString
+cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
   where
     (rs, c) = xSalsa20 secret nonce s
@@ -929,7 +944,15 @@ cryptoBox secret nonce s = BA.convert tag <> c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
-cbDecrypt secret (CbNonce nonce) packet
+cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
+
+-- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
+sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecrypt (SbKey key) = sbDecrypt_ key
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
+sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecrypt_ secret (CbNonce nonce) packet
   | B.length packet < 16 = Left CBDecryptError
   | BA.constEq tag' tag = unPad msg
   | otherwise = Left CBDecryptError
@@ -966,12 +989,34 @@ pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
 pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
+newtype SbKey = SbKey {unSbKey :: ByteString}
+  deriving (Eq, Show)
+
+instance StrEncoding SbKey where
+  strEncode (SbKey s) = strEncode s
+  strP = sbKey <$> strP
+
+instance ToJSON SbKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+sbKey :: ByteString -> SbKey
+sbKey s
+  | len == 32 = SbKey s
+  | len > 32 = SbKey . fst $ B.splitAt 32 s
+  | otherwise = SbKey $ s <> B.replicate (32 - len) (toEnum 0)
+  where
+    len = B.length s
+
+randomSbKey :: IO SbKey
+randomSbKey = SbKey <$> getRandomBytes 32
+
 instance Encoding CbNonce where
   smpEncode = unCbNonce
   smpP = CbNonce <$> A.take 24
 
-xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
-xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
+xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
+xSalsa20 shared nonce msg = (rs, msg')
   where
     zero = B.replicate 16 $ toEnum 0
     (iv0, iv1) = B.splitAt 8 nonce
