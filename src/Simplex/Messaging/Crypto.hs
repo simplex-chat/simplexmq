@@ -117,6 +117,7 @@ module Simplex.Messaging.Crypto
     sbEncrypt,
     sbDecrypt,
     sbKey,
+    unsafeSbKey,
     randomSbKey,
     cbAuthTagSize,
 
@@ -1027,7 +1028,7 @@ pattern SbKey s <- SecretBoxKey s
 
 instance StrEncoding SbKey where
   strEncode (SbKey s) = strEncode s
-  strP = sbKey <$> strP
+  strP = sbKey <$?> strP
 
 instance ToJSON SbKey where
   toJSON = strToJSON
@@ -1036,13 +1037,13 @@ instance ToJSON SbKey where
 instance FromJSON SbKey where
   parseJSON = strParseJSON "SbKey"
 
-sbKey :: ByteString -> SbKey
+sbKey :: ByteString -> Either String SbKey
 sbKey s
-  | len == 32 = SecretBoxKey s
-  | len > 32 = SecretBoxKey . fst $ B.splitAt 32 s
-  | otherwise = SecretBoxKey $ s <> B.replicate (32 - len) (toEnum 0)
-  where
-    len = B.length s
+  | B.length s == 32 = Right $ SecretBoxKey s
+  | otherwise = Left "SbKey: invalid length"
+
+unsafeSbKey :: ByteString -> SbKey
+unsafeSbKey s = either error id $ sbKey s
 
 randomSbKey :: IO SbKey
 randomSbKey = SecretBoxKey <$> getRandomBytes 32

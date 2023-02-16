@@ -17,7 +17,7 @@ import Test.Hspec
 
 fileDescriptionTests :: Spec
 fileDescriptionTests =
-  fdescribe "file description parsing / serializing" $ do
+  describe "file description parsing / serializing" $ do
     it "parse YAML file description" testParseYAMLFileDescription
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
@@ -32,13 +32,19 @@ tmpFileDescPath = "tests/tmp/file_description.yaml"
 mb :: Num a => a
 mb = 1024 * 1024
 
+testSbKey :: C.SbKey
+testSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTFFFOY="
+
+testCbNonce :: C.CbNonce
+testCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
+
 fileDesc :: FileDescription
 fileDesc =
   FileDescription
     { size = FileSize $ 26 * mb,
       digest = FileDigest "abc",
-      key = C.sbKey "def",
-      nonce = C.cbNonce "ghi",
+      key = testSbKey,
+      nonce = testCbNonce,
       chunkSize = defaultChunkSize,
       chunks =
         [ FileChunk
@@ -91,8 +97,8 @@ yamlFileDesc =
     { size = "26mb",
       chunkSize = "8mb",
       digest = FileDigest "abc",
-      key = C.sbKey "def",
-      nonce = C.cbNonce "ghi",
+      key = testSbKey,
+      nonce = testCbNonce,
       replicas =
         [ YAMLServerReplicas
             { server = "xftp://abc=@example1.com",
