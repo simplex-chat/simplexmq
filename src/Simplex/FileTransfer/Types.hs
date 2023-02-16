@@ -16,13 +16,15 @@ data RcvFileDescription = RcvFileDescription
     iv :: C.IV,
     chunkSize :: Word32,
     chunks :: [RcvFileChunk],
-    savePath :: Maybe FilePath, --
-    tempPath :: Maybe FilePath, --
-    complete :: Bool            -- use RcvFileStatus instead?
+    status :: RcvFileStatus
   }
   deriving (Eq, Show)
 
-data RcvFileStatus = RFSAccepted | RFSReceived {tempPath :: FilePath} | RFSComplete {savePath :: FilePath}
+data RcvFileStatus
+  = RFSAccepted
+  | RFSReceived {tempPath :: FilePath}
+  | RFSDecrypting {tempPath :: FilePath, savePath :: FilePath}
+  | RFSComplete {savePath :: FilePath}
   deriving (Eq, Show)
 
 data RcvFileChunk = RcvFileChunk

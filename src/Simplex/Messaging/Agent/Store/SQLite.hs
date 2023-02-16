@@ -123,6 +123,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getActiveNtfToken,
     getNtfRcvQueue,
     setConnectionNtfs,
+    -- File transfer
+    getNextRcvFileAction,
 
     -- * utilities
     withConnection,
@@ -163,6 +165,7 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Description (FileDescription)
+import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
@@ -174,7 +177,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, SndPublicVerifyKey, pattern NtfServer)
+import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
@@ -186,7 +189,6 @@ import System.IO (hFlush, stdout)
 import UnliftIO.Exception (bracket, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Simplex.FileTransfer.Types
 
 -- * SQLite Store implementation
 
@@ -1696,6 +1698,11 @@ ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAct
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
 ntfSubAndSMPAction (NtfSubSMPAction action) = (Nothing, Just action)
 
+upsertXftpServer_ :: DB.Connection -> XFTPServer -> IO ()
+upsertXftpServer_ db ProtocolServer {host, port, keyHash} = do
+  -- insert into xftp_servers
+  undefined
+
 createRcvFile :: FileDescription -> IO ()
 createRcvFile fd = do
   -- insert into rcv_file_chunk_replicas
@@ -1711,6 +1718,8 @@ getRcvFile fileId = do
   -- / join?
   undefined
 
+-- ? should return RcvFileDescription in same transaction
+-- ? so we can check if all replicas are received?
 updateRcvFileChunkReplicaReceived :: Int64 -> IO ()
 updateRcvFileChunkReplicaReceived replicaId = do
   -- update rcv_file_chunk_replicas
@@ -1730,4 +1739,15 @@ getUnreceivedRcvFiles :: IO [RcvFileDescription]
 getUnreceivedRcvFiles = do
   -- get unique file ids from rcv_files where complete = false
   -- getRcvFile for each file id
+  undefined
+
+createRcvFileAction :: DB.Connection -> Maybe XFTPServer -> XFTPAction -> IO ()
+createRcvFileAction db xftpServer_ action = do
+  -- insert into xftp_actions
+  undefined
+
+getNextRcvFileAction :: DB.Connection -> Maybe XFTPServer -> IO (Maybe (RcvFileDescription, XFTPAction))
+getNextRcvFileAction db xftpServer_ = do
+  -- select from xftp_actions
+  -- order by created_at?
   undefined
