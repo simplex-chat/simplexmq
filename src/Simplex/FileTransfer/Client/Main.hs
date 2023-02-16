@@ -98,8 +98,8 @@ data RandomFileOptions = RandomFileOptions
 defaultRetryCount :: Int
 defaultRetryCount = 3
 
-defaultXftpServers :: NonEmpty XFTPServer
-defaultXftpServers = L.fromList ["xftp://vr0bXzm4iKkLvleRMxLznTS-lHjXEyXunxn_7VJckk4=@localhost:443"]
+defaultXFTPServers :: NonEmpty XFTPServer
+defaultXFTPServers = L.fromList ["xftp://vr0bXzm4iKkLvleRMxLznTS-lHjXEyXunxn_7VJckk4=@localhost:443"]
 
 cliCommandP :: Parser CliCommand
 cliCommandP =
@@ -236,7 +236,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     uploadFile chunks = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       gen <- newTVarIO =<< liftIO newStdGen
-      let xftpSrvs = fromMaybe defaultXftpServers (nonEmpty xftpServers)
+      let xftpSrvs = fromMaybe defaultXFTPServers (nonEmpty xftpServers)
       -- TODO shuffle chunks
       sentChunks <- pooledForConcurrentlyN 32 (zip [1 ..] chunks) $ uploadFileChunk a gen xftpSrvs
       -- TODO unshuffle chunks
