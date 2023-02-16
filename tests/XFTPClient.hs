@@ -46,8 +46,14 @@ withXFTPServerCfg cfg =
 withXFTPServer :: IO a -> IO a
 withXFTPServer = withXFTPServerCfg testXFTPServerConfig . const
 
+withXFTPServer2 :: IO a -> IO a
+withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig {xftpPort = xftpTestPort2, filesPath = xftpServerFiles2} . const
+
 xftpTestPort :: ServiceName
 xftpTestPort = "7000"
+
+xftpTestPort2 :: ServiceName
+xftpTestPort2 = "7001"
 
 testXFTPServer :: XFTPServer
 testXFTPServer = fromString testXFTPServerStr
@@ -55,8 +61,14 @@ testXFTPServer = fromString testXFTPServerStr
 testXFTPServerStr :: String
 testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
 
+testXFTPServerStr2 :: String
+testXFTPServerStr2 = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7001"
+
 xftpServerFiles :: FilePath
 xftpServerFiles = "tests/tmp/xftp-server-files"
+
+xftpServerFiles2 :: FilePath
+xftpServerFiles2 = "tests/tmp/xftp-server-files2"
 
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =

@@ -28,6 +28,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Description (FileSize (unFileSize))
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C
@@ -70,6 +71,7 @@ data CliCommand
   = SendFile SendOptions
   | ReceiveFile ReceiveOptions
   | RandomFile RandomFileOptions
+  | FileDescrInfo InfoOptions
 
 data SendOptions = SendOptions
   { filePath :: FilePath,
@@ -86,6 +88,11 @@ data ReceiveOptions = ReceiveOptions
     filePath :: Maybe FilePath,
     retryCount :: Int,
     tempPath :: Maybe FilePath
+  }
+  deriving (Show)
+
+newtype InfoOptions = InfoOptions
+  { fileDescription :: FilePath
   }
   deriving (Show)
 
@@ -106,6 +113,7 @@ cliCommandP =
   hsubparser
     ( command "send" (info (SendFile <$> sendP) (progDesc "Send file"))
         <> command "recv" (info (ReceiveFile <$> receiveP) (progDesc "Receive file"))
+        <> command "info" (info (FileDescrInfo <$> infoP) (progDesc "Show file description"))
         <> command "rand" (info (RandomFile <$> randomP) (progDesc "Generate a random file of a given size"))
     )
   where
@@ -121,16 +129,19 @@ cliCommandP =
     receiveP :: Parser ReceiveOptions
     receiveP =
       ReceiveOptions
-        <$> argument str (metavar "FILE" <> help "File description file")
+        <$> fileDescrArg
         <*> optional (argument str $ metavar "DIR" <> help "Directory to save file (default: system Downloads directory)")
         <*> retries
         <*> temp
+    infoP :: Parser InfoOptions
+    infoP = InfoOptions <$> fileDescrArg
     randomP :: Parser RandomFileOptions
     randomP =
       RandomFileOptions
         <$> argument str (metavar "FILE" <> help "Path to save file")
         <*> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
     strDec = eitherReader $ strDecode . B.pack
+    fileDescrArg = argument str (metavar "FILE" <> help "File description file")
     retries = option auto (long "retry" <> short 'r' <> metavar "RETRY" <> help "Number of network retries" <> value defaultRetryCount <> showDefault)
     temp = optional (strOption $ long "tmp" <> metavar "TMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
     xftpServers =
@@ -176,6 +187,7 @@ xftpClientCLI =
   getCliCommand' cliCommandP clientVersion >>= \case
     SendFile opts -> runE $ cliSendFile opts
     ReceiveFile opts -> runE $ cliReceiveFile opts
+    FileDescrInfo opts -> runE $ cliFileDescrInfo opts
     RandomFile opts -> cliRandomFile opts
   where
     clientVersion = "SimpleX XFTP client v" <> xftpClientVersion
@@ -317,8 +329,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
-  fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile fileDescription
-  ValidFileDescription FileDescription {size, digest, key, nonce, chunks} <- liftEither . first CLIError $ validateFileDescription fd
+  ValidFileDescription FileDescription {size, digest, key, nonce, chunks} <- getFileDescription fileDescription
   encPath <- getEncPath tempPath "xftp"
   -- withFile encPath WriteMode $ \h -> do
   --   liftIO $ LB.hPut h $ LB.replicate (unFileSize size) '#'
@@ -369,6 +380,26 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
+
+cliFileDescrInfo :: InfoOptions -> ExceptT CLIError IO ()
+cliFileDescrInfo InfoOptions {fileDescription} = do
+  ValidFileDescription FileDescription {size, chunkSize, chunks} <- getFileDescription fileDescription
+  let replicas = groupReplicasByServer chunkSize chunks
+  liftIO $ do
+    putStrLn $ "File download size: " <> strEnc size
+    putStrLn "File server(s):"
+    forM_ replicas $ \srvReplicas -> do
+      let srv = replicaServer $ head srvReplicas
+          chSizes = map (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
+      putStrLn $ strEnc srv <> ": " <> strEnc (FileSize $ sum chSizes)
+
+strEnc :: StrEncoding a => a -> String
+strEnc = B.unpack . strEncode
+
+getFileDescription :: FilePath -> ExceptT CLIError IO ValidFileDescription
+getFileDescription path = do
+  fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile path
+  liftEither . first CLIError $ validateFileDescription fd
 
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes 0 = []
