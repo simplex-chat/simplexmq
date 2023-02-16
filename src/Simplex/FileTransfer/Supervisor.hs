@@ -13,6 +13,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Simplex.FileTransfer.Client
+import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Client
@@ -32,6 +33,7 @@ import qualified UnliftIO.Exception as E
 -- Maybe XFTPServer - Nothing is for worker dedicated to file decryption
 data XFTPSupervisorEnv = XFTPSupervisorEnv
   { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
+    -- add TVar XFTPClientAgent - for workers to get clients
   }
 
 -- TODO remove, replace uses with AgentMonad
@@ -64,9 +66,11 @@ addWorker c srv_ = do
 
 runWorker :: forall m. XFTPMonad m => AgentClient -> Maybe XFTPServer -> TMVar () -> m ()
 runWorker c srv_ doWork = do
+  -- Maybe XFTPClient?
+  -- duplicate runWorker for non download worker without XFTPClient?
   case srv_ of
     Nothing -> pure ()
-    Just srv -> pure () -- create xftp client
+    Just srv -> pure () -- create XFTPClient
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runXftpOperation -- decryption doesn't require network
@@ -91,8 +95,8 @@ runWorker c srv_ doWork = do
           -- downloadFileChunk -- ? which chunk to download? read encoded / parameterized XFTPAction instead?
           undefined
         XADecrypt -> undefined
-    downloadFileChunk :: FileChunk -> m () -- XFTPClientAgent ->
-    downloadFileChunk chunk = do
+    downloadFileChunk :: XFTPClient -> FileChunk -> m ()
+    downloadFileChunk a chunk = do
       -- generate chunk spec? offset is not needed if chunks are saved into separate files
       -- download chunk
       -- save chunk
