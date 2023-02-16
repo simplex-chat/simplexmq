@@ -103,6 +103,7 @@ module Simplex.Messaging.Crypto
 
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
+    pattern CbNonce,
     cbEncrypt,
     cbEncryptMaxLenBS,
     cbDecrypt,
@@ -110,10 +111,20 @@ module Simplex.Messaging.Crypto
     randomCbNonce,
     pseudoRandomCbNonce,
 
+    -- * NaCl crypto_secretbox
+    SbKey (unSbKey),
+    pattern SbKey,
+    sbEncrypt,
+    sbDecrypt,
+    sbKey,
+    unsafeSbKey,
+    randomSbKey,
+    cbAuthTagSize,
+
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
-    -- * SHA256 hash
+    -- * hash
     sha256Hash,
 
     -- * Message padding / un-padding
@@ -140,7 +151,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), hash)
+import Crypto.Hash (Digest, SHA256, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -153,6 +164,7 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
@@ -690,6 +702,8 @@ data CryptoError
     AESDecryptError
   | -- CryptoBox decryption error
     CBDecryptError
+  | -- Poly1305 initialization error
+    CryptoPoly1305Error CE.CryptoError
   | -- | message is larger that allowed padded length minus 2 (to prepend message length)
     -- (or required un-padded length is larger than the message length)
     CryptoLargeMsgError
@@ -923,13 +937,20 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
-cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
+cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
+
+-- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
+sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+sbEncrypt (SbKey key) = sbEncrypt_ key
+
+sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
-cbEncryptMaxLenBS secret (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
 
-cryptoBox :: DhSecret 'X25519 -> ByteString -> ByteString -> ByteString
+cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
   where
     (rs, c) = xSalsa20 secret nonce s
@@ -937,7 +958,15 @@ cryptoBox secret nonce s = BA.convert tag <> c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
-cbDecrypt secret (CbNonce nonce) packet
+cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
+
+-- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
+sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecrypt (SbKey key) = sbDecrypt_ key
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
+sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecrypt_ secret (CbNonce nonce) packet
   | B.length packet < 16 = Left CBDecryptError
   | BA.constEq tag' tag = unPad msg
   | otherwise = Left CBDecryptError
@@ -946,8 +975,16 @@ cbDecrypt secret (CbNonce nonce) packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
-newtype CbNonce = CbNonce {unCbNonce :: ByteString}
+cbAuthTagSize :: Int
+cbAuthTagSize = 16
+
+newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)
+
+pattern CbNonce :: ByteString -> CbNonce
+pattern CbNonce s <- CryptoBoxNonce s
+
+{-# COMPLETE CbNonce #-}
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s
@@ -957,33 +994,66 @@ instance ToJSON CbNonce where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance FromJSON CbNonce where
+  parseJSON = strParseJSON "CbNonce"
+
 cbNonce :: ByteString -> CbNonce
 cbNonce s
-  | len == 24 = CbNonce s
-  | len > 24 = CbNonce . fst $ B.splitAt 24 s
-  | otherwise = CbNonce $ s <> B.replicate (24 - len) (toEnum 0)
+  | len == 24 = CryptoBoxNonce s
+  | len > 24 = CryptoBoxNonce . fst $ B.splitAt 24 s
+  | otherwise = CryptoBoxNonce $ s <> B.replicate (24 - len) (toEnum 0)
   where
     len = B.length s
 
 randomCbNonce :: IO CbNonce
-randomCbNonce = CbNonce <$> getRandomBytes 24
+randomCbNonce = CryptoBoxNonce <$> getRandomBytes 24
 
 pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
-pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
+pseudoRandomCbNonce gVar = CryptoBoxNonce <$> pseudoRandomBytes 24 gVar
 
 pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce
-  smpP = CbNonce <$> A.take 24
+  smpP = CryptoBoxNonce <$> A.take 24
 
-xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
-xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
+newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
+  deriving (Eq, Show)
+
+pattern SbKey :: ByteString -> SbKey
+pattern SbKey s <- SecretBoxKey s
+
+{-# COMPLETE SbKey #-}
+
+instance StrEncoding SbKey where
+  strEncode (SbKey s) = strEncode s
+  strP = sbKey <$?> strP
+
+instance ToJSON SbKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON SbKey where
+  parseJSON = strParseJSON "SbKey"
+
+sbKey :: ByteString -> Either String SbKey
+sbKey s
+  | B.length s == 32 = Right $ SecretBoxKey s
+  | otherwise = Left "SbKey: invalid length"
+
+unsafeSbKey :: ByteString -> SbKey
+unsafeSbKey s = either error id $ sbKey s
+
+randomSbKey :: IO SbKey
+randomSbKey = SecretBoxKey <$> getRandomBytes 32
+
+xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
+xSalsa20 secret nonce msg = (rs, msg')
   where
     zero = B.replicate 16 $ toEnum 0
     (iv0, iv1) = B.splitAt 8 nonce
-    state0 = XSalsa.initialize 20 shared (zero `B.append` iv0)
+    state0 = XSalsa.initialize 20 secret (zero `B.append` iv0)
     state1 = XSalsa.derive state0 iv1
     (rs, state2) = XSalsa.generate state1 32
     (msg', _) = XSalsa.combine state2 msg

@@ -63,6 +63,7 @@ module Simplex.Messaging.Client
     transportClientConfig,
     chooseTransportHost,
     proxyUsername,
+    temporaryClientError,
     ServerTransmission,
     ClientCommand,
   )
@@ -417,6 +418,13 @@ data ProtocolClientError
   | -- | IO Error
     PCEIOError IOException
   deriving (Eq, Show, Exception)
+
+temporaryClientError :: ProtocolClientError -> Bool
+temporaryClientError = \case
+  PCENetworkError -> True
+  PCEResponseTimeout -> True
+  PCEIOError _ -> True
+  _ -> False
 
 -- | Create a new SMP queue.
 --

@@ -65,6 +65,7 @@ data XFTPChunkSpec = XFTPChunkSpec
     chunkOffset :: Int64,
     chunkSize :: Int
   }
+  deriving (Show)
 
 defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
@@ -100,7 +101,7 @@ sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fI
     liftEither . first PCETransportError $
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequestDirect http2 req
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
@@ -148,9 +149,9 @@ downloadXFTPChunk c rpKey fId rKey =
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
 receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset, chunkSize} = liftIO $ do
-  withFile filePath WriteMode $ \h -> do
-    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset} = liftIO $ do
+  withFile filePath AppendMode $ \h -> do
+    -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset
     -- TODO chunk decryption
     void $ receiveFile h chunkPart 0
 
