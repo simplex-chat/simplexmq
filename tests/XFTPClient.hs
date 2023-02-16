@@ -1,10 +1,12 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module XFTPClient where
 
 import Control.Concurrent (ThreadId)
+import Data.String (fromString)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
@@ -16,8 +18,24 @@ import Test.Hspec
 xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
 xftpTest test = runXFTPTest test `shouldReturn` ()
 
+xftpTestN :: HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO ()) -> Expectation
+xftpTestN n test = runXFTPTestN n test `shouldReturn` ()
+
+xftpTest2 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> IO ()) -> Expectation
+xftpTest2 test = xftpTestN 2 _test
+  where
+    _test [h1, h2] = test h1 h2
+    _test _ = error "expected 2 handles"
+
 runXFTPTest :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
 runXFTPTest test = withXFTPServer $ testXFTPClient test
+
+runXFTPTestN :: forall a. HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO a) -> IO a
+runXFTPTestN nClients test = withXFTPServer $ run nClients []
+  where
+    run :: Int -> [XFTPClient] -> IO a
+    run 0 hs = test hs
+    run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
@@ -32,7 +50,13 @@ xftpTestPort :: ServiceName
 xftpTestPort = "7000"
 
 testXFTPServer :: XFTPServer
-testXFTPServer = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
+testXFTPServer = fromString testXFTPServerStr
+
+testXFTPServerStr :: String
+testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
+
+xftpServerFiles :: FilePath
+xftpServerFiles = "tests/tmp/xftp-server-files"
 
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =
@@ -40,7 +64,7 @@ testXFTPServerConfig =
     { xftpPort = xftpTestPort,
       fileIdSize = 16,
       storeLogFile = Nothing,
-      filesPath = "tests/xftp-files",
+      filesPath = xftpServerFiles,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
