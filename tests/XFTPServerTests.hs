@@ -16,6 +16,7 @@ import Simplex.FileTransfer.Protocol (FileInfo (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (SenderId)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
+import System.FilePath ((</>))
 import Test.Hspec
 import XFTPClient
 
@@ -36,7 +37,7 @@ createTestChunk fp = do
   pure bytes
 
 readChunk :: SenderId -> IO ByteString
-readChunk sId = B.readFile (xftpServerFiles <> B.unpack (B64.encode sId))
+readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode sId))
 
 testFileChunkDelivery :: Spec
 testFileChunkDelivery =
