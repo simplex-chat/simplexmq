@@ -117,12 +117,14 @@ module Simplex.Messaging.Crypto
     sbEncrypt,
     sbDecrypt,
     sbKey,
+    unsafeSbKey,
     randomSbKey,
+    cbAuthTagSize,
 
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
-    -- * SHA256 hash
+    -- * hash
     sha256Hash,
 
     -- * Message padding / un-padding
@@ -149,7 +151,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), hash)
+import Crypto.Hash (Digest, SHA256, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -973,6 +975,9 @@ sbDecrypt_ secret (CbNonce nonce) packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
+cbAuthTagSize :: Int
+cbAuthTagSize = 16
+
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)
 
@@ -988,6 +993,9 @@ instance StrEncoding CbNonce where
 instance ToJSON CbNonce where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance FromJSON CbNonce where
+  parseJSON = strParseJSON "CbNonce"
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s
@@ -1020,19 +1028,22 @@ pattern SbKey s <- SecretBoxKey s
 
 instance StrEncoding SbKey where
   strEncode (SbKey s) = strEncode s
-  strP = sbKey <$> strP
+  strP = sbKey <$?> strP
 
 instance ToJSON SbKey where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
-sbKey :: ByteString -> SbKey
+instance FromJSON SbKey where
+  parseJSON = strParseJSON "SbKey"
+
+sbKey :: ByteString -> Either String SbKey
 sbKey s
-  | len == 32 = SecretBoxKey s
-  | len > 32 = SecretBoxKey . fst $ B.splitAt 32 s
-  | otherwise = SecretBoxKey $ s <> B.replicate (32 - len) (toEnum 0)
-  where
-    len = B.length s
+  | B.length s == 32 = Right $ SecretBoxKey s
+  | otherwise = Left "SbKey: invalid length"
+
+unsafeSbKey :: ByteString -> SbKey
+unsafeSbKey s = either error id $ sbKey s
 
 randomSbKey :: IO SbKey
 randomSbKey = SecretBoxKey <$> getRandomBytes 32

@@ -691,13 +691,6 @@ processSubResult c rq r = do
     _ -> addSubscription c rq
   pure r
 
-temporaryClientError :: ProtocolClientError -> Bool
-temporaryClientError = \case
-  PCENetworkError -> True
-  PCEResponseTimeout -> True
-  PCEIOError _ -> True
-  _ -> False
-
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ NETWORK -> True
