@@ -289,7 +289,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, retryCount, tempPat
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
   fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile fileDescription
-  ValidFileDescription FileDescription {size, key, nonce, chunks} <- liftEither . first CLIError $ validateFileDescription fd
+  ValidFileDescription FileDescription {size, digest, key, nonce, chunks} <- liftEither . first CLIError $ validateFileDescription fd
   encPath <- getEncPath tempPath "xftp"
   -- withFile encPath WriteMode $ \h -> do
   --   liftIO $ LB.hPut h $ LB.replicate (unFileSize size) '#'
@@ -300,7 +300,8 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
   -- chunks have to be ordered because of AppendMode
   forM_ (zip chunkSpecs chunks) $ \(chunkSpec, chunk) -> do
     downloadFileChunk a writeLock chunk chunkSpec
-  -- verify file digest
+  encDigest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
+  when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
   decryptFile encPath key nonce
   whenM (doesFileExist encPath) $ removeFile encPath
   where
