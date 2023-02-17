@@ -63,7 +63,7 @@ serverTests t@(ATransport t') = do
     testMsgExpireOnInterval t'
     testMsgNOTExpireOnInterval t'
 
-pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission BrokerMsg
+pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
@@ -72,13 +72,13 @@ pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, t)
   tGet1 h
 
-signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
+signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (Just $ C.sign pk t, t)
@@ -89,7 +89,7 @@ tPut1 h t = do
   [r] <- tPut h [t]
   pure r
 
-tGet1 :: (ProtocolEncoding cmd, Transport c, MonadIO m, MonadFail m) => THandle c -> m (SignedTransmission cmd)
+tGet1 :: (ProtocolEncoding err cmd, Transport c, MonadIO m, MonadFail m) => THandle c -> m (SignedTransmission err cmd)
 tGet1 h = do
   [r] <- liftIO $ tGet h
   pure r
@@ -428,7 +428,7 @@ testSwitchSub (ATransport t) =
       Resp "bcda" _ ok3 <- signSendRecv rh2 rKey ("bcda", rId, ACK mId3)
       (ok3, OK) #== "accepts ACK from the 2nd TCP connection"
 
-      1000 `timeout` tGet @BrokerMsg rh1 >>= \case
+      1000 `timeout` tGet @ErrorType @BrokerMsg rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
@@ -869,14 +869,14 @@ testMessageNotifications (ATransport t) =
       Resp "5a" _ OK <- signSendRecv rh rKey ("5a", rId, ACK mId2)
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
       Resp "" _ (NMSG _ _) <- tGet1 nh2
-      1000 `timeout` tGet @BrokerMsg nh1 >>= \case
+      1000 `timeout` tGet @ErrorType @BrokerMsg nh1 >>= \case
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
       Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
       Resp "7" _ OK <- signSendRecv sh sKey ("7", sId, _SEND' "hello there")
       Resp "" _ (Msg mId3 msg3) <- tGet1 rh
       (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
-      1000 `timeout` tGet @BrokerMsg nh2 >>= \case
+      1000 `timeout` tGet @ErrorType @BrokerMsg nh2 >>= \case
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
 
@@ -895,7 +895,7 @@ testMsgExpireOnSend t =
         testSMPClient @c $ \rh -> do
           Resp "3" _ (Msg mId msg) <- signSendRecv rh rKey ("3", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
-          1000 `timeout` tGet @BrokerMsg rh >>= \case
+          1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 
@@ -911,7 +911,7 @@ testMsgExpireOnInterval t =
         threadDelay 2500000
         testSMPClient @c $ \rh -> do
           Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, SUB)
-          1000 `timeout` tGet @BrokerMsg rh >>= \case
+          1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
 
@@ -929,7 +929,7 @@ testMsgNOTExpireOnInterval t =
         testSMPClient @c $ \rh -> do
           Resp "2" _ (Msg mId msg) <- signSendRecv rh rKey ("2", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
-          1000 `timeout` tGet @BrokerMsg rh >>= \case
+          1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 

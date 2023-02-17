@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -146,7 +147,7 @@ instance Encoding ANewNtfEntity where
       'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
-instance Protocol NtfResponse where
+instance Protocol ErrorType NtfResponse where
   type ProtoCommand NtfResponse = NtfCmd
   type ProtoType NtfResponse = 'PNTF
   protocolClientHandshake = ntfClientHandshake
@@ -183,7 +184,7 @@ data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
 
 deriving instance Show NtfCmd
 
-instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
+instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
   encodeProtocol _v = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
@@ -202,6 +203,9 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
+  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  {-# INLINE fromProtocolError #-}
+
   checkCredentials (sig, _, entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
@@ -219,7 +223,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
-instance ProtocolEncoding NtfCmd where
+instance ProtocolEncoding ErrorType NtfCmd where
   type Tag NtfCmd = NtfCmdTag
   encodeProtocol _v (NtfCmd _ c) = encodeProtocol _v c
 
@@ -238,6 +242,9 @@ instance ProtocolEncoding NtfCmd where
         SCHK_ -> pure SCHK
         SDEL_ -> pure SDEL
         PING_ -> pure PING
+
+  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  {-# INLINE fromProtocolError #-}
 
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
@@ -283,7 +290,7 @@ data NtfResponse
   | NRPong
   deriving (Show)
 
-instance ProtocolEncoding NtfResponse where
+instance ProtocolEncoding ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol _v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
@@ -305,6 +312,13 @@ instance ProtocolEncoding NtfResponse where
     NRTkn_ -> NRTkn <$> _smpP
     NRSub_ -> NRSub <$> _smpP
     NRPong_ -> pure NRPong
+
+  fromProtocolError = \case
+    PECmdSyntax -> CMD SYNTAX
+    PECmdUnknown -> CMD UNKNOWN
+    PESession -> SESSION
+    PEBlock -> BLOCK
+  {-# INLINE fromProtocolError #-}
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
     -- IDTKN response must not have queue ID
