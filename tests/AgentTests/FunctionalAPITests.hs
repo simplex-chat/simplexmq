@@ -1027,8 +1027,8 @@ testServerMultipleIdentities = do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     exchangeGreetings alice bobId bob aliceId
-    _ <- joinConnectionAsync bob 1 "1" True secondIdentityCReq "bob's connInfo"
-    liftIO $ threadDelay 100000
+    -- this saves queue with second server identity
+    Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo"
     disconnectAgentClient bob
     bob' <- liftIO $ getSMPAgentClient agentCfg {database = testDB2} initAgentServers
     subscribeConnection bob' aliceId
