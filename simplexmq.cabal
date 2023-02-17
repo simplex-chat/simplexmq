@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.35.0.
+-- This file has been generated from package.yaml by hpack version 0.35.1.
 --
 -- see: https://github.com/sol/hpack
 
@@ -58,6 +58,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
