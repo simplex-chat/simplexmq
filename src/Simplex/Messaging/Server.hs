@@ -266,7 +266,7 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
   write sndQ $ fst as
   write rcvQ $ snd as
   where
-    cmdAction :: SignedTransmission Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+    cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
     cmdAction (sig, signed, (corrId, queueId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, queueId, ERR e)
