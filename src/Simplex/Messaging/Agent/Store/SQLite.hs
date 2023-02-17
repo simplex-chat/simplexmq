@@ -874,12 +874,12 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
   where
     serverFields :: IO (Either StoreError (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash))
     serverFields =
-      runExceptT $ case srv_ of
-        Just srv@(SMPServer host port keyHash) -> do
+      case srv_ of
+        Just srv@(SMPServer host port keyHash) -> runExceptT $ do
           ProtocolServer {keyHash = keyHash'} <- ExceptT $ getExistingServer_' db srv
           let serverKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
           pure (Just host, Just port, serverKeyHash_)
-        _ -> pure (Nothing, Nothing, Nothing)
+        _ -> pure $ Right (Nothing, Nothing, Nothing)
 
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
