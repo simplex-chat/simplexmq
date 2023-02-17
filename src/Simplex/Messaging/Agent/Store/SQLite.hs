@@ -401,7 +401,7 @@ createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SCon
 createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server = server@ProtocolServer {keyHash}} cMode =
   createConn_ gVar cData $ \connId -> do
     ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-    let serverKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
+    let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertRcvQueue_ db connId q serverKeyHash_
 
@@ -409,7 +409,7 @@ createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server = server@ProtocolServer {keyHash}} =
   createConn_ gVar cData $ \connId -> do
     ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-    let serverKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
+    let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertSndQueue_ db connId q serverKeyHash_
 
@@ -450,7 +450,7 @@ addConnRcvQueue db connId rq =
 addConnRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO Int64
 addConnRcvQueue_ db connId rq@RcvQueue {server = server@ProtocolServer {keyHash}} = do
   ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-  let serverKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
+  let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
   insertRcvQueue_ db connId rq serverKeyHash_
 
 addConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError Int64)
@@ -463,7 +463,7 @@ addConnSndQueue db connId sq =
 addConnSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO Int64
 addConnSndQueue_ db connId sq@SndQueue {server = server@ProtocolServer {keyHash}} = do
   ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-  let serverKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
+  let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
   insertSndQueue_ db connId sq serverKeyHash_
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
@@ -877,7 +877,7 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
       case srv_ of
         Just srv@(SMPServer host port keyHash) -> runExceptT $ do
           ProtocolServer {keyHash = keyHash'} <- ExceptT $ getExistingServer_' db srv
-          let serverKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
+          let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
           pure (Just host, Just port, serverKeyHash_)
         _ -> pure $ Right (Nothing, Nothing, Nothing)
 
@@ -1035,7 +1035,7 @@ createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO 
 createNtfSubscription db ntfSubscription action = runExceptT $ do
   let NtfSubscription {connId, smpServer = smpServer@(SMPServer host port keyHash), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
   ProtocolServer {keyHash = keyHash'} <- ExceptT $ getExistingServer_' db smpServer
-  let smpServerKeyHash_ = if keyHash' /= keyHash then Just keyHash' else Nothing
+  let smpServerKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
   actionTs <- liftIO getCurrentTime
   liftIO $
     DB.execute
