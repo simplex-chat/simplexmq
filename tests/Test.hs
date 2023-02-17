@@ -16,6 +16,7 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
+import XFTPCLI
 import XFTPServerTests (xftpServerTests)
 
 logCfg :: LogConfig
@@ -44,4 +45,5 @@ main = do
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
+          describe "XFTP CLI" xftpCLITests
         describe "Server CLIs" cliTests

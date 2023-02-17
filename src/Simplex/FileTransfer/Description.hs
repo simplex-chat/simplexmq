@@ -14,11 +14,14 @@ module Simplex.FileTransfer.Description
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
+    FileServerReplica (..),
     FileSize (..),
     ChunkReplicaId (..),
     YAMLFileDescription (..), -- for tests
     YAMLServerReplicas (..), -- for tests
     validateFileDescription,
+    groupReplicasByServer,
+    replicaServer,
   )
 where
 
@@ -186,19 +189,24 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
       kb = 1024
       mb = 1024 * kb
 
+groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
+groupReplicasByServer defChunkSize =
+  groupBy ((==) `on` replicaServer)
+    . sortOn replicaServer
+    . unfoldChunksToReplicas defChunkSize
+
 encodeFileReplicas :: FileSize Word32 -> [FileChunk] -> [YAMLServerReplicas]
 encodeFileReplicas defChunkSize =
-  map encodeServerReplicas
-    . groupBy ((==) `on` server')
-    . sortOn server'
-    . unfoldChunksToReplicas defChunkSize
+  map encodeServerReplicas . groupReplicasByServer defChunkSize
   where
-    server' = server :: FileServerReplica -> XFTPServer
     encodeServerReplicas fs =
       YAMLServerReplicas
-        { server = server' $ head fs, -- groupBy guarantees that fs is not empty
+        { server = replicaServer $ head fs, -- groupBy guarantees that fs is not empty
           chunks = map (B.unpack . encodeServerReplica) fs
         }
+
+replicaServer :: FileServerReplica -> XFTPServer
+replicaServer = server
 
 encodeServerReplica :: FileServerReplica -> ByteString
 encodeServerReplica FileServerReplica {chunkNo, rcvId, rcvKey, digest, chunkSize} =
