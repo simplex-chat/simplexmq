@@ -37,7 +37,7 @@ import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Transport (receiveFile, sendFile)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, ErrorType (..), RcvPublicDhKey)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
@@ -207,7 +207,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
-      Nothing -> pure $ FRErr QUOTA -- TODO file specific errors?
+      Nothing -> pure $ FRErr SIZE -- TODO file specific errors?
       Just getBody -> do
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
@@ -216,7 +216,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         size' <- liftIO . withFile fPath WriteMode $ \h -> receiveFile h getBody 0
         if size' == fromIntegral size -- TODO check digest
           then atomically $ writeTVar filePath (Just fPath) $> FROk
-          else whenM (doesFileExist fPath) (removeFile fPath) $> FRErr QUOTA
+          else whenM (doesFileExist fPath) (removeFile fPath) $> FRErr SIZE
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
       readTVarIO filePath >>= \case

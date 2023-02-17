@@ -31,8 +31,7 @@ import Simplex.Messaging.Client
   )
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-  ( ErrorType (..),
-    ProtocolServer (ProtocolServer),
+  ( ProtocolServer (ProtocolServer),
     RcvPublicDhKey,
     RecipientId,
     SenderId,
@@ -67,10 +66,12 @@ data XFTPChunkSpec = XFTPChunkSpec
   }
   deriving (Show)
 
+type XFTPClientError = ProtocolClientError XFTPErrorType
+
 defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either ProtocolClientError XFTPClient)
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfig} disconnected = runExceptT $ do
   let tcConfig = transportClientConfig networkConfig
       http2Config = xftpHTTP2Config tcConfig config
@@ -89,13 +90,13 @@ xftpHTTP2Config transportConfig XFTPClientConfig {networkConfig = NetworkConfig 
       transportConfig
     }
 
-xftpClientError :: HTTP2ClientError -> ProtocolClientError
+xftpClientError :: HTTP2ClientError -> XFTPClientError
 xftpClientError = \case
   HCResponseTimeout -> PCEResponseTimeout
   HCNetworkError -> PCENetworkError
   HCIOError e -> PCEIOError e
 
-sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
+sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
@@ -123,21 +124,21 @@ createXFTPChunk ::
   C.APrivateSignKey ->
   FileInfo ->
   NonEmpty C.APublicVerifyKey ->
-  ExceptT ProtocolClientError IO (SenderId, NonEmpty RecipientId)
+  ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rsps =
   sendXFTPCommand c spKey "" (FNEW file rsps) Nothing >>= \case
     -- TODO check that body is empty
     (FRSndIds sId rIds, _body) -> pure (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
+uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 uploadXFTPChunk c spKey fId chunkSpec =
   sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= \case
     -- TODO check that body is empty
     (FROk, _body) -> pure ()
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT ProtocolClientError IO (RcvPublicDhKey, XFTPChunkBody)
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT XFTPClientError IO (RcvPublicDhKey, XFTPChunkBody)
 downloadXFTPChunk c rpKey fId rKey =
   sendXFTPCommand c rpKey fId (FGET rKey) Nothing >>= \case
     (FRFile sKey, http2Body@HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
@@ -145,10 +146,10 @@ downloadXFTPChunk c rpKey fId rKey =
       Just chunkPart -> do
         let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
         pure (sKey, chunk)
-      _ -> throwError $ PCEResponseError NO_MSG
+      _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
+receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset} = liftIO $ do
   withFile filePath AppendMode $ \h -> do
     -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset

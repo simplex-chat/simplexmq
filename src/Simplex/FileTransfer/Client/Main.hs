@@ -28,7 +28,6 @@ import Options.Applicative
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Description (FileSize (unFileSize))
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C

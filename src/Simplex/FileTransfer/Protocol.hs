@@ -1,6 +1,8 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,6 +13,7 @@
 
 module Simplex.FileTransfer.Protocol where
 
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -19,15 +22,16 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
+import GHC.Generics (Generic)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Protocol
   ( CommandError (..),
-    ErrorType (..),
     Protocol (..),
     ProtocolEncoding (..),
+    ProtocolErrorType (..),
     ProtocolMsgTag (..),
     ProtocolType (..),
     RcvPublicDhKey,
@@ -119,7 +123,7 @@ instance ProtocolMsgTag FileCmdTag where
 instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
   decodeTag s = decodeTag s >>= (\(FCT _ t) -> checkParty' t)
 
-instance Protocol FileResponse where
+instance Protocol XFTPErrorType FileResponse where
   type ProtoCommand FileResponse = FileCmd
   type ProtoType FileResponse = 'PXFTP
   protocolClientHandshake = ntfClientHandshake
@@ -152,7 +156,7 @@ data FileInfo = FileInfo
 
 type XFTPFileId = ByteString
 
-instance FilePartyI p => ProtocolEncoding (FileCommand p) where
+instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
   encodeProtocol _v = \case
     FNEW file rKeys -> e (FNEW_, ' ', file, rKeys)
@@ -168,6 +172,9 @@ instance FilePartyI p => ProtocolEncoding (FileCommand p) where
 
   protocolP v tag = (\(FileCmd _ c) -> checkParty c) <$?> protocolP v (FCT (sFileParty @p) tag)
 
+  fromProtocolError = fromProtocolError @XFTPErrorType @FileResponse
+  {-# INLINE fromProtocolError #-}
+
   checkCredentials (sig, _, fileId, _) cmd = case cmd of
     -- FNEW must not have signature and chunk ID
     FNEW {}
@@ -182,7 +189,7 @@ instance FilePartyI p => ProtocolEncoding (FileCommand p) where
       | isNothing sig || B.null fileId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
-instance ProtocolEncoding FileCmd where
+instance ProtocolEncoding XFTPErrorType FileCmd where
   type Tag FileCmd = FileCmdTag
   encodeProtocol _v (FileCmd _ c) = encodeProtocol _v c
 
@@ -198,6 +205,9 @@ instance ProtocolEncoding FileCmd where
         FGET_ -> FGET <$> _smpP
         FACK_ -> pure FACK
         PING_ -> pure PING
+
+  fromProtocolError = fromProtocolError @XFTPErrorType @FileResponse
+  {-# INLINE fromProtocolError #-}
 
   checkCredentials t (FileCmd p c) = FileCmd p <$> checkCredentials t c
 
@@ -243,11 +253,11 @@ data FileResponse
   | FRRcvIds (NonEmpty RecipientId)
   | FRFile RcvPublicDhKey
   | FROk
-  | FRErr ErrorType
+  | FRErr XFTPErrorType
   | FRPong
   deriving (Show)
 
-instance ProtocolEncoding FileResponse where
+instance ProtocolEncoding XFTPErrorType FileResponse where
   type Tag FileResponse = FileResponseTag
   encodeProtocol _v = \case
     FRSndIds fId rIds -> e (FRSndIds_, ' ', fId, rIds)
@@ -268,6 +278,13 @@ instance ProtocolEncoding FileResponse where
     FRErr_ -> FRErr <$> _smpP
     FRPong_ -> pure FRPong
 
+  fromProtocolError = \case
+    PECmdSyntax -> CMD SYNTAX
+    PECmdUnknown -> CMD UNKNOWN
+    PESession -> SESSION
+    PEBlock -> BLOCK
+  {-# INLINE fromProtocolError #-}
+
   checkCredentials (_, _, entId, _) cmd = case cmd of
     FRSndIds {} -> noEntity
     -- ERR response does not always have entity ID
@@ -283,6 +300,56 @@ instance ProtocolEncoding FileResponse where
         | B.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
 
+data XFTPErrorType
+  = -- | incorrect block format, encoding or signature size
+    BLOCK
+  | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
+    SESSION
+  | -- | SMP command is unknown or has invalid syntax
+    CMD {cmdErr :: CommandError}
+  | -- | command authorization error - bad signature or non-existing SMP queue
+    AUTH
+  | -- | incorrent file size
+    SIZE
+  | -- | incorrent file digest
+    DIGEST
+  | -- | no file body
+    NO_FILE
+  | -- | unexpected file body
+    HAS_FILE
+  | -- | internal server error
+    INTERNAL
+  | -- | used internally, never returned by the server (to be removed)
+    DUPLICATE_ -- not part of SMP protocol, used internally
+  deriving (Eq, Generic, Read, Show)
+
+instance Encoding XFTPErrorType where
+  smpEncode = \case
+    BLOCK -> "BLOCK"
+    SESSION -> "SESSION"
+    CMD err -> "CMD " <> smpEncode err
+    AUTH -> "AUTH"
+    SIZE -> "SIZE"
+    DIGEST -> "DIGEST"
+    NO_FILE -> "NO_FILE"
+    HAS_FILE -> "HAS_FILE"
+    INTERNAL -> "INTERNAL"
+    DUPLICATE_ -> "DUPLICATE_"
+
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "BLOCK" -> pure BLOCK
+      "SESSION" -> pure SESSION
+      "CMD" -> CMD <$> _smpP
+      "AUTH" -> pure AUTH
+      "SIZE" -> pure SIZE
+      "DIGEST" -> pure DIGEST
+      "NO_FILE" -> pure NO_FILE
+      "HAS_FILE" -> pure HAS_FILE
+      "INTERNAL" -> pure INTERNAL
+      "DUPLICATE_" -> pure DUPLICATE_
+      _ -> fail "bad error type"
+
 checkParty :: forall t p p'. (FilePartyI p, FilePartyI p') => t p' -> Either String (t p)
 checkParty c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Right c
@@ -293,7 +360,7 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
   let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
   xftpEncodeBatch1 $ signTransmission t
@@ -307,9 +374,9 @@ xftpEncodeBatch1 (sig, t) =
   let t' = tEncodeBatch 1 . smpEncode . Large $ tEncode (sig, t)
    in first (const TELargeMsg) $ C.pad t' xftpBlockSize
 
-xftpDecodeTransmission :: ProtocolEncoding c => SessionId -> ByteString -> Either ErrorType (SignedTransmission c)
+xftpDecodeTransmission :: ProtocolEncoding e c => SessionId -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission sessionId t = do
-  t' <- first (const LARGE_MSG) $ C.unPad t
+  t' <- first (const BLOCK) $ C.unPad t
   case tParse True t' of
     t'' :| [] -> Right $ tDecodeParseValidate sessionId currentXFTPVersion t''
     _ -> Left BLOCK
