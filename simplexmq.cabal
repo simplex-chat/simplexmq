@@ -516,6 +516,7 @@ test-suite simplexmq-test
       ServerTests
       SMPAgentClient
       SMPClient
+      XFTPCLI
       XFTPClient
       XFTPServerTests
       Paths_simplexmq

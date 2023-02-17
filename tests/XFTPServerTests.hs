@@ -16,14 +16,14 @@ import Simplex.FileTransfer.Protocol (FileInfo (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (SenderId)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
-import System.IO (IOMode (..), withFile)
+import System.FilePath ((</>))
 import Test.Hspec
 import XFTPClient
 
 xftpServerTests :: Spec
 xftpServerTests =
-  before_ (createDirectoryIfMissing False "tests/xftp-files")
-    . after_ (removeDirectoryRecursive "tests/xftp-files")
+  before_ (createDirectoryIfMissing False xftpServerFiles)
+    . after_ (removeDirectoryRecursive xftpServerFiles)
     $ do
       describe "XFTP file chunk delivery" testFileChunkDelivery
 
@@ -33,11 +33,11 @@ chSize = 256 * 1024
 createTestChunk :: FilePath -> IO ByteString
 createTestChunk fp = do
   bytes <- getRandomBytes chSize
-  withFile fp WriteMode $ \h -> B.hPut h bytes
+  B.writeFile fp bytes
   pure bytes
 
 readChunk :: SenderId -> IO ByteString
-readChunk sId = B.readFile ("tests/xftp-files/" <> B.unpack (B64.encode sId))
+readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode sId))
 
 testFileChunkDelivery :: Spec
 testFileChunkDelivery =
