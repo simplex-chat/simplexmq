@@ -398,18 +398,16 @@ updateNewConnSnd db connId sq =
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
-createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server = server@ProtocolServer {keyHash}} cMode =
+createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
-    ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-    let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
+    serverKeyHash_ <- createServer_ db server
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertRcvQueue_ db connId q serverKeyHash_
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
-createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server = server@ProtocolServer {keyHash}} =
+createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   createConn_ gVar cData $ \connId -> do
-    ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-    let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
+    serverKeyHash_ <- createServer_ db server
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertSndQueue_ db connId q serverKeyHash_
 
@@ -448,9 +446,8 @@ addConnRcvQueue db connId rq =
     _ -> pure $ Left SEConnNotFound
 
 addConnRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO Int64
-addConnRcvQueue_ db connId rq@RcvQueue {server = server@ProtocolServer {keyHash}} = do
-  ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-  let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
+addConnRcvQueue_ db connId rq@RcvQueue {server} = do
+  serverKeyHash_ <- createServer_ db server
   insertRcvQueue_ db connId rq serverKeyHash_
 
 addConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError Int64)
@@ -461,9 +458,8 @@ addConnSndQueue db connId sq =
     _ -> pure $ Left SEConnNotFound
 
 addConnSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO Int64
-addConnSndQueue_ db connId sq@SndQueue {server = server@ProtocolServer {keyHash}} = do
-  ProtocolServer {keyHash = keyHash'} <- createServer_ db server
-  let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
+addConnSndQueue_ db connId sq@SndQueue {server} = do
+  serverKeyHash_ <- createServer_ db server
   insertSndQueue_ db connId sq serverKeyHash_
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
@@ -864,7 +860,7 @@ updateRatchet db connId rc skipped = do
 
 createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO (Either StoreError AsyncCmdId)
 createCommand db corrId connId srv_ cmd = runExceptT $ do
-  (host_, port_, serverKeyHash_) <- ExceptT serverFields
+  (host_, port_, serverKeyHash_) <- serverFields
   liftIO $ do
     DB.execute
       db
@@ -872,14 +868,11 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
       (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_)
     insertedRowId db
   where
-    serverFields :: IO (Either StoreError (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash))
-    serverFields =
-      case srv_ of
-        Just srv@(SMPServer host port keyHash) -> runExceptT $ do
-          ProtocolServer {keyHash = keyHash'} <- ExceptT $ getExistingServer_' db srv
-          let serverKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
-          pure (Just host, Just port, serverKeyHash_)
-        _ -> pure $ Right (Nothing, Nothing, Nothing)
+    serverFields :: ExceptT StoreError IO (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash)
+    serverFields = case srv_ of
+      Just srv@(SMPServer host port _) ->
+        (Just host,Just port,) <$> ExceptT (getServerKeyHash_ db srv)
+      Nothing -> pure (Nothing, Nothing, Nothing)
 
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
@@ -1033,9 +1026,8 @@ getNtfSubscription db connId =
 
 createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO (Either StoreError ())
 createNtfSubscription db ntfSubscription action = runExceptT $ do
-  let NtfSubscription {connId, smpServer = smpServer@(SMPServer host port keyHash), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
-  ProtocolServer {keyHash = keyHash'} <- ExceptT $ getExistingServer_' db smpServer
-  let smpServerKeyHash_ = if keyHash /= keyHash' then Just keyHash else Nothing
+  let NtfSubscription {connId, smpServer = smpServer@(SMPServer host port _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
+  smpServerKeyHash_ <- ExceptT $ getServerKeyHash_ db smpServer
   actionTs <- liftIO getCurrentTime
   liftIO $
     DB.execute
@@ -1336,27 +1328,23 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 
 -- * Server helper
 
-createServer_ :: DB.Connection -> SMPServer -> IO SMPServer
-createServer_ dbConn newSrv@ProtocolServer {host, port, keyHash} =
-  getExistingServer_ dbConn newSrv >>= \case
-    Just srv -> pure srv
-    Nothing -> insertNewServer_ >> pure newSrv
+-- | Creates a new server, if it doesn't exist, and returns the passed key hash if it is different from stored.
+createServer_ :: DB.Connection -> SMPServer -> IO (Maybe C.KeyHash)
+createServer_ db newSrv@ProtocolServer {host, port, keyHash} =
+  getServerKeyHash_ db newSrv >>= \case
+    Right keyHash_ -> pure keyHash_
+    Left _ -> insertNewServer_ $> Nothing
   where
     insertNewServer_ =
-      DB.execute dbConn "INSERT INTO servers (host, port, key_hash) VALUES (?,?,?)" (host, port, keyHash)
+      DB.execute db "INSERT INTO servers (host, port, key_hash) VALUES (?,?,?)" (host, port, keyHash)
 
-getExistingServer_ :: DB.Connection -> SMPServer -> IO (Maybe SMPServer)
-getExistingServer_ db ProtocolServer {host, port} = do
-  maybeFirstRow toServer $
-    DB.query db "SELECT host, port, key_hash FROM servers WHERE host = ? AND port = ?" (host, port)
-
-getExistingServer_' :: DB.Connection -> SMPServer -> IO (Either StoreError SMPServer)
-getExistingServer_' db ProtocolServer {host, port} = do
-  firstRow toServer SEServerNotFound $
-    DB.query db "SELECT host, port, key_hash FROM servers WHERE host = ? AND port = ?" (host, port)
-
-toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> SMPServer
-toServer (host', port', keyHash) = SMPServer host' port' keyHash
+-- | Returns the stored server key hash if it is different from the passed one, or the error if the server does not exist.
+getServerKeyHash_ :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe C.KeyHash))
+getServerKeyHash_ db ProtocolServer {host, port, keyHash} = do
+  firstRow useKeyHash SEServerNotFound $
+    DB.query db "SELECT key_hash FROM servers WHERE host = ? AND port = ?" (host, port)
+  where
+    useKeyHash (Only keyHash') = if keyHash /= keyHash' then Just keyHash else Nothing
 
 upsertNtfServer_ :: DB.Connection -> NtfServer -> IO ()
 upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
