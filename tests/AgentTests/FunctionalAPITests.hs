@@ -1027,11 +1027,11 @@ testServerMultipleIdentities = do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     exchangeGreetings alice bobId bob aliceId
+    _ <- joinConnectionAsync bob 1 "1" True secondIdentityCReq "bob's connInfo"
+    liftIO $ threadDelay 100000
     disconnectAgentClient bob
     bob' <- liftIO $ getSMPAgentClient agentCfg {database = testDB2} initAgentServers
     subscribeConnection bob' aliceId
-    _ <- joinConnectionAsync bob' 1 "1" True secondIdentityCReq "bob's connInfo"
-    liftIO $ threadDelay 100000
     exchangeGreetingsMsgId 6 alice bobId bob' aliceId
   where
     secondIdentityCReq :: ConnectionRequestUri 'CMInvitation
