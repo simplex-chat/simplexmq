@@ -48,6 +48,7 @@ CREATE TABLE rcv_queues(
   rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
   replace_rcv_queue_id INTEGER NULL,
   delete_errors INTEGER DEFAULT 0 CHECK(delete_errors NOT NULL),
+  server_key_hash BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -68,6 +69,7 @@ CREATE TABLE snd_queues(
   snd_queue_id INTEGER CHECK(snd_queue_id NOT NULL),
   snd_primary INTEGER CHECK(snd_primary NOT NULL),
   replace_snd_queue_id INTEGER NULL,
+  server_key_hash BLOB,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -199,6 +201,7 @@ CREATE TABLE ntf_subscriptions(
   updated_by_supervisor INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite supervisor command(state still should be updated)
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  smp_server_key_hash BLOB,
   PRIMARY KEY(conn_id),
   FOREIGN KEY(smp_host, smp_port) REFERENCES servers(host, port)
   ON DELETE SET NULL ON UPDATE CASCADE,
@@ -214,6 +217,7 @@ CREATE TABLE commands(
   command_tag BLOB NOT NULL,
   command BLOB NOT NULL,
   agent_version INTEGER NOT NULL DEFAULT 1,
+  server_key_hash BLOB,
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 );

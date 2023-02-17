@@ -510,6 +510,8 @@ data StoreError
     SEUserNotFound
   | -- | Connection not found (or both queues absent).
     SEConnNotFound
+  | -- | Server not found.
+    SEServerNotFound
   | -- | Connection already used.
     SEConnDuplicate
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.

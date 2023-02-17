@@ -25,6 +25,7 @@ module AgentTests.FunctionalAPITests
   )
 where
 
+import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
@@ -45,8 +46,9 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..))
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -96,8 +98,10 @@ runRight action =
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  describe "Establishing duplex connection" $
+  describe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
+    it "should connect when server with multiple identities is stored" $
+      withSmpServer t testServerMultipleIdentities
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
@@ -1009,6 +1013,40 @@ testTwoUsers = do
   where
     hasClients :: HasCallStack => AgentClient -> Int -> ExceptT AgentErrorType IO ()
     hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
+
+testServerMultipleIdentities :: HasCallStack => IO ()
+testServerMultipleIdentities = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+  runRight_ $ do
+    (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo"
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    exchangeGreetings alice bobId bob aliceId
+    -- this saves queue with second server identity
+    Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo"
+    disconnectAgentClient bob
+    bob' <- liftIO $ getSMPAgentClient agentCfg {database = testDB2} initAgentServers
+    subscribeConnection bob' aliceId
+    exchangeGreetingsMsgId 6 alice bobId bob' aliceId
+  where
+    secondIdentityCReq :: ConnectionRequestUri 'CMInvitation
+    secondIdentityCReq =
+      CRInvitationUri
+        connReqData
+          { crSmpQueues =
+              [ SMPQueueUri
+                  supportedSMPClientVRange
+                  queueAddr
+                    { smpServer = SMPServer "localhost" "5001" (C.KeyHash "\215m\248\251")
+                    }
+              ]
+          }
+        testE2ERatchetParams
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
