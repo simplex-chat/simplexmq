@@ -6,14 +6,17 @@
 module XFTPServerTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Simplex.FileTransfer.Client
-import Simplex.FileTransfer.Protocol (FileInfo (..))
+import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
+import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol (SenderId)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.FilePath ((</>))
@@ -30,6 +33,9 @@ xftpServerTests =
 chSize :: Num n => n
 chSize = 256 * 1024
 
+testChunkPath :: FilePath
+testChunkPath = "tests/tmp/chunk1"
+
 createTestChunk :: FilePath -> IO ByteString
 createTestChunk fp = do
   bytes <- getRandomBytes chSize
@@ -45,13 +51,21 @@ testFileChunkDelivery =
     (sndKey, spKey) <- C.generateSignatureKeyPair C.SEd25519
     (rcvKey, rpKey) <- C.generateSignatureKeyPair C.SEd25519
     (rDhKey, _rpDhKey) <- C.generateKeyPair'
-    bytes <- createTestChunk "tests/tmp/chunk1"
+    bytes <- createTestChunk testChunkPath
     xftpTest $ \c -> runRight_ $ do
-      let file = FileInfo {sndKey, size = chSize, digest = "abc="}
+      digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+      let file = FileInfo {sndKey, size = chSize, digest}
+          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
       (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey]
-      uploadXFTPChunk c spKey sId $ XFTPChunkSpec {filePath = "tests/tmp/chunk1", chunkOffset = 0, chunkSize = chSize}
+      uploadXFTPChunk c spKey sId chunkSpec
+      (sId', _) <- createXFTPChunk c spKey file {digest = digest <> "_wrong"} [rcvKey]
+      uploadXFTPChunk c spKey sId' chunkSpec
+        `catchError` (liftIO . (`shouldBe` PCEProtocolError DIGEST))
       liftIO $ readChunk sId `shouldReturn` bytes
       (_sDhKey, chunkBody) <- downloadXFTPChunk c rpKey rId rDhKey
-      receiveXFTPChunk chunkBody "tests/tmp/received_chunk1" chSize
+      receiveXFTPChunk chunkBody "tests/tmp/received_chunk1" chSize (digest <> "_wrong")
+        `catchError` (liftIO . (`shouldBe` PCEResponseError DIGEST))
+      (_sDhKey, chunkBody') <- downloadXFTPChunk c rpKey rId rDhKey
+      receiveXFTPChunk chunkBody' "tests/tmp/received_chunk1" chSize digest
       liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
       pure ()

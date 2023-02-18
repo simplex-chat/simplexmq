@@ -342,7 +342,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
     retries :: Show e => ExceptT e IO a -> ExceptT CLIError IO a
     retries = withRetry retryCount . withExceptT (CLIError . show)
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileChunk -> ExceptT CLIError IO FilePath
-    downloadFileChunk a encPath FileChunk {chunkNo, chunkSize, replicas = replica : _} = do
+    downloadFileChunk a encPath FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, rcvId, rcvKey} = replica
       chunkPath <- uniqueCombine encPath $ show chunkNo
       c <- retries $ getXFTPServerClient a server
@@ -350,7 +350,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       (sKey, body) <- retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rKey
       -- download and decrypt (DH) chunk from server using XFTPClient
       -- verify chunk digest - in the client
-      retries $ receiveXFTPChunk body chunkPath $ unFileSize chunkSize
+      retries $ receiveXFTPChunk body chunkPath (unFileSize chunkSize) (unFileDigest digest)
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
@@ -368,6 +368,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
           pure path
     readChunks :: [FilePath] -> IO LB.ByteString
     readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) LB.empty
+    {-# NOINLINE readChunks #-}
     getFilePath :: String -> ExceptT CLIError IO FilePath
     getFilePath name =
       case filePath of

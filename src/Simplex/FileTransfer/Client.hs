@@ -14,7 +14,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Functor (($>))
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
@@ -32,8 +32,10 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
-  ( ProtocolServer (ProtocolServer),
+  ( Protocol (..),
+    ProtocolServer (..),
     RcvPublicDhKey,
     RecipientId,
     SenderId,
@@ -43,9 +45,8 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
-import System.Directory (doesFileExist, removeFile)
-import System.IO (IOMode (..), SeekMode (..))
-import UnliftIO.IO (hSeek, withFile)
+import UnliftIO.Directory
+import UnliftIO.IO
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -110,7 +111,9 @@ sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fI
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
   case respOrErr of
-    Right r -> pure (r, body)
+    Right r -> case protocolError r of
+      Just e -> throwError $ PCEProtocolError e
+      _ -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
   where
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
@@ -152,13 +155,17 @@ downloadXFTPChunk c rpKey fId rKey =
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-receiveXFTPChunk :: XFTPChunkBody -> FilePath -> Word32 -> ExceptT XFTPClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} filePath chunkSize = do
-  withExceptT PCEResponseError . ExceptT $ do
+receiveXFTPChunk :: XFTPChunkBody -> FilePath -> Word32 -> ByteString -> ExceptT XFTPClientError IO ()
+receiveXFTPChunk XFTPChunkBody {chunkPart} filePath chunkSize chunkDigest = do
+  withExceptT PCEResponseError $ do
     -- TODO chunk decryption
-    withFile filePath WriteMode (\h -> receiveFile h chunkPart chunkSize) >>= \case
-      Right () -> pure $ Right ()
-      Left e -> whenM (doesFileExist filePath) (removeFile filePath) $> Left e
+    receiveChunk `catchError` \e ->
+      whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
+  where
+    receiveChunk = do
+      ExceptT . withFile filePath WriteMode $ \h -> receiveFile h chunkPart chunkSize
+      digest' <- liftIO $ LC.sha512Hash <$> LB.readFile filePath
+      when (digest' /= chunkDigest) $ throwError DIGEST
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

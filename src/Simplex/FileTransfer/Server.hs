@@ -21,6 +21,7 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
@@ -36,6 +37,7 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Transport (receiveFile, sendFile)
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
@@ -147,7 +149,6 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      -- liftIO . sendResponse . H.responseBuilder N.ok200 [] . byteString $
       let t_ = xftpEncodeTransmission sessionId Nothing (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
@@ -157,7 +158,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
             Right t -> do
               send $ byteString t
               -- TODO chunk encryption
-              forM_ serverFile_ $ \ServerFile {filePath, fileSize, fileDhSecret} -> do
+              forM_ serverFile_ $ \ServerFile {filePath, fileSize, fileDhSecret} ->
                 withFile filePath ReadMode $ \h -> sendFile h send $ fromIntegral fileSize
           done
 
@@ -207,17 +208,22 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
+      -- TODO do not allow repeated file upload
       Nothing -> pure $ FRErr SIZE
       Just getBody -> do
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
-            FileInfo {size, digest} = fileInfo
-        -- TODO check digest
         liftIO $
-          withFile fPath WriteMode (\h -> receiveFile h getBody size) >>= \case
+          runExceptT (receiveChunk fPath fileInfo) >>= \case
             Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
             Left e -> whenM (doesFileExist fPath) (removeFile fPath) $> FRErr e
+        where
+          receiveChunk fPath FileInfo {size, digest} = do
+            ExceptT . withFile fPath WriteMode $ \h -> receiveFile h getBody size
+            digest' <- liftIO $ LC.sha512Hash <$> LB.readFile fPath
+            when (digest' /= digest) $ throwError DIGEST
+
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
       readTVarIO filePath >>= \case

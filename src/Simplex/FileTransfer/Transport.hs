@@ -11,7 +11,6 @@ module Simplex.FileTransfer.Transport
   )
 where
 
-import Control.Monad.Except
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -25,14 +24,16 @@ supportedFileServerVRange :: VersionRange
 supportedFileServerVRange = mkVersionRange 1 1
 
 sendFile :: Handle -> (Builder -> IO ()) -> Word32 -> IO ()
-sendFile _ _ 0 = pure ()
-sendFile h send sz = do
-  B.hGet h xftpBlockSize >>= \case
-    "" -> when (sz /= 0) ioe_EOF
-    ch -> do
-      let ch' = B.take (fromIntegral sz) ch -- sz >= xftpBlockSize
-      send (byteString ch')
-      sendFile h send $ sz - fromIntegral (B.length ch')
+sendFile h send = go
+  where
+    go 0 = pure ()
+    go sz =
+      B.hGet h xftpBlockSize >>= \case
+        "" -> ioe_EOF
+        ch -> do
+          let ch' = B.take (fromIntegral sz) ch -- sz >= xftpBlockSize
+          send $ byteString ch'
+          go $ sz - fromIntegral (B.length ch')
 
 receiveFile :: Handle -> (Int -> IO ByteString) -> Word32 -> IO (Either XFTPErrorType ())
 receiveFile h receive = go
