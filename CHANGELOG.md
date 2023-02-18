@@ -1,3 +1,10 @@
+# 4.4.1
+
+SMP agent:
+
+- fix handling of server addresses.
+- prevent message delivery getting stuck on IO error in SMP client.
+
 # 4.4.0
 
 SMP agent:
