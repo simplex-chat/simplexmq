@@ -14,6 +14,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -62,10 +63,8 @@ testFileChunkDelivery =
       uploadXFTPChunk c spKey sId' chunkSpec
         `catchError` (liftIO . (`shouldBe` PCEProtocolError DIGEST))
       liftIO $ readChunk sId `shouldReturn` bytes
-      (_sDhKey, chunkBody) <- downloadXFTPChunk c rpKey rId rDhKey
-      receiveXFTPChunk chunkBody "tests/tmp/received_chunk1" chSize (digest <> "_wrong")
+      downloadXFTPChunk c rpKey rId rDhKey (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize (digest <> "_wrong"))
         `catchError` (liftIO . (`shouldBe` PCEResponseError DIGEST))
-      (_sDhKey, chunkBody') <- downloadXFTPChunk c rpKey rId rDhKey
-      receiveXFTPChunk chunkBody' "tests/tmp/received_chunk1" chSize digest
+      downloadXFTPChunk c rpKey rId rDhKey $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
       liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
       pure ()

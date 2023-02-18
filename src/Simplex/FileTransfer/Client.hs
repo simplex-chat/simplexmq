@@ -14,14 +14,13 @@ import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Transport (receiveFile, sendFile)
+import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
     ProtocolClientError (..),
@@ -32,7 +31,6 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import qualified Simplex.Messaging.Crypto as C
-import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
   ( Protocol (..),
     ProtocolServer (..),
@@ -144,28 +142,19 @@ uploadXFTPChunk c spKey fId chunkSpec =
     (FROk, _body) -> pure ()
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT XFTPClientError IO (RcvPublicDhKey, XFTPChunkBody)
-downloadXFTPChunk c rpKey fId rKey =
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk c rpKey fId rKey chunkSpec@XFTPRcvChunkSpec {filePath} =
   sendXFTPCommand c rpKey fId (FGET rKey) Nothing >>= \case
-    (FRFile sKey, http2Body@HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
-      -- TODO atm bodySize is set to 0, so chunkSize will be incorrect
+    (FRFile sKey, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+      -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
-        let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
-        pure (sKey, chunk)
+        -- let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
+        withExceptT PCEResponseError $ do
+          -- TODO chunk decryption
+          receiveFile chunkPart chunkSpec `catchError` \e ->
+            whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
-
-receiveXFTPChunk :: XFTPChunkBody -> FilePath -> Word32 -> ByteString -> ExceptT XFTPClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} filePath chunkSize chunkDigest = do
-  withExceptT PCEResponseError $ do
-    -- TODO chunk decryption
-    receiveChunk `catchError` \e ->
-      whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
-  where
-    receiveChunk = do
-      ExceptT . withFile filePath WriteMode $ \h -> receiveFile h chunkPart chunkSize
-      digest' <- liftIO $ LC.sha512Hash <$> LB.readFile filePath
-      when (digest' /= chunkDigest) $ throwError DIGEST
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

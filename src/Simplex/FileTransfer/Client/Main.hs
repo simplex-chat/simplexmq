@@ -29,7 +29,7 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileInfo (..))
-import Simplex.Messaging.Agent.Lock
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
@@ -347,10 +347,8 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       chunkPath <- uniqueCombine encPath $ show chunkNo
       c <- retries $ getXFTPServerClient a server
       (rKey, rpKey) <- liftIO C.generateKeyPair'
-      (sKey, body) <- retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rKey
-      -- download and decrypt (DH) chunk from server using XFTPClient
-      -- verify chunk digest - in the client
-      retries $ receiveXFTPChunk body chunkPath (unFileSize chunkSize) (unFileDigest digest)
+      let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
+      retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rKey chunkSpec
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath

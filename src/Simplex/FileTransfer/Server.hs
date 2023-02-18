@@ -21,7 +21,6 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
@@ -35,9 +34,8 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Transport (receiveFile, sendFile)
+import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
-import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
@@ -214,15 +212,11 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
+            FileInfo {size, digest} = fileInfo
         liftIO $
-          runExceptT (receiveChunk fPath fileInfo) >>= \case
+          runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
             Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
             Left e -> whenM (doesFileExist fPath) (removeFile fPath) $> FRErr e
-        where
-          receiveChunk fPath FileInfo {size, digest} = do
-            ExceptT . withFile fPath WriteMode $ \h -> receiveFile h getBody size
-            digest' <- liftIO $ LC.sha512Hash <$> LB.readFile fPath
-            when (digest' /= digest) $ throwError DIGEST
 
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
