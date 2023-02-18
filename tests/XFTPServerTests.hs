@@ -52,6 +52,6 @@ testFileChunkDelivery =
       uploadXFTPChunk c spKey sId $ XFTPChunkSpec {filePath = "tests/tmp/chunk1", chunkOffset = 0, chunkSize = chSize}
       liftIO $ readChunk sId `shouldReturn` bytes
       (_sDhKey, chunkBody) <- downloadXFTPChunk c rpKey rId rDhKey
-      receiveXFTPChunk chunkBody XFTPChunkSpec {filePath = "tests/tmp/received_chunk1", chunkOffset = 0, chunkSize = chSize}
+      receiveXFTPChunk chunkBody "tests/tmp/received_chunk1" chSize
       liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
       pure ()

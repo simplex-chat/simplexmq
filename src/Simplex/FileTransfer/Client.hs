@@ -14,6 +14,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
@@ -41,7 +42,8 @@ import Simplex.Messaging.Transport (supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
-import Simplex.Messaging.Util (bshow, liftEitherError)
+import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
+import System.Directory (doesFileExist, removeFile)
 import System.IO (IOMode (..), SeekMode (..))
 import UnliftIO.IO (hSeek, withFile)
 
@@ -150,14 +152,13 @@ downloadXFTPChunk c rpKey fId rKey =
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset, chunkSize} = do
-  withExceptT PCEResponseError . ExceptT $
-    withFile filePath AppendMode $ \h -> do
-      -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-      -- TODO chunk decryption
-      -- TODO delete chunk once it is saved to a separate file
-      receiveFile h chunkPart chunkSize
+receiveXFTPChunk :: XFTPChunkBody -> FilePath -> Word32 -> ExceptT XFTPClientError IO ()
+receiveXFTPChunk XFTPChunkBody {chunkPart} filePath chunkSize = do
+  withExceptT PCEResponseError . ExceptT $ do
+    -- TODO chunk decryption
+    withFile filePath WriteMode (\h -> receiveFile h chunkPart chunkSize) >>= \case
+      Right () -> pure $ Right ()
+      Left e -> whenM (doesFileExist filePath) (removeFile filePath) $> Left e
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

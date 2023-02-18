@@ -330,39 +330,33 @@ cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
   ValidFileDescription FileDescription {size, digest, key, nonce, chunks} <- getFileDescription fileDescription
   encPath <- getEncPath tempPath "xftp"
-  -- withFile encPath WriteMode $ \h -> do
-  --   liftIO $ LB.hPut h $ LB.replicate (unFileSize size) '#'
+  createDirectory encPath
   a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-  writeLock <- atomically createLock
-  let chunkSizes = prepareChunkSizes $ unFileSize size
-      chunkSpecs = prepareChunkSpecs encPath chunkSizes
-  -- chunks have to be ordered because of AppendMode
-  forM_ (zip chunkSpecs chunks) $ \(chunkSpec, chunk) -> do
-    downloadFileChunk a writeLock chunk chunkSpec
-  encDigest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
+  chunkPaths <- pooledForConcurrentlyN 32 chunks $ downloadFileChunk a encPath
+  encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
   when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
-  path <- decryptFile encPath key nonce
-  whenM (doesFileExist encPath) $ removeFile encPath
+  path <- decryptFile chunkPaths key nonce
+  whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
   liftIO $ putStrLn $ "File received: " <> path
   where
     retries :: Show e => ExceptT e IO a -> ExceptT CLIError IO a
     retries = withRetry retryCount . withExceptT (CLIError . show)
-    downloadFileChunk :: XFTPClientAgent -> Lock -> FileChunk -> XFTPChunkSpec -> ExceptT CLIError IO ()
-    downloadFileChunk a writeLock FileChunk {replicas = replica : _} chunkSpec = do
+    downloadFileChunk :: XFTPClientAgent -> FilePath -> FileChunk -> ExceptT CLIError IO FilePath
+    downloadFileChunk a encPath FileChunk {chunkNo, chunkSize, replicas = replica : _} = do
       let FileChunkReplica {server, rcvId, rcvKey} = replica
+      chunkPath <- uniqueCombine encPath $ show chunkNo
       c <- retries $ getXFTPServerClient a server
       (rKey, rpKey) <- liftIO C.generateKeyPair'
       (sKey, body) <- retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rKey
       -- download and decrypt (DH) chunk from server using XFTPClient
       -- verify chunk digest - in the client
-      -- save to correct location in file - also in the client
-      retries $ withLock writeLock "save" $ receiveXFTPChunk body chunkSpec
-    downloadFileChunk _ _ _ _ = pure ()
-    decryptFile :: FilePath -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
-    decryptFile encPath key nonce = do
-      f <- liftIO $ LB.readFile encPath
-      f' <- liftEither $ first (CLIError . show) $ LC.sbDecrypt key nonce f
-      let (fileHdr, f'') = LB.splitAt 1024 f'
+      retries $ receiveXFTPChunk body chunkPath $ unFileSize chunkSize
+      pure chunkPath
+    downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
+    decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
+    decryptFile chunkPaths key nonce = do
+      f <- liftEither . first (CLIError . show) . LC.sbDecrypt key nonce =<< liftIO (readChunks chunkPaths)
+      let (fileHdr, f') = LB.splitAt 1024 f
       -- withFile encPath ReadMode $ \r -> do
       --   fileHdr <- liftIO $ B.hGet r 1024
       case A.parse smpP $ LB.toStrict fileHdr of
@@ -370,8 +364,10 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
         A.Partial _ -> throwError $ CLIError "Invalid file header"
         A.Done rest FileHeader {fileName} -> do
           path <- getFilePath fileName
-          liftIO $ LB.writeFile path $ LB.fromStrict rest <> f''
+          liftIO $ LB.writeFile path $ LB.fromStrict rest <> f'
           pure path
+    readChunks :: [FilePath] -> IO LB.ByteString
+    readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) LB.empty
     getFilePath :: String -> ExceptT CLIError IO FilePath
     getFilePath name =
       case filePath of
