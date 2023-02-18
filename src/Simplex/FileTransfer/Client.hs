@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
@@ -62,7 +63,7 @@ data XFTPChunkBody = XFTPChunkBody
 data XFTPChunkSpec = XFTPChunkSpec
   { filePath :: FilePath,
     chunkOffset :: Int64,
-    chunkSize :: Int
+    chunkSize :: Word32
   }
   deriving (Show)
 
@@ -150,11 +151,13 @@ downloadXFTPChunk c rpKey fId rKey =
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
 receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset} = liftIO $ do
-  withFile filePath AppendMode $ \h -> do
-    -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    -- TODO chunk decryption
-    void $ receiveFile h chunkPart 0
+receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset, chunkSize} = do
+  withExceptT PCEResponseError . ExceptT $
+    withFile filePath AppendMode $ \h -> do
+      -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+      -- TODO chunk decryption
+      -- TODO delete chunk once it is saved to a separate file
+      receiveFile h chunkPart chunkSize
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

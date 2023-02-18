@@ -207,16 +207,17 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
-      Nothing -> pure $ FRErr SIZE -- TODO file specific errors?
+      Nothing -> pure $ FRErr SIZE
       Just getBody -> do
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
-        size' <- liftIO . withFile fPath WriteMode $ \h -> receiveFile h getBody 0
-        if size' == fromIntegral size -- TODO check digest
-          then atomically $ writeTVar filePath (Just fPath) $> FROk
-          else whenM (doesFileExist fPath) (removeFile fPath) $> FRErr SIZE
+        -- TODO check digest
+        liftIO $
+          withFile fPath WriteMode (\h -> receiveFile h getBody size) >>= \case
+            Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
+            Left e -> whenM (doesFileExist fPath) (removeFile fPath) $> FRErr e
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
       readTVarIO filePath >>= \case
