@@ -123,13 +123,13 @@ defaultMessageRetryInterval =
             maxInterval = 60_000000
           },
       riSlow =
-        -- TODO: these timeouts can be increased in v4.6 once most clients are updated
+        -- TODO: these timeouts can be increased in v5.0 once most clients are updated
         -- to resume sending on QCONT messages.
         -- After that local message expiration period should be also increased.
         RetryInterval
-          { initialInterval = 30_000000,
-            increaseAfter = 30_000000,
-            maxInterval = 600_000000
+          { initialInterval = 60_000000,
+            increaseAfter = 60_000000,
+            maxInterval = 1200_000000 -- 20min
           }
     }
 
