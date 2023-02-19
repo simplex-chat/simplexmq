@@ -231,18 +231,18 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
           fileSize' = fromIntegral (B.length fileHdr) + fileSize
           chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + cbAuthTagLen
-          paddedSize = fromIntegral $ sum chunkSizes
-      encrypt fileHdr key nonce fileSize' paddedSize encPath
+          encSize = fromIntegral $ sum chunkSizes
+      encrypt fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fd = FileDescription {size = FileSize paddedSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
+          fd = FileDescription {size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
       pure (encPath, fd, chunkSpecs)
       where
         encrypt :: ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT CLIError IO ()
-        encrypt fileHdr key nonce fileSize' paddedSize encFile = do
+        encrypt fileHdr key nonce fileSize' encSize encFile = do
           f <- liftIO $ LB.readFile filePath
           let f' = LB.fromStrict fileHdr <> f
-          c <- liftEither $ first (CLIError . show) $ LC.sbEncrypt key nonce f' fileSize' $ paddedSize - cbAuthTagLen
+          c <- liftEither $ first (CLIError . show) $ LC.sbEncrypt key nonce f' fileSize' $ encSize - cbAuthTagLen
           liftIO $ LB.writeFile encFile c
     -- let padSize = paddedSize - fileSize - fromIntegral (B.length fileHdr)
     -- when (padSize > 0) . LB.hPut h $ LB.replicate padSize '#'
