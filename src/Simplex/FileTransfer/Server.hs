@@ -159,7 +159,6 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
             Right t -> do
               send $ byteString t
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
-                liftIO $ print "sendXFTPResponse file"
                 withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
           done
 
@@ -226,9 +225,9 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       readTVarIO filePath >>= \case
         Just path -> do
           (sDhKey, spDhKey) <- liftIO C.generateKeyPair'
-          let C.DhSecretX25519 dhSecret = C.dh' rDhKey spDhKey
-          cbNonce@(C.CbNonce nonce) <- liftIO C.randomCbNonce
-          pure $ case LC.sbInit dhSecret nonce of
+          let dhSecret = C.dh' rDhKey spDhKey
+          cbNonce <- liftIO C.randomCbNonce
+          pure $ case LC.cbInit dhSecret cbNonce of
             Right sbState -> (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
             _ -> (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)

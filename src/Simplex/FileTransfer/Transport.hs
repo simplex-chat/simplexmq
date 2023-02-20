@@ -15,6 +15,7 @@ module Simplex.FileTransfer.Transport
   )
 where
 
+import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Monad.Except
 import qualified Data.ByteArray as BA
@@ -56,14 +57,12 @@ sendEncFile h send = go
       -- TODO remove padding when HTTP2 issue is fixed
       let authTag = BA.convert (LC.sbAuth sbState) <> B.replicate (xftpBlockSize - C.authTagSize) '#'
       send $ byteString authTag
-    go sbState sz = do
-      liftIO $ putStrLn $ "sendEncFile sz " <> show sz
+    go sbState sz =
       getFileChunk h sz >>= \ch -> do
-        liftIO $ putStrLn $ "sendEncFile ch " <> show (B.length ch)
         let (encCh, sbState') = LC.sbEncryptChunk sbState ch
-        liftIO $ putStrLn $ "sendEncFile encrypted " <> show (B.length encCh)
         send (byteString encCh) `E.catch` \(e :: E.SomeException) -> print e >> E.throwIO e
-        liftIO $ putStrLn "sendEncFile sent"
+        -- TODO remove delay when HTTP2 issue is fixed
+        threadDelay 500
         go sbState' $ sz - fromIntegral (B.length ch)
 
 getFileChunk :: Handle -> Word32 -> IO ByteString
@@ -88,7 +87,6 @@ receiveEncFile :: (Int -> IO ByteString) -> LC.SbState -> XFTPRcvChunkSpec -> Ex
 receiveEncFile getBody = receiveFile_ . receive
   where
     receive sbState h sz = do
-      liftIO $ putStrLn $ "receiveEncFile sz " <> show sz
       ch <- getBody xftpBlockSize
       let chSize = fromIntegral $ B.length ch
       if

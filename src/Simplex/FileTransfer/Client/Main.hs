@@ -346,10 +346,8 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       let FileChunkReplica {server, rcvId, rcvKey} = replica
       chunkPath <- uniqueCombine encPath $ show chunkNo
       c <- retries $ getXFTPServerClient a server
-      rdhKeys <- liftIO C.generateKeyPair'
-      liftIO $ putStrLn $ "downloadFileChunk chunkNo " <> show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rdhKeys chunkSpec
+      retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) chunkSpec
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath

@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -143,24 +142,21 @@ uploadXFTPChunk c spKey fId chunkSpec =
     (FROk, _body) -> pure ()
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> C.KeyPair 'C.X25519 -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
-downloadXFTPChunk c rpKey fId (rDhKey, rpDhKey) chunkSpec@XFTPRcvChunkSpec {filePath} =
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
+  (rDhKey, rpDhKey) <- liftIO C.generateKeyPair'
   sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
-    (FRFile sDhKey (C.CbNonce cbNonce), HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+    (FRFile sDhKey cbNonce, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
-        liftIO $ print 1111
-        let C.DhSecretX25519 dhSecret = C.dh' sDhKey rpDhKey
-        cbState <- liftEither . first PCECryptoError $ LC.sbInit dhSecret cbNonce
-        liftIO $ print 1112
-        withExceptT PCEResponseError $ do
+        let dhSecret = C.dh' sDhKey rpDhKey
+        cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
+        withExceptT PCEResponseError $
           -- TODO chunk decryption
-          liftIO $ print 1113
           receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
             whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
-          liftIO $ print 1114
-      _ -> liftIO (print "0000") >> throwError (PCEResponseError NO_FILE)
-    (r, _) -> liftIO (print "0001") >> (throwError . PCEUnexpectedResponse $ bshow r)
+      _ -> throwError $ PCEResponseError NO_FILE
+    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

@@ -58,7 +58,6 @@ runTestFileChunkDelivery :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError 
 runTestFileChunkDelivery s r = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
-  dhKeys <- liftIO C.generateKeyPair'
   bytes <- liftIO $ createTestChunk testChunkPath
   digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
   let file = FileInfo {sndKey, size = chSize, digest}
@@ -69,7 +68,7 @@ runTestFileChunkDelivery s r = do
   uploadXFTPChunk s spKey sId' chunkSpec
     `catchError` (liftIO . (`shouldBe` PCEProtocolError DIGEST))
   liftIO $ readChunk sId `shouldReturn` bytes
-  downloadXFTPChunk r rpKey rId dhKeys (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize (digest <> "_wrong"))
+  downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize (digest <> "_wrong"))
     `catchError` (liftIO . (`shouldBe` PCEResponseError DIGEST))
-  downloadXFTPChunk r rpKey rId dhKeys $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
+  downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
