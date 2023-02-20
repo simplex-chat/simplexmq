@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -31,10 +32,10 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
   ( Protocol (..),
     ProtocolServer (..),
-    RcvPublicDhKey,
     RecipientId,
     SenderId,
   )
@@ -142,19 +143,24 @@ uploadXFTPChunk c spKey fId chunkSpec =
     (FROk, _body) -> pure ()
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
-downloadXFTPChunk c rpKey fId rKey chunkSpec@XFTPRcvChunkSpec {filePath} =
-  sendXFTPCommand c rpKey fId (FGET rKey) Nothing >>= \case
-    (FRFile sKey, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> C.KeyPair 'C.X25519 -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk c rpKey fId (rDhKey, rpDhKey) chunkSpec@XFTPRcvChunkSpec {filePath} =
+  sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
+    (FRFile sDhKey (C.CbNonce cbNonce), HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
-        -- let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
+        liftIO $ print 1111
+        let C.DhSecretX25519 dhSecret = C.dh' sDhKey rpDhKey
+        cbState <- liftEither . first PCECryptoError $ LC.sbInit dhSecret cbNonce
+        liftIO $ print 1112
         withExceptT PCEResponseError $ do
           -- TODO chunk decryption
-          receiveFile chunkPart chunkSpec `catchError` \e ->
+          liftIO $ print 1113
+          receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
             whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
-      _ -> throwError $ PCEResponseError NO_FILE
-    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+          liftIO $ print 1114
+      _ -> liftIO (print "0000") >> throwError (PCEResponseError NO_FILE)
+    (r, _) -> liftIO (print "0001") >> (throwError . PCEUnexpectedResponse $ bshow r)
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

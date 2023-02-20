@@ -11,6 +11,11 @@ module Simplex.Messaging.Crypto.Lazy
     sbEncrypt,
     sbDecrypt,
     fastReplicate,
+    SbState,
+    sbInit,
+    sbEncryptChunk,
+    sbDecryptChunk,
+    sbAuth,
   )
 where
 

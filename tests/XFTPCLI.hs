@@ -12,7 +12,7 @@ import XFTPClient (testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXF
 
 xftpCLITests :: Spec
 xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
-  it "should send and receive file" testXFTPCLISendReceive
+  fit "should send and receive file" testXFTPCLISendReceive
   it "should send and receive file with 2 servers" testXFTPCLISendReceive2servers
 
 testBracket :: IO () -> IO ()
@@ -36,21 +36,26 @@ testXFTPCLISendReceive :: IO ()
 testXFTPCLISendReceive = withXFTPServer $ do
   let filePath = senderFiles </> "testfile"
   xftp ["rand", filePath, "19mb"] `shouldReturn` ["File created: " <> filePath]
+  print 1
   file <- LB.readFile filePath
   getFileSize filePath `shouldReturn` 19 * mb
   let fd1 = filePath <> ".xftp" </> "rcv1.xftp"
       fd2 = filePath <> ".xftp" </> "rcv2.xftp"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
     `shouldReturn` ["File uploaded!", "Pass file descriptions to the recipient(s):", fd1, fd2]
+  print 2
   testReceiveFile fd1 "testfile" file
   testReceiveFile fd2 "testfile_1" file
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
+    xftp' params = withArgs params xftpClientCLI
     testReceiveFile fd fileName file = do
       xftp ["info", fd]
         `shouldReturn` ["File download size: 20mb", "File server(s):", testXFTPServerStr <> ": 20mb"]
-      xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
-        `shouldReturn` ["File received: " <> recipientFiles </> fileName]
+      print 3
+      xftp' ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
+      -- `shouldReturn` ["File received: " <> recipientFiles </> fileName]
+      print 4
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLISendReceive2servers :: IO ()

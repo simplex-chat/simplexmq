@@ -332,7 +332,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
   encPath <- getEncPath tempPath "xftp"
   createDirectory encPath
   a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-  chunkPaths <- pooledForConcurrentlyN 32 chunks $ downloadFileChunk a encPath
+  chunkPaths <- forM chunks $ downloadFileChunk a encPath
   encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
   when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
   path <- decryptFile chunkPaths key nonce
@@ -346,9 +346,10 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       let FileChunkReplica {server, rcvId, rcvKey} = replica
       chunkPath <- uniqueCombine encPath $ show chunkNo
       c <- retries $ getXFTPServerClient a server
-      (rKey, rpKey) <- liftIO C.generateKeyPair'
+      rdhKeys <- liftIO C.generateKeyPair'
+      liftIO $ putStrLn $ "downloadFileChunk chunkNo " <> show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rKey chunkSpec
+      retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) rdhKeys chunkSpec
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath

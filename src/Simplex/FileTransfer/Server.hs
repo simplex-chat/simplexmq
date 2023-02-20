@@ -36,6 +36,7 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
@@ -126,7 +127,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
 data ServerFile = ServerFile
   { filePath :: FilePath,
     fileSize :: Word32,
-    fileDhSecret :: C.DhSecretX25519
+    sbState :: LC.SbState
   }
 
 processRequest :: HTTP2Request -> M ()
@@ -152,12 +153,14 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
       where
         streamBody t_ send done = do
           case t_ of
-            Left _ -> send "padding error" -- TODO respond with BLOCK error?
+            Left _ -> do
+              send "padding error" -- TODO respond with BLOCK error?
+              done
             Right t -> do
               send $ byteString t
-              -- TODO chunk encryption
-              forM_ serverFile_ $ \ServerFile {filePath, fileSize, fileDhSecret} ->
-                withFile filePath ReadMode $ \h -> sendFile h send $ fromIntegral fileSize
+              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
+                liftIO $ print "sendXFTPResponse file"
+                withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
           done
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
@@ -196,7 +199,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     FADD _rcps -> noFile FROk
     FPUT -> (,Nothing) <$> receiveServerFile fr
     FDEL -> noFile FROk
-    FGET dhKey -> sendServerFile fr dhKey
+    FGET rDhKey -> sendServerFile fr rDhKey
     FACK -> noFile FROk
     -- it should never get to the options below, they are passed in other constructors of XFTPRequest
     FNEW _ _ -> noFile $ FRErr INTERNAL
@@ -219,13 +222,16 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
             Left e -> whenM (doesFileExist fPath) (removeFile fPath) $> FRErr e
 
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
-    sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
+    sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
         Just path -> do
-          (sKey, spKey) <- liftIO C.generateKeyPair'
-          let fileDhSecret = C.dh' rKey spKey
-          pure (FRFile sKey, Just ServerFile {filePath = path, fileSize = size, fileDhSecret})
-        _ -> pure (FRErr AUTH, Nothing) -- TODO file-specific errors?
+          (sDhKey, spDhKey) <- liftIO C.generateKeyPair'
+          let C.DhSecretX25519 dhSecret = C.dh' rDhKey spDhKey
+          cbNonce@(C.CbNonce nonce) <- liftIO C.randomCbNonce
+          pure $ case LC.sbInit dhSecret nonce of
+            Right sbState -> (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
+            _ -> (FRErr INTERNAL, Nothing)
+        _ -> pure (FRErr NO_FILE, Nothing)
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do
