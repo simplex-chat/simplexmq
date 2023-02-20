@@ -1338,7 +1338,7 @@ createServer_ db newSrv@ProtocolServer {host, port, keyHash} =
     insertNewServer_ =
       DB.execute db "INSERT INTO servers (host, port, key_hash) VALUES (?,?,?)" (host, port, keyHash)
 
--- | Returns the stored server key hash if it is different from the passed one, or the error if the server does not exist.
+-- | Returns the passed server key hash if it is different from the stored one, or the error if the server does not exist.
 getServerKeyHash_ :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe C.KeyHash))
 getServerKeyHash_ db ProtocolServer {host, port, keyHash} = do
   firstRow useKeyHash SEServerNotFound $
