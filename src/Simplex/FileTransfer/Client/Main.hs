@@ -347,19 +347,16 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
         B.writeFile fdPath $ strEncode fd
         pure fdPath
-      let fdSndPath = outDir </> "snd.xftp"
+      let fdSndPath = outDir </> "snd.xftp.private"
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
-cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
-  getFileDescription fileDescription >>= \case
-    AVFD (ValidFD fd) -> do
-      fd' <- either (throwError . CLIError) pure $ checkParty fd
-      receiveFile fd'
+cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} =
+  getFileDescription' fileDescription >>= receiveFile
   where
-    receiveFile :: FileDescription 'FPRecipient -> ExceptT CLIError IO ()
-    receiveFile FileDescription {digest, key, nonce, chunks} = do
+    receiveFile :: ValidFileDescription 'FPRecipient -> ExceptT CLIError IO ()
+    receiveFile (ValidFileDescription FileDescription {digest, key, nonce, chunks}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
@@ -407,7 +404,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
 cliFileDescrInfo :: InfoOptions -> ExceptT CLIError IO ()
 cliFileDescrInfo InfoOptions {fileDescription} = do
   getFileDescription fileDescription >>= \case
-    AVFD (ValidFD FileDescription {party, size, chunkSize, chunks}) -> do
+    AVFD (ValidFileDescription FileDescription {party, size, chunkSize, chunks}) -> do
       let replicas = groupReplicasByServer chunkSize chunks
       liftIO $ do
         printParty
@@ -430,6 +427,11 @@ getFileDescription :: FilePath -> ExceptT CLIError IO AValidFileDescription
 getFileDescription path = do
   fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile path
   liftEither . first CLIError $ validateFileDescription fd
+
+getFileDescription' :: FilePartyI p => FilePath -> ExceptT CLIError IO (ValidFileDescription p)
+getFileDescription' path =
+  getFileDescription path >>= \case
+    AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
 
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes 0 = []

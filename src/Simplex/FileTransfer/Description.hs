@@ -14,7 +14,7 @@
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
     AFileDescription (..),
-    ValidFileDescription (..),
+    ValidFileDescription, -- constructor is not exported, use pattern
     pattern ValidFileDescription,
     AValidFileDescription (..),
     FileDigest (..),
@@ -73,6 +73,8 @@ newtype ValidFileDescription p = ValidFD (FileDescription p)
 
 pattern ValidFileDescription :: FileDescription p -> ValidFileDescription p
 pattern ValidFileDescription fd = ValidFD fd
+
+{-# COMPLETE ValidFileDescription #-}
 
 data AValidFileDescription = forall p. FilePartyI p => AVFD (ValidFileDescription p)
 

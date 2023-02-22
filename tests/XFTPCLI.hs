@@ -41,7 +41,7 @@ testXFTPCLISendReceive = withXFTPServer $ do
   getFileSize filePath `shouldReturn` 19 * mb
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
-      fdSnd = filePath <> ".xftp" </> "snd.xftp"
+      fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
     `shouldReturn` [ "File uploaded!",
                      "Pass file descriptions to the recipient(s):",
@@ -73,7 +73,7 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   getFileSize filePath `shouldReturn` 19 * mb
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
-      fdSnd = filePath <> ".xftp" </> "snd.xftp"
+      fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
     `shouldReturn` [ "File uploaded!",
                      "Pass file descriptions to the recipient(s):",
