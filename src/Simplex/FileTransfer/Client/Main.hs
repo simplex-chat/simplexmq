@@ -221,7 +221,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
   -- TODO if only small chunks, use different default size
   liftIO $ do
     let fdRcvs = createRcvFileDescriptions fdRcv sentChunks
-    let fdSnd' = createSndFileDescription fdSnd sentChunks
+        fdSnd' = createSndFileDescription fdSnd sentChunks
     (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
     putStrLn "File uploaded!\nPass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
