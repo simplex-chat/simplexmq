@@ -14,7 +14,7 @@ import Data.Time.Clock (getCurrentTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.FileTransfer.Protocol (FileCmd, FileInfo)
+import Simplex.FileTransfer.Protocol (FileCmd, FileInfo, XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
@@ -63,5 +63,5 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, caCertificateFile, certi
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey)
-  | XFTPReqCmd FileRec FileCmd
+  | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing

@@ -17,6 +17,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (getRandomBytes)
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -38,7 +39,7 @@ import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
@@ -176,7 +177,7 @@ verifyXFTPTransmission sig_ signed fId cmd =
       atomically $ verify <$> getFile st party fId
       where
         verify = \case
-          Right (fr, k) -> XFTPReqCmd fr cmd `verifyWith` k
+          Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
           _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
 
@@ -193,12 +194,12 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       forM (L.zip rIds rcps) $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
     noFile $ either FRErr (const $ FRSndIds sId rIds) r
-  XFTPReqCmd fr (FileCmd _ cmd) -> case cmd of
+  XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
     FADD _rcps -> noFile FROk
     FPUT -> (,Nothing) <$> receiveServerFile fr
-    FDEL -> noFile FROk
+    FDEL -> (,Nothing) <$> deleteServerFile fr
     FGET rDhKey -> sendServerFile fr rDhKey
-    FACK -> noFile FROk
+    FACK -> (,Nothing) <$> ackFileReception fId fr
     -- it should never get to the options below, they are passed in other constructors of XFTPRequest
     FNEW _ _ -> noFile $ FRErr INTERNAL
     PING -> noFile FRPong
@@ -217,7 +218,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         liftIO $
           runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
             Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
-            Left e -> whenM (doesFileExist fPath) (removeFile fPath) $> FRErr e
+            Left e -> (whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError) $> FRErr e
 
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rDhKey = do
@@ -230,6 +231,25 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
             Right sbState -> (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
             _ -> (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)
+
+    deleteServerFile :: FileRec -> M FileResponse
+    deleteServerFile FileRec {senderId, filePath} = do
+      r <- runExceptT $ do
+        path <- readTVarIO filePath
+        ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
+        st <- asks store
+        void $ atomically $ deleteFile st senderId
+        pure FROk
+      either (pure . FRErr) pure r
+
+    logFileError :: SomeException -> IO ()
+    logFileError e = logError $ "Error deleting file: " <> tshow e
+
+    ackFileReception :: RecipientId -> FileRec -> M FileResponse
+    ackFileReception rId fr = do
+      st <- asks store
+      atomically $ deleteRecipient st rId fr
+      pure FROk
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do

@@ -341,6 +341,8 @@ data XFTPErrorType
     NO_FILE
   | -- | unexpected file body
     HAS_FILE
+  | -- | file IO error
+    FILE_IO
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -357,6 +359,7 @@ instance Encoding XFTPErrorType where
     DIGEST -> "DIGEST"
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
+    FILE_IO -> "FILE_IO"
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -370,6 +373,7 @@ instance Encoding XFTPErrorType where
       "DIGEST" -> pure DIGEST
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
+      "FILE_IO" -> pure FILE_IO
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"
