@@ -34,8 +34,8 @@ xftpServerTests =
         it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
         it "should delete file chunk (1 client)" testFileChunkDelete
         it "should delete file chunk (2 clients)" testFileChunkDelete2
-        it "should achknowledge file chunk reception (1 client)" testFileChunkAck
-        it "should achknowledge file chunk reception (2 clients)" testFileChunkAck2
+        it "should acknowledge file chunk reception (1 client)" testFileChunkAck
+        it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
 
 chSize :: Num n => n
 chSize = 128 * 1024
