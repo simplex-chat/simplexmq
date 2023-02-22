@@ -71,6 +71,7 @@ newtype CLIError = CLIError String
 data CliCommand
   = SendFile SendOptions
   | ReceiveFile ReceiveOptions
+  | DeleteFile DeleteOptions
   | RandomFile RandomFileOptions
   | FileDescrInfo InfoOptions
 
@@ -89,6 +90,12 @@ data ReceiveOptions = ReceiveOptions
     filePath :: Maybe FilePath,
     retryCount :: Int,
     tempPath :: Maybe FilePath
+  }
+  deriving (Show)
+
+data DeleteOptions = DeleteOptions
+  { fileDescription :: FilePath,
+    retryCount :: Int
   }
   deriving (Show)
 
@@ -114,6 +121,7 @@ cliCommandP =
   hsubparser
     ( command "send" (info (SendFile <$> sendP) (progDesc "Send file"))
         <> command "recv" (info (ReceiveFile <$> receiveP) (progDesc "Receive file"))
+        <> command "del" (info (DeleteFile <$> deleteP) (progDesc "Delete file from server(s)"))
         <> command "info" (info (FileDescrInfo <$> infoP) (progDesc "Show file description"))
         <> command "rand" (info (RandomFile <$> randomP) (progDesc "Generate a random file of a given size"))
     )
@@ -125,15 +133,20 @@ cliCommandP =
         <*> optional (argument str $ metavar "DIR" <> help "Directory to save file descriptions (default: current directory)")
         <*> option auto (short 'n' <> metavar "COUNT" <> help "Number of recipients" <> value 1 <> showDefault)
         <*> xftpServers
-        <*> retries
+        <*> retryCountP
         <*> temp
     receiveP :: Parser ReceiveOptions
     receiveP =
       ReceiveOptions
         <$> fileDescrArg
         <*> optional (argument str $ metavar "DIR" <> help "Directory to save file (default: system Downloads directory)")
-        <*> retries
+        <*> retryCountP
         <*> temp
+    deleteP :: Parser DeleteOptions
+    deleteP =
+      DeleteOptions
+        <$> fileDescrArg
+        <*> retryCountP
     infoP :: Parser InfoOptions
     infoP = InfoOptions <$> fileDescrArg
     randomP :: Parser RandomFileOptions
@@ -143,7 +156,7 @@ cliCommandP =
         <*> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
     strDec = eitherReader $ strDecode . B.pack
     fileDescrArg = argument str (metavar "FILE" <> help "File description file")
-    retries = option auto (long "retry" <> short 'r' <> metavar "RETRY" <> help "Number of network retries" <> value defaultRetryCount <> showDefault)
+    retryCountP = option auto (long "retry" <> short 'r' <> metavar "RETRY" <> help "Number of network retries" <> value defaultRetryCount <> showDefault)
     temp = optional (strOption $ long "tmp" <> metavar "TMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
     xftpServers =
       option
@@ -188,6 +201,7 @@ xftpClientCLI =
   getCliCommand' cliCommandP clientVersion >>= \case
     SendFile opts -> runE $ cliSendFile opts
     ReceiveFile opts -> runE $ cliReceiveFile opts
+    DeleteFile opts -> runE $ cliDeleteFile opts
     FileDescrInfo opts -> runE $ cliFileDescrInfo opts
     RandomFile opts -> cliRandomFile opts
   where
@@ -263,17 +277,15 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       -- TODO unshuffle chunks
       pure $ map snd sentChunks
       where
-        retries :: Show e => ExceptT e IO a -> ExceptT CLIError IO a
-        retries = withRetry retryCount . withExceptT (CLIError . show)
         uploadFileChunk :: XFTPClientAgent -> TVar StdGen -> NonEmpty XFTPServer -> (Int, XFTPChunkSpec) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a gen srvs (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}) = do
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519)
           chInfo@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
           xftpServer <- liftIO $ getXFTPServer gen srvs
-          c <- retries $ getXFTPServerClient a xftpServer
-          (sndId, rIds) <- retries $ createXFTPChunk c spKey chInfo $ L.map fst rKeys
-          retries $ uploadXFTPChunk c spKey sndId chunkSpec
+          c <- withRetry retryCount $ getXFTPServerClient a xftpServer
+          (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey chInfo $ L.map fst rKeys
+          withRetry retryCount $ uploadXFTPChunk c spKey sndId chunkSpec
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
           pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
@@ -366,15 +378,14 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       path <- decryptFile chunkPaths key nonce
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ putStrLn $ "File received: " <> path
-    retries :: Show e => ExceptT e IO a -> ExceptT CLIError IO a
-    retries = withRetry retryCount . withExceptT (CLIError . show)
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileChunk -> ExceptT CLIError IO FilePath
     downloadFileChunk a encPath FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
       chunkPath <- uniqueCombine encPath $ show chunkNo
-      c <- retries $ getXFTPServerClient a server
+      c <- withRetry retryCount $ getXFTPServerClient a server
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      retries $ downloadXFTPChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
+      withRetry retryCount $ downloadXFTPChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
+      withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
@@ -400,6 +411,22 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
+
+cliDeleteFile :: DeleteOptions -> ExceptT CLIError IO ()
+cliDeleteFile DeleteOptions {fileDescription, retryCount} = do
+  getFileDescription' fileDescription >>= deleteFile
+  where
+    deleteFile :: ValidFileDescription 'FPSender -> ExceptT CLIError IO ()
+    deleteFile (ValidFileDescription FileDescription {chunks}) = do
+      a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+      forM_ chunks $ deleteFileChunk a
+      liftIO $ putStrLn "File deleted"
+    deleteFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
+    deleteFileChunk a FileChunk {replicas = replica : _} = do
+      let FileChunkReplica {server, replicaId, replicaKey} = replica
+      c <- withRetry retryCount $ getXFTPServerClient a server
+      withRetry retryCount $ deleteXFTPChunk c replicaKey (unChunkReplicaId replicaId)
+    deleteFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
 cliFileDescrInfo :: InfoOptions -> ExceptT CLIError IO ()
 cliFileDescrInfo InfoOptions {fileDescription} = do
@@ -464,10 +491,13 @@ uniqueCombine filePath fileName = tryCombine (0 :: Int)
           f = filePath </> (name <> suffix <> ext)
        in ifM (doesPathExist f) (tryCombine $ n + 1) (pure f)
 
-withRetry :: Int -> ExceptT CLIError IO a -> ExceptT CLIError IO a
-withRetry 0 _ = throwError $ CLIError "internal: no retry attempts"
-withRetry 1 a = a
-withRetry n a = a `catchError` \_ -> withRetry (n - 1) a
+withRetry :: Show e => Int -> ExceptT e IO a -> ExceptT CLIError IO a
+withRetry retryCount = withRetry' retryCount . withExceptT (CLIError . show)
+  where
+    withRetry' :: Int -> ExceptT CLIError IO a -> ExceptT CLIError IO a
+    withRetry' 0 _ = throwError $ CLIError "internal: no retry attempts"
+    withRetry' 1 a = a
+    withRetry' n a = a `catchError` \_ -> withRetry' (n - 1) a
 
 cliRandomFile :: RandomFileOptions -> IO ()
 cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do
