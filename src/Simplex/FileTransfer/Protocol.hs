@@ -13,6 +13,8 @@
 
 module Simplex.FileTransfer.Protocol where
 
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
@@ -27,6 +29,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
+import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( CommandError (..),
     Protocol (..),
@@ -61,34 +64,55 @@ xftpBlockSize :: Int
 xftpBlockSize = 16384
 
 -- | File protocol clients
-data FileParty = Recipient | Sender
-  deriving (Show)
+data FileParty = FPRecipient | FPSender
+  deriving (Eq, Show, Generic)
+
+instance FromJSON FileParty where
+  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "FP"
+
+instance ToJSON FileParty where
+  toJSON = J.genericToJSON . enumJSON $ dropPrefix "FP"
+  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "FP"
 
 data SFileParty :: FileParty -> Type where
-  SRecipient :: SFileParty Recipient
-  SSender :: SFileParty Sender
+  SRecipient :: SFileParty FPRecipient
+  SSender :: SFileParty FPSender
 
 instance TestEquality SFileParty where
   testEquality SRecipient SRecipient = Just Refl
   testEquality SSender SSender = Just Refl
   testEquality _ _ = Nothing
 
+deriving instance Eq (SFileParty p)
+
 deriving instance Show (SFileParty p)
+
+data AFileParty = forall p. FilePartyI p => AFP (SFileParty p)
+
+toFileParty :: SFileParty p -> FileParty
+toFileParty = \case
+  SRecipient -> FPRecipient
+  SSender -> FPSender
+
+aFileParty :: FileParty -> AFileParty
+aFileParty = \case
+  FPRecipient -> AFP SRecipient
+  FPSender -> AFP SSender
 
 class FilePartyI (p :: FileParty) where sFileParty :: SFileParty p
 
-instance FilePartyI Recipient where sFileParty = SRecipient
+instance FilePartyI FPRecipient where sFileParty = SRecipient
 
-instance FilePartyI Sender where sFileParty = SSender
+instance FilePartyI FPSender where sFileParty = SSender
 
 data FileCommandTag (p :: FileParty) where
-  FNEW_ :: FileCommandTag Sender
-  FADD_ :: FileCommandTag Sender
-  FPUT_ :: FileCommandTag Sender
-  FDEL_ :: FileCommandTag Sender
-  FGET_ :: FileCommandTag Recipient
-  FACK_ :: FileCommandTag Recipient
-  PING_ :: FileCommandTag Recipient
+  FNEW_ :: FileCommandTag FPSender
+  FADD_ :: FileCommandTag FPSender
+  FPUT_ :: FileCommandTag FPSender
+  FDEL_ :: FileCommandTag FPSender
+  FGET_ :: FileCommandTag FPRecipient
+  FACK_ :: FileCommandTag FPRecipient
+  PING_ :: FileCommandTag FPRecipient
 
 deriving instance Show (FileCommandTag p)
 
@@ -133,13 +157,13 @@ instance Protocol XFTPErrorType FileResponse where
     _ -> Nothing
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> FileCommand Sender
-  FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
-  FPUT :: FileCommand Sender
-  FDEL :: FileCommand Sender
-  FGET :: RcvPublicDhKey -> FileCommand Recipient
-  FACK :: FileCommand Recipient
-  PING :: FileCommand Recipient
+  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> FileCommand FPSender
+  FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand FPSender
+  FPUT :: FileCommand FPSender
+  FDEL :: FileCommand FPSender
+  FGET :: RcvPublicDhKey -> FileCommand FPRecipient
+  FACK :: FileCommand FPRecipient
+  PING :: FileCommand FPRecipient
 
 deriving instance Show (FileCommand p)
 
@@ -357,7 +381,7 @@ instance Encoding XFTPErrorType where
 checkParty :: forall t p p'. (FilePartyI p, FilePartyI p') => t p' -> Either String (t p)
 checkParty c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Right c
-  Nothing -> Left "bad command party"
+  Nothing -> Left "incorrect XFTP party"
 
 checkParty' :: forall t p p'. (FilePartyI p, FilePartyI p') => t p' -> Maybe (t p)
 checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of

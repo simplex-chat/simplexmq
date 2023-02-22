@@ -1,5 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -28,7 +30,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileInfo (..))
+import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -175,8 +177,8 @@ data SentRecipientReplica = SentRecipientReplica
   { chunkNo :: Int,
     server :: XFTPServer,
     rcvNo :: Int,
-    rcvId :: ChunkReplicaId,
-    rcvKey :: C.APrivateSignKey,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey,
     digest :: FileDigest,
     chunkSize :: FileSize Word32
   }
@@ -213,16 +215,20 @@ instance Encoding FileHeader where
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath} = do
   let (_, fileName) = splitFileName filePath
-  (encPath, fd, chunkSpecs) <- encryptFile fileName
+  (encPath, fdRcv, fdSnd, chunkSpecs) <- encryptFile fileName
   sentChunks <- uploadFile chunkSpecs
   whenM (doesFileExist encPath) $ removeFile encPath
   -- TODO if only small chunks, use different default size
   liftIO $ do
-    fds <- writeFileDescriptions fileName $ createFileDescriptions fd sentChunks
+    let fdRcvs = createRcvFileDescriptions fdRcv sentChunks
+        fdSnd' = createSndFileDescription fdSnd sentChunks
+    (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
     putStrLn "File uploaded!\nPass file descriptions to the recipient(s):"
-    forM_ fds putStrLn
+    forM_ fdRcvPaths putStrLn
+    putStrLn "Sender file description:"
+    putStrLn fdSndPath
   where
-    encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription, [XFTPChunkSpec])
+    encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FPRecipient, FileDescription 'FPSender, [XFTPChunkSpec])
     encryptFile fileName = do
       encPath <- getEncPath tempPath "xftp"
       key <- liftIO C.randomSbKey
@@ -235,8 +241,9 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       encrypt fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fd = FileDescription {size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
-      pure (encPath, fd, chunkSpecs)
+          fdRcv = FileDescription {party = SRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
+          fdSnd = FileDescription {party = SSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
+      pure (encPath, fdRcv, fdSnd, chunkSpecs)
       where
         encrypt :: ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT CLIError IO ()
         encrypt fileHdr key nonce fileSize' encSize encFile = do
@@ -285,8 +292,8 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     -- M chunks, R replicas, N recipients
     -- rcvReplicas: M[SentFileChunk] -> M * R * N [SentRecipientReplica]
     -- rcvChunks: M * R * N [SentRecipientReplica] -> N[ M[FileChunk] ]
-    createFileDescriptions :: FileDescription -> [SentFileChunk] -> [FileDescription]
-    createFileDescriptions fd sentChunks = map (\chunks -> (fd :: FileDescription) {chunks}) rcvChunks
+    createRcvFileDescriptions :: FileDescription 'FPRecipient -> [SentFileChunk] -> [FileDescription 'FPRecipient]
+    createRcvFileDescriptions fd sentChunks = map (\chunks -> (fd :: (FileDescription 'FPRecipient)) {chunks}) rcvChunks
       where
         rcvReplicas :: [SentRecipientReplica]
         rcvReplicas =
@@ -294,7 +301,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
             ( \SentFileChunk {chunkNo, digest, chunkSize, replicas} ->
                 concatMap
                   ( \SentFileChunkReplica {server, recipients} ->
-                      zipWith (\rcvNo (rcvId, rcvKey) -> SentRecipientReplica {chunkNo, server, rcvNo, rcvId, rcvKey, digest, chunkSize}) [1 ..] recipients
+                      zipWith (\rcvNo (replicaId, replicaKey) -> SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize}) [1 ..] recipients
                   )
                   replicas
             )
@@ -305,7 +312,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
         reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
         addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
-        addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, rcvId, rcvKey, digest, chunkSize} =
+        addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
           M.alter (Just . addOrChangeRecipient) rcvNo m
           where
             addOrChangeRecipient :: Maybe (Map Int FileChunk) -> Map Int FileChunk
@@ -316,38 +323,58 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
             addOrChangeChunk = \case
               Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
               _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
-            replica = FileChunkReplica {server, rcvId, rcvKey}
-    writeFileDescriptions :: String -> [FileDescription] -> IO [FilePath]
-    writeFileDescriptions fileName fds = do
+            replica = FileChunkReplica {server, replicaId, replicaKey}
+    createSndFileDescription :: FileDescription 'FPSender -> [SentFileChunk] -> FileDescription 'FPSender
+    createSndFileDescription fd sentChunks = fd {chunks = sndChunks}
+      where
+        sndChunks :: [FileChunk]
+        sndChunks =
+          map
+            ( \SentFileChunk {chunkNo, sndId, sndPrivateKey, chunkSize, digest, replicas} ->
+                FileChunk {chunkNo, digest, chunkSize, replicas = sndReplicas replicas (ChunkReplicaId sndId) sndPrivateKey}
+            )
+            sentChunks
+        -- SentFileChunk having sndId and sndPrivateKey represents the current implementation's limitation
+        -- that sender uploads each chunk only to one server, so we can use the first replica's server for FileChunkReplica
+        sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
+        sndReplicas [] _ _ = []
+        sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
+    writeFileDescriptions :: String -> [FileDescription 'FPRecipient] -> FileDescription 'FPSender -> IO ([FilePath], FilePath)
+    writeFileDescriptions fileName fdRcvs fdSnd = do
       outDir <- uniqueCombine (fromMaybe "." outputDir) (fileName <> ".xftp")
       createDirectoryIfMissing True outDir
-      forM (zip [1 ..] fds) $ \(i :: Int, fd) -> do
+      fdRcvPaths <- forM (zip [1 ..] fdRcvs) $ \(i :: Int, fd) -> do
         let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
         B.writeFile fdPath $ strEncode fd
         pure fdPath
+      let fdSndPath = outDir </> "snd.xftp.private"
+      B.writeFile fdSndPath $ strEncode fdSnd
+      pure (fdRcvPaths, fdSndPath)
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
-cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
-  ValidFileDescription FileDescription {size, digest, key, nonce, chunks} <- getFileDescription fileDescription
-  encPath <- getEncPath tempPath "xftp"
-  createDirectory encPath
-  a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-  chunkPaths <- forM chunks $ downloadFileChunk a encPath
-  encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
-  when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
-  path <- decryptFile chunkPaths key nonce
-  whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
-  liftIO $ putStrLn $ "File received: " <> path
+cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} =
+  getFileDescription' fileDescription >>= receiveFile
   where
+    receiveFile :: ValidFileDescription 'FPRecipient -> ExceptT CLIError IO ()
+    receiveFile (ValidFileDescription FileDescription {digest, key, nonce, chunks}) = do
+      encPath <- getEncPath tempPath "xftp"
+      createDirectory encPath
+      a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+      chunkPaths <- forM chunks $ downloadFileChunk a encPath
+      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
+      when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
+      path <- decryptFile chunkPaths key nonce
+      whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
+      liftIO $ putStrLn $ "File received: " <> path
     retries :: Show e => ExceptT e IO a -> ExceptT CLIError IO a
     retries = withRetry retryCount . withExceptT (CLIError . show)
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileChunk -> ExceptT CLIError IO FilePath
     downloadFileChunk a encPath FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
-      let FileChunkReplica {server, rcvId, rcvKey} = replica
+      let FileChunkReplica {server, replicaId, replicaKey} = replica
       chunkPath <- uniqueCombine encPath $ show chunkNo
       c <- retries $ getXFTPServerClient a server
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      retries $ downloadXFTPChunk c rcvKey (unChunkReplicaId rcvId) chunkSpec
+      retries $ downloadXFTPChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
@@ -376,23 +403,35 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
 
 cliFileDescrInfo :: InfoOptions -> ExceptT CLIError IO ()
 cliFileDescrInfo InfoOptions {fileDescription} = do
-  ValidFileDescription FileDescription {size, chunkSize, chunks} <- getFileDescription fileDescription
-  let replicas = groupReplicasByServer chunkSize chunks
-  liftIO $ do
-    putStrLn $ "File download size: " <> strEnc size
-    putStrLn "File server(s):"
-    forM_ replicas $ \srvReplicas -> do
-      let srv = replicaServer $ head srvReplicas
-          chSizes = map (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
-      putStrLn $ strEnc srv <> ": " <> strEnc (FileSize $ sum chSizes)
+  getFileDescription fileDescription >>= \case
+    AVFD (ValidFileDescription FileDescription {party, size, chunkSize, chunks}) -> do
+      let replicas = groupReplicasByServer chunkSize chunks
+      liftIO $ do
+        printParty
+        putStrLn $ "File download size: " <> strEnc size
+        putStrLn "File server(s):"
+        forM_ replicas $ \srvReplicas -> do
+          let srv = replicaServer $ head srvReplicas
+              chSizes = map (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
+          putStrLn $ strEnc srv <> ": " <> strEnc (FileSize $ sum chSizes)
+      where
+        printParty :: IO ()
+        printParty = case party of
+          SRecipient -> putStrLn "Recipient file description"
+          SSender -> putStrLn "Sender file description"
 
 strEnc :: StrEncoding a => a -> String
 strEnc = B.unpack . strEncode
 
-getFileDescription :: FilePath -> ExceptT CLIError IO ValidFileDescription
+getFileDescription :: FilePath -> ExceptT CLIError IO AValidFileDescription
 getFileDescription path = do
   fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile path
   liftEither . first CLIError $ validateFileDescription fd
+
+getFileDescription' :: FilePartyI p => FilePath -> ExceptT CLIError IO (ValidFileDescription p)
+getFileDescription' path =
+  getFileDescription path >>= \case
+    AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
 
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes 0 = []

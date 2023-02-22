@@ -167,7 +167,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, (<$?>), eitherToMaybe)
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -1153,9 +1153,7 @@ checkParty c = case testEquality (sParty @p) (sParty @p') of
   Nothing -> Left "bad command party"
 
 checkParty' :: forall t p p'. (PartyI p, PartyI p') => t p' -> Maybe (t p)
-checkParty' c = case testEquality (sParty @p) (sParty @p') of
-  Just Refl -> Just c
-  _ -> Nothing
+checkParty' = eitherToMaybe . checkParty
 
 instance Encoding ErrorType where
   smpEncode = \case
