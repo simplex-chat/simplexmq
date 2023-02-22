@@ -131,16 +131,12 @@ createXFTPChunk ::
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rsps =
   sendXFTPCommand c spKey "" (FNEW file rsps) Nothing >>= \case
-    -- TODO check that body is empty
-    (FRSndIds sId rIds, _body) -> pure (sId, rIds)
+    (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
 uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 uploadXFTPChunk c spKey fId chunkSpec =
-  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= \case
-    -- TODO check that body is empty
-    (FROk, _body) -> pure ()
-    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
 
 downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
 downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
@@ -156,6 +152,23 @@ downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
             whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+deleteXFTPChunk :: XFTPClient -> C.APrivateSignKey -> SenderId -> ExceptT XFTPClientError IO ()
+deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse
+
+ackXFTPChunk :: XFTPClient -> C.APrivateSignKey -> RecipientId -> ExceptT XFTPClientError IO ()
+ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing >>= okResponse
+
+okResponse :: (FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO ()
+okResponse = \case
+  (FROk, body) -> noFile body ()
+  (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+-- TODO this currently does not check anything because response size is not set and bodyPart is always Just
+noFile :: HTTP2Body -> a -> ExceptT XFTPClientError IO a
+noFile HTTP2Body {bodyPart} a = case bodyPart of
+  Just _ -> pure a -- throwError $ PCEResponseError HAS_FILE
+  _ -> pure a
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

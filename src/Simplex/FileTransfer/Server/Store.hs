@@ -11,6 +11,7 @@ module Simplex.FileTransfer.Server.Store
     setFilePath,
     addRecipient,
     deleteFile,
+    deleteRecipient,
     getFile,
     ackFile,
   )
@@ -83,6 +84,11 @@ deleteFile FileStore {files, recipients} senderId = do
       readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
       pure $ Right ()
     _ -> pure $ Left AUTH
+
+deleteRecipient :: FileStore -> RecipientId -> FileRec -> STM ()
+deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = do
+  TM.delete rId recipients
+  modifyTVar' recipientIds $ S.delete rId
 
 getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either XFTPErrorType (FileRec, C.APublicVerifyKey))
 getFile st party fId = case party of
