@@ -10,6 +10,7 @@ import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (removeFile)
@@ -38,10 +39,11 @@ testSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTF
 testCbNonce :: C.CbNonce
 testCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
 
-fileDesc :: FileDescription
+fileDesc :: FileDescription 'FPRecipient
 fileDesc =
   FileDescription
-    { size = FileSize $ 26 * mb,
+    { party = SRecipient,
+      size = FileSize $ 26 * mb,
       digest = FileDigest "abc",
       key = testSbKey,
       nonce = testCbNonce,
@@ -52,8 +54,8 @@ fileDesc =
               digest = chunkDigest,
               chunkSize = defaultChunkSize,
               replicas =
-                [ FileChunkReplica {server = "xftp://abc=@example1.com", rcvId, rcvKey},
-                  FileChunkReplica {server = "xftp://abc=@example3.com", rcvId, rcvKey}
+                [ FileChunkReplica {server = "xftp://abc=@example1.com", replicaId, replicaKey},
+                  FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
                 ]
             },
           FileChunk
@@ -61,8 +63,8 @@ fileDesc =
               digest = chunkDigest,
               chunkSize = defaultChunkSize,
               replicas =
-                [ FileChunkReplica {server = "xftp://abc=@example2.com", rcvId, rcvKey},
-                  FileChunkReplica {server = "xftp://abc=@example4.com", rcvId, rcvKey}
+                [ FileChunkReplica {server = "xftp://abc=@example2.com", replicaId, replicaKey},
+                  FileChunkReplica {server = "xftp://abc=@example4.com", replicaId, replicaKey}
                 ]
             },
           FileChunk
@@ -70,8 +72,8 @@ fileDesc =
               digest = chunkDigest,
               chunkSize = defaultChunkSize,
               replicas =
-                [ FileChunkReplica {server = "xftp://abc=@example1.com", rcvId, rcvKey},
-                  FileChunkReplica {server = "xftp://abc=@example4.com", rcvId, rcvKey}
+                [ FileChunkReplica {server = "xftp://abc=@example1.com", replicaId, replicaKey},
+                  FileChunkReplica {server = "xftp://abc=@example4.com", replicaId, replicaKey}
                 ]
             },
           FileChunk
@@ -79,22 +81,23 @@ fileDesc =
               digest = chunkDigest,
               chunkSize = FileSize $ 2 * mb,
               replicas =
-                [ FileChunkReplica {server = "xftp://abc=@example2.com", rcvId, rcvKey},
-                  FileChunkReplica {server = "xftp://abc=@example3.com", rcvId, rcvKey}
+                [ FileChunkReplica {server = "xftp://abc=@example2.com", replicaId, replicaKey},
+                  FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
                 ]
             }
         ]
     }
   where
     defaultChunkSize = FileSize $ 8 * mb
-    rcvId = ChunkReplicaId "abc"
-    rcvKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+    replicaId = ChunkReplicaId "abc"
+    replicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
 
 yamlFileDesc :: YAMLFileDescription
 yamlFileDesc =
   YAMLFileDescription
-    { size = "26mb",
+    { party = FPRecipient,
+      size = "26mb",
       chunkSize = "8mb",
       digest = FileDigest "abc",
       key = testSbKey,

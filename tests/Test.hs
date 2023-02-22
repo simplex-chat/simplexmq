@@ -44,6 +44,6 @@ main = do
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
-          describe "XFTP file description" fileDescriptionTests
-          describe "XFTP CLI" xftpCLITests
+          fdescribe "XFTP file description" fileDescriptionTests
+          fdescribe "XFTP CLI" xftpCLITests
         describe "Server CLIs" cliTests

@@ -2,15 +2,21 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
-    ValidFileDescription,
+    AFileDescription (..),
+    ValidFileDescription (..),
     pattern ValidFileDescription,
+    AValidFileDescription (..),
     FileDigest (..),
     FileChunk (..),
     FileChunkReplica (..),
@@ -43,14 +49,16 @@ import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import GHC.Generics (Generic)
+import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Util (bshow, (<$?>))
 
-data FileDescription = FileDescription
-  { size :: FileSize Int64,
+data FileDescription (p :: FileParty) = FileDescription
+  { party :: SFileParty p,
+    size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.SbKey,
     nonce :: C.CbNonce,
@@ -59,10 +67,14 @@ data FileDescription = FileDescription
   }
   deriving (Eq, Show)
 
-newtype ValidFileDescription = ValidFD FileDescription
+data AFileDescription = forall p. FilePartyI p => AFD (FileDescription p)
 
-pattern ValidFileDescription :: FileDescription -> ValidFileDescription
+newtype ValidFileDescription p = ValidFD (FileDescription p)
+
+pattern ValidFileDescription :: FileDescription p -> ValidFileDescription p
 pattern ValidFileDescription fd = ValidFD fd
+
+data AValidFileDescription = forall p. FilePartyI p => AVFD (ValidFileDescription p)
 
 newtype FileDigest = FileDigest {unFileDigest :: ByteString}
   deriving (Eq, Show)
@@ -89,8 +101,8 @@ data FileChunk = FileChunk
 
 data FileChunkReplica = FileChunkReplica
   { server :: XFTPServer,
-    rcvId :: ChunkReplicaId,
-    rcvKey :: C.APrivateSignKey
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey
   }
   deriving (Eq, Show)
 
@@ -109,7 +121,8 @@ instance ToJSON ChunkReplicaId where
   toEncoding = strToJEncoding
 
 data YAMLFileDescription = YAMLFileDescription
-  { size :: String,
+  { party :: FileParty,
+    size :: String,
     digest :: FileDigest,
     key :: C.SbKey,
     nonce :: C.CbNonce,
@@ -135,31 +148,38 @@ instance ToJSON YAMLServerReplicas where
 data FileServerReplica = FileServerReplica
   { chunkNo :: Int,
     server :: XFTPServer,
-    rcvId :: ChunkReplicaId,
-    rcvKey :: C.APrivateSignKey,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey,
     digest :: Maybe FileDigest,
     chunkSize :: Maybe (FileSize Word32)
   }
   deriving (Show)
 
-instance StrEncoding FileDescription where
+instance FilePartyI p => StrEncoding (FileDescription p) where
   strEncode = Y.encode . encodeFileDescription
+  strDecode s = strDecode s >>= (\(AFD fd) -> checkParty fd)
+  strP = strDecode <$?> A.takeByteString
+
+instance StrEncoding AFileDescription where
+  strEncode (AFD fd) = strEncode fd
   strDecode = decodeFileDescription <=< first show . Y.decodeEither'
   strP = strDecode <$?> A.takeByteString
 
-validateFileDescription :: FileDescription -> Either String ValidFileDescription
-validateFileDescription fd@FileDescription {size, chunks}
-  | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
-  | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
-  | otherwise = Right $ ValidFD fd
-  where
-    chunkNos = map (chunkNo :: FileChunk -> Int) chunks
-    chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
+validateFileDescription :: AFileDescription -> Either String AValidFileDescription
+validateFileDescription = \case
+  AFD fd@FileDescription {size, chunks}
+    | chunkNos /= [1 .. length chunks] -> Left "chunk numbers are not sequential"
+    | chunksSize chunks /= unFileSize size -> Left "chunks total size is different than file size"
+    | otherwise -> Right $ AVFD (ValidFD fd)
+    where
+      chunkNos = map (chunkNo :: FileChunk -> Int) chunks
+      chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
-encodeFileDescription :: FileDescription -> YAMLFileDescription
-encodeFileDescription FileDescription {size, digest, key, nonce, chunkSize, chunks} =
+encodeFileDescription :: FileDescription p -> YAMLFileDescription
+encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks} =
   YAMLFileDescription
-    { size = B.unpack $ strEncode size,
+    { party = toFileParty party,
+      size = B.unpack $ strEncode size,
       digest,
       key,
       nonce,
@@ -209,41 +229,42 @@ replicaServer :: FileServerReplica -> XFTPServer
 replicaServer = server
 
 encodeServerReplica :: FileServerReplica -> ByteString
-encodeServerReplica FileServerReplica {chunkNo, rcvId, rcvKey, digest, chunkSize} =
+encodeServerReplica FileServerReplica {chunkNo, replicaId, replicaKey, digest, chunkSize} =
   bshow chunkNo
     <> ":"
-    <> strEncode rcvId
+    <> strEncode replicaId
     <> ":"
-    <> strEncode rcvKey
+    <> strEncode replicaKey
     <> maybe "" ((":" <>) . strEncode) digest
     <> maybe "" ((":" <>) . strEncode) chunkSize
 
 serverReplicaP :: XFTPServer -> Parser FileServerReplica
 serverReplicaP server = do
   chunkNo <- A.decimal
-  rcvId <- A.char ':' *> strP
-  rcvKey <- A.char ':' *> strP
+  replicaId <- A.char ':' *> strP
+  replicaKey <- A.char ':' *> strP
   digest <- optional (A.char ':' *> strP)
   chunkSize <- optional (A.char ':' *> strP)
-  pure FileServerReplica {chunkNo, server, rcvId, rcvKey, digest, chunkSize}
+  pure FileServerReplica {chunkNo, server, replicaId, replicaKey, digest, chunkSize}
 
 unfoldChunksToReplicas :: FileSize Word32 -> [FileChunk] -> [FileServerReplica]
 unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
   where
     chunkReplicas c@FileChunk {replicas} = zipWith (replicaToServerReplica c) [1 ..] replicas
     replicaToServerReplica :: FileChunk -> Int -> FileChunkReplica -> FileServerReplica
-    replicaToServerReplica FileChunk {chunkNo, digest, chunkSize} replicaNo FileChunkReplica {server, rcvId, rcvKey} =
+    replicaToServerReplica FileChunk {chunkNo, digest, chunkSize} replicaNo FileChunkReplica {server, replicaId, replicaKey} =
       let chunkSize' = if chunkSize /= defChunkSize && replicaNo == 1 then Just chunkSize else Nothing
           digest' = if replicaNo == 1 then Just digest else Nothing
-       in FileServerReplica {chunkNo, server, rcvId, rcvKey, digest = digest', chunkSize = chunkSize'}
+       in FileServerReplica {chunkNo, server, replicaId, replicaKey, digest = digest', chunkSize = chunkSize'}
 
-decodeFileDescription :: YAMLFileDescription -> Either String FileDescription
-decodeFileDescription YAMLFileDescription {size, digest, key, nonce, chunkSize, replicas} = do
+decodeFileDescription :: YAMLFileDescription -> Either String AFileDescription
+decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chunkSize, replicas} = do
   size' <- strDecode $ B.pack size
   chunkSize' <- strDecode $ B.pack chunkSize
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
-  pure FileDescription {size = size', digest, key, nonce, chunkSize = chunkSize', chunks}
+  pure $ case aFileParty party of
+    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks}
   where
     decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 
@@ -275,15 +296,15 @@ foldReplicasToChunks defChunkSize fs = do
     foldChunks sd = foldl' (addReplica sd) (Right M.empty)
     addReplica :: (Map Int (FileSize Word32), Map Int FileDigest) -> Either String (Map Int FileChunk) -> FileServerReplica -> Either String (Map Int FileChunk)
     addReplica _ (Left e) _ = Left e
-    addReplica (ms, md) (Right cs) FileServerReplica {chunkNo, server, rcvId, rcvKey} = do
+    addReplica (ms, md) (Right cs) FileServerReplica {chunkNo, server, replicaId, replicaKey} = do
       case M.lookup chunkNo cs of
         Just chunk@FileChunk {replicas} ->
-          let replica = FileChunkReplica {server, rcvId, rcvKey}
+          let replica = FileChunkReplica {server, replicaId, replicaKey}
            in Right $ M.insert chunkNo ((chunk :: FileChunk) {replicas = replica : replicas}) cs
         _ -> do
           case M.lookup chunkNo md of
             Just digest' ->
-              let replica = FileChunkReplica {server, rcvId, rcvKey}
+              let replica = FileChunkReplica {server, replicaId, replicaKey}
                   chunkSize' = fromMaybe defChunkSize $ M.lookup chunkNo ms
                   chunk = FileChunk {chunkNo, digest = digest', chunkSize = chunkSize', replicas = [replica]}
                in Right $ M.insert chunkNo chunk cs
