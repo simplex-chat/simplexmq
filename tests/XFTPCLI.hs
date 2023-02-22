@@ -39,12 +39,19 @@ testXFTPCLISendReceive = withXFTPServer $ do
   xftp ["rand", filePath, "19mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
   getFileSize filePath `shouldReturn` 19 * mb
-  let fd1 = filePath <> ".xftp" </> "rcv1.xftp"
-      fd2 = filePath <> ".xftp" </> "rcv2.xftp"
+  let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
+      fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
+      fdSnd = filePath <> ".xftp" </> "snd.xftp"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
-    `shouldReturn` ["File uploaded!", "Pass file descriptions to the recipient(s):", fd1, fd2]
-  testReceiveFile fd1 "testfile" file
-  testReceiveFile fd2 "testfile_1" file
+    `shouldReturn` [ "File uploaded!",
+                     "Pass file descriptions to the recipient(s):",
+                     fdRcv1,
+                     fdRcv2,
+                     "Sender file description:",
+                     fdSnd
+                   ]
+  testReceiveFile fdRcv1 "testfile" file
+  testReceiveFile fdRcv2 "testfile_1" file
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testReceiveFile fd fileName file = do
@@ -60,12 +67,19 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   xftp ["rand", filePath, "19mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
   getFileSize filePath `shouldReturn` 19 * mb
-  let fd1 = filePath <> ".xftp" </> "rcv1.xftp"
-      fd2 = filePath <> ".xftp" </> "rcv2.xftp"
+  let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
+      fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
+      fdSnd = filePath <> ".xftp" </> "snd.xftp"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
-    `shouldReturn` ["File uploaded!", "Pass file descriptions to the recipient(s):", fd1, fd2]
-  testReceiveFile fd1 "testfile" file
-  testReceiveFile fd2 "testfile_1" file
+    `shouldReturn` [ "File uploaded!",
+                     "Pass file descriptions to the recipient(s):",
+                     fdRcv1,
+                     fdRcv2,
+                     "Sender file description:",
+                     fdSnd
+                   ]
+  testReceiveFile fdRcv1 "testfile" file
+  testReceiveFile fdRcv2 "testfile_1" file
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testReceiveFile fd fileName file = do

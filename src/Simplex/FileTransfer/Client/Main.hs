@@ -346,7 +346,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
         B.writeFile fdPath $ strEncode fd
         pure fdPath
-      let fdSndPath = outDir </> "sender.xftp"
+      let fdSndPath = outDir </> "snd.xftp"
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
 
