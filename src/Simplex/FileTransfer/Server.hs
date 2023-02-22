@@ -123,7 +123,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
               ]
         threadDelay interval
 
--- TODO add client DH secret
 data ServerFile = ServerFile
   { filePath :: FilePath,
     fileSize :: Word32,

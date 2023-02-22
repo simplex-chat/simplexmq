@@ -62,7 +62,6 @@ removeStore db = do
     close :: SQLiteStore -> IO ()
     close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
 
--- TODO add null port tests
 storeTests :: Spec
 storeTests = do
   withStore2 $ do
@@ -279,7 +278,6 @@ testDeleteRcvConn =
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
     deleteConn db "conn1"
       `shouldReturn` ()
-    -- TODO check queues are deleted as well
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -292,7 +290,6 @@ testDeleteSndConn =
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1))
     deleteConn db "conn1"
       `shouldReturn` ()
-    -- TODO check queues are deleted as well
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -306,7 +303,6 @@ testDeleteDuplexConn =
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
     deleteConn db "conn1"
       `shouldReturn` ()
-    -- TODO check queues are deleted as well
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 

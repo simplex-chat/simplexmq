@@ -152,7 +152,6 @@ downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
         withExceptT PCEResponseError $
-          -- TODO chunk decryption
           receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
             whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
