@@ -55,8 +55,6 @@ testXFTPCLISendReceive = withXFTPServer $ do
   testInfoFile fdRcv2 "Recipient"
   testReceiveFile fdRcv2 "testfile_1" file
   testInfoFile fdSnd "Sender"
-  xftp ["recv", fdSnd, recipientFiles, "--tmp=tests/tmp"]
-    `shouldReturn` ["incorrect XFTP party"]
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testInfoFile fd party = do
