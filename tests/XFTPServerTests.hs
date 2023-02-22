@@ -1,17 +1,19 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 
 module XFTPServerTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
+import Control.Exception (SomeException)
 import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.List (isInfixOf)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
@@ -97,6 +99,8 @@ runTestFileChunkDelete s r = do
   downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
   deleteXFTPChunk s spKey sId
+  liftIO $ readChunk sId
+    `shouldThrow` \(e :: SomeException) -> "openBinaryFile: does not exist" `isInfixOf` show e
   downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId
@@ -122,6 +126,7 @@ runTestFileChunkAck s r =  do
   downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
   ackXFTPChunk r rpKey rId
+  liftIO $ readChunk sId `shouldReturn` bytes
   downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   ackXFTPChunk r rpKey rId
