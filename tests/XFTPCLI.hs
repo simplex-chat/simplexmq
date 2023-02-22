@@ -50,13 +50,19 @@ testXFTPCLISendReceive = withXFTPServer $ do
                      "Sender file description:",
                      fdSnd
                    ]
+  testInfoFile fdRcv1 "Recipient"
   testReceiveFile fdRcv1 "testfile" file
+  testInfoFile fdRcv2 "Recipient"
   testReceiveFile fdRcv2 "testfile_1" file
+  testInfoFile fdSnd "Sender"
+  xftp ["recv", fdSnd, recipientFiles, "--tmp=tests/tmp"]
+    `shouldReturn` ["incorrect XFTP party"]
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
-    testReceiveFile fd fileName file = do
+    testInfoFile fd party = do
       xftp ["info", fd]
-        `shouldReturn` ["File download size: 20mb", "File server(s):", testXFTPServerStr <> ": 20mb"]
+        `shouldReturn` [party <> " file description", "File download size: 20mb", "File server(s):", testXFTPServerStr <> ": 20mb"]
+    testReceiveFile fd fileName file = do
       xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
         `shouldReturn` ["File received: " <> recipientFiles </> fileName]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
@@ -83,7 +89,8 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testReceiveFile fd fileName file = do
-      sizeStr : srvStr : srvs <- xftp ["info", fd]
+      partyStr : sizeStr : srvStr : srvs <- xftp ["info", fd]
+      partyStr `shouldContain` "Recipient file description"
       sizeStr `shouldBe` "File download size: 20mb"
       srvStr `shouldBe` "File server(s):"
       case srvs of

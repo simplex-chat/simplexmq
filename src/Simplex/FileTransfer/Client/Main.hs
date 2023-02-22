@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -334,7 +335,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
             )
             sentChunks
         -- SentFileChunk having sndId and sndPrivateKey represents the current implementation's limitation
-        -- that sender uploads each chunk only to a single server, so we can use the first replica's server for FileChunkReplica
+        -- that sender uploads each chunk only to one server, so we can use the first replica's server for FileChunkReplica
         sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
         sndReplicas [] _ _ = []
         sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
@@ -353,7 +354,12 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} = do
   getFileDescription fileDescription >>= \case
-    AVFD (ValidFD FileDescription {size, digest, key, nonce, chunks}) -> do
+    AVFD (ValidFD fd) -> do
+      fd' <- either (throwError . CLIError) pure $ checkParty fd
+      receiveFile fd'
+  where
+    receiveFile :: FileDescription 'FPRecipient -> ExceptT CLIError IO ()
+    receiveFile FileDescription {digest, key, nonce, chunks} = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
@@ -363,7 +369,6 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       path <- decryptFile chunkPaths key nonce
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ putStrLn $ "File received: " <> path
-  where
     retries :: Show e => ExceptT e IO a -> ExceptT CLIError IO a
     retries = withRetry retryCount . withExceptT (CLIError . show)
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileChunk -> ExceptT CLIError IO FilePath
@@ -402,15 +407,21 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
 cliFileDescrInfo :: InfoOptions -> ExceptT CLIError IO ()
 cliFileDescrInfo InfoOptions {fileDescription} = do
   getFileDescription fileDescription >>= \case
-    AVFD (ValidFD FileDescription {size, chunkSize, chunks}) -> do
+    AVFD (ValidFD FileDescription {party, size, chunkSize, chunks}) -> do
       let replicas = groupReplicasByServer chunkSize chunks
       liftIO $ do
+        printParty
         putStrLn $ "File download size: " <> strEnc size
         putStrLn "File server(s):"
         forM_ replicas $ \srvReplicas -> do
           let srv = replicaServer $ head srvReplicas
               chSizes = map (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
           putStrLn $ strEnc srv <> ": " <> strEnc (FileSize $ sum chSizes)
+      where
+        printParty :: IO ()
+        printParty = case party of
+          SRecipient -> putStrLn "Recipient file description"
+          SSender -> putStrLn "Sender file description"
 
 strEnc :: StrEncoding a => a -> String
 strEnc = B.unpack . strEncode
