@@ -2,6 +2,7 @@ module XFTPCLI where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString as LB
+import Data.List (isInfixOf)
 import Simplex.FileTransfer.Client.Main (xftpClientCLI)
 import System.Directory (createDirectoryIfMissing, getFileSize, removeDirectoryRecursive)
 import System.Environment (withArgs)
@@ -68,11 +69,15 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testReceiveFile fd fileName file = do
-      [sizeStr, srvStr, srv1Str, srv2Str] <- xftp ["info", fd]
+      sizeStr : srvStr : srvs <- xftp ["info", fd]
       sizeStr `shouldBe` "File download size: 20mb"
       srvStr `shouldBe` "File server(s):"
-      srv1Str `shouldContain` testXFTPServerStr
-      srv2Str `shouldContain` testXFTPServerStr2
+      case srvs of
+        [srv1] -> any (`isInfixOf` srv1) [testXFTPServerStr, testXFTPServerStr2] `shouldBe` True
+        [srv1, srv2] -> do
+          srv1 `shouldContain` testXFTPServerStr
+          srv2 `shouldContain` testXFTPServerStr2
+        _ -> print srvs >> error "more than 2 servers returned"
       xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
         `shouldReturn` ["File received: " <> recipientFiles </> fileName]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file

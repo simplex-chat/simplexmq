@@ -251,7 +251,7 @@ instance ProtocolMsgTag FileResponseTag where
 data FileResponse
   = FRSndIds SenderId (NonEmpty RecipientId)
   | FRRcvIds (NonEmpty RecipientId)
-  | FRFile RcvPublicDhKey
+  | FRFile RcvPublicDhKey C.CbNonce
   | FROk
   | FRErr XFTPErrorType
   | FRPong
@@ -262,7 +262,7 @@ instance ProtocolEncoding XFTPErrorType FileResponse where
   encodeProtocol _v = \case
     FRSndIds fId rIds -> e (FRSndIds_, ' ', fId, rIds)
     FRRcvIds rIds -> e (FRRcvIds_, ' ', rIds)
-    FRFile rKey -> e (FRFile_, ' ', rKey)
+    FRFile rDhKey nonce -> e (FRFile_, ' ', rDhKey, nonce)
     FROk -> e FROk_
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
@@ -273,7 +273,7 @@ instance ProtocolEncoding XFTPErrorType FileResponse where
   protocolP _v = \case
     FRSndIds_ -> FRSndIds <$> _smpP <*> smpP
     FRRcvIds_ -> FRRcvIds <$> _smpP
-    FRFile_ -> FRFile <$> _smpP
+    FRFile_ -> FRFile <$> _smpP <*> smpP
     FROk_ -> pure FROk
     FRErr_ -> FRErr <$> _smpP
     FRPong_ -> pure FRPong
@@ -313,7 +313,7 @@ data XFTPErrorType
     SIZE
   | -- | incorrent file digest
     DIGEST
-  | -- | no file body
+  | -- | no expected file body in request/response or no file on the server
     NO_FILE
   | -- | unexpected file body
     HAS_FILE

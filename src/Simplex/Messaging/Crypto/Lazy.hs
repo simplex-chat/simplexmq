@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,6 +12,11 @@ module Simplex.Messaging.Crypto.Lazy
     sbEncrypt,
     sbDecrypt,
     fastReplicate,
+    SbState,
+    cbInit,
+    sbEncryptChunk,
+    sbDecryptChunk,
+    sbAuth,
   )
 where
 
@@ -29,7 +35,7 @@ import qualified Data.ByteString.Lazy.Internal as LB
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Foreign (sizeOf)
-import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), SbKey, pattern CbNonce, pattern SbKey)
+import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), DhSecret (..), DhSecretX25519, SbKey, pattern CbNonce, pattern SbKey)
 import Simplex.Messaging.Encoding
 
 type LazyByteString = LB.ByteString
@@ -92,7 +98,7 @@ sbDecrypt (SbKey key) (CbNonce nonce) packet
     (tag', c) = LB.splitAt 16 packet
 
 secretBox :: ByteArrayAccess key => (SbState -> ByteString -> (ByteString, SbState)) -> key -> ByteString -> LazyByteString -> Either CryptoError (NonEmpty ByteString)
-secretBox sbProcess secret nonce msg = run <$> sbInit secret nonce
+secretBox sbProcess secret nonce msg = run <$> sbInit_ secret nonce
   where
     process state = foldlChunks update ([], state) msg
     update (cs, st) chunk = let (c, st') = sbProcess st chunk in (c : cs, st')
@@ -100,8 +106,12 @@ secretBox sbProcess secret nonce msg = run <$> sbInit secret nonce
 
 type SbState = (XSalsa.State, Poly1305.State)
 
-sbInit :: ByteArrayAccess key => key -> ByteString -> Either CryptoError SbState
-sbInit secret nonce = (state2,) <$> cryptoPassed (Poly1305.initialize rs)
+cbInit :: DhSecretX25519 -> CbNonce -> Either CryptoError SbState
+cbInit (DhSecretX25519 secret) (CbNonce nonce) = sbInit_ secret nonce
+{-# INLINE cbInit #-}
+
+sbInit_ :: ByteArrayAccess key => key -> ByteString -> Either CryptoError SbState
+sbInit_ secret nonce = (state2,) <$> cryptoPassed (Poly1305.initialize rs)
   where
     zero = B.replicate 16 $ toEnum 0
     (iv0, iv1) = B.splitAt 8 nonce
