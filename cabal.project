@@ -15,7 +15,7 @@ source-repository-package
 source-repository-package
     type: git
     location: https://github.com/kazu-yamamoto/http2.git
-    tag: 1136bb126636789cec197e5d0bae39aa63c6f9e5
+    tag: aa56ded3494dd4f0efb0bbcb5378879ce785a647
 
 source-repository-package
     type: git

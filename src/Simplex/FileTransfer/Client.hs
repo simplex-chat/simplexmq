@@ -31,10 +31,10 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
   ( Protocol (..),
     ProtocolServer (..),
-    RcvPublicDhKey,
     RecipientId,
     SenderId,
   )
@@ -142,16 +142,17 @@ uploadXFTPChunk c spKey fId chunkSpec =
     (FROk, _body) -> pure ()
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
-downloadXFTPChunk c rpKey fId rKey chunkSpec@XFTPRcvChunkSpec {filePath} =
-  sendXFTPCommand c rpKey fId (FGET rKey) Nothing >>= \case
-    (FRFile sKey, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
+  (rDhKey, rpDhKey) <- liftIO C.generateKeyPair'
+  sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
+    (FRFile sDhKey cbNonce, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
-        -- let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
-        withExceptT PCEResponseError $ do
-          -- TODO chunk decryption
-          receiveFile chunkPart chunkSpec `catchError` \e ->
+        let dhSecret = C.dh' sDhKey rpDhKey
+        cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
+        withExceptT PCEResponseError $
+          receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
             whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r

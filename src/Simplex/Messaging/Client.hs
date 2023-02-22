@@ -414,8 +414,8 @@ data ProtocolClientError err
   | -- | TCP transport handshake or some other transport error.
     -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`.
     PCETransportError TransportError
-  | -- | Error when cryptographically "signing" the command.
-    PCESignatureError C.CryptoError
+  | -- | Error when cryptographically "signing" the command or when initializing crypto_box.
+    PCECryptoError C.CryptoError
   | -- | IO Error
     PCEIOError IOException
   deriving (Eq, Show, Exception)
