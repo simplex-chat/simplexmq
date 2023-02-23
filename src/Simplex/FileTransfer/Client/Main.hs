@@ -59,8 +59,8 @@ smallChunkSize = 1 * mb
 fileSizeLen :: Int64
 fileSizeLen = 8
 
-cbAuthTagLen :: Int64
-cbAuthTagLen = fromIntegral C.cbAuthTagSize
+authTagSize :: Int64
+authTagSize = fromIntegral C.authTagSize
 
 mb :: Num a => a
 mb = 1024 * 1024
@@ -153,7 +153,7 @@ cliCommandP =
     randomP =
       RandomFileOptions
         <$> argument str (metavar "FILE" <> help "Path to save file")
-        <*> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb)")
+        <*> argument strDec (metavar "SIZE" <> help "File size (bytes/kb/mb/gb)")
     strDec = eitherReader $ strDecode . B.pack
     fileDescrArg = argument str (metavar "FILE" <> help "File description file")
     retryCountP = option auto (long "retry" <> short 'r' <> metavar "RETRY" <> help "Number of network retries" <> value defaultRetryCount <> showDefault)
@@ -250,8 +250,8 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       fileSize <- fromInteger <$> getFileSize filePath
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
           fileSize' = fromIntegral (B.length fileHdr) + fileSize
-          chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + cbAuthTagLen
-          encSize = fromIntegral $ sum chunkSizes
+          chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
+          encSize = sum $ map fromIntegral chunkSizes
       encrypt fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
@@ -263,10 +263,8 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         encrypt fileHdr key nonce fileSize' encSize encFile = do
           f <- liftIO $ LB.readFile filePath
           let f' = LB.fromStrict fileHdr <> f
-          c <- liftEither $ first (CLIError . show) $ LC.sbEncrypt key nonce f' fileSize' $ encSize - cbAuthTagLen
+          c <- liftEither $ first (CLIError . show) $ LC.sbEncryptTailTag key nonce f' fileSize' $ encSize - authTagSize
           liftIO $ LB.writeFile encFile c
-    -- let padSize = paddedSize - fileSize - fromIntegral (B.length fileHdr)
-    -- when (padSize > 0) . LB.hPut h $ LB.replicate padSize '#'
     uploadFile :: [XFTPChunkSpec] -> ExceptT CLIError IO [SentFileChunk]
     uploadFile chunks = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
@@ -368,14 +366,16 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
   getFileDescription' fileDescription >>= receiveFile
   where
     receiveFile :: ValidFileDescription 'FPRecipient -> ExceptT CLIError IO ()
-    receiveFile (ValidFileDescription FileDescription {digest, key, nonce, chunks}) = do
+    receiveFile (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       chunkPaths <- forM chunks $ downloadFileChunk a encPath
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
-      path <- decryptFile chunkPaths key nonce
+      encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
+      when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
+      path <- decryptFile encSize chunkPaths key nonce
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ putStrLn $ "File received: " <> path
@@ -389,9 +389,9 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       withRetry retryCount $ downloadXFTPChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
-    decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
-    decryptFile chunkPaths key nonce = do
-      f <- liftEither . first (CLIError . show) . LC.sbDecrypt key nonce =<< liftIO (readChunks chunkPaths)
+    decryptFile :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
+    decryptFile encSize chunkPaths key nonce = do
+      (authOk, f) <- liftEither . first (CLIError . show) . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (readChunks chunkPaths)
       let (fileHdr, f') = LB.splitAt 1024 f
       -- withFile encPath ReadMode $ \r -> do
       --   fileHdr <- liftIO $ B.hGet r 1024
@@ -401,6 +401,9 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
         A.Done rest FileHeader {fileName} -> do
           path <- getFilePath fileName
           liftIO $ LB.writeFile path $ LB.fromStrict rest <> f'
+          unless authOk $ do
+            removeFile path
+            throwError $ CLIError "Error decrypting file: incorrect auth tag"
           pure path
     readChunks :: [FilePath] -> IO LB.ByteString
     readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) LB.empty

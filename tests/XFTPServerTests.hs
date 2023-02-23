@@ -1,7 +1,8 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module XFTPServerTests where
 
@@ -30,14 +31,14 @@ xftpServerTests :: Spec
 xftpServerTests =
   before_ (createDirectoryIfMissing False xftpServerFiles)
     . after_ (removeDirectoryRecursive xftpServerFiles)
+    . describe "XFTP file chunk delivery"
     $ do
-      describe "XFTP file chunk delivery" $ do
-        it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
-        it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
-        it "should delete file chunk (1 client)" testFileChunkDelete
-        it "should delete file chunk (2 clients)" testFileChunkDelete2
-        it "should acknowledge file chunk reception (1 client)" testFileChunkAck
-        it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
+      it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
+      it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
+      it "should delete file chunk (1 client)" testFileChunkDelete
+      it "should delete file chunk (2 clients)" testFileChunkDelete2
+      it "should acknowledge file chunk reception (1 client)" testFileChunkAck
+      it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
 
 chSize :: Num n => n
 chSize = 128 * 1024
@@ -99,8 +100,9 @@ runTestFileChunkDelete s r = do
   downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
   deleteXFTPChunk s spKey sId
-  liftIO $ readChunk sId
-    `shouldThrow` \(e :: SomeException) -> "openBinaryFile: does not exist" `isInfixOf` show e
+  liftIO $
+    readChunk sId
+      `shouldThrow` \(e :: SomeException) -> "openBinaryFile: does not exist" `isInfixOf` show e
   downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId
@@ -113,7 +115,7 @@ testFileChunkAck2 :: Expectation
 testFileChunkAck2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkAck s r
 
 runTestFileChunkAck :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
-runTestFileChunkAck s r =  do
+runTestFileChunkAck s r = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   bytes <- liftIO $ createTestChunk testChunkPath

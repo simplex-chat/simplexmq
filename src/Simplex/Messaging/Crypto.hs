@@ -121,7 +121,6 @@ module Simplex.Messaging.Crypto
     sbKey,
     unsafeSbKey,
     randomSbKey,
-    cbAuthTagSize,
 
     -- * pseudo-random bytes
     pseudoRandomBytes,
@@ -992,9 +991,6 @@ sbDecrypt_ secret (CbNonce nonce) packet
     (tag', c) = B.splitAt 16 packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
-
-cbAuthTagSize :: Int
-cbAuthTagSize = 16
 
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)

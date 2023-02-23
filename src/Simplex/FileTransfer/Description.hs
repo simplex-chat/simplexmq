@@ -196,20 +196,24 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
     | b' /= 0 = bshow b
     | kb' /= 0 = bshow kb <> "kb"
-    | otherwise = bshow mb <> "mb"
+    | mb' /= 0 = bshow mb <> "mb"
+    | otherwise = bshow gb <> "gb"
     where
       (kb, b') = b `divMod` 1024
       (mb, kb') = kb `divMod` 1024
+      (gb, mb') = mb `divMod` 1024
   strP =
     FileSize
       <$> A.choice
-        [ (mb *) <$> A.decimal <* "mb",
+        [ (gb *) <$> A.decimal <* "gb",
+          (mb *) <$> A.decimal <* "mb",
           (kb *) <$> A.decimal <* "kb",
           A.decimal
         ]
     where
       kb = 1024
       mb = 1024 * kb
+      gb = 1024 * mb
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
 groupReplicasByServer defChunkSize =
