@@ -165,6 +165,7 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Description (FileDescription)
+import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
@@ -1713,7 +1714,7 @@ upsertXftpServer_ db ProtocolServer {host, port, keyHash} = do
   -- insert into xftp_servers
   undefined
 
-createRcvFile :: FileDescription -> IO ()
+createRcvFile :: FileDescription 'FPRecipient -> IO ()
 createRcvFile fd = do
   -- insert into rcv_file_chunk_replicas
   -- insert into rcv_file_chunks
