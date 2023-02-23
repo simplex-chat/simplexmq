@@ -15,7 +15,7 @@ import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
@@ -107,6 +107,9 @@ xftpServerCLI cfgPath logPath = do
               fileIdSize = 16,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,
+              allowNewFiles = True,
+              newFileBasicAuth = Nothing,
+              fileExpiration = Just defaultFileExpiration,
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,

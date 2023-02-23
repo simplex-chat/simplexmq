@@ -19,7 +19,8 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (RcvPublicVerifyKey)
+import Simplex.Messaging.Protocol (BasicAuth, RcvPublicVerifyKey)
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -29,6 +30,12 @@ data XFTPServerConfig = XFTPServerConfig
     fileIdSize :: Int,
     storeLogFile :: Maybe FilePath,
     filesPath :: FilePath,
+    -- | set to False to prohibit creating new queues
+    allowNewFiles :: Bool,
+    -- | simple password that the clients need to pass in handshake to be able to create new queues
+    newFileBasicAuth :: Maybe BasicAuth,
+    -- | time after which the messages can be removed from the queues and check interval, seconds
+    fileExpiration :: Maybe ExpirationConfig,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -50,6 +57,13 @@ data XFTPEnv = XFTPEnv
     tlsServerParams :: T.ServerParams,
     serverStats :: FileServerStats
   }
+
+defaultFileExpiration :: ExpirationConfig
+defaultFileExpiration =
+  ExpirationConfig
+    { ttl = 48 * 3600, -- seconds, 48 hours
+      checkInterval = 2 * 3600 -- seconds, 2 hours
+    }
 
 newXFTPServerEnv :: (MonadUnliftIO m, MonadRandom m) => XFTPServerConfig -> m XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do

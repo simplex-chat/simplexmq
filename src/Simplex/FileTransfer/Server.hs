@@ -25,8 +25,10 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
@@ -41,6 +43,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
 import Simplex.Messaging.Transport.HTTP2
@@ -68,7 +71,7 @@ runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpSer
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
 xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
   restoreServerStats
-  raceAny_ (runServer : serverStatsThread_ cfg) `finally` stopServer
+  raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg) `finally` stopServer
   where
     runServer :: M ()
     runServer = do
@@ -83,6 +86,28 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
     stopServer = do
       withFileLog closeStoreLog
       saveServerStats
+
+    expireFilesThread_ :: XFTPServerConfig -> [M ()]
+    expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]
+    expireFilesThread_ _ = []
+
+    expireFiles :: ExpirationConfig -> M ()
+    expireFiles expCfg = do
+      st <- asks store
+      let interval = checkInterval expCfg * 1000000
+      forever $ do
+        threadDelay interval
+        old <- liftIO $ expireBeforeEpoch expCfg
+        sIds <- M.keysSet <$> readTVarIO (files st)
+        forM_ sIds $ \sId ->
+          atomically (expiredFilePath st sId old)
+            >>= mapM_ (remove (void . atomically $ deleteFile st sId))
+      where
+        remove delete filePath =
+          ifM
+            (doesFileExist filePath)
+            (removeFile filePath >> delete `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+            delete
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -189,8 +214,9 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     -- TODO retry on duplicate IDs?
     sId <- getFileId
     rIds <- mapM (const getFileId) rcps
+    ts <- liftIO getSystemTime
     r <- runExceptT $ do
-      ExceptT $ atomically $ addFile st sId file
+      ExceptT $ atomically $ addFile st sId file ts
       forM (L.zip rIds rcps) $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
     noFile $ either FRErr (const $ FRSndIds sId rIds) r

@@ -7,6 +7,7 @@
 module XFTPServerTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException)
 import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
@@ -17,11 +18,13 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol (SenderId)
+import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -39,6 +42,7 @@ xftpServerTests =
       it "should delete file chunk (2 clients)" testFileChunkDelete2
       it "should acknowledge file chunk reception (1 client)" testFileChunkAck
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
+      it "should expire chunks after set interval" testFileChunkExpiration
 
 chSize :: Num n => n
 chSize = 128 * 1024
@@ -133,3 +137,26 @@ runTestFileChunkAck s r = do
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+
+testFileChunkExpiration :: Expectation
+testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration} $
+  \_ -> testXFTPClient $ \c -> runRight_ $ do
+    (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+    (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+    bytes <- liftIO $ createTestChunk testChunkPath
+    digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+    let file = FileInfo {sndKey, size = chSize, digest}
+        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+    (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey]
+    uploadXFTPChunk c spKey sId chunkSpec
+
+    downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
+    liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+
+    liftIO $ threadDelay 2000000
+    downloadXFTPChunk c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+    deleteXFTPChunk c spKey sId
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+  where
+    fileExpiration = Just ExpirationConfig {ttl = 2, checkInterval = 1}
