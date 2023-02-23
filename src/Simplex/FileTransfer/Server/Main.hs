@@ -74,25 +74,25 @@ xftpServerCLI cfgPath logPath = do
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\
-               \n\
+               \\n\
                \[AUTH]\n\
                \# Set new_files option to off to completely prohibit uploading new files.\n\
                \# This can be useful when you want to decommission the server, but still allow downloading the existing files.\n\
                \new_files: on\n\
-               \n\
+               \\n\
                \# Use create_password option to enable basic auth to upload new files.\n\
                \# The password should be used as part of server address in client configuration:\n\
                \# xftp://fingerprint:password@host1,host2\n\
                \# The password will not be shared with file recipients, you must share it only\n\
                \# with the users who you want to allow uploading files to your server.\n\
                \# create_password: password to upload files (any printable ASCII characters without whitespace, '@', ':' and '/')\n\
-               \n\
+               \\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
             <> "log_tls_errors: off\n\
-               \n\
+               \\n\
                \[FILES]\n"
             <> ("path: " <> filesPath <> "\n")
             <> "# storage_quota: 100gb\n"
