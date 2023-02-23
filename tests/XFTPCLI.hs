@@ -126,8 +126,8 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp"]
     `shouldReturn` ["File received: " <> recipientFiles </> "testfile"]
   LB.readFile (recipientFiles </> "testfile") `shouldReturn` file
-  listDirectory xftpServerFiles >>= (`shouldBe` [])
-  listDirectory xftpServerFiles2 >>= (`shouldBe` [])
+  listDirectory xftpServerFiles >>= (`shouldNotBe` [])
+  listDirectory xftpServerFiles2 >>= (`shouldNotBe` [])
   xftp ["del", fdSnd]
     `shouldReturn` ["File deleted"]
   listDirectory xftpServerFiles >>= (`shouldBe` [])
