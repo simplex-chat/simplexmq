@@ -78,6 +78,7 @@ testXFTPServerConfig =
       storeLogFile = Nothing,
       filesPath = xftpServerFiles,
       allowNewFiles = True,
+      fileSizeQuota = Nothing,
       newFileBasicAuth = Nothing,
       fileExpiration = Just defaultFileExpiration,
       caCertificateFile = "tests/fixtures/ca.crt",

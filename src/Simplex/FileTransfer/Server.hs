@@ -99,9 +99,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
         threadDelay interval
         old <- liftIO $ expireBeforeEpoch expCfg
         sIds <- M.keysSet <$> readTVarIO (files st)
-        forM_ sIds $ \sId ->
+        forM_ sIds $ \sId -> do
+          threadDelay 100000
           atomically (expiredFilePath st sId old)
-            >>= mapM_ (remove (void . atomically $ deleteFile st sId))
+            >>= mapM_ (remove $ void $ atomically $ deleteFile st sId)
       where
         remove delete filePath =
           ifM
@@ -233,7 +234,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
   where
     noFile resp = pure (resp, Nothing)
     receiveServerFile :: FileRec -> M FileResponse
-    receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
+    receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
       -- TODO do not allow repeated file upload
       Nothing -> pure $ FRErr SIZE
       Just getBody -> do
@@ -241,10 +242,18 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
+        st <- asks store
+        quota_ <- asks $ fileSizeQuota . config
         liftIO $
           runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
-            Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
-            Left e -> (whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError) $> FRErr e
+            Right () -> do
+              used <- readTVarIO $ usedStorage st
+              if maybe False (used + fromIntegral size >) quota_
+                then remove fPath $> FRErr QUOTA
+                else atomically (setFilePath' st fr fPath) $> FROk
+            Left e -> remove fPath $> FRErr e
+        where
+          remove fPath = whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
 
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rDhKey = do

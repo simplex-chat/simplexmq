@@ -9,6 +9,7 @@ module Simplex.FileTransfer.Server.Env where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -32,6 +33,8 @@ data XFTPServerConfig = XFTPServerConfig
     filesPath :: FilePath,
     -- | set to False to prohibit creating new queues
     allowNewFiles :: Bool,
+    -- | server storage quota
+    fileSizeQuota :: Maybe Int64,
     -- | simple password that the clients need to pass in handshake to be able to create new queues
     newFileBasicAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds

@@ -9,6 +9,7 @@ module Simplex.FileTransfer.Server.Store
     newFileStore,
     addFile,
     setFilePath,
+    setFilePath',
     addRecipient,
     deleteFile,
     deleteRecipient,
@@ -33,7 +34,8 @@ import Simplex.Messaging.Util (ifM, ($>>=))
 
 data FileStore = FileStore
   { files :: TMap SenderId FileRec,
-    recipients :: TMap RecipientId (SenderId, RcvPublicVerifyKey)
+    recipients :: TMap RecipientId (SenderId, RcvPublicVerifyKey),
+    usedStorage :: TVar Int64
   }
 
 data FileRec = FileRec
@@ -49,7 +51,8 @@ newFileStore :: STM FileStore
 newFileStore = do
   files <- TM.empty
   recipients <- TM.empty
-  pure FileStore {files, recipients}
+  usedStorage <- newTVar 0
+  pure FileStore {files, recipients, usedStorage}
 
 addFile :: FileStore -> SenderId -> FileInfo -> SystemTime -> STM (Either XFTPErrorType ())
 addFile FileStore {files} sId fileInfo createdAt =
@@ -66,8 +69,12 @@ newFileRec senderId fileInfo createdAt = do
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
-  withFile st sId $ \FileRec {filePath} ->
-    writeTVar filePath (Just fPath) $> Right ()
+  withFile st sId $ \fr -> setFilePath' st fr fPath $> Right ()
+
+setFilePath' :: FileStore -> FileRec -> FilePath -> STM ()
+setFilePath' st FileRec {fileInfo, filePath} fPath = do
+  writeTVar filePath (Just fPath)
+  modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
 
 addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either XFTPErrorType ())
 addRecipient st@FileStore {recipients} senderId (rId, rKey) =
@@ -81,11 +88,13 @@ addRecipient st@FileStore {recipients} senderId (rId, rKey) =
         TM.insert rId (senderId, rKey) recipients
         pure $ Right ()
 
+-- this function must be called after the file is deleted from the file system
 deleteFile :: FileStore -> SenderId -> STM (Either XFTPErrorType ())
-deleteFile FileStore {files, recipients} senderId = do
+deleteFile FileStore {files, recipients, usedStorage} senderId = do
   TM.lookupDelete senderId files >>= \case
-    Just FileRec {recipientIds} -> do
+    Just FileRec {fileInfo, recipientIds} -> do
       readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
+      modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
       pure $ Right ()
     _ -> pure $ Left AUTH
 

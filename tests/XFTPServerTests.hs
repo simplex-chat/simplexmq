@@ -43,6 +43,7 @@ xftpServerTests =
       it "should acknowledge file chunk reception (1 client)" testFileChunkAck
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should expire chunks after set interval" testFileChunkExpiration
+      it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
 
 chSize :: Num n => n
 chSize = 128 * 1024
@@ -153,10 +154,37 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
     downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
     liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
-    liftIO $ threadDelay 2000000
+    liftIO $ threadDelay 1000000
     downloadXFTPChunk c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
     deleteXFTPChunk c spKey sId
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   where
-    fileExpiration = Just ExpirationConfig {ttl = 2, checkInterval = 1}
+    fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testFileStorageQuota :: Expectation
+testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2} $
+  \_ -> testXFTPClient $ \c -> runRight_ $ do
+    (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+    (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+    bytes <- liftIO $ createTestChunk testChunkPath
+    digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+    let file = FileInfo {sndKey, size = chSize, digest}
+        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+        download rId = do
+          downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
+          liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+    (sId1, [rId1]) <- createXFTPChunk c spKey file [rcvKey]
+    uploadXFTPChunk c spKey sId1 chunkSpec
+    download rId1
+    (sId2, [rId2]) <- createXFTPChunk c spKey file [rcvKey]
+    uploadXFTPChunk c spKey sId2 chunkSpec
+    download rId2
+
+    (sId3, [rId3]) <- createXFTPChunk c spKey file [rcvKey]
+    uploadXFTPChunk c spKey sId3 chunkSpec
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
+
+    deleteXFTPChunk c spKey sId1
+    uploadXFTPChunk c spKey sId3 chunkSpec
+    download rId3

@@ -108,6 +108,7 @@ xftpServerCLI cfgPath logPath = do
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,
               allowNewFiles = True,
+              fileSizeQuota = Nothing,
               newFileBasicAuth = Nothing,
               fileExpiration = Just defaultFileExpiration,
               caCertificateFile = c caCrtFile,
