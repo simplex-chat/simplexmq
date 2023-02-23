@@ -103,7 +103,7 @@ receiveEncFile getBody = receiveFile_ . receive
                     tagSz = B.length tag'
                     tag = LC.sbAuth sbState'
                 tag'' <- if tagSz == C.authTagSize then pure tag' else (tag' <>) <$> getBody (C.authTagSize - tagSz)
-                pure $ if BA.constEq tag'' tag then Right () else Left DIGEST
+                pure $ if BA.constEq tag'' tag then Right () else Left CRYPTO
           | otherwise -> pure $ Left SIZE
     authSz = fromIntegral C.authTagSize
 

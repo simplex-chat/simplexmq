@@ -337,6 +337,8 @@ data XFTPErrorType
     SIZE
   | -- | incorrent file digest
     DIGEST
+  | -- | file encryption/decryption failed
+    CRYPTO
   | -- | no expected file body in request/response or no file on the server
     NO_FILE
   | -- | unexpected file body
@@ -357,6 +359,7 @@ instance Encoding XFTPErrorType where
     AUTH -> "AUTH"
     SIZE -> "SIZE"
     DIGEST -> "DIGEST"
+    CRYPTO -> "CRYPTO"
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
@@ -371,6 +374,7 @@ instance Encoding XFTPErrorType where
       "AUTH" -> pure AUTH
       "SIZE" -> pure SIZE
       "DIGEST" -> pure DIGEST
+      "CRYPTO" -> pure CRYPTO
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO

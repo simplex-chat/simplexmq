@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -11,9 +13,12 @@ module Simplex.Messaging.Crypto.Lazy
     unPad,
     sbEncrypt,
     sbDecrypt,
+    sbEncryptTailTag,
+    sbDecryptTailTag,
     fastReplicate,
     SbState,
     cbInit,
+    sbInit,
     sbEncryptChunk,
     sbDecryptChunk,
     sbAuth,
@@ -79,6 +84,7 @@ unPad padded
     (lenStr, rest) = LB.splitAt 8 padded
 
 -- | NaCl @secret_box@ lazy encrypt with a symmetric 256-bit key and 192-bit nonce.
+-- Please note that the resulting string will be bigger than paddedLen by the size of the auth tag (16 bytes).
 sbEncrypt :: SbKey -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
 sbEncrypt (SbKey key) (CbNonce nonce) msg len paddedLen =
   prependTag <$> (secretBox sbEncryptChunk key nonce =<< pad msg len paddedLen)
@@ -86,6 +92,7 @@ sbEncrypt (SbKey key) (CbNonce nonce) msg len paddedLen =
     prependTag (tag :| cs) = LB.Chunk tag $ LB.fromChunks cs
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
+-- Please note that the resulting string will be smaller than packet size by the size of the auth tag (16 bytes).
 sbDecrypt :: SbKey -> CbNonce -> LazyByteString -> Either CryptoError LazyByteString
 sbDecrypt (SbKey key) (CbNonce nonce) packet
   | LB.length tag' < 16 = Left CBDecryptError
@@ -104,11 +111,39 @@ secretBox sbProcess secret nonce msg = run <$> sbInit_ secret nonce
     update (cs, st) chunk = let (c, st') = sbProcess st chunk in (c : cs, st')
     run state = let (cs, state') = process state in BA.convert (sbAuth state') :| reverse cs
 
+-- | NaCl @secret_box@ lazy encrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
+sbEncryptTailTag :: SbKey -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
+sbEncryptTailTag (SbKey key) (CbNonce nonce) msg len paddedLen =
+  LB.fromChunks <$> (secretBoxTailTag sbEncryptChunk key nonce =<< pad msg len paddedLen)
+
+-- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
+-- paddedLen should NOT include the tag length, it should be the same number that is passed to sbEncrypt / sbEncryptTailTag.
+sbDecryptTailTag :: SbKey -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
+sbDecryptTailTag (SbKey key) (CbNonce nonce) paddedLen packet =
+  case secretBox sbDecryptChunk key nonce c of
+    Right (tag :| cs) ->
+      let valid = LB.length tag' == 16 && BA.constEq (LB.toStrict tag') tag
+       in (valid,) <$> unPad (LB.fromChunks cs)
+    Left e -> Left e
+  where
+    (c, tag') = LB.splitAt paddedLen packet
+
+secretBoxTailTag :: ByteArrayAccess key => (SbState -> ByteString -> (ByteString, SbState)) -> key -> ByteString -> LazyByteString -> Either CryptoError [ByteString]
+secretBoxTailTag sbProcess secret nonce msg = run <$> sbInit_ secret nonce
+  where
+    process state = foldlChunks update ([], state) msg
+    update (cs, st) chunk = let (c, st') = sbProcess st chunk in (c : cs, st')
+    run state = let (cs, state') = process state in reverse $ BA.convert (sbAuth state') : cs
+
 type SbState = (XSalsa.State, Poly1305.State)
 
 cbInit :: DhSecretX25519 -> CbNonce -> Either CryptoError SbState
 cbInit (DhSecretX25519 secret) (CbNonce nonce) = sbInit_ secret nonce
 {-# INLINE cbInit #-}
+
+sbInit :: SbKey -> CbNonce -> Either CryptoError SbState
+sbInit (SbKey secret) (CbNonce nonce) = sbInit_ secret nonce
+{-# INLINE sbInit #-}
 
 sbInit_ :: ByteArrayAccess key => key -> ByteString -> Either CryptoError SbState
 sbInit_ secret nonce = (state2,) <$> cryptoPassed (Poly1305.initialize rs)
