@@ -96,6 +96,8 @@ module Simplex.Messaging.Crypto
     decryptAES,
     encryptAEAD,
     decryptAEAD,
+    encryptAESNoPad,
+    decryptAESNoPad,
     authTagSize,
     randomAesKey,
     randomIV,
@@ -814,6 +816,14 @@ encryptAEAD aesKey ivBytes paddedLen ad msg = do
   msg' <- liftEither $ pad msg paddedLen
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
 
+encryptAESNoPad :: Key -> IV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAESNoPad key iv = encryptAEADNoPad key iv ""
+
+encryptAEADNoPad :: Key -> IV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAEADNoPad aesKey ivBytes ad msg = do
+  aead <- initAEAD @AES256 aesKey ivBytes
+  pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
+
 -- | AEAD-GCM decryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
@@ -827,6 +837,14 @@ decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AuthTag -> ExceptT Crypt
 decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
   aead <- initAEAD @AES256 aesKey ivBytes
   liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
+
+decryptAESNoPad :: Key -> IV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+decryptAESNoPad key iv = decryptAEADNoPad key iv ""
+
+decryptAEADNoPad :: Key -> IV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+decryptAEADNoPad aesKey ivBytes ad msg (AuthTag authTag) = do
+  aead <- initAEAD @AES256 aesKey ivBytes
+  maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
 
 maxMsgLen :: Int
 maxMsgLen = 2 ^ (16 :: Int) - 3

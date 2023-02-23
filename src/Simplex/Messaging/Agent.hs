@@ -757,7 +757,7 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
 enqueueCommand :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> m ()
 enqueueCommand c corrId connId server aCommand = do
   resumeSrvCmds c server
-  commandId <- withStore' c $ \db -> createCommand db corrId connId server aCommand
+  commandId <- withStore c $ \db -> createCommand db corrId connId server aCommand
   queuePendingCommands c server [commandId]
 
 resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()

@@ -17,6 +17,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (getRandomBytes)
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -34,10 +35,11 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Transport (receiveFile, sendFile)
+import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, ErrorType (..), RcvPublicDhKey)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
@@ -122,11 +124,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
               ]
         threadDelay interval
 
--- TODO add client DH secret
 data ServerFile = ServerFile
   { filePath :: FilePath,
     fileSize :: Word32,
-    fileDhSecret :: C.DhSecretX25519
+    sbState :: LC.SbState
   }
 
 processRequest :: HTTP2Request -> M ()
@@ -147,18 +148,18 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      -- liftIO . sendResponse . H.responseBuilder N.ok200 [] . byteString $
       let t_ = xftpEncodeTransmission sessionId Nothing (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do
           case t_ of
-            Left _ -> send "padding error" -- TODO respond with BLOCK error?
+            Left _ -> do
+              send "padding error" -- TODO respond with BLOCK error?
+              done
             Right t -> do
               send $ byteString t
-              -- TODO chunk encryption
-              forM_ serverFile_ $ \ServerFile {filePath, fileSize, fileDhSecret} -> do
-                withFile filePath ReadMode $ \h -> sendFile h send $ fromIntegral fileSize
+              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
+                withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
           done
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
@@ -176,7 +177,7 @@ verifyXFTPTransmission sig_ signed fId cmd =
       atomically $ verify <$> getFile st party fId
       where
         verify = \case
-          Right (fr, k) -> XFTPReqCmd fr cmd `verifyWith` k
+          Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
           _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
 
@@ -193,12 +194,12 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       forM (L.zip rIds rcps) $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
     noFile $ either FRErr (const $ FRSndIds sId rIds) r
-  XFTPReqCmd fr (FileCmd _ cmd) -> case cmd of
+  XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
     FADD _rcps -> noFile FROk
     FPUT -> (,Nothing) <$> receiveServerFile fr
-    FDEL -> noFile FROk
-    FGET dhKey -> sendServerFile fr dhKey
-    FACK -> noFile FROk
+    FDEL -> (,Nothing) <$> deleteServerFile fr
+    FGET rDhKey -> sendServerFile fr rDhKey
+    FACK -> (,Nothing) <$> ackFileReception fId fr
     -- it should never get to the options below, they are passed in other constructors of XFTPRequest
     FNEW _ _ -> noFile $ FRErr INTERNAL
     PING -> noFile FRPong
@@ -207,24 +208,48 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
-      Nothing -> pure $ FRErr QUOTA -- TODO file specific errors?
+      -- TODO do not allow repeated file upload
+      Nothing -> pure $ FRErr SIZE
       Just getBody -> do
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
-        size' <- liftIO . withFile fPath WriteMode $ \h -> receiveFile h getBody 0
-        if size' == fromIntegral size -- TODO check digest
-          then atomically $ writeTVar filePath (Just fPath) $> FROk
-          else whenM (doesFileExist fPath) (removeFile fPath) $> FRErr QUOTA
+        liftIO $
+          runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
+            Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
+            Left e -> (whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError) $> FRErr e
+
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
-    sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rKey = do
+    sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
         Just path -> do
-          (sKey, spKey) <- liftIO C.generateKeyPair'
-          let fileDhSecret = C.dh' rKey spKey
-          pure (FRFile sKey, Just ServerFile {filePath = path, fileSize = size, fileDhSecret})
-        _ -> pure (FRErr AUTH, Nothing) -- TODO file-specific errors?
+          (sDhKey, spDhKey) <- liftIO C.generateKeyPair'
+          let dhSecret = C.dh' rDhKey spDhKey
+          cbNonce <- liftIO C.randomCbNonce
+          pure $ case LC.cbInit dhSecret cbNonce of
+            Right sbState -> (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
+            _ -> (FRErr INTERNAL, Nothing)
+        _ -> pure (FRErr NO_FILE, Nothing)
+
+    deleteServerFile :: FileRec -> M FileResponse
+    deleteServerFile FileRec {senderId, filePath} = do
+      r <- runExceptT $ do
+        path <- readTVarIO filePath
+        ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
+        st <- asks store
+        void $ atomically $ deleteFile st senderId
+        pure FROk
+      either (pure . FRErr) pure r
+
+    logFileError :: SomeException -> IO ()
+    logFileError e = logError $ "Error deleting file: " <> tshow e
+
+    ackFileReception :: RecipientId -> FileRec -> M FileResponse
+    ackFileReception rId fr = do
+      st <- asks store
+      atomically $ deleteRecipient st rId fr
+      pure FROk
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do

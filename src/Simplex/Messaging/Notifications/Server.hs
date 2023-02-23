@@ -27,7 +27,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Client (ProtocolClientError (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -227,7 +227,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       where
         showServer' = decodeLatin1 . strEncode . host
 
-    handleSubError :: SMPQueueNtf -> ProtocolClientError -> M ()
+    handleSubError :: SMPQueueNtf -> SMPClientError -> M ()
     handleSubError smpQueue = \case
       PCEProtocolError AUTH -> updateSubStatus smpQueue NSAuth
       PCEProtocolError e -> updateErr "SMP error " e
@@ -235,7 +235,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       PCEResponseError e -> updateErr "ResponseError " e
       PCEUnexpectedResponse r -> updateErr "UnexpectedResponse " r
       PCETransportError e -> updateErr "TransportError " e
-      PCESignatureError e -> updateErr "SignatureError " e
+      PCECryptoError e -> updateErr "CryptoError " e
       PCEIncompatibleHost -> updateSubStatus smpQueue $ NSErr "IncompatibleHost"
       PCEResponseTimeout -> pure ()
       PCENetworkError -> pure ()
@@ -343,7 +343,7 @@ send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, activeAt} = for
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
-verifyNtfTransmission :: SignedTransmission NtfCmd -> NtfCmd -> M VerificationResult
+verifyNtfTransmission :: SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of

@@ -82,11 +82,11 @@ processNtfSub c (connId, cmd) = do
             case clientNtfCreds of
               Just ClientNtfCreds {notifierId} -> do
                 let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey
-                withStore' c $ \db -> createNtfSubscription db newSub $ NtfSubNTFAction NSACreate
+                withStore c $ \db -> createNtfSubscription db newSub $ NtfSubNTFAction NSACreate
                 addNtfNTFWorker ntfServer
               Nothing -> do
                 let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew
-                withStore' c $ \db -> createNtfSubscription db newSub $ NtfSubSMPAction NSASmpKey
+                withStore c $ \db -> createNtfSubscription db newSub $ NtfSubSMPAction NSASmpKey
                 addNtfSMPWorker smpServer
         (Just (sub@NtfSubscription {ntfSubStatus, ntfServer = subNtfServer, smpServer = smpServer', ntfQueueId}, action_)) -> do
           case (clientNtfCreds, ntfQueueId) of

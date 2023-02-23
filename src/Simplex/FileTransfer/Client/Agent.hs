@@ -47,7 +47,7 @@ defaultXFTPClientAgentConfig =
           }
     }
 
-data XFTPClientAgentError = XFTPClientAgentError XFTPServer ProtocolClientError
+data XFTPClientAgentError = XFTPClientAgentError XFTPServer XFTPClientError
   deriving (Show, Exception)
 
 newXFTPAgent :: XFTPClientAgentConfig -> STM XFTPClientAgent

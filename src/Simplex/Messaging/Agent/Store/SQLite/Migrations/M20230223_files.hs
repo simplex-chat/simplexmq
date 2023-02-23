@@ -1,12 +1,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230215_files where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20230215_files :: Query
-m20230215_files =
+m20230223_files :: Query
+m20230223_files =
   [sql|
 CREATE TABLE xftp_servers (
   xftp_host TEXT NOT NULL,

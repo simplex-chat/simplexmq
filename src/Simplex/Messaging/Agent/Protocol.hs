@@ -1121,7 +1121,7 @@ instance ToJSON ConnectionErrorType where
 -- | SMP server errors.
 data BrokerErrorType
   = -- | invalid server response (failed to parse)
-    RESPONSE {smpErr :: ErrorType}
+    RESPONSE {smpErr :: String}
   | -- | unexpected response
     UNEXPECTED
   | -- | network error
@@ -1164,27 +1164,27 @@ instance StrEncoding AgentErrorType where
       <|> "CONN " *> (CONN <$> parseRead1)
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
-      <|> "BROKER " *> (BROKER <$> srvP <* " RESPONSE " <*> (RESPONSE <$> strP))
-      <|> "BROKER " *> (BROKER <$> srvP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
-      <|> "BROKER " *> (BROKER <$> srvP <* A.space <*> parseRead1)
+      <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
+      <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
+      <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
     where
-      srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
+      textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
-    BROKER srv (RESPONSE e) -> "BROKER " <> addr srv <> " RESPONSE " <> strEncode e
-    BROKER srv (TRANSPORT e) -> "BROKER " <> addr srv <> " TRANSPORT " <> serializeTransportError e
-    BROKER srv e -> "BROKER " <> addr srv <> " " <> bshow e
+    BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
+    BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
+    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
     where
-      addr = encodeUtf8 . T.pack
+      text = encodeUtf8 . T.pack
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 

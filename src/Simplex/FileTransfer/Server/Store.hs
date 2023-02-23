@@ -11,6 +11,7 @@ module Simplex.FileTransfer.Server.Store
     setFilePath,
     addRecipient,
     deleteFile,
+    deleteRecipient,
     getFile,
     ackFile,
   )
@@ -20,9 +21,9 @@ import Control.Concurrent.STM
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
-import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPErrorType (..), XFTPFileId)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol hiding (SParty, SRecipient, SSender)
+import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM)
@@ -46,7 +47,7 @@ newFileStore = do
   recipients <- TM.empty
   pure FileStore {files, recipients}
 
-addFile :: FileStore -> SenderId -> FileInfo -> STM (Either ErrorType ())
+addFile :: FileStore -> SenderId -> FileInfo -> STM (Either XFTPErrorType ())
 addFile FileStore {files} sId fileInfo =
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
     f <- newFileRec sId fileInfo
@@ -59,12 +60,12 @@ newFileRec senderId fileInfo = do
   filePath <- newTVar Nothing
   pure FileRec {senderId, fileInfo, filePath, recipientIds}
 
-setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either ErrorType ())
+setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
   withFile st sId $ \FileRec {filePath} ->
     writeTVar filePath (Just fPath) $> Right ()
 
-addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either ErrorType ())
+addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either XFTPErrorType ())
 addRecipient st@FileStore {recipients} senderId (rId, rKey) =
   withFile st senderId $ \FileRec {recipientIds} -> do
     rIds <- readTVar recipientIds
@@ -76,7 +77,7 @@ addRecipient st@FileStore {recipients} senderId (rId, rKey) =
         TM.insert rId (senderId, rKey) recipients
         pure $ Right ()
 
-deleteFile :: FileStore -> SenderId -> STM (Either ErrorType ())
+deleteFile :: FileStore -> SenderId -> STM (Either XFTPErrorType ())
 deleteFile FileStore {files, recipients} senderId = do
   TM.lookupDelete senderId files >>= \case
     Just FileRec {recipientIds} -> do
@@ -84,7 +85,12 @@ deleteFile FileStore {files, recipients} senderId = do
       pure $ Right ()
     _ -> pure $ Left AUTH
 
-getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either ErrorType (FileRec, C.APublicVerifyKey))
+deleteRecipient :: FileStore -> RecipientId -> FileRec -> STM ()
+deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = do
+  TM.delete rId recipients
+  modifyTVar' recipientIds $ S.delete rId
+
+getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either XFTPErrorType (FileRec, C.APublicVerifyKey))
 getFile st party fId = case party of
   SSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
   SRecipient ->
@@ -92,7 +98,7 @@ getFile st party fId = case party of
       Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
       _ -> pure $ Left AUTH
 
-ackFile :: FileStore -> RecipientId -> STM (Either ErrorType ())
+ackFile :: FileStore -> RecipientId -> STM (Either XFTPErrorType ())
 ackFile st@FileStore {recipients} recipientId = do
   TM.lookupDelete recipientId recipients >>= \case
     Just (sId, _) ->
@@ -101,7 +107,7 @@ ackFile st@FileStore {recipients} recipientId = do
         pure $ Right ()
     _ -> pure $ Left AUTH
 
-withFile :: FileStore -> SenderId -> (FileRec -> STM (Either ErrorType a)) -> STM (Either ErrorType a)
+withFile :: FileStore -> SenderId -> (FileRec -> STM (Either XFTPErrorType a)) -> STM (Either XFTPErrorType a)
 withFile FileStore {files} sId a =
   TM.lookup sId files >>= \case
     Just f -> a f

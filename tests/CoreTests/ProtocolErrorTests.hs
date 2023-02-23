@@ -6,7 +6,7 @@ module CoreTests.ProtocolErrorTests where
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), BrokerErrorType (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Test.Hspec
@@ -17,12 +17,14 @@ protocolErrorTests :: Spec
 protocolErrorTests = modifyMaxSuccess (const 1000) $ do
   describe "errors parsing / serializing" $ do
     it "should parse SMP protocol errors" . property $ \(err :: AgentErrorType) ->
-      errServerHasSpaces err
+      errHasSpaces err
         || parseAll strP (strEncode err) == Right err
     it "should parse SMP agent errors" . property $ \(err :: AgentErrorType) ->
-      errServerHasSpaces err
+      errHasSpaces err
         || parseAll strP (strEncode err) == Right err
   where
-    errServerHasSpaces = \case
-      BROKER srv _ -> ' ' `B.elem` encodeUtf8 (T.pack srv)
+    errHasSpaces = \case
+      BROKER srv (RESPONSE e) -> hasSpaces srv || hasSpaces e
+      BROKER srv _ -> hasSpaces srv
       _ -> False
+    hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)

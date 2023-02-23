@@ -16,10 +16,11 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Transport (receiveFile, sendFile)
+import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
     ProtocolClientError (..),
@@ -30,10 +31,10 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
-  ( ErrorType (..),
-    ProtocolServer (ProtocolServer),
-    RcvPublicDhKey,
+  ( Protocol (..),
+    ProtocolServer (..),
     RecipientId,
     SenderId,
   )
@@ -41,9 +42,9 @@ import Simplex.Messaging.Transport (supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
-import Simplex.Messaging.Util (bshow, liftEitherError)
-import System.IO (IOMode (..), SeekMode (..))
-import UnliftIO.IO (hSeek, withFile)
+import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
+import UnliftIO.Directory
+import UnliftIO.IO
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -63,14 +64,16 @@ data XFTPChunkBody = XFTPChunkBody
 data XFTPChunkSpec = XFTPChunkSpec
   { filePath :: FilePath,
     chunkOffset :: Int64,
-    chunkSize :: Int
+    chunkSize :: Word32
   }
   deriving (Show)
+
+type XFTPClientError = ProtocolClientError XFTPErrorType
 
 defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either ProtocolClientError XFTPClient)
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfig} disconnected = runExceptT $ do
   let tcConfig = transportClientConfig networkConfig
       http2Config = xftpHTTP2Config tcConfig config
@@ -89,13 +92,13 @@ xftpHTTP2Config transportConfig XFTPClientConfig {networkConfig = NetworkConfig 
       transportConfig
     }
 
-xftpClientError :: HTTP2ClientError -> ProtocolClientError
+xftpClientError :: HTTP2ClientError -> XFTPClientError
 xftpClientError = \case
   HCResponseTimeout -> PCEResponseTimeout
   HCNetworkError -> PCENetworkError
   HCIOError e -> PCEIOError e
 
-sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT ProtocolClientError IO (FileResponse, HTTP2Body)
+sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
@@ -106,7 +109,9 @@ sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fI
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
   case respOrErr of
-    Right r -> pure (r, body)
+    Right r -> case protocolError r of
+      Just e -> throwError $ PCEProtocolError e
+      _ -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
   where
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
@@ -123,37 +128,47 @@ createXFTPChunk ::
   C.APrivateSignKey ->
   FileInfo ->
   NonEmpty C.APublicVerifyKey ->
-  ExceptT ProtocolClientError IO (SenderId, NonEmpty RecipientId)
+  ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rsps =
   sendXFTPCommand c spKey "" (FNEW file rsps) Nothing >>= \case
-    -- TODO check that body is empty
-    (FRSndIds sId rIds, _body) -> pure (sId, rIds)
+    (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
+uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 uploadXFTPChunk c spKey fId chunkSpec =
-  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= \case
-    -- TODO check that body is empty
-    (FROk, _body) -> pure ()
-    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
 
-downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> RcvPublicDhKey -> ExceptT ProtocolClientError IO (RcvPublicDhKey, XFTPChunkBody)
-downloadXFTPChunk c rpKey fId rKey =
-  sendXFTPCommand c rpKey fId (FGET rKey) Nothing >>= \case
-    (FRFile sKey, http2Body@HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
-      -- TODO atm bodySize is set to 0, so chunkSize will be incorrect
+downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
+  (rDhKey, rpDhKey) <- liftIO C.generateKeyPair'
+  sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
+    (FRFile sDhKey cbNonce, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+      -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
-        let chunk = XFTPChunkBody {chunkSize = bodySize - B.length bodyHead, chunkPart, http2Body}
-        pure (sKey, chunk)
-      _ -> throwError $ PCEResponseError NO_MSG
+        let dhSecret = C.dh' sDhKey rpDhKey
+        cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
+        withExceptT PCEResponseError $
+          receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
+            whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
+      _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-receiveXFTPChunk :: XFTPChunkBody -> XFTPChunkSpec -> ExceptT ProtocolClientError IO ()
-receiveXFTPChunk XFTPChunkBody {chunkPart} XFTPChunkSpec {filePath, chunkOffset} = liftIO $ do
-  withFile filePath AppendMode $ \h -> do
-    -- hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    -- TODO chunk decryption
-    void $ receiveFile h chunkPart 0
+deleteXFTPChunk :: XFTPClient -> C.APrivateSignKey -> SenderId -> ExceptT XFTPClientError IO ()
+deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse
+
+ackXFTPChunk :: XFTPClient -> C.APrivateSignKey -> RecipientId -> ExceptT XFTPClientError IO ()
+ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing >>= okResponse
+
+okResponse :: (FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO ()
+okResponse = \case
+  (FROk, body) -> noFile body ()
+  (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+-- TODO this currently does not check anything because response size is not set and bodyPart is always Just
+noFile :: HTTP2Body -> a -> ExceptT XFTPClientError IO a
+noFile HTTP2Body {bodyPart} a = case bodyPart of
+  Just _ -> pure a -- throwError $ PCEResponseError HAS_FILE
+  _ -> pure a
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender

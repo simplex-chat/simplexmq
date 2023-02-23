@@ -499,10 +499,8 @@ syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
   describe "NEW" $ do
     describe "valid" $ do
-      -- TODO: add tests with defined connection id
       it "with correct parameter" $ ("211", "", "NEW T INV") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
     describe "invalid" $ do
-      -- TODO: add tests with defined connection id
       it "with incorrect parameter" $ ("222", "", "NEW T hi") >#> ("222", "", "ERR CMD SYNTAX")
 
   describe "JOIN" $ do
