@@ -376,8 +376,10 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
       path <- decryptFile chunkPaths key nonce
+      forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ putStrLn $ "File received: " <> path
+      liftIO $ putStrLn "File description cannot be used again"
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileChunk -> ExceptT CLIError IO FilePath
     downloadFileChunk a encPath FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
@@ -385,7 +387,6 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       c <- withRetry retryCount $ getXFTPServerClient a server
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
       withRetry retryCount $ downloadXFTPChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
-      withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
       pure chunkPath
     downloadFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
@@ -411,6 +412,12 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
+    acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
+    acknowledgeFileChunk a FileChunk {replicas = replica : _} = do
+      let FileChunkReplica {server, replicaId, replicaKey} = replica
+      c <- withRetry retryCount $ getXFTPServerClient a server
+      withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
+    acknowledgeFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
 cliDeleteFile :: DeleteOptions -> ExceptT CLIError IO ()
 cliDeleteFile DeleteOptions {fileDescription, retryCount} = do
