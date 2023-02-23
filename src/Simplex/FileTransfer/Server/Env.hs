@@ -3,10 +3,13 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
 module Simplex.FileTransfer.Server.Env where
 
+import Control.Logger.Simple (logInfo)
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Int (Int64)
@@ -23,6 +26,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicVerifyKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -32,10 +36,10 @@ data XFTPServerConfig = XFTPServerConfig
     storeLogFile :: Maybe FilePath,
     filesPath :: FilePath,
     -- | set to False to prohibit creating new queues
-    allowNewFiles :: Bool,
-    -- | server storage quota
     fileSizeQuota :: Maybe Int64,
     -- | simple password that the clients need to pass in handshake to be able to create new queues
+    allowNewFiles :: Bool,
+    -- | server storage quota
     newFileBasicAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     fileExpiration :: Maybe ExpirationConfig,
@@ -69,10 +73,14 @@ defaultFileExpiration =
     }
 
 newXFTPServerEnv :: (MonadUnliftIO m, MonadRandom m) => XFTPServerConfig -> m XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
+newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- drgNew >>= newTVarIO
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
+  used <- readTVarIO (usedStorage store)
+  forM_ fileSizeQuota $ \quota -> do
+    logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
+    when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime

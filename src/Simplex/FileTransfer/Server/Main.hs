@@ -14,6 +14,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
+import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import qualified Simplex.Messaging.Crypto as C
@@ -72,33 +73,52 @@ xftpServerCLI cfgPath logPath = do
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
-            <> "log_stats: off\n\n\
+            <> "log_stats: off\n\
+               \n\
+               \[AUTH]\n\
+               \# Set new_files option to off to completely prohibit uploading new files.\n\
+               \# This can be useful when you want to decommission the server, but still allow downloading the existing files.\n\
+               \new_files: on\n\
+               \n\
+               \# Use create_password option to enable basic auth to upload new files.\n\
+               \# The password should be used as part of server address in client configuration:\n\
+               \# xftp://fingerprint:password@host1,host2\n\
+               \# The password will not be shared with file recipients, you must share it only\n\
+               \# with the users who you want to allow uploading files to your server.\n\
+               \# create_password: password to upload files (any printable ASCII characters without whitespace, '@', ':' and '/')\n\
+               \n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n\n\
+            <> "log_tls_errors: off\n\
+               \n\
                \[FILES]\n"
             <> ("path: " <> filesPath <> "\n")
+            <> "# storage_quota: 100gb\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@XFTPServerConfig {xftpPort, storeLogFile} = serverConfig
           srv = ProtoServerWithAuth (XFTPServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
-      printXFTPConfig xftpPort storeLogFile
-      runXFTPServer cfg
+      printXFTPConfig serverConfig
+      runXFTPServer serverConfig
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
-        printXFTPConfig xftpPort logFile = do
-          putStrLn $ case logFile of
+        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile} = do
+          putStrLn $ case storeLogFile of
             Just f -> "Store log: " <> f
             _ -> "Store log disabled."
+          putStrLn $
+            "Uploading new files "
+              <> if allowNewFiles
+                then maybe "allowed." (const "requires password.") newFileBasicAuth
+                else "NOT allowed."
           putStrLn $ "Listening on port " <> xftpPort <> "..."
 
         serverConfig =
@@ -107,9 +127,9 @@ xftpServerCLI cfgPath logPath = do
               fileIdSize = 16,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,
-              allowNewFiles = True,
-              fileSizeQuota = Nothing,
-              newFileBasicAuth = Nothing,
+              fileSizeQuota = either error unFileSize <$> strDecodeIni "FILES" "storage_quota" ini,
+              allowNewFiles = fromMaybe True $ iniOnOff "AUTH" "new_files" ini,
+              newFileBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
               fileExpiration = Just defaultFileExpiration,
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
