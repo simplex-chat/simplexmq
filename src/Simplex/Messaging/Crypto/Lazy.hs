@@ -84,7 +84,7 @@ unPad padded
     (lenStr, rest) = LB.splitAt 8 padded
 
 -- | NaCl @secret_box@ lazy encrypt with a symmetric 256-bit key and 192-bit nonce.
--- Please note that the resulting string will be bigger than paddedLen by the size of the auth tag (16 bytes).
+-- The resulting string will be bigger than paddedLen by the size of the auth tag (16 bytes).
 sbEncrypt :: SbKey -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
 sbEncrypt (SbKey key) (CbNonce nonce) msg len paddedLen =
   prependTag <$> (secretBox sbEncryptChunk key nonce =<< pad msg len paddedLen)
@@ -92,7 +92,7 @@ sbEncrypt (SbKey key) (CbNonce nonce) msg len paddedLen =
     prependTag (tag :| cs) = LB.Chunk tag $ LB.fromChunks cs
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
--- Please note that the resulting string will be smaller than packet size by the size of the auth tag (16 bytes).
+-- The resulting string will be smaller than packet size by the size of the auth tag (16 bytes).
 sbDecrypt :: SbKey -> CbNonce -> LazyByteString -> Either CryptoError LazyByteString
 sbDecrypt (SbKey key) (CbNonce nonce) packet
   | LB.length tag' < 16 = Left CBDecryptError
