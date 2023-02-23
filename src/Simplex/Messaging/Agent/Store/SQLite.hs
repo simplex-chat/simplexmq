@@ -124,7 +124,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getNtfRcvQueue,
     setConnectionNtfs,
     -- File transfer
-    getNextRcvFileAction,
+    getNextRcvXFTPAction,
+    getNextRcvXFTPLocalAction,
 
     -- * utilities
     withConnection,
@@ -1757,8 +1758,14 @@ createRcvFileAction db xftpServer_ action = do
   -- insert into xftp_actions
   undefined
 
-getNextRcvFileAction :: DB.Connection -> Maybe XFTPServer -> IO (Maybe (RcvFileDescription, XFTPAction))
-getNextRcvFileAction db xftpServer_ = do
+getNextRcvXFTPAction :: DB.Connection -> XFTPServer -> IO (Maybe (RcvFileDescription, XFTPAction))
+getNextRcvXFTPAction db xftpServer = do
+  -- select from xftp_actions
+  -- order by created_at?
+  undefined
+
+getNextRcvXFTPLocalAction :: DB.Connection -> IO (Maybe (RcvFileDescription, XFTPLocalAction))
+getNextRcvXFTPLocalAction db = do
   -- select from xftp_actions
   -- order by created_at?
   undefined

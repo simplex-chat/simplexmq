@@ -33,7 +33,9 @@ data RcvFileChunk = RcvFileChunk
     digest :: FileDigest,
     replicas :: [RcvFileChunkReplica],
     received :: Bool, -- computed based on replicas?
-    tempPath :: Maybe FilePath
+    acknowledged :: Bool,
+    tempPath :: Maybe FilePath,
+    nextDelay :: Int
   }
   deriving (Eq, Show)
 
@@ -48,5 +50,8 @@ data RcvFileChunkReplica = RcvFileChunkReplica
 
 data XFTPAction
   = XADownloadChunk
-  | XADecrypt
+  deriving (Show)
+
+data XFTPLocalAction 
+  = XALDecrypt
   deriving (Show)

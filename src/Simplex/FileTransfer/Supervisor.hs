@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
@@ -15,6 +16,7 @@ import Control.Monad.Reader
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -32,14 +34,14 @@ import qualified UnliftIO.Exception as E
 -- can be part of agent
 -- Maybe XFTPServer - Nothing is for worker dedicated to file decryption
 data XFTPSupervisorEnv = XFTPSupervisorEnv
-  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
-    -- add TVar XFTPClientAgent - for workers to get clients
+  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    xftpAgent :: XFTPClientAgent
   }
 
 -- TODO remove, replace uses with AgentMonad
 type XFTPMonad m = (MonadUnliftIO m, MonadReader XFTPSupervisorEnv m, MonadError AgentErrorType m)
 
-receiveFile :: XFTPMonad m => AgentClient -> FileDescription -> m ()
+receiveFile :: XFTPMonad m => AgentClient -> FileDescription 'FPRecipient -> m ()
 receiveFile c fd@FileDescription {chunks} = do
   -- same as cli: validate file description
   -- createRcvFile
@@ -59,31 +61,34 @@ addWorker c srv_ = do
   atomically (TM.lookup srv_ ws) >>= \case
     Nothing -> do
       doWork <- newTMVarIO ()
-      worker <- async $ runWorker c srv_ doWork `E.finally` atomically (TM.delete srv_ ws)
+      let runWorker = case srv_ of
+            Just srv -> runXFTPWorker c srv doWork
+            Nothing -> runXFTPLocalWorker c doWork
+      worker <- async $ runWorker `E.finally` atomically (TM.delete srv_ ws)
       atomically $ TM.insert srv_ (doWork, worker) ws
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
 
-runWorker :: forall m. XFTPMonad m => AgentClient -> Maybe XFTPServer -> TMVar () -> m ()
-runWorker c srv_ doWork = do
-  -- Maybe XFTPClient?
-  -- duplicate runWorker for non download worker without XFTPClient?
-  case srv_ of
-    Nothing -> pure ()
-    Just srv -> pure () -- create XFTPClient
+runXFTPWorker :: forall m. XFTPMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
+runXFTPWorker c srv doWork = do
+  xa <- asks xftpAgent
+  xc <- liftXFTP $ getXFTPServerClient xa srv
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AONtfNetwork throwWhenInactive runXftpOperation -- decryption doesn't require network
+    agentOperationBracket c AORcvNetwork throwWhenInactive (runXftpOperation xc)
   where
-    runXftpOperation :: m ()
-    runXftpOperation = do
-      -- nextFile <- withStore' c (`getNextRcvFileAction` srv_) -- TODO in AgentMonad
+    liftXFTP :: ExceptT XFTPClientAgentError IO XFTPClient -> m XFTPClient
+    liftXFTP = either (throwError . INTERNAL . show) return <=< liftIO . runExceptT
+    runXftpOperation :: XFTPClient -> m ()
+    runXftpOperation xc = do
+      -- nextFile <- withStore' c (`getNextRcvXFTPAction` srv) -- TODO in AgentMonad
       let nextFile = Nothing
       case nextFile of
         Nothing -> noWorkToDo
         Just a@(fd@RcvFileDescription {}, _) -> do
           -- ri <- asks $ reconnectInterval . config
-          let ri = defaultReconnectInterval
+          let savedDelay = 1000000 -- next delay saved on chunk
+              ri = defaultReconnectInterval {initialInterval = savedDelay}
           withRetryInterval ri $ \loop ->
             processAction a
               `catchError` const loop -- filter errors
@@ -94,12 +99,38 @@ runWorker c srv_ doWork = do
         XADownloadChunk -> do
           -- downloadFileChunk -- ? which chunk to download? read encoded / parameterized XFTPAction instead?
           undefined
-        XADecrypt -> undefined
     downloadFileChunk :: XFTPClient -> FileChunk -> m ()
     downloadFileChunk a chunk = do
       -- generate chunk spec? offset is not needed if chunks are saved into separate files
       -- download chunk
       -- save chunk
       -- update chunk status - returns updated file description
+      -- should chunk acknowledgement be scheduled as a separate action?
+      --   or check if chunk is downloaded and not acknowledged via flag acknowledged
       -- if all chunks are received, create task to decrypt file / or decrypt in same worker?
       undefined
+
+runXFTPLocalWorker :: forall m. XFTPMonad m => AgentClient -> TMVar () -> m ()
+runXFTPLocalWorker c doWork = do
+  forever $ do
+    void . atomically $ readTMVar doWork
+    agentOperationBracket c AODatabase throwWhenInactive runXftpOperation
+  where
+    runXftpOperation :: m ()
+    runXftpOperation = do
+      -- nextFile <- withStore' c getNextRcvXFTPLocalAction -- TODO in AgentMonad
+      let nextFile = Nothing
+      case nextFile of
+        Nothing -> noWorkToDo
+        Just a@(fd@RcvFileDescription {}, _) -> do
+          -- ri <- asks $ reconnectInterval . config
+          let savedDelay = 1000000 -- next delay saved on chunk
+              ri = defaultReconnectInterval {initialInterval = savedDelay}
+          withRetryInterval ri $ \loop ->
+            processAction a
+              `catchError` const loop -- filter errors
+    noWorkToDo = void . atomically $ tryTakeTMVar doWork
+    processAction :: (RcvFileDescription, XFTPLocalAction) -> m ()
+    processAction (rcvFile, action) = do
+      case action of
+        XALDecrypt -> undefined
