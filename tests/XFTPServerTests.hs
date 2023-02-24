@@ -8,6 +8,7 @@ module XFTPServerTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
@@ -16,6 +17,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
+import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
@@ -25,7 +27,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol (SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
+import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec
 import XFTPClient
@@ -44,6 +46,7 @@ xftpServerTests =
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
+      it "should store file records to log and restore them after server restart" testFileLog
 
 chSize :: Num n => n
 chSize = 128 * 1024
@@ -188,3 +191,67 @@ testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = J
     deleteXFTPChunk c spKey sId1
     uploadXFTPChunk c spKey sId3 chunkSpec
     download rId3
+
+testFileLog :: Expectation
+testFileLog = do
+  bytes <- liftIO $ createTestChunk testChunkPath
+  (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey1, rpKey1) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey2, rpKey2) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+  sIdVar <- newTVarIO ""
+  rIdVar1 <- newTVarIO ""
+  rIdVar2 <- newTVarIO ""
+
+  withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
+    let file = FileInfo {sndKey, size = chSize, digest}
+        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+
+    (sId, [rId1, rId2]) <- createXFTPChunk c spKey file [rcvKey1, rcvKey2]
+    liftIO $
+      atomically $ do
+        writeTVar sIdVar sId
+        writeTVar rIdVar1 rId1
+        writeTVar rIdVar2 rId2
+    uploadXFTPChunk c spKey sId chunkSpec
+
+    download c rpKey1 rId1 digest bytes
+    download c rpKey2 rId2 digest bytes
+
+  logSize testXFTPLogFile `shouldReturn` 3
+
+  withXFTPServerThreadOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
+    sId <- liftIO $ readTVarIO sIdVar
+    rId1 <- liftIO $ readTVarIO rIdVar1
+    rId2 <- liftIO $ readTVarIO rIdVar2
+    downloadXFTPChunk c rpKey1 rId1 (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+    downloadXFTPChunk c rpKey2 rId2 (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+    deleteXFTPChunk c spKey sId
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+
+  withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
+    rId1 <- liftIO $ readTVarIO rIdVar1
+    rId2 <- liftIO $ readTVarIO rIdVar2
+
+    download c rpKey1 rId1 digest bytes
+    ackXFTPChunk c rpKey1 rId1
+
+    download c rpKey2 rId2 digest bytes
+
+  logSize testXFTPLogFile `shouldReturn` 4
+
+  withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
+    sId <- liftIO $ readTVarIO sIdVar
+    deleteXFTPChunk c spKey sId
+
+  -- logSize testXFTPLogFile `shouldReturn` 0
+
+  -- liftIO $ threadDelay 60000000
+
+  removeFile testXFTPLogFile
+  where
+    download c rpKey rId digest bytes = do
+      downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
+      liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes

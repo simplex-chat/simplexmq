@@ -37,11 +37,17 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
     run 0 hs = test hs
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
+withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile}
+
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
   serverBracket
     (`runXFTPServerBlocking` cfg)
     (pure ())
+
+withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
 
 withXFTPServer :: IO a -> IO a
 withXFTPServer = withXFTPServerCfg testXFTPServerConfig . const
@@ -69,6 +75,9 @@ xftpServerFiles = "tests/tmp/xftp-server-files"
 
 xftpServerFiles2 :: FilePath
 xftpServerFiles2 = "tests/tmp/xftp-server-files2"
+
+testXFTPLogFile :: FilePath
+testXFTPLogFile = "tests/tmp/xftp-server-store.log"
 
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =

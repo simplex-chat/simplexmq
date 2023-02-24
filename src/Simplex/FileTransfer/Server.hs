@@ -37,6 +37,7 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -45,7 +46,6 @@ import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Util
@@ -102,13 +102,16 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
         forM_ sIds $ \sId -> do
           threadDelay 100000
           atomically (expiredFilePath st sId old)
-            >>= mapM_ (remove $ void $ atomically $ deleteFile st sId)
+            >>= mapM_ (remove $ delete st sId)
       where
-        remove delete filePath =
+        remove del filePath =
           ifM
             (doesFileExist filePath)
-            (removeFile filePath >> delete `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
-            delete
+            (removeFile filePath >> del `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+            del
+        delete st sId = do
+          withFileLog (`logDeleteFile` sId)
+          void $ atomically $ deleteFile st sId
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -215,10 +218,14 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     -- TODO retry on duplicate IDs?
     sId <- getFileId
     rIds <- mapM (const getFileId) rcps
+    let rIdsKeys = L.zipWith FileRecipient rIds rcps
     ts <- liftIO getSystemTime
+    withFileLog $ \sl -> do
+      logAddFile sl sId file ts
+      logAddRecipients sl sId rIdsKeys
     r <- runExceptT $ do
       ExceptT $ atomically $ addFile st sId file ts
-      forM (L.zip rIds rcps) $ \rcp ->
+      forM rIdsKeys $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
     noFile $ either FRErr (const $ FRSndIds sId rIds) r
   XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
@@ -242,6 +249,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
+        withFileLog $ \sl -> logPutFile sl senderId fPath
         st <- asks store
         quota_ <- asks $ fileSizeQuota . config
         liftIO $
@@ -269,6 +277,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     deleteServerFile :: FileRec -> M FileResponse
     deleteServerFile FileRec {senderId, filePath} = do
+      withFileLog (`logDeleteFile` senderId)
       r <- runExceptT $ do
         path <- readTVarIO filePath
         ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
@@ -282,6 +291,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     ackFileReception :: RecipientId -> FileRec -> M FileResponse
     ackFileReception rId fr = do
+      withFileLog (`logAckFile` rId)
       st <- asks store
       atomically $ deleteRecipient st rId fr
       pure FROk

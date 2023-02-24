@@ -1,11 +1,13 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.FileTransfer.Server.Store
   ( FileStore (..),
     FileRec (..),
+    FileRecipient (..),
     newFileStore,
     addFile,
     setFilePath,
@@ -20,6 +22,7 @@ module Simplex.FileTransfer.Server.Store
 where
 
 import Control.Concurrent.STM
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Set (Set)
@@ -27,6 +30,7 @@ import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..))
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPErrorType (..), XFTPFileId)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -46,6 +50,12 @@ data FileRec = FileRec
     createdAt :: SystemTime
   }
   deriving (Eq)
+
+data FileRecipient = FileRecipient RecipientId RcvPublicVerifyKey
+
+instance StrEncoding FileRecipient where
+  strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey
+  strP = FileRecipient <$> strP <* A.char ':' <*> strP
 
 newFileStore :: STM FileStore
 newFileStore = do
@@ -76,8 +86,8 @@ setFilePath' st FileRec {fileInfo, filePath} fPath = do
   writeTVar filePath (Just fPath)
   modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
 
-addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either XFTPErrorType ())
-addRecipient st@FileStore {recipients} senderId (rId, rKey) =
+addRecipient :: FileStore -> SenderId -> FileRecipient -> STM (Either XFTPErrorType ())
+addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) =
   withFile st senderId $ \FileRec {recipientIds} -> do
     rIds <- readTVar recipientIds
     mem <- TM.member rId recipients
