@@ -76,6 +76,7 @@ module Simplex.Messaging.Protocol
     pattern NtfServer,
     XFTPServer,
     pattern XFTPServer,
+    XFTPServerWithAuth,
     ProtoServerWithAuth (..),
     BasicAuth (..),
     SrvLoc (..),
@@ -167,7 +168,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, (<$?>), eitherToMaybe)
+import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -631,6 +632,8 @@ pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> Prot
 pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash
 
 {-# COMPLETE XFTPServer #-}
+
+type XFTPServerWithAuth = ProtoServerWithAuth 'PXFTP
 
 sameSrvAddr' :: ProtoServerWithAuth p -> ProtoServerWithAuth p -> Bool
 sameSrvAddr' (ProtoServerWithAuth srv _) (ProtoServerWithAuth srv' _) = sameSrvAddr srv srv'
