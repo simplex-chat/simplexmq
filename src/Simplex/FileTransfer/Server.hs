@@ -24,6 +24,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (intercalate)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
@@ -42,7 +43,7 @@ import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicVerifyKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
@@ -196,7 +197,7 @@ data VerificationResult = VRVerified XFTPRequest | VRFailed
 verifyXFTPTransmission :: Maybe C.ASignature -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission sig_ signed fId cmd =
   case cmd of
-    FileCmd SSender (FNEW file rcps) -> pure $ XFTPReqNew file rcps `verifyWith` sndKey file
+    FileCmd SSender (FNEW file rcps auth) -> pure $ XFTPReqNew file rcps auth `verifyWith` sndKey file
     FileCmd SRecipient PING -> pure $ VRVerified XFTPReqPing
     FileCmd party _ -> verifyCmd party
   where
@@ -212,34 +213,45 @@ verifyXFTPTransmission sig_ signed fId cmd =
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
-  XFTPReqNew file rcps -> do
-    st <- asks store
-    -- TODO validate body empty
-    -- TODO retry on duplicate IDs?
-    sId <- getFileId
-    rIds <- mapM (const getFileId) rcps
-    let rIdsKeys = L.zipWith FileRecipient rIds rcps
-    ts <- liftIO getSystemTime
-    withFileLog $ \sl -> do
-      logAddFile sl sId file ts
-      logAddRecipients sl sId rIdsKeys
-    r <- runExceptT $ do
-      ExceptT $ atomically $ addFile st sId file ts
-      forM rIdsKeys $ \rcp ->
-        ExceptT $ atomically $ addRecipient st sId rcp
-    noFile $ either FRErr (const $ FRSndIds sId rIds) r
+  XFTPReqNew file rcps auth ->
+    noFile
+      =<< ifM
+        allowNew
+        (createFile file rcps)
+        (pure $ FRErr AUTH)
+    where
+      allowNew = do
+        XFTPServerConfig {allowNewFiles, newFileBasicAuth} <- asks config
+        pure $ allowNewFiles && maybe True ((== auth) . Just) newFileBasicAuth
   XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
     FADD _rcps -> noFile FROk
-    FPUT -> (,Nothing) <$> receiveServerFile fr
-    FDEL -> (,Nothing) <$> deleteServerFile fr
+    FPUT -> noFile =<< receiveServerFile fr
+    FDEL -> noFile =<< deleteServerFile fr
     FGET rDhKey -> sendServerFile fr rDhKey
-    FACK -> (,Nothing) <$> ackFileReception fId fr
-    -- it should never get to the options below, they are passed in other constructors of XFTPRequest
-    FNEW _ _ -> noFile $ FRErr INTERNAL
+    FACK -> noFile =<< ackFileReception fId fr
+    -- it should never get to the commands below, they are passed in other constructors of XFTPRequest
+    FNEW {} -> noFile $ FRErr INTERNAL
     PING -> noFile FRPong
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
+    createFile :: FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    createFile file rcps = do
+      st <- asks store
+      -- TODO validate body empty
+      -- TODO retry on duplicate IDs?
+      sId <- getFileId
+      rIds <- mapM (const getFileId) rcps
+      let rIdsKeys = L.zipWith FileRecipient rIds rcps
+      ts <- liftIO getSystemTime
+      withFileLog $ \sl -> do
+        logAddFile sl sId file ts
+        logAddRecipients sl sId rIdsKeys
+      r <- runExceptT $ do
+        ExceptT $ atomically $ addFile st sId file ts
+        forM rIdsKeys $ \rcp ->
+          ExceptT $ atomically $ addRecipient st sId rcp
+      pure $ either FRErr (const $ FRSndIds sId rIds) r
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
       -- TODO do not allow repeated file upload

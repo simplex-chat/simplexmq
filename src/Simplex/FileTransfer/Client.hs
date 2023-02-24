@@ -33,7 +33,8 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
-  ( Protocol (..),
+  ( BasicAuth,
+    Protocol (..),
     ProtocolServer (..),
     RecipientId,
     SenderId,
@@ -128,9 +129,10 @@ createXFTPChunk ::
   C.APrivateSignKey ->
   FileInfo ->
   NonEmpty C.APublicVerifyKey ->
+  Maybe BasicAuth ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
-createXFTPChunk c spKey file rsps =
-  sendXFTPCommand c spKey "" (FNEW file rsps) Nothing >>= \case
+createXFTPChunk c spKey file rsps auth_ =
+  sendXFTPCommand c spKey "" (FNEW file rsps auth_) Nothing >>= \case
     (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
