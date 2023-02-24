@@ -252,12 +252,12 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         addFileRetry :: Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
         addFileRetry n ts =
           retryAdd n $ \sId ->
-            (sId <$) <$> addFile st sId file ts
+            const sId <$$> addFile st sId file ts
         addRecipientRetry :: Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
         addRecipientRetry n sId rpk =
           retryAdd n $ \rId ->
             let rcp = FileRecipient rId rpk
-             in (rcp <$) <$> addRecipient st sId rcp
+             in const rcp <$$> addRecipient st sId rcp
         retryAdd :: Int -> (XFTPFileId -> STM (Either XFTPErrorType a)) -> M (Either XFTPErrorType a)
         retryAdd 0 _ = pure $ Left INTERNAL
         retryAdd n add = do
