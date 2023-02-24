@@ -262,9 +262,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         addRecipients :: XFTPFileId -> M (Either XFTPErrorType (NonEmpty FileRecipient))
         addRecipients sId = do
           rcps <- mapM (addRecipientRetry 3 sId) rks
-          pure $ case sequence rcps of
-            Left e -> Left e
-            Right rcps' -> Right rcps'
+          pure $ sequence rcps
         addRecipientRetry :: Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
         addRecipientRetry 0 _ _ = pure $ Left INTERNAL
         addRecipientRetry n sId rpk = do
