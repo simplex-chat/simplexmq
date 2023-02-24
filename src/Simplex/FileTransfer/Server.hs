@@ -102,13 +102,16 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
         forM_ sIds $ \sId -> do
           threadDelay 100000
           atomically (expiredFilePath st sId old)
-            >>= mapM_ (remove $ void $ atomically $ deleteFile st sId)
+            >>= mapM_ (remove $ delete st sId)
       where
-        remove delete filePath =
+        remove del filePath =
           ifM
             (doesFileExist filePath)
-            (removeFile filePath >> delete `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
-            delete
+            (removeFile filePath >> del `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+            del
+        delete st sId = do
+          withFileLog (`logDeleteFile` sId)
+          void $ atomically $ deleteFile st sId
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -274,7 +277,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     deleteServerFile :: FileRec -> M FileResponse
     deleteServerFile FileRec {senderId, filePath} = do
-      withFileLog $ \sl -> logDeleteFile sl senderId
+      withFileLog (`logDeleteFile` senderId)
       r <- runExceptT $ do
         path <- readTVarIO filePath
         ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
@@ -288,7 +291,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     ackFileReception :: RecipientId -> FileRec -> M FileResponse
     ackFileReception rId fr = do
-      withFileLog $ \sl -> logAckFile sl rId
+      withFileLog (`logAckFile` rId)
       st <- asks store
       atomically $ deleteRecipient st rId fr
       pure FROk
