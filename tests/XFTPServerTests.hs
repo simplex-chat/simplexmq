@@ -1,7 +1,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-}
 
 module XFTPServerTests where
 
@@ -38,6 +40,8 @@ xftpServerTests =
         it "should delete file chunk (2 clients)" testFileChunkDelete2
         it "should acknowledge file chunk reception (1 client)" testFileChunkAck
         it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
+      describe "File log" $
+        it "should store file records to log and restore them after server restart" testFileLog
 
 chSize :: Num n => n
 chSize = 128 * 1024
@@ -99,8 +103,9 @@ runTestFileChunkDelete s r = do
   downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
   deleteXFTPChunk s spKey sId
-  liftIO $ readChunk sId
-    `shouldThrow` \(e :: SomeException) -> "openBinaryFile: does not exist" `isInfixOf` show e
+  liftIO $
+    readChunk sId
+      `shouldThrow` \(e :: SomeException) -> "openBinaryFile: does not exist" `isInfixOf` show e
   downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId
@@ -113,7 +118,7 @@ testFileChunkAck2 :: Expectation
 testFileChunkAck2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkAck s r
 
 runTestFileChunkAck :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
-runTestFileChunkAck s r =  do
+runTestFileChunkAck s r = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   bytes <- liftIO $ createTestChunk testChunkPath
@@ -131,3 +136,21 @@ runTestFileChunkAck s r =  do
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+
+testFileLog :: Expectation
+testFileLog = do
+  c <- getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (pure ()) >>= \case
+    Right c -> pure c
+    Left e -> error $ show e
+
+  runRight_ $ do
+    (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+    (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+    bytes <- liftIO $ createTestChunk testChunkPath
+    digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+    let file = FileInfo {sndKey, size = chSize, digest}
+        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+    (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey]
+    uploadXFTPChunk c spKey sId chunkSpec
+
+  pure ()

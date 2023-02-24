@@ -35,6 +35,7 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -42,7 +43,6 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Util
@@ -189,9 +189,13 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     -- TODO retry on duplicate IDs?
     sId <- getFileId
     rIds <- mapM (const getFileId) rcps
+    let rIdsKeys = L.zip rIds rcps
+    withFileLog $ \sl -> do
+      logAddFile sl sId file
+      logAddRecipients sl sId rIdsKeys
     r <- runExceptT $ do
       ExceptT $ atomically $ addFile st sId file
-      forM (L.zip rIds rcps) $ \rcp ->
+      forM rIdsKeys $ \rcp ->
         ExceptT $ atomically $ addRecipient st sId rcp
     noFile $ either FRErr (const $ FRSndIds sId rIds) r
   XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
@@ -215,6 +219,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
+        withFileLog $ \sl -> logPutFile sl senderId fPath
         liftIO $
           runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
             Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
@@ -234,6 +239,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     deleteServerFile :: FileRec -> M FileResponse
     deleteServerFile FileRec {senderId, filePath} = do
+      withFileLog $ \sl -> logDeleteFile sl senderId
       r <- runExceptT $ do
         path <- readTVarIO filePath
         ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
@@ -247,6 +253,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     ackFileReception :: RecipientId -> FileRec -> M FileResponse
     ackFileReception rId fr = do
+      withFileLog $ \sl -> logAckFile sl rId
       st <- asks store
       atomically $ deleteRecipient st rId fr
       pure FROk
