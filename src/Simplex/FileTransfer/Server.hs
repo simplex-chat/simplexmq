@@ -237,41 +237,34 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     createFile :: FileStore -> FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
     createFile st file rks = do
-      -- TODO validate body empty
       ts <- liftIO getSystemTime
-      addFileRetry 3 ts >>= \case
-        Left e -> pure $ FRErr e
-        Right sId -> do
-          addRecipients sId >>= \case
-            Left e -> pure $ FRErr e
-            Right rcps -> do
-              withFileLog $ \sl -> do
-                logAddFile sl sId file ts
-                logAddRecipients sl sId rcps
-              let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
-              pure $ FRSndIds sId rIds
+      r <- runExceptT $ do
+        -- TODO validate body empty
+        sId <- ExceptT $ addFileRetry 3 ts
+        rcps <- mapM (ExceptT . addRecipientRetry 3 sId) rks
+        withFileLog $ \sl -> do
+          logAddFile sl sId file ts
+          logAddRecipients sl sId rcps
+        let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
+        pure $ FRSndIds sId rIds
+      pure $ either FRErr id r
       where
         addFileRetry :: Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
-        addFileRetry 0 _ = pure $ Left INTERNAL
-        addFileRetry n ts = do
-          sId <- getFileId
-          atomically (addFile st sId file ts) >>= \case
-            Left DUPLICATE_ -> addFileRetry (n - 1) ts
-            Left e -> pure $ Left e
-            Right _ -> pure $ Right sId
-        addRecipients :: XFTPFileId -> M (Either XFTPErrorType (NonEmpty FileRecipient))
-        addRecipients sId = do
-          rcps <- mapM (addRecipientRetry 3 sId) rks
-          pure $ sequence rcps
+        addFileRetry n ts =
+          retryAdd n $ \sId ->
+            (sId <$) <$> addFile st sId file ts
         addRecipientRetry :: Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
-        addRecipientRetry 0 _ _ = pure $ Left INTERNAL
-        addRecipientRetry n sId rpk = do
-          rId <- getFileId
-          let rcp = FileRecipient rId rpk
-          atomically (addRecipient st sId rcp) >>= \case
-            Left DUPLICATE_ -> addRecipientRetry (n - 1) sId rpk
-            Left e -> pure $ Left e
-            Right _ -> pure $ Right rcp
+        addRecipientRetry n sId rpk =
+          retryAdd n $ \rId ->
+            let rcp = FileRecipient rId rpk
+             in (rcp <$) <$> addRecipient st sId rcp
+        retryAdd :: Int -> (XFTPFileId -> STM (Either XFTPErrorType a)) -> M (Either XFTPErrorType a)
+        retryAdd 0 _ = pure $ Left INTERNAL
+        retryAdd n add = do
+          fId <- getFileId
+          atomically (add fId) >>= \case
+            Left DUPLICATE_ -> retryAdd (n - 1) add
+            r -> pure r
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
       -- TODO do not allow repeated file upload
@@ -336,7 +329,7 @@ randomId n = do
 getFileId :: M XFTPFileId
 getFileId = liftIO . getRandomBytes =<< asks (fileIdSize . config)
 
-withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
+withFileLog :: (MonadIO m, MonadReader XFTPEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
 
 incFileStat :: (FileServerStats -> TVar Int) -> M ()
