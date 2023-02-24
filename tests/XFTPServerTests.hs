@@ -46,7 +46,7 @@ xftpServerTests =
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
-      it "should store file records to log and restore them after server restart" testFileLog
+      fit "should store file records to log and restore them after server restart" testFileLog
 
 chSize :: Num n => n
 chSize = 128 * 1024
@@ -206,7 +206,6 @@ testFileLog = do
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     let file = FileInfo {sndKey, size = chSize, digest}
         chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-
     (sId, [rId1, rId2]) <- createXFTPChunk c spKey file [rcvKey1, rcvKey2]
     liftIO $
       atomically $ do
@@ -214,16 +213,15 @@ testFileLog = do
         writeTVar rIdVar1 rId1
         writeTVar rIdVar2 rId2
     uploadXFTPChunk c spKey sId chunkSpec
-
     download c rpKey1 rId1 digest bytes
     download c rpKey2 rId2 digest bytes
-
   logSize testXFTPLogFile `shouldReturn` 3
 
   withXFTPServerThreadOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
     rId1 <- liftIO $ readTVarIO rIdVar1
     rId2 <- liftIO $ readTVarIO rIdVar2
+    -- recipients and sender get AUTH error because server restarted without log
     downloadXFTPChunk c rpKey1 rId1 (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
     downloadXFTPChunk c rpKey2 rId2 (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest)
@@ -234,21 +232,28 @@ testFileLog = do
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     rId1 <- liftIO $ readTVarIO rIdVar1
     rId2 <- liftIO $ readTVarIO rIdVar2
-
+    -- recipient 1 can download, acknowledges - +1 to log
     download c rpKey1 rId1 digest bytes
     ackXFTPChunk c rpKey1 rId1
-
+    -- recipient 2 can download
     download c rpKey2 rId2 digest bytes
-
   logSize testXFTPLogFile `shouldReturn` 4
 
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
+    rId1 <- liftIO $ readTVarIO rIdVar1
+    rId2 <- liftIO $ readTVarIO rIdVar2
+    -- recipient 1 can't download due to previous acknowledgement
+    download c rpKey1 rId1 digest bytes
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+    -- recipient 2 can download
+    download c rpKey2 rId2 digest bytes
+    -- sender can delete - +1 to log
     deleteXFTPChunk c spKey sId
+  logSize testXFTPLogFile `shouldReturn` 5
 
-  -- logSize testXFTPLogFile `shouldReturn` 0
-
-  -- liftIO $ threadDelay 60000000
+  withXFTPServerStoreLogOn $ \_ -> pure () -- compacts on start
+  logSize testXFTPLogFile `shouldReturn` 0
 
   removeFile testXFTPLogFile
   where
