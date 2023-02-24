@@ -120,7 +120,7 @@ sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fI
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
         withFile filePath ReadMode $ \h -> do
           hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-          sendFile h send chunkSize
+          sendFile h send $ fromIntegral chunkSize
       done
 
 createXFTPChunk ::

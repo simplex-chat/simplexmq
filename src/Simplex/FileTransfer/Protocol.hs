@@ -335,8 +335,12 @@ data XFTPErrorType
     AUTH
   | -- | incorrent file size
     SIZE
+  | -- | storage quota exceeded
+    QUOTA
   | -- | incorrent file digest
     DIGEST
+  | -- | file encryption/decryption failed
+    CRYPTO
   | -- | no expected file body in request/response or no file on the server
     NO_FILE
   | -- | unexpected file body
@@ -356,7 +360,9 @@ instance Encoding XFTPErrorType where
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
     SIZE -> "SIZE"
+    QUOTA -> "QUOTA"
     DIGEST -> "DIGEST"
+    CRYPTO -> "CRYPTO"
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
@@ -370,7 +376,9 @@ instance Encoding XFTPErrorType where
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
       "SIZE" -> pure SIZE
+      "QUOTA" -> pure QUOTA
       "DIGEST" -> pure DIGEST
+      "CRYPTO" -> pure CRYPTO
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO

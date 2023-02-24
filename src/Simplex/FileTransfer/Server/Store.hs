@@ -9,9 +9,11 @@ module Simplex.FileTransfer.Server.Store
     newFileStore,
     addFile,
     setFilePath,
+    setFilePath',
     addRecipient,
     deleteFile,
     deleteRecipient,
+    expiredFilePath,
     getFile,
     ackFile,
   )
@@ -19,25 +21,29 @@ where
 
 import Control.Concurrent.STM
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Time.Clock.System (SystemTime (..))
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPErrorType (..), XFTPFileId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, ($>>=))
 
 data FileStore = FileStore
   { files :: TMap SenderId FileRec,
-    recipients :: TMap RecipientId (SenderId, RcvPublicVerifyKey)
+    recipients :: TMap RecipientId (SenderId, RcvPublicVerifyKey),
+    usedStorage :: TVar Int64
   }
 
 data FileRec = FileRec
   { senderId :: SenderId,
     fileInfo :: FileInfo,
     filePath :: TVar (Maybe FilePath),
-    recipientIds :: TVar (Set RecipientId)
+    recipientIds :: TVar (Set RecipientId),
+    createdAt :: SystemTime
   }
   deriving (Eq)
 
@@ -45,25 +51,30 @@ newFileStore :: STM FileStore
 newFileStore = do
   files <- TM.empty
   recipients <- TM.empty
-  pure FileStore {files, recipients}
+  usedStorage <- newTVar 0
+  pure FileStore {files, recipients, usedStorage}
 
-addFile :: FileStore -> SenderId -> FileInfo -> STM (Either XFTPErrorType ())
-addFile FileStore {files} sId fileInfo =
+addFile :: FileStore -> SenderId -> FileInfo -> SystemTime -> STM (Either XFTPErrorType ())
+addFile FileStore {files} sId fileInfo createdAt =
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
-    f <- newFileRec sId fileInfo
+    f <- newFileRec sId fileInfo createdAt
     TM.insert sId f files
     pure $ Right ()
 
-newFileRec :: SenderId -> FileInfo -> STM FileRec
-newFileRec senderId fileInfo = do
+newFileRec :: SenderId -> FileInfo -> SystemTime -> STM FileRec
+newFileRec senderId fileInfo createdAt = do
   recipientIds <- newTVar S.empty
   filePath <- newTVar Nothing
-  pure FileRec {senderId, fileInfo, filePath, recipientIds}
+  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt}
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
-  withFile st sId $ \FileRec {filePath} ->
-    writeTVar filePath (Just fPath) $> Right ()
+  withFile st sId $ \fr -> setFilePath' st fr fPath $> Right ()
+
+setFilePath' :: FileStore -> FileRec -> FilePath -> STM ()
+setFilePath' st FileRec {fileInfo, filePath} fPath = do
+  writeTVar filePath (Just fPath)
+  modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
 
 addRecipient :: FileStore -> SenderId -> (RecipientId, RcvPublicVerifyKey) -> STM (Either XFTPErrorType ())
 addRecipient st@FileStore {recipients} senderId (rId, rKey) =
@@ -77,11 +88,13 @@ addRecipient st@FileStore {recipients} senderId (rId, rKey) =
         TM.insert rId (senderId, rKey) recipients
         pure $ Right ()
 
+-- this function must be called after the file is deleted from the file system
 deleteFile :: FileStore -> SenderId -> STM (Either XFTPErrorType ())
-deleteFile FileStore {files, recipients} senderId = do
+deleteFile FileStore {files, recipients, usedStorage} senderId = do
   TM.lookupDelete senderId files >>= \case
-    Just FileRec {recipientIds} -> do
+    Just FileRec {fileInfo, recipientIds} -> do
       readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
+      modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
       pure $ Right ()
     _ -> pure $ Left AUTH
 
@@ -97,6 +110,14 @@ getFile st party fId = case party of
     TM.lookup fId (recipients st) >>= \case
       Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
       _ -> pure $ Left AUTH
+
+expiredFilePath :: FileStore -> XFTPFileId -> Int64 -> STM (Maybe FilePath)
+expiredFilePath FileStore {files} sId old =
+  TM.lookup sId files
+    $>>= \FileRec {filePath, createdAt} ->
+      if systemSeconds createdAt < old
+        then readTVar filePath
+        else pure Nothing
 
 ackFile :: FileStore -> RecipientId -> STM (Either XFTPErrorType ())
 ackFile st@FileStore {recipients} recipientId = do
