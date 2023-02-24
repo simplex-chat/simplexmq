@@ -87,6 +87,6 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   pure XFTPEnv {config, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
-  = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey)
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey) (Maybe BasicAuth)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing

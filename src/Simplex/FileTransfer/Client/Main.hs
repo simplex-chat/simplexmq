@@ -37,7 +37,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (SenderId, SndPrivateSignKey, SndPublicVerifyKey, XFTPServer)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, SndPublicVerifyKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (ifM, whenM)
 import System.Exit (exitFailure)
@@ -79,7 +79,7 @@ data SendOptions = SendOptions
   { filePath :: FilePath,
     outputDir :: Maybe FilePath,
     numRecipients :: Int,
-    xftpServers :: [XFTPServer],
+    xftpServers :: [XFTPServerWithAuth],
     retryCount :: Int,
     tempPath :: Maybe FilePath
   }
@@ -113,7 +113,7 @@ data RandomFileOptions = RandomFileOptions
 defaultRetryCount :: Int
 defaultRetryCount = 3
 
-defaultXFTPServers :: NonEmpty XFTPServer
+defaultXFTPServers :: NonEmpty XFTPServerWithAuth
 defaultXFTPServers = L.fromList ["xftp://vr0bXzm4iKkLvleRMxLznTS-lHjXEyXunxn_7VJckk4=@localhost:443"]
 
 cliCommandP :: Parser CliCommand
@@ -275,14 +275,14 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       -- TODO unshuffle chunks
       pure $ map snd sentChunks
       where
-        uploadFileChunk :: XFTPClientAgent -> TVar StdGen -> NonEmpty XFTPServer -> (Int, XFTPChunkSpec) -> ExceptT CLIError IO (Int, SentFileChunk)
+        uploadFileChunk :: XFTPClientAgent -> TVar StdGen -> NonEmpty XFTPServerWithAuth -> (Int, XFTPChunkSpec) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a gen srvs (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}) = do
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519)
           chInfo@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
-          xftpServer <- liftIO $ getXFTPServer gen srvs
+          ProtoServerWithAuth xftpServer auth <- liftIO $ getXFTPServer gen srvs
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
-          (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey chInfo $ L.map fst rKeys
+          (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey chInfo (L.map fst rKeys) auth
           withRetry retryCount $ uploadXFTPChunk c spKey sndId chunkSpec
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
@@ -293,7 +293,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
             hSeek h AbsoluteSeek $ fromIntegral chunkOffset
             digest <- LC.sha512Hash <$> LB.hGet h (fromIntegral chunkSize)
             pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
-        getXFTPServer :: TVar StdGen -> NonEmpty XFTPServer -> IO XFTPServer
+        getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
         getXFTPServer gen = \case
           srv :| [] -> pure srv
           servers -> do
