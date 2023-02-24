@@ -41,7 +41,7 @@ import System.IO
 data FileStoreLogRecord
   = AddFile SenderId FileInfo SystemTime
   | PutFile SenderId FilePath
-  | AddRecipients SenderId (NonEmpty (RecipientId, RcvPublicVerifyKey))
+  | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
   | AckFile RecipientId
 
@@ -73,7 +73,7 @@ logAddFile s = logFileStoreRecord s .:. AddFile
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()
 logPutFile s = logFileStoreRecord s .: PutFile
 
-logAddRecipients :: StoreLog 'WriteMode -> SenderId -> NonEmpty (RecipientId, RcvPublicVerifyKey) -> IO ()
+logAddRecipients :: StoreLog 'WriteMode -> SenderId -> NonEmpty FileRecipient -> IO ()
 logAddRecipients s = logFileStoreRecord s .: AddRecipients
 
 logDeleteFile :: StoreLog 'WriteMode -> SenderId -> IO ()
@@ -123,6 +123,6 @@ writeFileStore s FileStore {files, recipients} = do
       where
         getRcp rId = case M.lookup rId allRcps of
           Just (sndId, rKey)
-            | sndId == senderId -> Right (rId, rKey)
+            | sndId == senderId -> Right $ FileRecipient rId rKey
             | otherwise -> Left $ "sender ID for recipient ID " <> bshow rId <> " does not match FileRec"
           Nothing -> Left $ "recipient ID " <> bshow rId <> " not found"

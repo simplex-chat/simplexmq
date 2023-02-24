@@ -218,7 +218,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     -- TODO retry on duplicate IDs?
     sId <- getFileId
     rIds <- mapM (const getFileId) rcps
-    let rIdsKeys = L.zip rIds rcps
+    let rIdsKeys = L.zipWith FileRecipient rIds rcps
     ts <- liftIO getSystemTime
     withFileLog $ \sl -> do
       logAddFile sl sId file ts
