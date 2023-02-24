@@ -46,7 +46,7 @@ xftpServerTests =
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
-      fit "should store file records to log and restore them after server restart" testFileLog
+      it "should store file records to log and restore them after server restart" testFileLog
 
 chSize :: Num n => n
 chSize = 128 * 1024

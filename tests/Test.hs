@@ -42,7 +42,7 @@ main = do
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
-        fdescribe "XFTP" $ do
+        describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
