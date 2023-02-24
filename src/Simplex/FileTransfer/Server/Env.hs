@@ -35,13 +35,13 @@ data XFTPServerConfig = XFTPServerConfig
     fileIdSize :: Int,
     storeLogFile :: Maybe FilePath,
     filesPath :: FilePath,
-    -- | set to False to prohibit creating new queues
-    fileSizeQuota :: Maybe Int64,
-    -- | simple password that the clients need to pass in handshake to be able to create new queues
-    allowNewFiles :: Bool,
     -- | server storage quota
+    fileSizeQuota :: Maybe Int64,
+    -- | set to False to prohibit creating new files
+    allowNewFiles :: Bool,
+    -- | simple password that the clients need to pass in handshake to be able to create new files
     newFileBasicAuth :: Maybe BasicAuth,
-    -- | time after which the messages can be removed from the queues and check interval, seconds
+    -- | time after which the files can be removed and check interval, seconds
     fileExpiration :: Maybe ExpirationConfig,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
