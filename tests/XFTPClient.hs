@@ -37,18 +37,6 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
     run 0 hs = test hs
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
--- withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
--- withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
-
--- withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
--- withSmpServerConfigOn t cfg' port' =
---   serverBracket
---     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
---     (pure ())
-
--- withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
--- withSmpServerThreadOn t = withSmpServerConfigOn t cfg
-
 withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile}
 

@@ -216,10 +216,10 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     sId <- getFileId
     rIds <- mapM (const getFileId) rcps
     let rIdsKeys = L.zip rIds rcps
-    withFileLog $ \sl -> do
-      logAddFile sl sId file
-      logAddRecipients sl sId rIdsKeys
     ts <- liftIO getSystemTime
+    withFileLog $ \sl -> do
+      logAddFile sl sId file ts
+      logAddRecipients sl sId rIdsKeys
     r <- runExceptT $ do
       ExceptT $ atomically $ addFile st sId file ts
       forM rIdsKeys $ \rcp ->
