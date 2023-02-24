@@ -261,7 +261,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
             Right _ -> pure $ Right sId
         addRecipients :: XFTPFileId -> M (Either XFTPErrorType (NonEmpty FileRecipient))
         addRecipients sId = do
-          rcps <- traverse (addRecipientRetry 3 sId) rks
+          rcps <- mapM (addRecipientRetry 3 sId) rks
           case sequence rcps of
             Left e -> pure $ Left e
             Right rcps' -> pure $ Right rcps'
