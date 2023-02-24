@@ -178,9 +178,7 @@ smpServerCLI cfgPath logPath =
                       _ -> enableStoreLog $> messagesPath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
-              newQueueBasicAuth = case lookupValue "AUTH" "create_password" ini of
-                Right auth -> either error Just . strDecode $ encodeUtf8 auth
-                _ -> Nothing,
+              newQueueBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
               messageExpiration = Just defaultMessageExpiration,
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini

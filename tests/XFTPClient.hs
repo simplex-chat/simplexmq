@@ -11,7 +11,7 @@ import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Test.Hspec
 
@@ -77,6 +77,10 @@ testXFTPServerConfig =
       fileIdSize = 16,
       storeLogFile = Nothing,
       filesPath = xftpServerFiles,
+      fileSizeQuota = Nothing,
+      allowNewFiles = True,
+      newFileBasicAuth = Nothing,
+      fileExpiration = Just defaultFileExpiration,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
