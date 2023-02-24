@@ -248,6 +248,8 @@ testFileLog = do
 
   -- logSize testXFTPLogFile `shouldReturn` 0
 
+  -- liftIO $ threadDelay 60000000
+
   removeFile testXFTPLogFile
   where
     download c rpKey rId digest bytes = do

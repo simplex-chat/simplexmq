@@ -146,10 +146,7 @@ strListP = listItem `A.sepBy'` A.char ','
 -- relies on sepBy1 never returning an empty list
 instance StrEncoding a => StrEncoding (L.NonEmpty a) where
   strEncode = strEncodeList . L.toList
-  strP = L.fromList <$> listItem' `A.sepBy1'` A.char ','
-    where
-      listItem' :: StrEncoding a => Parser a
-      listItem' = parseAll strP <$?> A.takeTill (== ',')
+  strP = L.fromList <$> listItem `A.sepBy1'` A.char ','
 
 instance (StrEncoding a, Ord a) => StrEncoding (Set a) where
   strEncode = strEncodeList . S.toList

@@ -31,9 +31,10 @@ import Data.Time.Clock.System (SystemTime)
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (bshow, whenM)
+import Simplex.Messaging.Util (bshow, whenM, (<$?>))
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
@@ -55,10 +56,13 @@ instance StrEncoding FileStoreLogRecord where
     A.choice
       [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP),
         "FPUT " *> (PutFile <$> strP_ <*> strP),
-        "FADD " *> (AddRecipients <$> strP_ <*> strP),
+        "FADD " *> (AddRecipients <$> strP_ <*> rcpsP),
         "FDEL " *> (DeleteFile <$> strP),
         "FACK " *> (AckFile <$> strP)
       ]
+    where
+      rcpsP = L.fromList <$> listItem `A.sepBy1'` A.char ','
+      listItem = parseAll strP <$?> A.takeTill (== ',')
 
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
