@@ -246,8 +246,10 @@ testFileLog = do
     download c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 4
 
+  withXFTPServerStoreLogOn $ \_ -> pure () -- ack is compacted - -1 from log
+  logSize testXFTPLogFile `shouldReturn` 3
+
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
-    -- ack is compacted - -1 from log
     sId <- liftIO $ readTVarIO sIdVar
     rId1 <- liftIO $ readTVarIO rIdVar1
     rId2 <- liftIO $ readTVarIO rIdVar2
