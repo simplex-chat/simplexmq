@@ -53,6 +53,7 @@ jobs:
         run: |
           mv $(cabal list-bin smp-server) smp-server-ubuntu-20_04-x86-64
           mv $(cabal list-bin ntf-server) ntf-server-ubuntu-20_04-x86-64
+          mv $(cabal list-bin xftp-server) xftp-server-ubuntu-20_04-x86-64
 
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
@@ -80,6 +81,7 @@ jobs:
             LICENSE
             smp-server-ubuntu-20_04-x86-64
             ntf-server-ubuntu-20_04-x86-64
+            xftp-server-ubuntu-20_04-x86-64
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
