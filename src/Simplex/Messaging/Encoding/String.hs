@@ -75,9 +75,9 @@ instance StrEncoding Str where
   strEncode = unStr
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
 
-instance StrEncoding FilePath where
-  strEncode = strEncode
-  strDecode = strDecode
+instance StrEncoding String where
+  strEncode = strEncode . B.pack
+  strP = B.unpack <$> strP
 
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s

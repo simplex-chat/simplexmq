@@ -31,7 +31,8 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( CommandError (..),
+  ( BasicAuth,
+    CommandError (..),
     Protocol (..),
     ProtocolEncoding (..),
     ProtocolErrorType (..),
@@ -157,7 +158,7 @@ instance Protocol XFTPErrorType FileResponse where
     _ -> Nothing
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> FileCommand FPSender
+  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> Maybe BasicAuth -> FileCommand FPSender
   FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand FPSender
   FPUT :: FileCommand FPSender
   FDEL :: FileCommand FPSender
@@ -183,7 +184,7 @@ type XFTPFileId = ByteString
 instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
   encodeProtocol _v = \case
-    FNEW file rKeys -> e (FNEW_, ' ', file, rKeys)
+    FNEW file rKeys auth_ -> e (FNEW_, ' ', file, rKeys, auth_)
     FADD rKeys -> e (FADD_, ' ', rKeys)
     FPUT -> e FPUT_
     FDEL -> e FDEL_
@@ -220,7 +221,7 @@ instance ProtocolEncoding XFTPErrorType FileCmd where
   protocolP _v = \case
     FCT SSender tag ->
       FileCmd SSender <$> case tag of
-        FNEW_ -> FNEW <$> _smpP <*> smpP
+        FNEW_ -> FNEW <$> _smpP <*> smpP <*> smpP
         FADD_ -> FADD <$> _smpP
         FPUT_ -> pure FPUT
         FDEL_ -> pure FDEL
@@ -335,8 +336,12 @@ data XFTPErrorType
     AUTH
   | -- | incorrent file size
     SIZE
+  | -- | storage quota exceeded
+    QUOTA
   | -- | incorrent file digest
     DIGEST
+  | -- | file encryption/decryption failed
+    CRYPTO
   | -- | no expected file body in request/response or no file on the server
     NO_FILE
   | -- | unexpected file body
@@ -356,7 +361,9 @@ instance Encoding XFTPErrorType where
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
     SIZE -> "SIZE"
+    QUOTA -> "QUOTA"
     DIGEST -> "DIGEST"
+    CRYPTO -> "CRYPTO"
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
@@ -370,7 +377,9 @@ instance Encoding XFTPErrorType where
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
       "SIZE" -> pure SIZE
+      "QUOTA" -> pure QUOTA
       "DIGEST" -> pure DIGEST
+      "CRYPTO" -> pure CRYPTO
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO

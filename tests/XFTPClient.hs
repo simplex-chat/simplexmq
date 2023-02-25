@@ -11,7 +11,7 @@ import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Test.Hspec
 
@@ -37,11 +37,17 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
     run 0 hs = test hs
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
+withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile}
+
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
   serverBracket
     (`runXFTPServerBlocking` cfg)
     (pure ())
+
+withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
 
 withXFTPServer :: IO a -> IO a
 withXFTPServer = withXFTPServerCfg testXFTPServerConfig . const
@@ -70,6 +76,9 @@ xftpServerFiles = "tests/tmp/xftp-server-files"
 xftpServerFiles2 :: FilePath
 xftpServerFiles2 = "tests/tmp/xftp-server-files2"
 
+testXFTPLogFile :: FilePath
+testXFTPLogFile = "tests/tmp/xftp-server-store.log"
+
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =
   XFTPServerConfig
@@ -77,6 +86,10 @@ testXFTPServerConfig =
       fileIdSize = 16,
       storeLogFile = Nothing,
       filesPath = xftpServerFiles,
+      fileSizeQuota = Nothing,
+      allowNewFiles = True,
+      newFileBasicAuth = Nothing,
+      fileExpiration = Just defaultFileExpiration,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",

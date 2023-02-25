@@ -91,9 +91,8 @@ module Simplex.Messaging.Crypto
     -- * AES256 AEAD-GCM scheme
     Key (..),
     IV (..),
+    GCMIV (unGCMIV), -- constructor is not exported
     AuthTag (..),
-    encryptAES,
-    decryptAES,
     encryptAEAD,
     decryptAEAD,
     encryptAESNoPad,
@@ -101,7 +100,10 @@ module Simplex.Messaging.Crypto
     authTagSize,
     randomAesKey,
     randomIV,
+    randomGCMIV,
     ivSize,
+    gcmIVSize,
+    gcmIV,
 
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
@@ -121,7 +123,6 @@ module Simplex.Messaging.Crypto
     sbKey,
     unsafeSbKey,
     randomSbKey,
-    cbAuthTagSize,
 
     -- * pseudo-random bytes
     pseudoRandomBytes,
@@ -172,7 +173,6 @@ import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
@@ -771,11 +771,19 @@ instance ToJSON IV where
 instance FromJSON IV where
   parseJSON = fmap IV . strParseJSON "IV"
 
+-- | GCMIV bytes newtype.
+newtype GCMIV = GCMIV {unGCMIV :: ByteString}
+
+gcmIV :: ByteString -> Either CryptoError GCMIV
+gcmIV s
+  | B.length s == gcmIVSize = Right $ GCMIV s
+  | otherwise = Left CryptoIVError
+
 newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
 
 instance Encoding AuthTag where
-  smpEncode = B.pack . map w2c . BA.unpack . AES.unAuthTag . unAuthTag
-  smpP = AuthTag . AES.AuthTag . BA.pack . map c2w . B.unpack <$> A.take authTagSize
+  smpEncode = BA.convert . unAuthTag
+  smpP = AuthTag . AES.AuthTag . BA.convert <$> A.take authTagSize
 
 -- | Certificate fingerpint newtype.
 --
@@ -801,50 +809,47 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
--- | AEAD-GCM encryption with empty associated data.
+-- | AEAD-GCM encryption with associated data.
 --
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
-encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
-encryptAES key iv paddedLen = encryptAEAD key iv paddedLen ""
-
--- | AEAD-GCM encryption.
---
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
+-- Used as part of double ratchet encryption.
+-- This function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
 encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEAD aesKey ivBytes paddedLen ad msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- liftEither $ pad msg paddedLen
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
 
-encryptAESNoPad :: Key -> IV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+-- Used to encrypt WebRTC frames.
+-- This function requires 12 bytes IV, it does not transform IV.
+encryptAESNoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAESNoPad key iv = encryptAEADNoPad key iv ""
 
-encryptAEADNoPad :: Key -> IV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEADNoPad aesKey ivBytes ad msg = do
-  aead <- initAEAD @AES256 aesKey ivBytes
+  aead <- initAEADGCM aesKey ivBytes
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
 
--- | AEAD-GCM decryption with empty associated data.
+-- | AEAD-GCM decryption with associated data.
 --
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
-decryptAES :: Key -> IV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
-decryptAES key iv = decryptAEAD key iv ""
-
--- | AEAD-GCM decryption.
---
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
+-- Used as part of double ratchet encryption.
+-- This function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
+-- To make it compatible with WebCrypto we will need to start using initAEADGCM.
 decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
   aead <- initAEAD @AES256 aesKey ivBytes
   liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
 
-decryptAESNoPad :: Key -> IV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+-- Used to decrypt WebRTC frames.
+-- This function requires 12 bytes IV, it does not transform IV.
+decryptAESNoPad :: Key -> GCMIV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAESNoPad key iv = decryptAEADNoPad key iv ""
 
-decryptAEADNoPad :: Key -> IV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
-decryptAEADNoPad aesKey ivBytes ad msg (AuthTag authTag) = do
-  aead <- initAEAD @AES256 aesKey ivBytes
-  maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
+decryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
+  aead <- initAEADGCM aesKey iv
+  maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg tag)
 
 maxMsgLen :: Int
 maxMsgLen = 2 ^ (16 :: Int) - 3
@@ -900,12 +905,21 @@ appendMaxLenBS (MLBS s1) (MLBS s2) = MLBS $ s1 <> s2
 maxLength :: forall i. KnownNat i => Int
 maxLength = fromIntegral (natVal $ Proxy @i)
 
+-- this function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
+-- This is used for double ratchet encryption, so to make it compatible with WebCrypto we will need to deprecate it and start using initAEADGCM
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
   iv <- makeIV @c ivBytes
   cryptoFailable $ do
     cipher <- AES.cipherInit aesKey
     AES.aeadInit AES.AEAD_GCM cipher iv
+
+-- this function requires 12 bytes IV, it does not transforms IV.
+initAEADGCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES256)
+initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
+  cipher <- AES.cipherInit aesKey
+  AES.aeadInit AES.AEAD_GCM cipher ivBytes
 
 -- | Random AES256 key.
 randomAesKey :: IO Key
@@ -915,8 +929,14 @@ randomAesKey = Key <$> getRandomBytes aesKeySize
 randomIV :: IO IV
 randomIV = IV <$> getRandomBytes (ivSize @AES256)
 
+randomGCMIV :: IO GCMIV
+randomGCMIV = GCMIV <$> getRandomBytes gcmIVSize
+
 ivSize :: forall c. AES.BlockCipher c => Int
 ivSize = AES.blockSize (undefined :: c)
+
+gcmIVSize :: Int
+gcmIVSize = 12
 
 makeIV :: AES.BlockCipher c => ByteString -> ExceptT CryptoError IO (AES.IV c)
 makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
@@ -992,9 +1012,6 @@ sbDecrypt_ secret (CbNonce nonce) packet
     (tag', c) = B.splitAt 16 packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
-
-cbAuthTagSize :: Int
-cbAuthTagSize = 16
 
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)

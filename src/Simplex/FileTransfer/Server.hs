@@ -8,7 +8,6 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.FileTransfer.Server where
 
@@ -24,9 +23,12 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (intercalate)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
@@ -35,14 +37,15 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RecipientId)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicVerifyKey, RecipientId)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Util
@@ -68,7 +71,7 @@ runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpSer
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
 xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
   restoreServerStats
-  raceAny_ (runServer : serverStatsThread_ cfg) `finally` stopServer
+  raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg) `finally` stopServer
   where
     runServer :: M ()
     runServer = do
@@ -83,6 +86,32 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
     stopServer = do
       withFileLog closeStoreLog
       saveServerStats
+
+    expireFilesThread_ :: XFTPServerConfig -> [M ()]
+    expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]
+    expireFilesThread_ _ = []
+
+    expireFiles :: ExpirationConfig -> M ()
+    expireFiles expCfg = do
+      st <- asks store
+      let interval = checkInterval expCfg * 1000000
+      forever $ do
+        threadDelay interval
+        old <- liftIO $ expireBeforeEpoch expCfg
+        sIds <- M.keysSet <$> readTVarIO (files st)
+        forM_ sIds $ \sId -> do
+          threadDelay 100000
+          atomically (expiredFilePath st sId old)
+            >>= mapM_ (remove $ delete st sId)
+      where
+        remove del filePath =
+          ifM
+            (doesFileExist filePath)
+            (removeFile filePath >> del `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+            del
+        delete st sId = do
+          withFileLog (`logDeleteFile` sId)
+          void $ atomically $ deleteFile st sId
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -167,7 +196,7 @@ data VerificationResult = VRVerified XFTPRequest | VRFailed
 verifyXFTPTransmission :: Maybe C.ASignature -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission sig_ signed fId cmd =
   case cmd of
-    FileCmd SSender (FNEW file rcps) -> pure $ XFTPReqNew file rcps `verifyWith` sndKey file
+    FileCmd SSender (FNEW file rcps auth) -> pure $ XFTPReqNew file rcps auth `verifyWith` sndKey file
     FileCmd SRecipient PING -> pure $ VRVerified XFTPReqPing
     FileCmd party _ -> verifyCmd party
   where
@@ -183,31 +212,63 @@ verifyXFTPTransmission sig_ signed fId cmd =
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
-  XFTPReqNew file rcps -> do
+  XFTPReqNew file rks auth -> do
     st <- asks store
-    -- TODO validate body empty
-    -- TODO retry on duplicate IDs?
-    sId <- getFileId
-    rIds <- mapM (const getFileId) rcps
-    r <- runExceptT $ do
-      ExceptT $ atomically $ addFile st sId file
-      forM (L.zip rIds rcps) $ \rcp ->
-        ExceptT $ atomically $ addRecipient st sId rcp
-    noFile $ either FRErr (const $ FRSndIds sId rIds) r
+    noFile
+      =<< ifM
+        allowNew
+        (createFile st file rks)
+        (pure $ FRErr AUTH)
+    where
+      allowNew = do
+        XFTPServerConfig {allowNewFiles, newFileBasicAuth} <- asks config
+        pure $ allowNewFiles && maybe True ((== auth) . Just) newFileBasicAuth
   XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
     FADD _rcps -> noFile FROk
-    FPUT -> (,Nothing) <$> receiveServerFile fr
-    FDEL -> (,Nothing) <$> deleteServerFile fr
+    FPUT -> noFile =<< receiveServerFile fr
+    FDEL -> noFile =<< deleteServerFile fr
     FGET rDhKey -> sendServerFile fr rDhKey
-    FACK -> (,Nothing) <$> ackFileReception fId fr
-    -- it should never get to the options below, they are passed in other constructors of XFTPRequest
-    FNEW _ _ -> noFile $ FRErr INTERNAL
+    FACK -> noFile =<< ackFileReception fId fr
+    -- it should never get to the commands below, they are passed in other constructors of XFTPRequest
+    FNEW {} -> noFile $ FRErr INTERNAL
     PING -> noFile FRPong
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
+    createFile :: FileStore -> FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    createFile st file rks = do
+      ts <- liftIO getSystemTime
+      r <- runExceptT $ do
+        -- TODO validate body empty
+        sId <- ExceptT $ addFileRetry 3 ts
+        rcps <- mapM (ExceptT . addRecipientRetry 3 sId) rks
+        withFileLog $ \sl -> do
+          logAddFile sl sId file ts
+          logAddRecipients sl sId rcps
+        let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
+        pure $ FRSndIds sId rIds
+      pure $ either FRErr id r
+      where
+        addFileRetry :: Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
+        addFileRetry n ts =
+          retryAdd n $ \sId -> runExceptT $ do
+            ExceptT $ addFile st sId file ts
+            pure sId
+        addRecipientRetry :: Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
+        addRecipientRetry n sId rpk =
+          retryAdd n $ \rId -> runExceptT $ do
+            let rcp = FileRecipient rId rpk
+            ExceptT $ addRecipient st sId rcp
+            pure rcp
+        retryAdd :: Int -> (XFTPFileId -> STM (Either XFTPErrorType a)) -> M (Either XFTPErrorType a)
+        retryAdd 0 _ = pure $ Left INTERNAL
+        retryAdd n add = do
+          fId <- getFileId
+          atomically (add fId) >>= \case
+            Left DUPLICATE_ -> retryAdd (n - 1) add
+            r -> pure r
     receiveServerFile :: FileRec -> M FileResponse
-    receiveServerFile FileRec {senderId, fileInfo, filePath} = case bodyPart of
+    receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
       -- TODO do not allow repeated file upload
       Nothing -> pure $ FRErr SIZE
       Just getBody -> do
@@ -215,10 +276,19 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
+        withFileLog $ \sl -> logPutFile sl senderId fPath
+        st <- asks store
+        quota_ <- asks $ fileSizeQuota . config
         liftIO $
           runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
-            Right () -> atomically $ writeTVar filePath (Just fPath) $> FROk
-            Left e -> (whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError) $> FRErr e
+            Right () -> do
+              used <- readTVarIO $ usedStorage st
+              if maybe False (used + fromIntegral size >) quota_
+                then remove fPath $> FRErr QUOTA
+                else atomically (setFilePath' st fr fPath) $> FROk
+            Left e -> remove fPath $> FRErr e
+        where
+          remove fPath = whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
 
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rDhKey = do
@@ -234,6 +304,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     deleteServerFile :: FileRec -> M FileResponse
     deleteServerFile FileRec {senderId, filePath} = do
+      withFileLog (`logDeleteFile` senderId)
       r <- runExceptT $ do
         path <- readTVarIO filePath
         ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
@@ -247,6 +318,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     ackFileReception :: RecipientId -> FileRec -> M FileResponse
     ackFileReception rId fr = do
+      withFileLog (`logAckFile` rId)
       st <- asks store
       atomically $ deleteRecipient st rId fr
       pure FROk
@@ -259,7 +331,7 @@ randomId n = do
 getFileId :: M XFTPFileId
 getFileId = liftIO . getRandomBytes =<< asks (fileIdSize . config)
 
-withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
+withFileLog :: (MonadIO m, MonadReader XFTPEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
 
 incFileStat :: (FileServerStats -> TVar Int) -> M ()
