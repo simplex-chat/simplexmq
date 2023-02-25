@@ -78,7 +78,7 @@ cryptoTests = do
   describe "lazy secretbox" $ do
     testLazySecretBox
     testLazySecretBoxFile
-  fdescribe "AES GCM" $ do
+  describe "AES GCM" $ do
     testAESGCM
   describe "X509 key encoding" $ do
     describe "Ed25519" $ testEncoding C.SEd25519

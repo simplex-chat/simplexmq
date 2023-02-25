@@ -103,6 +103,7 @@ module Simplex.Messaging.Crypto
     randomGCMIV,
     ivSize,
     gcmIVSize,
+    gcmIV,
 
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
@@ -763,11 +764,12 @@ instance Encoding IV where
   smpP = IV <$> A.take (ivSize @AES256)
 
 -- | GCMIV bytes newtype.
-newtype GCMIV = GCMIV {unGCMIV :: ByteString}
+newtype GCMIV = GCMIV ByteString
 
-instance Encoding GCMIV where
-  smpEncode = unGCMIV
-  smpP = GCMIV <$> A.take gcmIVSize
+gcmIV :: ByteString -> Either CryptoError GCMIV
+gcmIV s
+  | B.length s == gcmIVSize = Right $ GCMIV s
+  | otherwise = Left CryptoIVError
 
 newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
 
