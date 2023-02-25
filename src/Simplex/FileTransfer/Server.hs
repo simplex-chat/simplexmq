@@ -8,7 +8,6 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.FileTransfer.Server where
 
@@ -29,7 +28,7 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
-import Data.Time.Clock.System (getSystemTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
@@ -213,11 +212,12 @@ verifyXFTPTransmission sig_ signed fId cmd =
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
-  XFTPReqNew file rcps auth ->
+  XFTPReqNew file rks auth -> do
+    st <- asks store
     noFile
       =<< ifM
         allowNew
-        (createFile file rcps)
+        (createFile st file rks)
         (pure $ FRErr AUTH)
     where
       allowNew = do
@@ -235,23 +235,38 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
-    createFile file rcps = do
-      st <- asks store
-      -- TODO validate body empty
-      -- TODO retry on duplicate IDs?
-      sId <- getFileId
-      rIds <- mapM (const getFileId) rcps
-      let rIdsKeys = L.zipWith FileRecipient rIds rcps
+    createFile :: FileStore -> FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    createFile st file rks = do
       ts <- liftIO getSystemTime
-      withFileLog $ \sl -> do
-        logAddFile sl sId file ts
-        logAddRecipients sl sId rIdsKeys
       r <- runExceptT $ do
-        ExceptT $ atomically $ addFile st sId file ts
-        forM rIdsKeys $ \rcp ->
-          ExceptT $ atomically $ addRecipient st sId rcp
-      pure $ either FRErr (const $ FRSndIds sId rIds) r
+        -- TODO validate body empty
+        sId <- ExceptT $ addFileRetry 3 ts
+        rcps <- mapM (ExceptT . addRecipientRetry 3 sId) rks
+        withFileLog $ \sl -> do
+          logAddFile sl sId file ts
+          logAddRecipients sl sId rcps
+        let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
+        pure $ FRSndIds sId rIds
+      pure $ either FRErr id r
+      where
+        addFileRetry :: Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
+        addFileRetry n ts =
+          retryAdd n $ \sId -> runExceptT $ do
+            ExceptT $ addFile st sId file ts
+            pure sId
+        addRecipientRetry :: Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
+        addRecipientRetry n sId rpk =
+          retryAdd n $ \rId -> runExceptT $ do
+            let rcp = FileRecipient rId rpk
+            ExceptT $ addRecipient st sId rcp
+            pure rcp
+        retryAdd :: Int -> (XFTPFileId -> STM (Either XFTPErrorType a)) -> M (Either XFTPErrorType a)
+        retryAdd 0 _ = pure $ Left INTERNAL
+        retryAdd n add = do
+          fId <- getFileId
+          atomically (add fId) >>= \case
+            Left DUPLICATE_ -> retryAdd (n - 1) add
+            r -> pure r
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
       -- TODO do not allow repeated file upload
@@ -316,7 +331,7 @@ randomId n = do
 getFileId :: M XFTPFileId
 getFileId = liftIO . getRandomBytes =<< asks (fileIdSize . config)
 
-withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
+withFileLog :: (MonadIO m, MonadReader XFTPEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
 
 incFileStat :: (FileServerStats -> TVar Int) -> M ()
