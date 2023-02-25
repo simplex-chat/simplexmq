@@ -91,7 +91,7 @@ module Simplex.Messaging.Crypto
     -- * AES256 AEAD-GCM scheme
     Key (..),
     IV (..),
-    GCMIV, -- constructor is not exported
+    GCMIV (unGCMIV), -- constructor is not exported
     AuthTag (..),
     encryptAEAD,
     decryptAEAD,
@@ -172,7 +172,6 @@ import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
@@ -764,7 +763,7 @@ instance Encoding IV where
   smpP = IV <$> A.take (ivSize @AES256)
 
 -- | GCMIV bytes newtype.
-newtype GCMIV = GCMIV ByteString
+newtype GCMIV = GCMIV {unGCMIV :: ByteString}
 
 gcmIV :: ByteString -> Either CryptoError GCMIV
 gcmIV s
@@ -774,8 +773,8 @@ gcmIV s
 newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
 
 instance Encoding AuthTag where
-  smpEncode = B.pack . map w2c . BA.unpack . AES.unAuthTag . unAuthTag
-  smpP = AuthTag . AES.AuthTag . BA.pack . map c2w . B.unpack <$> A.take authTagSize
+  smpEncode = BA.convert . unAuthTag
+  smpP = AuthTag . AES.AuthTag . BA.convert <$> A.take authTagSize
 
 -- | Certificate fingerpint newtype.
 --
