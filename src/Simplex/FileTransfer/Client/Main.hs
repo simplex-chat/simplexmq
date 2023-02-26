@@ -230,7 +230,7 @@ cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath} = do
   let (_, fileName) = splitFileName filePath
   (encPath, fdRcv, fdSnd, chunkSpecs, uploadedSize, encSize) <- encryptFile fileName
-  liftIO $ printProgress "Uploading file..."
+  liftIO $ printNoNewLine "Uploading file..."
   sentChunks <- uploadFile chunkSpecs uploadedSize encSize
   whenM (doesFileExist encPath) $ removeFile encPath
   -- TODO if only small chunks, use different default size
@@ -238,7 +238,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     let fdRcvs = createRcvFileDescriptions fdRcv sentChunks
         fdSnd' = createSndFileDescription fdSnd sentChunks
     (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
-    printProgress "File uploaded!"
+    printNoNewLine "File uploaded!"
     putStrLn "\nPass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
     putStrLn "Sender file description:"
@@ -288,7 +288,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey chInfo (L.map fst rKeys) auth
           withRetry retryCount $ uploadXFTPChunk c spKey sndId chunkSpec
-          liftIO $ printProgress $ "Uploaded " <> show ((uploaded * 100) `div` encSize) <> "%"
+          liftIO $ printProgress "Uploaded" uploaded encSize
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
           pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
@@ -375,7 +375,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
-      liftIO $ printProgress "Downloading file..."
+      liftIO $ printNoNewLine "Downloading file..."
       let downloadedSize = tail $ scanl' (\s FileChunk {chunkSize} -> s + fromIntegral (unFileSize chunkSize)) 0 chunks
       chunkPaths <- forM (zip chunks downloadedSize) $ downloadFileChunk a encPath size
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
@@ -385,7 +385,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       path <- decryptFile encSize chunkPaths key nonce
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
-      liftIO $ printProgress $ "File downloaded: " <> path
+      liftIO $ printNoNewLine $ "File downloaded: " <> path
       liftIO $ putStrLn "\nFile description can't be used again"
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileSize Int64 -> (FileChunk, Int64) -> ExceptT CLIError IO FilePath
     downloadFileChunk a encPath (FileSize encSize) (FileChunk {chunkNo, chunkSize, digest, replicas = replica : _}, downloaded) = do
@@ -394,7 +394,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       c <- withRetry retryCount $ getXFTPServerClient a server
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
       withRetry retryCount $ downloadXFTPChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
-      liftIO $ printProgress $ "Downloaded " <> show ((downloaded * 100) `div` encSize) <> "%"
+      liftIO $ printProgress "Downloaded" downloaded encSize
       pure chunkPath
     downloadFileChunk _ _ _ _ = throwError $ CLIError "chunk has no replicas"
     decryptFile :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
@@ -430,8 +430,11 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath} 
       withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
     acknowledgeFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
-printProgress :: String -> IO ()
-printProgress s = do
+printProgress :: String -> Int64 -> Int64 -> IO ()
+printProgress s part total = printNoNewLine $ s <> " " <> show ((part * 100) `div` total) <> "%"
+
+printNoNewLine :: String -> IO ()
+printNoNewLine s = do
   putStr $ s <> replicate (max 0 $ 25 - length s) ' ' <> "\r"
   hFlush stdout
 
