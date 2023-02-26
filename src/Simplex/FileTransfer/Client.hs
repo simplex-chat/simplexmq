@@ -53,7 +53,8 @@ data XFTPClient = XFTPClient
   }
 
 data XFTPClientConfig = XFTPClientConfig
-  { networkConfig :: NetworkConfig
+  { networkConfig :: NetworkConfig,
+    uploadTimeoutPerMb :: Int
   }
 
 data XFTPChunkBody = XFTPChunkBody
@@ -72,7 +73,11 @@ data XFTPChunkSpec = XFTPChunkSpec
 type XFTPClientError = ProtocolClientError XFTPErrorType
 
 defaultXFTPClientConfig :: XFTPClientConfig
-defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
+defaultXFTPClientConfig =
+  XFTPClientConfig
+    { networkConfig = defaultNetworkConfig,
+      uploadTimeoutPerMb = 10000000 -- 15 seconds
+    }
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfig} disconnected = runExceptT $ do
@@ -100,12 +105,13 @@ xftpClientError = \case
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
+sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req
+      reqTimeout = (\XFTPChunkSpec {chunkSize} -> (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb) <$> chunkSpec_
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
@@ -115,6 +121,7 @@ sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fI
       _ -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
   where
+    mb = 1024 * 1024
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
     streamBody t send done = do
       send $ byteString t
@@ -149,6 +156,7 @@ downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
       Just chunkPart -> do
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
+        -- timeout download in the same way as upload
         withExceptT PCEResponseError $
           receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
             whenM (doesFileExist filePath) (removeFile filePath) >> throwError e

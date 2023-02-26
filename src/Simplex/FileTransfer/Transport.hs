@@ -41,6 +41,9 @@ data XFTPRcvChunkSpec = XFTPRcvChunkSpec
 supportedFileServerVRange :: VersionRange
 supportedFileServerVRange = mkVersionRange 1 1
 
+fileBlockSize :: Int
+fileBlockSize = 16 * 1024
+
 sendFile :: Handle -> (Builder -> IO ()) -> Word32 -> IO ()
 sendFile h send = go
   where
@@ -55,7 +58,7 @@ sendEncFile h send = go
   where
     go sbState 0 = do
       -- TODO remove padding when HTTP2 issue is fixed
-      let authTag = BA.convert (LC.sbAuth sbState) <> B.replicate (xftpBlockSize - C.authTagSize) '#'
+      let authTag = BA.convert (LC.sbAuth sbState) <> B.replicate (fileBlockSize - C.authTagSize) '#'
       send $ byteString authTag
     go sbState sz =
       getFileChunk h sz >>= \ch -> do
@@ -67,7 +70,7 @@ sendEncFile h send = go
 
 getFileChunk :: Handle -> Word32 -> IO ByteString
 getFileChunk h sz =
-  B.hGet h xftpBlockSize >>= \case
+  B.hGet h fileBlockSize >>= \case
     "" -> ioe_EOF
     ch -> pure $ B.take (fromIntegral sz) ch -- sz >= xftpBlockSize
 
@@ -75,7 +78,7 @@ receiveFile :: (Int -> IO ByteString) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorTy
 receiveFile getBody = receiveFile_ receive
   where
     receive h sz = do
-      ch <- getBody xftpBlockSize
+      ch <- getBody fileBlockSize
       let chSize = fromIntegral $ B.length ch
       if
           | chSize > sz -> pure $ Left SIZE
@@ -87,7 +90,7 @@ receiveEncFile :: (Int -> IO ByteString) -> LC.SbState -> XFTPRcvChunkSpec -> Ex
 receiveEncFile getBody = receiveFile_ . receive
   where
     receive sbState h sz = do
-      ch <- getBody xftpBlockSize
+      ch <- getBody fileBlockSize
       let chSize = fromIntegral $ B.length ch
       if
           | chSize > sz + authSz -> pure $ Left SIZE

@@ -44,7 +44,7 @@ testXFTPCLISendReceive = withXFTPServer $ do
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
-    `shouldReturn` [ "File uploaded!",
+    `shouldReturn` [ uploadProgress,
                      "Pass file descriptions to the recipient(s):",
                      fdRcv1,
                      fdRcv2,
@@ -65,7 +65,9 @@ testXFTPCLISendReceive = withXFTPServer $ do
         `shouldReturn` [party <> " file description", "File download size: 20mb", "File server(s):", testXFTPServerStr <> ": 20mb"]
     testReceiveFile fd fileName file = do
       xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
-        `shouldReturn` ["File received: " <> recipientFiles </> fileName, "File description cannot be used again"]
+        `shouldReturn` [ downloadProgress fileName,
+                         "File description can't be used again"
+                       ]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLISendReceive2servers :: IO ()
@@ -78,7 +80,7 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
-    `shouldReturn` [ "File uploaded!",
+    `shouldReturn` [ uploadProgress,
                      "Pass file descriptions to the recipient(s):",
                      fdRcv1,
                      fdRcv2,
@@ -101,7 +103,9 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
           srv2 `shouldContain` testXFTPServerStr2
         _ -> print srvs >> error "more than 2 servers returned"
       xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
-        `shouldReturn` ["File received: " <> recipientFiles </> fileName, "File description cannot be used again"]
+        `shouldReturn` [ downloadProgress fileName,
+                         "File description can't be used again"
+                       ]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLIDelete :: IO ()
@@ -114,7 +118,7 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
-    `shouldReturn` [ "File uploaded!",
+    `shouldReturn` [ uploadProgress,
                      "Pass file descriptions to the recipient(s):",
                      fdRcv1,
                      fdRcv2,
@@ -124,7 +128,9 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   xftp ["del", fdRcv1]
     `shouldThrow` anyException
   xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp"]
-    `shouldReturn` ["File received: " <> recipientFiles </> "testfile", "File description cannot be used again"]
+    `shouldReturn` [ downloadProgress "testfile",
+                     "File description can't be used again"
+                   ]
   LB.readFile (recipientFiles </> "testfile") `shouldReturn` file
   fs1 <- listDirectory xftpServerFiles
   fs2 <- listDirectory xftpServerFiles2
@@ -137,3 +143,25 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
     `shouldThrow` anyException
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
+
+uploadProgress :: String
+uploadProgress =
+  "Uploading file...        \r\
+  \Uploaded 40%             \r\
+  \Uploaded 80%             \r\
+  \Uploaded 85%             \r\
+  \Uploaded 90%             \r\
+  \Uploaded 95%             \r\
+  \Uploaded 100%            \r\
+  \File uploaded!           \r"
+
+downloadProgress :: FilePath -> String
+downloadProgress fileName =
+  "Downloading file...      \r\
+  \Downloaded 40%           \r\
+  \Downloaded 80%           \r\
+  \Downloaded 85%           \r\
+  \Downloaded 90%           \r\
+  \Downloaded 95%           \r\
+  \Downloaded 100%          \r"
+    <> ("File downloaded: " <> recipientFiles </> fileName <> "\r")

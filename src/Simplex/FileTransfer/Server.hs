@@ -187,6 +187,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
               done
             Right t -> do
               send $ byteString t
+              -- timeout sending file in the same way as receiving
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
                 withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
           done
@@ -279,6 +280,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         withFileLog $ \sl -> logPutFile sl senderId fPath
         st <- asks store
         quota_ <- asks $ fileSizeQuota . config
+        -- TODO timeout file upload, remove partially uploaded files
         liftIO $
           runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
             Right () -> do
