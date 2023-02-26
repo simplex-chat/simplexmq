@@ -86,7 +86,8 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfi
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost networkConfig host
-  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost port (Just keyHash) Nothing http2Config disconnected
+  let usePort = if null port then "443" else port
+  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config disconnected
   pure XFTPClient {http2Client, config}
 
 xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
