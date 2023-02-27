@@ -7,9 +7,11 @@
 
 module Simplex.FileTransfer.Server.Main where
 
+import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
+import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
@@ -18,6 +20,7 @@ import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -51,7 +54,7 @@ xftpServerCLI cfgPath logPath = do
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
-    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath} = do
+    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota} = do
       clearDirIfExists cfgPath
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
@@ -95,7 +98,7 @@ xftpServerCLI cfgPath logPath = do
                \\n\
                \[FILES]\n"
             <> ("path: " <> filesPath <> "\n")
-            <> "# storage_quota: 100gb\n"
+            <> ("storage_quota: " <> B.unpack (strEncode fileSizeQuota) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -151,7 +154,8 @@ data InitOptions = InitOptions
     signAlgorithm :: SignAlgorithm,
     ip :: HostName,
     fqdn :: Maybe HostName,
-    filesPath :: FilePath
+    filesPath :: FilePath,
+    fileSizeQuota :: FileSize Int64
   }
   deriving (Show)
 
@@ -200,4 +204,10 @@ cliCommandP cfgPath logPath iniFile =
               <> short 'p'
               <> help "Path to the directory to store files"
               <> metavar "PATH"
+          )
+        <*> strOption
+          ( long "quota"
+              <> short 'q'
+              <> help "File storage quota (e.g. 100gb)"
+              <> metavar "QUOTA"
           )

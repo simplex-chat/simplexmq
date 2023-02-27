@@ -46,6 +46,7 @@ import Data.List (foldl', groupBy, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
+import Data.String
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import GHC.Generics (Generic)
@@ -214,6 +215,9 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
       kb = 1024
       mb = 1024 * kb
       gb = 1024 * mb
+
+instance (Integral a, Show a) => IsString (FileSize a) where
+  fromString = either error id . strDecode . B.pack
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
 groupReplicasByServer defChunkSize =
