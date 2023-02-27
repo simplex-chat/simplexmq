@@ -40,7 +40,7 @@ fileDesc :: FileDescription 'FPRecipient
 fileDesc =
   FileDescription
     { party = SRecipient,
-      size = FileSize $ 26 * mb,
+      size = FileSize $ mb 26,
       digest = FileDigest "abc",
       key = testSbKey,
       nonce = testCbNonce,
@@ -76,7 +76,7 @@ fileDesc =
           FileChunk
             { chunkNo = 4,
               digest = chunkDigest,
-              chunkSize = FileSize $ 2 * mb,
+              chunkSize = FileSize $ mb 2,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example2.com", replicaId, replicaKey},
                   FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
@@ -85,7 +85,7 @@ fileDesc =
         ]
     }
   where
-    defaultChunkSize = FileSize $ 8 * mb
+    defaultChunkSize = FileSize $ mb 8
     replicaId = ChunkReplicaId "abc"
     replicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"

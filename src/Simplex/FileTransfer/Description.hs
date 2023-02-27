@@ -208,20 +208,20 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strP =
     FileSize
       <$> A.choice
-        [ (gb *) <$> A.decimal <* "gb",
-          (mb *) <$> A.decimal <* "mb",
-          (kb *) <$> A.decimal <* "kb",
+        [ gb <$> A.decimal <* "gb",
+          mb <$> A.decimal <* "mb",
+          kb <$> A.decimal <* "kb",
           A.decimal
         ]
 
-kb :: Integral a => a
-kb = 1024
+kb :: Integral a => a -> a
+kb n = 1024 * n
 
-mb :: Integral a => a
-mb = 1024 * kb
+mb :: Integral a => a -> a
+mb n = 1024 * kb n
 
-gb :: Integral a => a
-gb = 1024 * mb
+gb :: Integral a => a -> a
+gb n = 1024 * mb n
 
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
