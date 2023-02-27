@@ -48,6 +48,11 @@ module Simplex.Messaging.Agent.Client
     agentNtfCreateSubscription,
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
+    agentXFTPCreateChunk,
+    agentXFTPUploadChunk,
+    agentXFTPDownloadChunk,
+    agentXFTPDeleteChunk,
+    agentXFTPAckChunk,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -112,6 +117,9 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
+import qualified Simplex.FileTransfer.Client as X
+import qualified Simplex.FileTransfer.Protocol as XP
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Protocol
@@ -149,8 +157,11 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
+    RecipientId,
     SMPMsgMeta (..),
+    SenderId,
     SndPublicVerifyKey,
+    XFTPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
@@ -169,9 +180,13 @@ type SMPClientVar = TMVar (Either AgentErrorType SMPClient)
 
 type NtfClientVar = TMVar (Either AgentErrorType NtfClient)
 
+type XFTPClientVar = TMVar (Either AgentErrorType X.XFTPClient)
+
 type SMPTransportSession = TransportSession SMP.BrokerMsg
 
 type NtfTransportSession = TransportSession NtfResponse
+
+type XFTPTransportSession = TransportSession XP.FileResponse
 
 data AgentClient = AgentClient
   { active :: TVar Bool,
@@ -182,6 +197,8 @@ data AgentClient = AgentClient
     smpClients :: TMap SMPTransportSession SMPClientVar,
     ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfTransportSession NtfClientVar,
+    xftpServers :: TVar [XFTPServer],
+    xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar NetworkConfig,
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
@@ -256,6 +273,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   smpClients <- TM.empty
   ntfServers <- newTVar ntf
   ntfClients <- TM.empty
+  xftpServers <- newTVar []
+  xftpClients <- TM.empty
   useNetworkConfig <- newTVar netCfg
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
@@ -290,6 +309,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
         smpClients,
         ntfServers,
         ntfClients,
+        xftpServers,
+        xftpClients,
         useNetworkConfig,
         subscrConns,
         activeSubs,
@@ -419,6 +440,10 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+
+getXFTPServerClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m X.XFTPClient
+getXFTPServerClient c tSess =
+  undefined
 
 getClientVar :: forall a s. TransportSession s -> TMap (TransportSession s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
 getClientVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup tSess clients
@@ -911,6 +936,26 @@ agentNtfCheckSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
 agentNtfDeleteSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -> NtfToken -> m ()
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
+
+agentXFTPCreateChunk :: AgentMonad m => AgentClient -> C.APrivateSignKey -> XP.FileInfo -> NonEmpty C.APublicVerifyKey -> m (SenderId, NonEmpty RecipientId)
+agentXFTPCreateChunk c spKey file rsps =
+  undefined
+
+agentXFTPUploadChunk :: AgentMonad m => AgentClient -> C.APrivateSignKey -> XP.XFTPFileId -> X.XFTPChunkSpec -> m ()
+agentXFTPUploadChunk c spKey fId chunkSpec =
+  undefined
+
+agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> C.APrivateSignKey -> XP.XFTPFileId -> XFTPRcvChunkSpec -> m ()
+agentXFTPDownloadChunk c rpKey fId chunkSpec =
+  undefined
+
+agentXFTPDeleteChunk :: AgentMonad m => AgentClient -> C.APrivateSignKey -> SenderId -> m ()
+agentXFTPDeleteChunk c spKey sId =
+  undefined
+
+agentXFTPAckChunk :: AgentMonad m => AgentClient -> C.APrivateSignKey -> RecipientId -> m ()
+agentXFTPAckChunk c rpKey rId =
+  undefined
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do

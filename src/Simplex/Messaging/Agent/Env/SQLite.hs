@@ -38,7 +38,6 @@ import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
-import Simplex.FileTransfer.Client.Agent
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (UserId)
@@ -213,12 +212,10 @@ newNtfSubSupervisor qSize = do
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 data XFTPSupervisor = XFTPSupervisor
-  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    xftpAgent :: XFTPClientAgent
+  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
   }
 
 newXFTPSupervisor :: STM XFTPSupervisor
 newXFTPSupervisor = do
   xftpWorkers <- TM.empty
-  xftpAgent <- newXFTPAgent defaultXFTPClientAgentConfig
-  pure XFTPSupervisor {xftpWorkers, xftpAgent}
+  pure XFTPSupervisor {xftpWorkers}

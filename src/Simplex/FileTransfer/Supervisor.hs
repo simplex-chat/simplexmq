@@ -58,16 +58,12 @@ addWorker c srv_ = do
 
 runXFTPWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPWorker c srv doWork = do
-  xa <- asks $ xftpAgent . xftpSupervisor
-  xc <- liftXFTP $ getXFTPServerClient xa srv
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AORcvNetwork throwWhenInactive (runXftpOperation xc)
+    agentOperationBracket c AORcvNetwork throwWhenInactive runXftpOperation
   where
-    liftXFTP :: ExceptT XFTPClientAgentError IO XFTPClient -> m XFTPClient
-    liftXFTP = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
-    runXftpOperation :: XFTPClient -> m ()
-    runXftpOperation xc = do
+    runXftpOperation :: m ()
+    runXftpOperation = do
       nextFile <- withStore' c (`getNextRcvXFTPAction` srv)
       case nextFile of
         Nothing -> noWorkToDo
@@ -86,8 +82,8 @@ runXFTPWorker c srv doWork = do
         XADownloadChunk -> do
           -- downloadFileChunk -- ? which chunk to download? read encoded / parameterized XFTPAction instead?
           undefined
-    downloadFileChunk :: XFTPClient -> FileChunk -> m ()
-    downloadFileChunk a chunk = do
+    downloadFileChunk :: FileChunk -> m ()
+    downloadFileChunk chunk = do
       -- generate chunk spec? offset is not needed if chunks are saved into separate files
       -- download chunk
       -- save chunk
