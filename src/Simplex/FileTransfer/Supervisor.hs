@@ -8,7 +8,10 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Supervisor where
+module Simplex.FileTransfer.Supervisor
+  ( receiveFile,
+  )
+where
 
 import Control.Monad
 import Control.Monad.Except
@@ -24,40 +27,24 @@ import Simplex.Messaging.Agent.Protocol (AgentErrorType (INTERNAL))
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import UnliftIO
 import qualified UnliftIO.Exception as E
 
--- add temporary folder to save files to agent environment
-
--- can be part of agent
--- Maybe XFTPServer - Nothing is for worker dedicated to file decryption
-data XFTPSupervisorEnv = XFTPSupervisorEnv
-  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    xftpAgent :: XFTPClientAgent
-  }
-
--- TODO remove, replace uses with AgentMonad
-type XFTPMonad m = (MonadUnliftIO m, MonadReader XFTPSupervisorEnv m, MonadError AgentErrorType m)
-
-receiveFile :: XFTPMonad m => AgentClient -> FileDescription 'FPRecipient -> m ()
+receiveFile :: AgentMonad m => AgentClient -> FileDescription 'FPRecipient -> m ()
 receiveFile c fd@FileDescription {chunks} = do
-  -- same as cli: validate file description
-  -- createRcvFile
-  -- for each chunk create worker task to download and save chunk
-  -- worker that successfully receives last chunk should create task to decrypt file
+  withStore' c (`createRcvFile` fd)
   forM_ chunks downloadChunk
   where
-    downloadChunk :: XFTPMonad m => FileChunk -> m ()
+    downloadChunk :: AgentMonad m => FileChunk -> m ()
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
       -- createRcvFileAction
       addWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
-addWorker :: XFTPMonad m => AgentClient -> Maybe XFTPServer -> m ()
+addWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
 addWorker c srv_ = do
-  ws <- asks xftpWorkers
+  ws <- asks $ xftpWorkers . xftpSupervisor
   atomically (TM.lookup srv_ ws) >>= \case
     Nothing -> do
       doWork <- newTMVarIO ()
@@ -69,26 +56,26 @@ addWorker c srv_ = do
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
 
-runXFTPWorker :: forall m. XFTPMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
+runXFTPWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPWorker c srv doWork = do
-  xa <- asks xftpAgent
+  xa <- asks $ xftpAgent . xftpSupervisor
   xc <- liftXFTP $ getXFTPServerClient xa srv
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AORcvNetwork throwWhenInactive (runXftpOperation xc)
   where
     liftXFTP :: ExceptT XFTPClientAgentError IO XFTPClient -> m XFTPClient
-    liftXFTP = either (throwError . INTERNAL . show) return <=< liftIO . runExceptT
+    liftXFTP = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
     runXftpOperation :: XFTPClient -> m ()
     runXftpOperation xc = do
-      -- nextFile <- withStore' c (`getNextRcvXFTPAction` srv) -- TODO in AgentMonad
-      let nextFile = Nothing
+      nextFile <- withStore' c (`getNextRcvXFTPAction` srv)
       case nextFile of
         Nothing -> noWorkToDo
         Just a@(fd@RcvFileDescription {}, _) -> do
-          -- ri <- asks $ reconnectInterval . config
+          aCfg <- asks (config :: Env -> AgentConfig)
           let savedDelay = 1000000 -- next delay saved on chunk
-              ri = defaultReconnectInterval {initialInterval = savedDelay}
+              ari = reconnectInterval (aCfg :: AgentConfig)
+              ri = ari {initialInterval = savedDelay}
           withRetryInterval ri $ \loop ->
             processAction a
               `catchError` const loop -- filter errors
@@ -110,7 +97,7 @@ runXFTPWorker c srv doWork = do
       -- if all chunks are received, create task to decrypt file / or decrypt in same worker?
       undefined
 
-runXFTPLocalWorker :: forall m. XFTPMonad m => AgentClient -> TMVar () -> m ()
+runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork

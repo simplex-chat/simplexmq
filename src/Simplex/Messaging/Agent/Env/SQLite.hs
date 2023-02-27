@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
+    XFTPSupervisor (..),
   )
 where
 
@@ -37,6 +38,7 @@ import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
+import Simplex.FileTransfer.Client.Agent
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (UserId)
@@ -47,7 +49,7 @@ import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -173,7 +175,8 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
-    ntfSupervisor :: NtfSupervisor
+    ntfSupervisor :: NtfSupervisor,
+    xftpSupervisor :: XFTPSupervisor
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -185,7 +188,8 @@ newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} =
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+  xftpSupervisor <- atomically newXFTPSupervisor
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpSupervisor}
 
 createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
@@ -207,3 +211,14 @@ newNtfSubSupervisor qSize = do
   ntfWorkers <- TM.empty
   ntfSMPWorkers <- TM.empty
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+
+data XFTPSupervisor = XFTPSupervisor
+  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    xftpAgent :: XFTPClientAgent
+  }
+
+newXFTPSupervisor :: STM XFTPSupervisor
+newXFTPSupervisor = do
+  xftpWorkers <- TM.empty
+  xftpAgent <- newXFTPAgent defaultXFTPClientAgentConfig
+  pure XFTPSupervisor {xftpWorkers, xftpAgent}

@@ -124,6 +124,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getNtfRcvQueue,
     setConnectionNtfs,
     -- File transfer
+    createRcvFile,
     getNextRcvXFTPAction,
     getNextRcvXFTPLocalAction,
 
@@ -165,7 +166,7 @@ import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
 import Network.Socket (ServiceName)
-import Simplex.FileTransfer.Description (FileDescription)
+import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
@@ -1710,20 +1711,50 @@ ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAct
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
 ntfSubAndSMPAction (NtfSubSMPAction action) = (Nothing, Just action)
 
-upsertXftpServer_ :: DB.Connection -> XFTPServer -> IO ()
-upsertXftpServer_ db ProtocolServer {host, port, keyHash} = do
-  -- insert into xftp_servers
-  undefined
+createXFTPServer_ :: DB.Connection -> XFTPServer -> IO Int64
+createXFTPServer_ db newSrv@ProtocolServer {host, port, keyHash} =
+  getXFTPServerId_ db newSrv >>= \case
+    Right srvId -> pure srvId
+    Left _ -> insertNewServer_
+  where
+    insertNewServer_ = do
+      DB.execute db "INSERT INTO xftp_servers (xftp_host, xftp_port, xftp_key_hash) VALUES (?,?,?)" (host, port, keyHash)
+      insertedRowId db
 
-createRcvFile :: FileDescription 'FPRecipient -> IO ()
-createRcvFile fd = do
-  -- insert into rcv_file_chunk_replicas
-  -- insert into rcv_file_chunks
-  -- insert into rcv_files
-  undefined
+getXFTPServerId_ :: DB.Connection -> XFTPServer -> IO (Either StoreError Int64)
+getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
+  firstRow fromOnly SEXFTPServerNotFound $
+    DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-getRcvFile :: Int64 -> IO (Either StoreError RcvFileDescription)
-getRcvFile fileId = do
+createRcvFile :: DB.Connection -> FileDescription 'FPRecipient -> IO ()
+createRcvFile db fd@FileDescription {chunks} = do
+  rcvFileId <- insertRcvFile fd
+  forM_ chunks $ \fc@FileChunk {replicas} -> do
+    chunkId <- insertChunk fc rcvFileId
+    forM_ replicas $ \replica -> insertReplica replica chunkId
+  where
+    insertRcvFile FileDescription {size, digest, key, nonce, chunkSize} = do
+      DB.execute
+        db
+        "INSERT INTO rcv_files (size, digest, key, iv, chunk_size) VALUES (?,?,?,?,?)"
+        (size, digest, key, nonce, chunkSize)
+      insertedRowId db
+    insertChunk FileChunk {chunkNo, chunkSize, digest} rcvFileId = do
+      DB.execute
+        db
+        "INSERT INTO rcv_file_chunks (rcv_file_id, chunk_no, chunk_size, digest) VALUES (?,?,?,?)"
+        (rcvFileId, chunkNo, chunkSize, digest)
+      insertedRowId db
+    insertReplica FileChunkReplica {server, replicaId, replicaKey} chunkId = do
+      srvId <- createXFTPServer_ db server
+      DB.execute
+        db
+        "INSERT INTO rcv_file_chunk_replicas (rcv_file_chunk_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?)"
+        (chunkId, srvId, replicaId, replicaKey)
+      insertedRowId db
+
+getRcvFile :: DB.Connection -> Int64 -> IO (Either StoreError RcvFileDescription)
+getRcvFile db fileId = do
   -- select from rcv_file_chunk_replicas
   -- select from rcv_file_chunks
   -- select from rcv_files
@@ -1732,23 +1763,23 @@ getRcvFile fileId = do
 
 -- ? should return RcvFileDescription in same transaction
 -- ? so we can check if all replicas are received?
-updateRcvFileChunkReplicaReceived :: Int64 -> IO ()
-updateRcvFileChunkReplicaReceived replicaId = do
+updateRcvFileChunkReplicaReceived :: DB.Connection -> Int64 -> IO ()
+updateRcvFileChunkReplicaReceived db replicaId = do
   -- update rcv_file_chunk_replicas
   undefined
 
-updateRcvFileChunkReplicaRetries :: Int64 -> IO ()
-updateRcvFileChunkReplicaRetries replicaId = do
+updateRcvFileChunkReplicaRetries :: DB.Connection -> Int64 -> IO ()
+updateRcvFileChunkReplicaRetries db replicaId = do
   -- update rcv_file_chunk_replicas
   undefined
 
-updateRcvFile :: Int64 -> IO ()
-updateRcvFile replicaId = do
+updateRcvFile :: DB.Connection -> Int64 -> IO ()
+updateRcvFile db replicaId = do
   -- update rcv_files - completed, temp_path, save_path
   undefined
 
-getUnreceivedRcvFiles :: IO [RcvFileDescription]
-getUnreceivedRcvFiles = do
+getUnreceivedRcvFiles :: DB.Connection -> IO [RcvFileDescription]
+getUnreceivedRcvFiles db = do
   -- get unique file ids from rcv_files where complete = false
   -- getRcvFile for each file id
   undefined

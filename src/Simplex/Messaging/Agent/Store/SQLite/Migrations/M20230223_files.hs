@@ -14,12 +14,12 @@ CREATE TABLE xftp_servers (
   xftp_port TEXT NOT NULL,
   xftp_key_hash BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(xftp_host, xftp_port, xftp_key_hash)
 );
 
 CREATE TABLE rcv_files (
   rcv_file_id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL, -- ?
   size INTEGER NOT NULL, -- ?
   digest BLOB NOT NULL,
   key BLOB NOT NULL,
@@ -40,6 +40,7 @@ CREATE TABLE rcv_file_chunks (
   chunk_size INTEGER NOT NULL,
   digest BLOB NOT NULL,
   -- received INTEGER NOT NULL DEFAULT 0, -- ? duplicate
+  -- acknowledged NOT NULL DEFAULT 0, -- ? duplicate
   temp_path TEXT, -- ? NOT NULL
   next_delay INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -50,7 +51,8 @@ CREATE TABLE rcv_file_chunk_replicas (
   rcv_file_chunk_replica_id INTEGER PRIMARY KEY,
   rcv_file_chunk_id INTEGER NOT NULL REFERENCES rcv_file_chunks ON DELETE CASCADE,
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
-  rcvKey BLOB NOT NULL,
+  replica_id BLOB NOT NULL,
+  replica_key BLOB NOT NULL,
   received INTEGER NOT NULL DEFAULT 0,
   acknowledged INTEGER NOT NULL DEFAULT 0,
   retries INTEGER NOT NULL DEFAULT 0,
