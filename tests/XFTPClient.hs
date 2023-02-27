@@ -97,8 +97,8 @@ testXFTPServerConfig =
       certificateFile = "tests/fixtures/server.crt",
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
-      serverStatsLogFile = "tests/xftp-server-stats.daily.log",
-      serverStatsBackupFile = Nothing,
+      serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
+      serverStatsBackupFile = Just "tests/tmp/xftp-server-stats.log",
       logTLSErrors = True
     }
 

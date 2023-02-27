@@ -123,7 +123,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
-      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks} <- asks serverStats
+      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -137,6 +137,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
           files <- atomically $ periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
           fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
+          filesCount' <- atomically $ swapTVar filesCount 0
+          filesSize' <- atomically $ swapTVar filesSize 0
           hPutStrLn h $
             intercalate
               ","
@@ -149,7 +151,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
                 weekCount files,
                 monthCount files,
                 show fileDownloads',
-                show fileDownloadAcks'
+                show fileDownloadAcks',
+                show filesCount',
+                show filesSize'
               ]
         threadDelay interval
 
@@ -248,6 +252,9 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         withFileLog $ \sl -> do
           logAddFile sl sId file ts
           logAddRecipients sl sId rcps
+        stats <- asks serverStats
+        atomically $ modifyTVar' (filesCreated stats) (+ 1)
+        atomically $ modifyTVar' (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
       pure $ either FRErr id r
@@ -283,39 +290,55 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         st <- asks store
         quota_ <- asks $ fileSizeQuota . config
         -- TODO timeout file upload, remove partially uploaded files
+        stats <- asks serverStats
         liftIO $
           runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
             Right () -> do
               used <- readTVarIO $ usedStorage st
               if maybe False (used + fromIntegral size >) quota_
                 then remove fPath $> FRErr QUOTA
-                else atomically (setFilePath' st fr fPath) $> FROk
+                else do
+                  atomically (setFilePath' st fr fPath)
+                  atomically $ modifyTVar' (filesUploaded stats) (+ 1)
+                  atomically $ modifyTVar' (filesCount stats) (+ 1)
+                  atomically $ modifyTVar' (filesSize stats) (+ fromIntegral size)
+                  pure FROk
             Left e -> remove fPath $> FRErr e
         where
           remove fPath = whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
 
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
-    sendServerFile FileRec {filePath, fileInfo = FileInfo {size}} rDhKey = do
+    sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
         Just path -> do
           (sDhKey, spDhKey) <- liftIO C.generateKeyPair'
           let dhSecret = C.dh' rDhKey spDhKey
           cbNonce <- liftIO C.randomCbNonce
-          pure $ case LC.cbInit dhSecret cbNonce of
-            Right sbState -> (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
-            _ -> (FRErr INTERNAL, Nothing)
+          case LC.cbInit dhSecret cbNonce of
+            Right sbState -> do
+              stats <- asks serverStats
+              atomically $ modifyTVar' (fileDownloads stats) (+ 1)
+              atomically $ updatePeriodStats (filesDownloaded stats) senderId
+              pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
+            _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)
 
     deleteServerFile :: FileRec -> M FileResponse
-    deleteServerFile FileRec {senderId, filePath} = do
+    deleteServerFile FileRec {senderId, fileInfo, filePath} = do
       withFileLog (`logDeleteFile` senderId)
       r <- runExceptT $ do
         path <- readTVarIO filePath
-        ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
+        stats <- asks serverStats
+        ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
         st <- asks store
         void $ atomically $ deleteFile st senderId
+        atomically $ modifyTVar' (filesDeleted stats) (+ 1)
         pure FROk
       either (pure . FRErr) pure r
+      where
+        deletedStats stats = do
+          atomically $ modifyTVar' (filesCount stats) (subtract 1)
+          atomically $ modifyTVar' (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
     logFileError :: SomeException -> IO ()
     logFileError e = logError $ "Error deleting file: " <> tshow e
@@ -325,6 +348,8 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       withFileLog (`logAckFile` rId)
       st <- asks store
       atomically $ deleteRecipient st rId fr
+      stats <- asks serverStats
+      atomically $ modifyTVar' (fileDownloadAcks stats) (+ 1)
       pure FROk
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
@@ -361,7 +386,10 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setFileServerStats s d
+          fs <- readTVarIO . files =<< asks store
+          let _filesCount = length $ M.keys fs
+              _filesSize = M.foldl' (\n -> (n +) . fromIntegral . size . fileInfo) 0 fs
+          atomically $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Left e -> do
