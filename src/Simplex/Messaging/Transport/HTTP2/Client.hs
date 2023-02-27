@@ -123,15 +123,18 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
 closeHTTP2Client :: HTTP2Client -> IO ()
 closeHTTP2Client = mapM_ uninterruptibleCancel . action
 
-sendRequest :: HTTP2Client -> Request -> IO (Either HTTP2ClientError HTTP2Response)
-sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req = do
+sendRequest :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
+sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
   resp <- newEmptyTMVarIO
   atomically $ writeTBQueue reqQ (req, resp)
-  maybe (Left HCResponseTimeout) Right <$> (connTimeout config `timeout` atomically (takeTMVar resp))
+  let reqTimeout = http2RequestTimeout config reqTimeout_
+  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resp))
 
-sendRequestDirect :: HTTP2Client -> Request -> IO (Either HTTP2ClientError HTTP2Response)
-sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req =
-  connTimeout config `timeout` try (sendReq req process) >>= \case
+-- | this function should not be used until HTTP2 is thread safe, use sendRequest
+sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
+sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req reqTimeout_ = do
+  let reqTimeout = http2RequestTimeout config reqTimeout_
+  reqTimeout `timeout` try (sendReq req process) >>= \case
     Just (Right r) -> pure $ Right r
     Just (Left e) -> disconnected $> Left (HCIOError e)
     Nothing -> pure $ Left HCNetworkError
@@ -139,6 +142,9 @@ sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq
     process r = do
       respBody <- getHTTP2Body r $ bodyHeadSize config
       pure HTTP2Response {response = r, respBody}
+
+http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
+http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)
 
 runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (SessionId -> H.Client a) -> IO a
 runHTTP2Client tlsParams caStore tcConfig bufferSize proxyUsername host port keyHash client =
