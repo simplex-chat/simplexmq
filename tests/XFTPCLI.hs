@@ -2,7 +2,7 @@ module XFTPCLI where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString as LB
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Simplex.FileTransfer.Client.Main (xftpClientCLI)
 import System.Directory (createDirectoryIfMissing, getFileSize, listDirectory, removeDirectoryRecursive)
 import System.Environment (withArgs)
@@ -43,14 +43,15 @@ testXFTPCLISendReceive = withXFTPServer $ do
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
-    `shouldReturn` [ uploadProgress,
-                     "Pass file descriptions to the recipient(s):",
-                     fdRcv1,
-                     fdRcv2,
-                     "Sender file description:",
-                     fdSnd
-                   ]
+  progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
+  progress `shouldSatisfy` uploadProgress
+  sendResult
+    `shouldBe` [ "Pass file descriptions to the recipient(s):",
+                 fdRcv1,
+                 fdRcv2,
+                 "Sender file description:",
+                 fdSnd
+               ]
   testInfoFile fdRcv1 "Recipient"
   testReceiveFile fdRcv1 "testfile" file
   testInfoFile fdRcv2 "Recipient"
@@ -64,10 +65,9 @@ testXFTPCLISendReceive = withXFTPServer $ do
       xftp ["info", fd]
         `shouldReturn` [party <> " file description", "File download size: 20mb", "File server(s):", testXFTPServerStr <> ": 20mb"]
     testReceiveFile fd fileName file = do
-      xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
-        `shouldReturn` [ downloadProgress fileName,
-                         "File description can't be used again"
-                       ]
+      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
+      progress `shouldSatisfy` downloadProgress fileName
+      recvResult `shouldBe` ["File description can't be used again"]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLISendReceive2servers :: IO ()
@@ -79,14 +79,15 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
-    `shouldReturn` [ uploadProgress,
-                     "Pass file descriptions to the recipient(s):",
-                     fdRcv1,
-                     fdRcv2,
-                     "Sender file description:",
-                     fdSnd
-                   ]
+  progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
+  progress `shouldSatisfy` uploadProgress
+  sendResult
+    `shouldBe` [ "Pass file descriptions to the recipient(s):",
+                 fdRcv1,
+                 fdRcv2,
+                 "Sender file description:",
+                 fdSnd
+               ]
   testReceiveFile fdRcv1 "testfile" file
   testReceiveFile fdRcv2 "testfile_1" file
   where
@@ -102,10 +103,9 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
           srv1 `shouldContain` testXFTPServerStr
           srv2 `shouldContain` testXFTPServerStr2
         _ -> print srvs >> error "more than 2 servers returned"
-      xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
-        `shouldReturn` [ downloadProgress fileName,
-                         "File description can't be used again"
-                       ]
+      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
+      progress `shouldSatisfy` downloadProgress fileName
+      recvResult `shouldBe` ["File description can't be used again"]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLIDelete :: IO ()
@@ -117,20 +117,20 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
-    `shouldReturn` [ uploadProgress,
-                     "Pass file descriptions to the recipient(s):",
-                     fdRcv1,
-                     fdRcv2,
-                     "Sender file description:",
-                     fdSnd
-                   ]
+  progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
+  progress `shouldSatisfy` uploadProgress
+  sendResult
+    `shouldBe` [ "Pass file descriptions to the recipient(s):",
+                 fdRcv1,
+                 fdRcv2,
+                 "Sender file description:",
+                 fdSnd
+               ]
   xftp ["del", fdRcv1]
     `shouldThrow` anyException
-  xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp"]
-    `shouldReturn` [ downloadProgress "testfile",
-                     "File description can't be used again"
-                   ]
+  progress1 : recvResult <- xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp"]
+  progress1 `shouldSatisfy` downloadProgress "testfile"
+  recvResult `shouldBe` ["File description can't be used again"]
   LB.readFile (recipientFiles </> "testfile") `shouldReturn` file
   fs1 <- listDirectory xftpServerFiles
   fs2 <- listDirectory xftpServerFiles2
@@ -144,24 +144,9 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   where
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
 
-uploadProgress :: String
-uploadProgress =
-  "Uploading file...        \r\
-  \Uploaded 40%             \r\
-  \Uploaded 80%             \r\
-  \Uploaded 85%             \r\
-  \Uploaded 90%             \r\
-  \Uploaded 95%             \r\
-  \Uploaded 100%            \r\
-  \File uploaded!           \r"
+uploadProgress :: String -> Bool
+uploadProgress s = "Uploading file..." `isPrefixOf` s && "File uploaded!" `isInfixOf` s
 
-downloadProgress :: FilePath -> String
-downloadProgress fileName =
-  "Downloading file...      \r\
-  \Downloaded 40%           \r\
-  \Downloaded 80%           \r\
-  \Downloaded 85%           \r\
-  \Downloaded 90%           \r\
-  \Downloaded 95%           \r\
-  \Downloaded 100%          \r"
-    <> ("File downloaded: " <> recipientFiles </> fileName <> "\r")
+downloadProgress :: FilePath -> String -> Bool
+downloadProgress fileName s =
+  "Downloading file..." `isPrefixOf` s && ("File downloaded: " <> recipientFiles </> fileName <> "\r") `isSuffixOf` s
