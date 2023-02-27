@@ -7,7 +7,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Client.Main (xftpClientCLI) where
+module Simplex.FileTransfer.Client.Main
+  ( xftpClientCLI,
+    prepareChunkSizes,
+  )
+where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -51,11 +55,14 @@ import UnliftIO.Directory
 xftpClientVersion :: String
 xftpClientVersion = "0.1.0"
 
-defaultChunkSize :: Word32
-defaultChunkSize = 4 * mb
+chunkSize1 :: Word32
+chunkSize1 = kb 256
 
-smallChunkSize :: Word32
-smallChunkSize = 1 * mb
+chunkSize2 :: Word32
+chunkSize2 = mb 1
+
+chunkSize3 :: Word32
+chunkSize3 = mb 4
 
 fileSizeLen :: Int64
 fileSizeLen = 8
@@ -252,13 +259,14 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
           fileSize' = fromIntegral (B.length fileHdr) + fileSize
           chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
+          defChunkSize = head chunkSizes
           chunkSizes' = map fromIntegral chunkSizes
           encSize = sum chunkSizes'
       encrypt fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fdRcv = FileDescription {party = SRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
-          fdSnd = FileDescription {party = SSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defaultChunkSize, chunks = []}
+          fdRcv = FileDescription {party = SRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdSnd = FileDescription {party = SSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
       where
         encrypt :: ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT CLIError IO ()
@@ -493,15 +501,18 @@ getFileDescription' path =
     AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
 
 prepareChunkSizes :: Int64 -> [Word32]
-prepareChunkSizes 0 = []
-prepareChunkSizes size
-  | size >= defSz = replicate (fromIntegral n1) defaultChunkSize <> prepareChunkSizes remSz
-  | size > defSz `div` 2 = [defaultChunkSize]
-  | otherwise = replicate (fromIntegral n2') smallChunkSize
+prepareChunkSizes size' = prepareSizes size'
   where
-    (n1, remSz) = size `divMod` defSz
-    n2' = let (n2, remSz2) = (size `divMod` fromIntegral smallChunkSize) in if remSz2 == 0 then n2 else n2 + 1
-    defSz = fromIntegral defaultChunkSize :: Int64
+    (smallSize, bigSize) = if size' > size34 chunkSize3 then (chunkSize2, chunkSize3) else (chunkSize1, chunkSize2)
+    size34 sz = (fromIntegral sz * 3) `div` 4
+    prepareSizes 0 = []
+    prepareSizes size
+      | size >= fromIntegral bigSize = replicate (fromIntegral n1) bigSize <> prepareSizes remSz
+      | size > size34 bigSize = [bigSize]
+      | otherwise = replicate (fromIntegral n2') smallSize
+      where
+        (n1, remSz) = size `divMod` fromIntegral bigSize
+        n2' = let (n2, remSz2) = (size `divMod` fromIntegral smallSize) in if remSz2 == 0 then n2 else n2 + 1
 
 prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
 prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
@@ -537,6 +548,7 @@ cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do
   putStrLn $ "File created: " <> filePath
   where
     saveRandomFile h sz = do
-      bytes <- getRandomBytes $ min mb sz
+      bytes <- getRandomBytes $ min mb' sz
       B.hPut h bytes
-      when (sz > mb) $ saveRandomFile h (sz - mb)
+      when (sz > mb') $ saveRandomFile h (sz - mb')
+    mb' = mb 1

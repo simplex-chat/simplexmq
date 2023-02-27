@@ -58,7 +58,7 @@ xftpServerTests =
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
 
 chSize :: Integral a => a
-chSize = 128 * kb
+chSize = kb 128
 
 testChunkPath :: FilePath
 testChunkPath = "tests/tmp/chunk1"
@@ -155,9 +155,9 @@ testWrongChunkSize :: Expectation
 testWrongChunkSize = xftpTest $ \c -> runRight_ $ do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, _rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
-  liftIO $ B.writeFile testChunkPath =<< getRandomBytes (96 * kb)
+  liftIO $ B.writeFile testChunkPath =<< getRandomBytes (kb 96)
   digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
-  let file = FileInfo {sndKey, size = 96 * kb, digest}
+  let file = FileInfo {sndKey, size = kb 96, digest}
   void (createXFTPChunk c spKey file [rcvKey] Nothing)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
 

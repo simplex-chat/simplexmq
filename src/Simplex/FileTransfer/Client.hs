@@ -112,7 +112,7 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
     liftEither . first PCETransportError $
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
-      reqTimeout = (\XFTPChunkSpec {chunkSize} -> (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb) <$> chunkSpec_
+      reqTimeout = (\XFTPChunkSpec {chunkSize} -> (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1) <$> chunkSpec_
   HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
