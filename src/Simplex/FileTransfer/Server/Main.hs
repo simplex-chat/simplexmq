@@ -16,7 +16,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.FileTransfer.Description (FileSize (..))
+import Simplex.FileTransfer.Description (FileSize (..), kb, mb)
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import qualified Simplex.Messaging.Crypto as C
@@ -131,6 +131,7 @@ xftpServerCLI cfgPath logPath = do
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,
               fileSizeQuota = either error unFileSize <$> strDecodeIni "FILES" "storage_quota" ini,
+              allowedChunkSizes = [256 * kb, 1 * mb, 4 * mb],
               allowNewFiles = fromMaybe True $ iniOnOff "AUTH" "new_files" ini,
               newFileBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
               fileExpiration = Just defaultFileExpiration,

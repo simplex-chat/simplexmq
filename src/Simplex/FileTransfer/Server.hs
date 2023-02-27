@@ -238,8 +238,10 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     createFile :: FileStore -> FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
     createFile st file rks = do
-      ts <- liftIO getSystemTime
       r <- runExceptT $ do
+        sizes <- asks $ allowedChunkSizes . config
+        unless (size file `elem` sizes) $ throwError SIZE
+        ts <- liftIO getSystemTime
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry 3 ts
         rcps <- mapM (ExceptT . addRecipientRetry 3 sId) rks

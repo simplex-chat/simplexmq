@@ -19,6 +19,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
+import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
@@ -44,6 +45,7 @@ xftpServerTests =
       it "should delete file chunk (2 clients)" testFileChunkDelete2
       it "should acknowledge file chunk reception (1 client)" testFileChunkAck
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
+      it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
@@ -55,8 +57,8 @@ xftpServerTests =
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
 
-chSize :: Num n => n
-chSize = 128 * 1024
+chSize :: Integral a => a
+chSize = 128 * kb
 
 testChunkPath :: FilePath
 testChunkPath = "tests/tmp/chunk1"
@@ -148,6 +150,16 @@ runTestFileChunkAck s r = do
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+
+testWrongChunkSize :: Expectation
+testWrongChunkSize = xftpTest $ \c -> runRight_ $ do
+  (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey, _rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  liftIO $ B.writeFile testChunkPath =<< getRandomBytes (96 * kb)
+  digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = 96 * kb, digest}
+  void (createXFTPChunk c spKey file [rcvKey] Nothing)
+    `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
 
 testFileChunkExpiration :: Expectation
 testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration} $

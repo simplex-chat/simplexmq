@@ -9,7 +9,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
@@ -28,6 +27,9 @@ module Simplex.FileTransfer.Description
     validateFileDescription,
     groupReplicasByServer,
     replicaServer,
+    kb,
+    mb,
+    gb,
   )
 where
 
@@ -196,13 +198,13 @@ newtype FileSize a = FileSize {unFileSize :: a}
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
     | b' /= 0 = bshow b
-    | kb' /= 0 = bshow kb <> "kb"
-    | mb' /= 0 = bshow mb <> "mb"
-    | otherwise = bshow gb <> "gb"
+    | ks' /= 0 = bshow ks <> "kb"
+    | ms' /= 0 = bshow ms <> "mb"
+    | otherwise = bshow gs <> "gb"
     where
-      (kb, b') = b `divMod` 1024
-      (mb, kb') = kb `divMod` 1024
-      (gb, mb') = mb `divMod` 1024
+      (ks, b') = b `divMod` 1024
+      (ms, ks') = ks `divMod` 1024
+      (gs, ms') = ms `divMod` 1024
   strP =
     FileSize
       <$> A.choice
@@ -211,10 +213,15 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
           (kb *) <$> A.decimal <* "kb",
           A.decimal
         ]
-    where
-      kb = 1024
-      mb = 1024 * kb
-      gb = 1024 * mb
+
+kb :: Integral a => a
+kb = 1024
+
+mb :: Integral a => a
+mb = 1024 * kb
+
+gb :: Integral a => a
+gb = 1024 * mb
 
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack

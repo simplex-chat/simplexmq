@@ -19,6 +19,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
+import Simplex.FileTransfer.Description (mb)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
@@ -122,7 +123,6 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
       _ -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
   where
-    mb = 1024 * 1024
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
     streamBody t send done = do
       send $ byteString t

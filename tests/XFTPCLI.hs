@@ -4,6 +4,7 @@ import Control.Exception (bracket_)
 import qualified Data.ByteString as LB
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Simplex.FileTransfer.Client.Main (xftpClientCLI)
+import Simplex.FileTransfer.Description (mb)
 import System.Directory (createDirectoryIfMissing, getFileSize, listDirectory, removeDirectoryRecursive)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
@@ -31,15 +32,12 @@ senderFiles = "tests/tmp/xftp-sender-files"
 recipientFiles :: FilePath
 recipientFiles = "tests/tmp/xftp-recipient-files"
 
-mb :: Num a => a
-mb = 1024 * 1024
-
 testXFTPCLISendReceive :: IO ()
 testXFTPCLISendReceive = withXFTPServer $ do
   let filePath = senderFiles </> "testfile"
-  xftp ["rand", filePath, "19mb"] `shouldReturn` ["File created: " <> filePath]
+  xftp ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
-  getFileSize filePath `shouldReturn` 19 * mb
+  getFileSize filePath `shouldReturn` 17 * mb
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
@@ -63,7 +61,7 @@ testXFTPCLISendReceive = withXFTPServer $ do
     xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testInfoFile fd party = do
       xftp ["info", fd]
-        `shouldReturn` [party <> " file description", "File download size: 20mb", "File server(s):", testXFTPServerStr <> ": 20mb"]
+        `shouldReturn` [party <> " file description", "File download size: 18mb", "File server(s):", testXFTPServerStr <> ": 18mb"]
     testReceiveFile fd fileName file = do
       progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
       progress `shouldSatisfy` downloadProgress fileName
@@ -73,9 +71,9 @@ testXFTPCLISendReceive = withXFTPServer $ do
 testXFTPCLISendReceive2servers :: IO ()
 testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   let filePath = senderFiles </> "testfile"
-  xftp ["rand", filePath, "19mb"] `shouldReturn` ["File created: " <> filePath]
+  xftp ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
-  getFileSize filePath `shouldReturn` 19 * mb
+  getFileSize filePath `shouldReturn` 17 * mb
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
@@ -95,7 +93,7 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
     testReceiveFile fd fileName file = do
       partyStr : sizeStr : srvStr : srvs <- xftp ["info", fd]
       partyStr `shouldContain` "Recipient file description"
-      sizeStr `shouldBe` "File download size: 20mb"
+      sizeStr `shouldBe` "File download size: 18mb"
       srvStr `shouldBe` "File server(s):"
       case srvs of
         [srv1] -> any (`isInfixOf` srv1) [testXFTPServerStr, testXFTPServerStr2] `shouldBe` True
@@ -111,9 +109,9 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
 testXFTPCLIDelete :: IO ()
 testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   let filePath = senderFiles </> "testfile"
-  xftp ["rand", filePath, "19mb"] `shouldReturn` ["File created: " <> filePath]
+  xftp ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
-  getFileSize filePath `shouldReturn` 19 * mb
+  getFileSize filePath `shouldReturn` 17 * mb
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
