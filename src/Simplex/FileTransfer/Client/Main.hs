@@ -136,8 +136,8 @@ cliCommandP =
         <> command "recv" (info (ReceiveFile <$> receiveP) (progDesc "Receive file"))
         <> command "del" (info (DeleteFile <$> deleteP) (progDesc "Delete file from server(s)"))
         <> command "info" (info (FileDescrInfo <$> infoP) (progDesc "Show file description"))
-        -- <> command "rand" (info (RandomFile <$> randomP) (progDesc "Generate a random file of a given size"))
     )
+    <|> hsubparser (command "rand" (info (RandomFile <$> randomP) (progDesc "Generate a random file of a given size")) <> internal)
   where
     sendP :: Parser SendOptions
     sendP =
@@ -162,11 +162,11 @@ cliCommandP =
         <*> retryCountP
     infoP :: Parser InfoOptions
     infoP = InfoOptions <$> fileDescrArg
-    -- randomP :: Parser RandomFileOptions
-    -- randomP =
-    --   RandomFileOptions
-    --     <$> argument str (metavar "FILE" <> help "Path to save file")
-    --     <*> argument str (metavar "SIZE" <> help "File size (bytes/kb/mb/gb)")
+    randomP :: Parser RandomFileOptions
+    randomP =
+      RandomFileOptions
+        <$> argument str (metavar "FILE" <> help "Path to save file")
+        <*> argument str (metavar "SIZE" <> help "File size (bytes/kb/mb/gb)")
     fileDescrArg = argument str (metavar "FILE" <> help "File description file")
     retryCountP = option auto (long "retry" <> short 'r' <> metavar "RETRY" <> help "Number of network retries" <> value defaultRetryCount <> showDefault)
     temp = optional (strOption $ long "tmp" <> metavar "TMP" <> help "Directory for temporary encrypted file (default: system temp directory)")

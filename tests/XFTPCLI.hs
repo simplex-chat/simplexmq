@@ -13,7 +13,7 @@ import Test.Hspec
 import XFTPClient (testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLITests :: Spec
-xftpCLITests = around_ testBracket . fdescribe "XFTP CLI" $ do
+xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
   it "should send and receive file" testXFTPCLISendReceive
   it "should send and receive file with 2 servers" testXFTPCLISendReceive2servers
   it "should delete file from 2 servers" testXFTPCLIDelete
