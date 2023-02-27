@@ -76,7 +76,7 @@ defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig =
   XFTPClientConfig
     { networkConfig = defaultNetworkConfig,
-      uploadTimeoutPerMb = 10000000 -- 15 seconds
+      uploadTimeoutPerMb = 10000000 -- 10 seconds
     }
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either XFTPClientError XFTPClient)
