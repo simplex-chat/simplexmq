@@ -25,7 +25,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Word (Word32)
 import GHC.IO.Handle.Internals (ioe_EOF)
-import Simplex.FileTransfer.Protocol (XFTPErrorType (..), xftpBlockSize)
+import Simplex.FileTransfer.Protocol (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Version

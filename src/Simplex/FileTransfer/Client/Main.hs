@@ -52,7 +52,7 @@ xftpClientVersion :: String
 xftpClientVersion = "0.1.0"
 
 defaultChunkSize :: Word32
-defaultChunkSize = 8 * mb
+defaultChunkSize = 4 * mb
 
 smallChunkSize :: Word32
 smallChunkSize = 1 * mb
@@ -62,9 +62,6 @@ fileSizeLen = 8
 
 authTagSize :: Int64
 authTagSize = fromIntegral C.authTagSize
-
-mb :: Num a => a
-mb = 1024 * 1024
 
 newtype CLIError = CLIError String
   deriving (Eq, Show, Exception)

@@ -10,6 +10,7 @@ import Data.String (fromString)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
+import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.Messaging.Protocol (XFTPServer)
@@ -87,6 +88,7 @@ testXFTPServerConfig =
       storeLogFile = Nothing,
       filesPath = xftpServerFiles,
       fileSizeQuota = Nothing,
+      allowedChunkSizes = [128 * kb, 256 * kb, 1 * mb, 4 * mb],
       allowNewFiles = True,
       newFileBasicAuth = Nothing,
       fileExpiration = Just defaultFileExpiration,
