@@ -39,7 +39,7 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
 withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile}
+withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
 
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
@@ -80,6 +80,9 @@ xftpServerFiles2 = "tests/tmp/xftp-server-files2"
 testXFTPLogFile :: FilePath
 testXFTPLogFile = "tests/tmp/xftp-server-store.log"
 
+testXFTPStatsBackupFile :: FilePath
+testXFTPStatsBackupFile = "tests/tmp/xftp-server-stats.log"
+
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =
   XFTPServerConfig
@@ -98,7 +101,7 @@ testXFTPServerConfig =
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
-      serverStatsBackupFile = Just "tests/tmp/xftp-server-stats.log",
+      serverStatsBackupFile = Nothing,
       logTLSErrors = True
     }
 

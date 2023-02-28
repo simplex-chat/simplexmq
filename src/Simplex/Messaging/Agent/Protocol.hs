@@ -125,6 +125,8 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Monad (unless)
+import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
@@ -1467,8 +1469,10 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       case B.unpack binary of
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
-          Just size -> liftIO $ do
-            body <- cGet h size
-            s <- getLn h
-            return $ if B.null s then Right body else Left $ CMD SIZE
+          Just size -> runExceptT $ do
+            body <- liftIO $ cGet h size
+            unless (B.length body == size) $ throwError $ CMD SIZE
+            s <- liftIO $ getLn h
+            unless (B.null s) $ throwError $ CMD SIZE
+            pure body
           Nothing -> return . Left $ CMD SYNTAX

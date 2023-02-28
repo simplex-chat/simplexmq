@@ -235,6 +235,7 @@ testFileLog = do
     download c rpKey1 rId1 digest bytes
     download c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 3
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   withXFTPServerThreadOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
@@ -257,6 +258,7 @@ testFileLog = do
     -- recipient 2 can download
     download c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 4
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   withXFTPServerStoreLogOn $ \_ -> pure () -- ack is compacted - -1 from log
   logSize testXFTPLogFile `shouldReturn` 3
@@ -273,11 +275,14 @@ testFileLog = do
     -- sender can delete - +1 to log
     deleteXFTPChunk c spKey sId
   logSize testXFTPLogFile `shouldReturn` 4
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   withXFTPServerStoreLogOn $ \_ -> pure () -- compacts on start
   logSize testXFTPLogFile `shouldReturn` 0
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   removeFile testXFTPLogFile
+  removeFile testXFTPStatsBackupFile
   where
     download c rpKey rId digest bytes = do
       downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
