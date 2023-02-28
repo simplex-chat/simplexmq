@@ -57,7 +57,7 @@ sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go
   where
     go sbState 0 = do
-      -- TODO remove padding when HTTP2 issue is fixed
+      -- TODO padding somehow also solves timing issue in HTTP2 (?)
       let authTag = BA.convert (LC.sbAuth sbState) <> B.replicate (fileBlockSize - C.authTagSize) '#'
       send $ byteString authTag
     go sbState sz =
