@@ -1771,18 +1771,6 @@ updateRcvFileChunkReceived db rId cId chunkTmpPath = do
   DB.execute db "UPDATE rcv_file_chunk_replicas SET received = 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (updatedAt, rId)
   DB.execute db "UPDATE rcv_file_chunks SET tmp_path = ?, updated_at = ? WHERE rcv_file_chunk_id = ?" (chunkTmpPath, updatedAt, cId)
 
--- updateDeviceToken :: DB.Connection -> NtfToken -> DeviceToken -> IO ()
--- updateDeviceToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} (DeviceToken toProvider toToken) = do
---   updatedAt <- getCurrentTime
---   DB.execute
---     db
---     [sql|
---       UPDATE ntf_tokens
---       SET provider = ?, device_token = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
---       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
---     |]
---     (toProvider, toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
-
 updateRcvFileChunkReplicaRetries :: DB.Connection -> Int64 -> IO ()
 updateRcvFileChunkReplicaRetries db replicaId = do
   -- update rcv_file_chunk_replicas
