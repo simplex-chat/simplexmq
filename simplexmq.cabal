@@ -49,6 +49,7 @@ library
       Simplex.FileTransfer.Supervisor
       Simplex.FileTransfer.Transport
       Simplex.FileTransfer.Types
+      Simplex.FileTransfer.Util
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite

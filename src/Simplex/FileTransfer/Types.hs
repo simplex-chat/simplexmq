@@ -9,49 +9,46 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 
 data RcvFileDescription = RcvFileDescription
-  { name :: String,
-    size :: Int64,
+  { rcvFileId :: Int64,
+    name :: String,
+    size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.Key,
     iv :: C.IV,
-    chunkSize :: Word32,
+    chunkSize :: FileSize Word32,
     chunks :: [RcvFileChunk],
     status :: RcvFileStatus
   }
   deriving (Eq, Show)
 
 data RcvFileStatus
-  = RFSAccepted
-  | RFSReceived {tempPath :: FilePath}
-  | RFSDecrypting {tempPath :: FilePath, savePath :: FilePath}
+  = RFSReceiving {tmpPath :: FilePath}
+  | RFSReceived {tmpPath :: FilePath}
+  | RFSDecrypting {tmpPath :: FilePath, savePath :: FilePath}
   | RFSComplete {savePath :: FilePath}
   deriving (Eq, Show)
 
 data RcvFileChunk = RcvFileChunk
-  { chunkNo :: Int,
-    chunkSize :: Word32,
+  { rcvFileChunkId :: Int64,
+    chunkNo :: Int,
+    chunkSize :: FileSize Word32,
     digest :: FileDigest,
     replicas :: [RcvFileChunkReplica],
-    received :: Bool, -- computed based on replicas?
-    acknowledged :: Bool,
-    tempPath :: Maybe FilePath,
-    nextDelay :: Int
+    -- received :: Bool, -- computed based on replicas?
+    -- acknowledged :: Bool,
+    fileTmpPath :: FilePath,
+    chunkTmpPath :: Maybe FilePath,
+    nextDelay :: Maybe Int
   }
   deriving (Eq, Show)
 
 data RcvFileChunkReplica = RcvFileChunkReplica
-  { server :: XFTPServer,
-    rcvId :: ChunkReplicaId,
-    rcvKey :: C.APrivateSignKey,
+  { rcvFileChunkReplicaId :: Int64,
+    server :: XFTPServer,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey,
     received :: Bool,
+    acknowledged :: Bool,
     retries :: Int
   }
   deriving (Eq, Show)
-
-data XFTPAction
-  = XADownloadChunk
-  deriving (Show)
-
-data XFTPLocalAction 
-  = XALDecrypt
-  deriving (Show)

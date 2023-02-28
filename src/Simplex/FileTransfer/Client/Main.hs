@@ -32,6 +32,7 @@ import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import Simplex.FileTransfer.Util (uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
@@ -41,7 +42,7 @@ import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivat
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (ifM, whenM)
 import System.Exit (exitFailure)
-import System.FilePath (splitExtensions, splitFileName, (</>))
+import System.FilePath (splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
 import System.Random (StdGen, newStdGen, randomR)
 import UnliftIO
@@ -491,15 +492,6 @@ prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) c
 
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
 getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
-
-uniqueCombine :: MonadIO m => FilePath -> String -> m FilePath
-uniqueCombine filePath fileName = tryCombine (0 :: Int)
-  where
-    tryCombine n =
-      let (name, ext) = splitExtensions fileName
-          suffix = if n == 0 then "" else "_" <> show n
-          f = filePath </> (name <> suffix <> ext)
-       in ifM (doesPathExist f) (tryCombine $ n + 1) (pure f)
 
 withRetry :: Show e => Int -> ExceptT e IO a -> ExceptT CLIError IO a
 withRetry retryCount = withRetry' retryCount . withExceptT (CLIError . show)

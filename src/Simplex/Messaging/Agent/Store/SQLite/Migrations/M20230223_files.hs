@@ -25,10 +25,9 @@ CREATE TABLE rcv_files (
   key BLOB NOT NULL,
   iv BLOB NOT NULL,
   chunk_size INTEGER NOT NULL,
-  save_path TEXT, -- ? NOT NULL
-  temp_path TEXT, -- ? NOT NULL
-  -- xftp_action TEXT,
-  complete INTEGER NOT NULL DEFAULT 0, -- when collected and decrypted -- ? store status?
+  tmp_path TEXT NOT NULL,
+  save_path TEXT,
+  complete INTEGER NOT NULL DEFAULT 0, -- when received and decrypted -- ? store status?
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -41,15 +40,18 @@ CREATE TABLE rcv_file_chunks (
   digest BLOB NOT NULL,
   -- received INTEGER NOT NULL DEFAULT 0, -- ? duplicate
   -- acknowledged NOT NULL DEFAULT 0, -- ? duplicate
-  temp_path TEXT, -- ? NOT NULL
+  tmp_path TEXT,
   next_delay INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX idx_rcv_file_chunks_rcv_file_id ON rcv_file_chunks(rcv_file_id);
+
 CREATE TABLE rcv_file_chunk_replicas (
   rcv_file_chunk_replica_id INTEGER PRIMARY KEY,
   rcv_file_chunk_id INTEGER NOT NULL REFERENCES rcv_file_chunks ON DELETE CASCADE,
+  replica_number INTEGER NOT NULL,
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
   replica_id BLOB NOT NULL,
   replica_key BLOB NOT NULL,
@@ -60,12 +62,6 @@ CREATE TABLE rcv_file_chunk_replicas (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- or store on rcv_files / rcv_file_chunks?
-CREATE TABLE xftp_actions (
-  xftp_action_id INTEGER PRIMARY KEY,
-  xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
-  action TEXT NOT NULL, -- encoded XftpAction? or foreign key to rcv_files / rcv_file_chunks?
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+CREATE INDEX idx_rcv_file_chunk_replicas_rcv_file_chunk_id ON rcv_file_chunk_replicas(rcv_file_chunk_id);
+CREATE INDEX idx_rcv_file_chunk_replicas_xftp_server_id ON rcv_file_chunk_replicas(xftp_server_id);
 |]

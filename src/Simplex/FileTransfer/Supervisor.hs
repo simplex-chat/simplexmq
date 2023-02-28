@@ -16,11 +16,11 @@ where
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Simplex.FileTransfer.Client
-import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
+import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (INTERNAL))
@@ -29,16 +29,18 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Protocol (XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
 import UnliftIO
+import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> FileDescription 'FPRecipient -> m ()
-receiveFile c fd@FileDescription {chunks} = do
-  withStore' c (`createRcvFile` fd)
+receiveFile :: AgentMonad m => AgentClient -> FileDescription 'FPRecipient -> FilePath -> m ()
+receiveFile c fd@FileDescription {chunks} xftpPath = do
+  encPath <- uniqueCombine xftpPath "xftp.encrypted"
+  createDirectory encPath
+  withStore' c $ \db -> createRcvFile db fd encPath
   forM_ chunks downloadChunk
   where
     downloadChunk :: AgentMonad m => FileChunk -> m ()
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
-      -- createRcvFileAction
       addWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
@@ -64,34 +66,32 @@ runXFTPWorker c srv doWork = do
   where
     runXftpOperation :: m ()
     runXftpOperation = do
-      nextFile <- withStore' c (`getNextRcvXFTPAction` srv)
-      case nextFile of
+      nextChunk <- withStore' c (`getNextRcvChunkToDownload` srv)
+      case nextChunk of
         Nothing -> noWorkToDo
-        Just a@(fd@RcvFileDescription {}, _) -> do
-          aCfg <- asks (config :: Env -> AgentConfig)
-          let savedDelay = 1000000 -- next delay saved on chunk
-              ari = reconnectInterval (aCfg :: AgentConfig)
-              ri = ari {initialInterval = savedDelay}
+        Just fc@RcvFileChunk {nextDelay} -> do
+          ari <- asks $ reconnectInterval . config
+          let ri = maybe ari (\d -> ari {initialInterval = d}) nextDelay
           withRetryInterval ri $ \loop ->
-            processAction a
-              `catchError` const loop -- filter errors
+            downloadFileChunk fc
+              `catchError` \_ -> do
+                -- TODO don't loop on permanent errors
+                -- TODO increase replica retries count
+                -- TODO update nextDelay
+                loop
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    processAction :: (RcvFileDescription, XFTPAction) -> m ()
-    processAction (rcvFile, action) = do
-      case action of
-        XADownloadChunk -> do
-          -- downloadFileChunk -- ? which chunk to download? read encoded / parameterized XFTPAction instead?
-          undefined
-    downloadFileChunk :: FileChunk -> m ()
-    downloadFileChunk chunk = do
-      -- generate chunk spec? offset is not needed if chunks are saved into separate files
-      -- download chunk
-      -- save chunk
-      -- update chunk status - returns updated file description
-      -- should chunk acknowledgement be scheduled as a separate action?
-      --   or check if chunk is downloaded and not acknowledged via flag acknowledged
-      -- if all chunks are received, create task to decrypt file / or decrypt in same worker?
-      undefined
+    downloadFileChunk :: RcvFileChunk -> m ()
+    downloadFileChunk RcvFileChunk {rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, replicas = replica : _} = do
+      let RcvFileChunkReplica {rcvFileChunkReplicaId, replicaId, replicaKey} = replica
+      chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
+      let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
+      agentXFTPDownloadChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
+      withStore' c $ \db -> updateRcvFileChunkReceived db rcvFileChunkReplicaId rcvFileChunkId chunkPath
+      -- check if chunk is downloaded and not acknowledged via flag acknowledged?
+      -- or just catch and ignore error on acknowledgement? (and remove flag)
+      agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId)
+    -- TODO if all chunks are received, kick local worker to start decryption
+    downloadFileChunk _ = throwError $ INTERNAL "no replica"
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c doWork = do
@@ -101,19 +101,19 @@ runXFTPLocalWorker c doWork = do
   where
     runXftpOperation :: m ()
     runXftpOperation = do
-      -- nextFile <- withStore' c getNextRcvXFTPLocalAction -- TODO in AgentMonad
-      let nextFile = Nothing
+      nextFile <- withStore' c getNextRcvFileToDecrypt -- TODO in AgentMonad
       case nextFile of
         Nothing -> noWorkToDo
-        Just a@(fd@RcvFileDescription {}, _) -> do
+        Just fd -> do
           -- ri <- asks $ reconnectInterval . config
           let savedDelay = 1000000 -- next delay saved on chunk
               ri = defaultReconnectInterval {initialInterval = savedDelay}
           withRetryInterval ri $ \loop ->
-            processAction a
+            decryptFile fd
               `catchError` const loop -- filter errors
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    processAction :: (RcvFileDescription, XFTPLocalAction) -> m ()
-    processAction (rcvFile, action) = do
-      case action of
-        XALDecrypt -> undefined
+    decryptFile :: RcvFileDescription -> m ()
+    decryptFile fd = do
+      -- decrypt file
+      -- update file status
+      undefined
