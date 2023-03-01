@@ -158,8 +158,13 @@ testPrepareChunkSizes = do
     r3 = replicate 3
 
 uploadProgress :: String -> Bool
-uploadProgress s = "Uploading file..." `isPrefixOf` s && "File uploaded!" `isInfixOf` s
+uploadProgress s =
+  "Encrypting file..." `isPrefixOf` s
+    && "Uploading file..." `isInfixOf` s
+    && "File uploaded!" `isInfixOf` s
 
 downloadProgress :: FilePath -> String -> Bool
 downloadProgress fileName s =
-  "Downloading file..." `isPrefixOf` s && ("File downloaded: " <> recipientFiles </> fileName <> "\r") `isSuffixOf` s
+  "Downloading file..." `isPrefixOf` s
+    && "Decrypting file..." `isInfixOf` s
+    && ("File downloaded: " <> recipientFiles </> fileName <> "\r") `isSuffixOf` s

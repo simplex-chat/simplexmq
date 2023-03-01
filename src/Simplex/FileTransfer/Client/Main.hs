@@ -70,6 +70,12 @@ chunkSize2 = mb 1
 chunkSize3 :: Word32
 chunkSize3 = mb 4
 
+maxFileSize :: Int64
+maxFileSize = gb 1
+
+maxFileSizeStr :: String
+maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+
 fileSizeLen :: Int64
 fileSizeLen = 8
 
@@ -267,6 +273,7 @@ instance Encoding FileHeader where
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} = do
   let (_, fileName) = splitFileName filePath
+  liftIO $ printNoNewLine "Encrypting file..."
   (encPath, fdRcv, fdSnd, chunkSpecs, encSize) <- encryptFile fileName
   liftIO $ printNoNewLine "Uploading file..."
   uploadedChunks <- newTVarIO []
@@ -284,10 +291,11 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
   where
     encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FPRecipient, FileDescription 'FPSender, [XFTPChunkSpec], Int64)
     encryptFile fileName = do
+      fileSize <- fromInteger <$> getFileSize filePath
+      when (fileSize > maxFileSize) $ throwError $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
       encPath <- getEncPath tempPath "xftp"
       key <- liftIO C.randomSbKey
       nonce <- liftIO C.randomCbNonce
-      fileSize <- fromInteger <$> getFileSize filePath
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
           fileSize' = fromIntegral (B.length fileHdr) + fileSize
           chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
@@ -432,6 +440,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
+      liftIO $ printNoNewLine "Decrypting file..."
       path <- decryptFile encSize chunkPaths key nonce
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
