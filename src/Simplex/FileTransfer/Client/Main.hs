@@ -319,7 +319,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       where
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec, XFTPServerWithAuth) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}, ProtoServerWithAuth xftpServer auth) = do
-          logInfo $ "upnloading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
+          logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519)
           ch@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
