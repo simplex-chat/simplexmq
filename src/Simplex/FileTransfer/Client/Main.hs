@@ -25,6 +25,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Char (toLower)
 import Data.Function (on)
 import Data.Int (Int64)
 import Data.List (foldl', groupBy, sortOn)
@@ -101,14 +102,16 @@ data ReceiveOptions = ReceiveOptions
     filePath :: Maybe FilePath,
     retryCount :: Int,
     tempPath :: Maybe FilePath,
-    verbose :: Bool
+    verbose :: Bool,
+    yes :: Bool
   }
   deriving (Show)
 
 data DeleteOptions = DeleteOptions
   { fileDescription :: FilePath,
     retryCount :: Int,
-    verbose :: Bool
+    verbose :: Bool,
+    yes :: Bool
   }
   deriving (Show)
 
@@ -165,12 +168,14 @@ cliCommandP =
         <*> retryCountP
         <*> temp
         <*> verboseP
+        <*> yesP
     deleteP :: Parser DeleteOptions
     deleteP =
       DeleteOptions
         <$> fileDescrArg
         <*> retryCountP
         <*> verboseP
+        <*> yesP
     infoP :: Parser InfoOptions
     infoP = InfoOptions <$> fileDescrArg
     randomP :: Parser RandomFileOptions
@@ -182,6 +187,7 @@ cliCommandP =
     retryCountP = option auto (long "retry" <> short 'r' <> metavar "RETRY" <> help "Number of network retries" <> value defaultRetryCount <> showDefault)
     temp = optional (strOption $ long "tmp" <> metavar "TMP" <> help "Directory for temporary encrypted file (default: system temp directory)")
     verboseP = switch (long "verbose" <> short 'v' <> help "Verbose output")
+    yesP = switch (long "yes" <> short 'y' <> help "Yes to questions")
     xftpServers =
       option
         parseXFTPServers
@@ -410,7 +416,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       pure (fdRcvPaths, fdSndPath)
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
-cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose} =
+cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
   getFileDescription' fileDescription >>= receiveFile
   where
     receiveFile :: ValidFileDescription 'FPRecipient -> ExceptT CLIError IO ()
@@ -430,8 +436,9 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       path <- decryptFile encSize chunkPaths key nonce
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
-      liftIO $ printNoNewLine $ "File downloaded: " <> path
-      liftIO $ putStrLn "\nFile description can't be used again"
+      liftIO $ do
+        printNoNewLine $ "File downloaded: " <> path
+        removeFD yes fileDescription
     downloadFileChunk :: XFTPClientAgent -> FilePath -> FileSize Int64 -> TVar [Int64] -> FileChunk -> ExceptT CLIError IO (Int, FilePath)
     downloadFileChunk a encPath (FileSize encSize) downloadedChunks FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
@@ -489,14 +496,16 @@ printNoNewLine s = do
   hFlush stdout
 
 cliDeleteFile :: DeleteOptions -> ExceptT CLIError IO ()
-cliDeleteFile DeleteOptions {fileDescription, retryCount} = do
+cliDeleteFile DeleteOptions {fileDescription, retryCount, yes} = do
   getFileDescription' fileDescription >>= deleteFile
   where
     deleteFile :: ValidFileDescription 'FPSender -> ExceptT CLIError IO ()
     deleteFile (ValidFileDescription FileDescription {chunks}) = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       forM_ chunks $ deleteFileChunk a
-      liftIO $ putStrLn "File deleted"
+      liftIO $ do
+        printNoNewLine "File deleted!"
+        removeFD yes fileDescription
     deleteFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
     deleteFileChunk a FileChunk {chunkNo, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
@@ -587,6 +596,26 @@ withRetry retryCount = withRetry' retryCount . withExceptT (CLIError . show)
       a `catchError` \e -> do
         logWarn ("retrying: " <> tshow e)
         withRetry' (n - 1) a
+
+removeFD :: Bool -> FilePath -> IO ()
+removeFD yes fd
+  | yes = do
+    putStrLn $ "\nFile description " <> fd <> " is deleted."
+    removeFile fd
+  | otherwise = do
+    y <- liftIO . getConfirmation $ "\nFile description " <> fd <> " can't be used again. Delete it"
+    when y $ removeFile fd
+
+getConfirmation :: String -> IO Bool
+getConfirmation prompt = do
+  putStr $ prompt <> " (Y/n): "
+  hFlush stdout
+  s <- getLine
+  case map toLower s of
+    "y" -> pure True
+    "" -> pure True
+    "n" -> pure False
+    _ -> getConfirmation prompt
 
 cliRandomFile :: RandomFileOptions -> IO ()
 cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do

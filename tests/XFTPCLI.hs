@@ -13,7 +13,7 @@ import Test.Hspec
 import XFTPClient (testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLITests :: Spec
-xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
+xftpCLITests = around_ testBracket . fdescribe "XFTP CLI" $ do
   it "should send and receive file" testXFTPCLISendReceive
   it "should send and receive file with 2 servers" testXFTPCLISendReceive2servers
   it "should delete file from 2 servers" testXFTPCLIDelete
@@ -64,9 +64,9 @@ testXFTPCLISendReceive = withXFTPServer $ do
       xftp ["info", fd]
         `shouldReturn` [party <> " file description", "File download size: 18mb", "File server(s):", testXFTPServerStr <> ": 18mb"]
     testReceiveFile fd fileName file = do
-      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
+      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
       progress `shouldSatisfy` downloadProgress fileName
-      recvResult `shouldBe` ["File description can't be used again"]
+      recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLISendReceive2servers :: IO ()
@@ -102,9 +102,9 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
           srv1 `shouldContain` testXFTPServerStr
           srv2 `shouldContain` testXFTPServerStr2
         _ -> print srvs >> error "more than 2 servers returned"
-      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp"]
+      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
       progress `shouldSatisfy` downloadProgress fileName
-      recvResult `shouldBe` ["File description can't be used again"]
+      recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLIDelete :: IO ()
@@ -127,15 +127,15 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
                ]
   xftp ["del", fdRcv1]
     `shouldThrow` anyException
-  progress1 : recvResult <- xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp"]
+  progress1 : recvResult <- xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp", "-y"]
   progress1 `shouldSatisfy` downloadProgress "testfile"
-  recvResult `shouldBe` ["File description can't be used again"]
+  recvResult `shouldBe` ["File description " <> fdRcv1 <> " is deleted."]
   LB.readFile (recipientFiles </> "testfile") `shouldReturn` file
   fs1 <- listDirectory xftpServerFiles
   fs2 <- listDirectory xftpServerFiles2
   length fs1 + length fs2 `shouldBe` 6
-  xftp ["del", fdSnd]
-    `shouldReturn` ["File deleted"]
+  xftp ["del", fdSnd, "-y"]
+    `shouldReturn` ["File deleted!            \r", "File description " <> fdSnd <> " is deleted."]
   listDirectory xftpServerFiles >>= (`shouldBe` [])
   listDirectory xftpServerFiles2 >>= (`shouldBe` [])
   xftp ["recv", fdRcv2, recipientFiles, "--tmp=tests/tmp"]
