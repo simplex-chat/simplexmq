@@ -537,4 +537,6 @@ data StoreError
     SEAgentError AgentErrorType
   | -- | XFTP Server not found.
     SEXFTPServerNotFound
+  | -- | XFTP File not found.
+    SEFileNotFound
   deriving (Eq, Show, Exception)

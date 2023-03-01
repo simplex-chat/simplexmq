@@ -125,6 +125,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setConnectionNtfs,
     -- File transfer
     createRcvFile,
+    getRcvFile,
     updateRcvFileChunkReceived,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
@@ -1756,20 +1757,73 @@ createRcvFile db fd@FileDescription {chunks} tmpPath = do
         (replicaNo, chunkId, srvId, replicaId, replicaKey)
 
 getRcvFile :: DB.Connection -> Int64 -> IO (Either StoreError RcvFileDescription)
-getRcvFile db fileId = do
-  -- select from rcv_file_chunk_replicas
-  -- select from rcv_file_chunks
-  -- select from rcv_files
-  -- / join?
-  undefined
+getRcvFile db fileId = runExceptT $ do
+  fd <- ExceptT getFileDescription
+  chunks <- liftIO getChunks
+  pure (fd {chunks} :: RcvFileDescription)
+  where
+    getFileDescription :: IO (Either StoreError RcvFileDescription)
+    getFileDescription = do
+      firstRow toFileDescription SEFileNotFound $
+        DB.query
+          db
+          [sql|
+            SELECT rcv_file_id, size, digest, key, iv, chunk_size, tmp_path, save_path, complete
+            FROM rcv_files
+            WHERE rcv_file_id = ?
+          |]
+          (Only fileId)
+    toFileDescription :: (Int64, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, String, String, String) -> RcvFileDescription
+    toFileDescription (rcvFileId, size, digest, key, nonce, chunkSize, tmpPath, savePath, complete) =
+      -- TODO save status?
+      RcvFileDescription {rcvFileId, size, digest, key, nonce, chunkSize, chunks = [], status = RFSReceiving tmpPath}
+    getChunks :: IO [RcvFileChunk]
+    getChunks = do
+      chunks <-
+        map toChunk
+          <$> DB.query
+            db
+            [sql|
+              SELECT c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path, c.next_delay,
+              FROM rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+              JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+              WHERE f.rcv_file_id = ?
+            |]
+            (Only fileId)
+      forM chunks $ \chunk@RcvFileChunk {rcvFileChunkId} -> do
+        replicas' <- getChunkReplicas rcvFileChunkId
+        pure (chunk {replicas = replicas'} :: RcvFileChunk)
+    toChunk :: (Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) -> RcvFileChunk
+    toChunk (rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) =
+      RcvFileChunk {rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay, replicas = []}
+    getChunkReplicas :: Int64 -> IO [RcvFileChunkReplica]
+    getChunkReplicas chunkId = do
+      map toReplica
+        <$> DB.query
+          db
+          [sql|
+            SELECT
+              r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.acknowledged, r.retries,
+              s.xftp_host, s.xftp_port, s.xftp_key_hash
+            FROM rcv_file_chunk_replicas
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            WHERE rcv_file_chunk_id = ?
+          |]
+          (Only chunkId)
+    toReplica :: (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
+    toReplica (rcvFileChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries, host, port, keyHash) =
+      let server = XFTPServer host port keyHash
+       in RcvFileChunkReplica {rcvFileChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
 
 -- ? should return RcvFileDescription in same transaction
 -- ? so we can check if all replicas are received?
-updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> FilePath -> IO ()
+updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> FilePath -> IO (Either StoreError RcvFileDescription)
 updateRcvFileChunkReceived db rId cId chunkTmpPath = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_file_chunk_replicas SET received = 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (updatedAt, rId)
   DB.execute db "UPDATE rcv_file_chunks SET tmp_path = ?, updated_at = ? WHERE rcv_file_chunk_id = ?" (chunkTmpPath, updatedAt, cId)
+  -- TODO add file id to RcvFileChunk?
+  getRcvFile db 1
 
 updateRcvFileChunkReplicaRetries :: DB.Connection -> Int64 -> IO ()
 updateRcvFileChunkReplicaRetries db replicaId = do
@@ -1778,7 +1832,7 @@ updateRcvFileChunkReplicaRetries db replicaId = do
 
 updateRcvFile :: DB.Connection -> Int64 -> IO ()
 updateRcvFile db replicaId = do
-  -- update rcv_files - completed, temp_path, save_path
+  -- update rcv_files - completed, tmp_path, save_path
   undefined
 
 getUnreceivedRcvFiles :: DB.Connection -> IO [RcvFileDescription]
@@ -1794,7 +1848,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
       db
       [sql|
         SELECT
-          c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.temp_path, c.temp_path, c.next_delay,
+          c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path, c.next_delay,
           r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.acknowledged, r.retries
         FROM rcv_file_chunk_replicas r
         JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id

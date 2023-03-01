@@ -10,11 +10,10 @@ import Simplex.Messaging.Protocol
 
 data RcvFileDescription = RcvFileDescription
   { rcvFileId :: Int64,
-    name :: String,
     size :: FileSize Int64,
     digest :: FileDigest,
-    key :: C.Key,
-    iv :: C.IV,
+    key :: C.SbKey,
+    nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
     chunks :: [RcvFileChunk],
     status :: RcvFileStatus

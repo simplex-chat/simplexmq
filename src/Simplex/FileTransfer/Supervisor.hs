@@ -86,11 +86,14 @@ runXFTPWorker c srv doWork = do
       chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
       agentXFTPDownloadChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
-      withStore' c $ \db -> updateRcvFileChunkReceived db rcvFileChunkReplicaId rcvFileChunkId chunkPath
+      fd <- withStore c $ \db -> updateRcvFileChunkReceived db rcvFileChunkReplicaId rcvFileChunkId chunkPath
       -- check if chunk is downloaded and not acknowledged via flag acknowledged?
       -- or just catch and ignore error on acknowledgement? (and remove flag)
-      agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId)
-    -- TODO if all chunks are received, kick local worker to start decryption
+      agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId) `catchError` \_ -> pure ()
+      when (allChunksReceived fd) $ pure ()
+      where
+        allChunksReceived :: RcvFileDescription -> Bool
+        allChunksReceived = undefined
     downloadFileChunk _ = throwError $ INTERNAL "no replica"
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
