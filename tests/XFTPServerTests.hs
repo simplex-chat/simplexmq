@@ -37,7 +37,7 @@ xftpServerTests :: Spec
 xftpServerTests =
   before_ (createDirectoryIfMissing False xftpServerFiles)
     . after_ (removeDirectoryRecursive xftpServerFiles)
-    . fdescribe "XFTP file chunk delivery"
+    . describe "XFTP file chunk delivery"
     $ do
       it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
       it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
