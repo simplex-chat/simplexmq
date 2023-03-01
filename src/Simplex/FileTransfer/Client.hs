@@ -31,6 +31,7 @@ import Simplex.Messaging.Client
     proxyUsername,
     transportClientConfig,
   )
+import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
@@ -45,8 +46,8 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
+import UnliftIO
 import UnliftIO.Directory
-import UnliftIO.IO
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -90,6 +91,9 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfi
   let usePort = if null port then "443" else port
   http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config disconnected
   pure XFTPClient {http2Client, config}
+
+closeXFTPClient :: XFTPClient -> IO ()
+closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
 
 xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
 xftpHTTP2Config transportConfig XFTPClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} =
@@ -149,7 +153,7 @@ uploadXFTPChunk c spKey fId chunkSpec =
   sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
 
 downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
-downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
+downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath, chunkSize} = do
   (rDhKey, rpDhKey) <- liftIO C.generateKeyPair'
   sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
     (FRFile sDhKey cbNonce, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
@@ -157,10 +161,13 @@ downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
       Just chunkPart -> do
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
-        -- timeout download in the same way as upload
-        withExceptT PCEResponseError $
-          receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
-            whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
+        let t = (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
+        t `timeout` download cbState >>= maybe (throwError PCEResponseTimeout) pure
+        where
+          download cbState =
+            withExceptT PCEResponseError $
+              receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
+                whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
