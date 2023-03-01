@@ -599,8 +599,8 @@ withRetry retryCount = withRetry' retryCount . withExceptT (CLIError . show)
 removeFD :: Bool -> FilePath -> IO ()
 removeFD yes fd
   | yes = do
-    putStrLn $ "\nFile description " <> fd <> " is deleted."
     removeFile fd
+    putStrLn $ "\nFile description " <> fd <> " is deleted."
   | otherwise = do
     y <- liftIO . getConfirmation $ "\nFile description " <> fd <> " can't be used again. Delete it"
     when y $ removeFile fd
