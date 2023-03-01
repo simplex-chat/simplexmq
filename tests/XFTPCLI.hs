@@ -13,7 +13,7 @@ import Test.Hspec
 import XFTPClient (testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLITests :: Spec
-xftpCLITests = around_ testBracket . fdescribe "XFTP CLI" $ do
+xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
   it "should send and receive file" testXFTPCLISendReceive
   it "should send and receive file with 2 servers" testXFTPCLISendReceive2servers
   it "should delete file from 2 servers" testXFTPCLIDelete
@@ -45,11 +45,10 @@ testXFTPCLISendReceive = withXFTPServer $ do
   progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
   sendResult
-    `shouldBe` [ "Pass file descriptions to the recipient(s):",
+    `shouldBe` [ "Sender file description: " <> fdSnd,
+                 "Pass file descriptions to the recipient(s):",
                  fdRcv1,
-                 fdRcv2,
-                 "Sender file description:",
-                 fdSnd
+                 fdRcv2
                ]
   testInfoFile fdRcv1 "Recipient"
   testReceiveFile fdRcv1 "testfile" file
@@ -81,11 +80,10 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
   sendResult
-    `shouldBe` [ "Pass file descriptions to the recipient(s):",
+    `shouldBe` [ "Sender file description: " <> fdSnd,
+                 "Pass file descriptions to the recipient(s):",
                  fdRcv1,
-                 fdRcv2,
-                 "Sender file description:",
-                 fdSnd
+                 fdRcv2
                ]
   testReceiveFile fdRcv1 "testfile" file
   testReceiveFile fdRcv2 "testfile_1" file
@@ -119,11 +117,10 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
   sendResult
-    `shouldBe` [ "Pass file descriptions to the recipient(s):",
+    `shouldBe` [ "Sender file description: " <> fdSnd,
+                 "Pass file descriptions to the recipient(s):",
                  fdRcv1,
-                 fdRcv2,
-                 "Sender file description:",
-                 fdSnd
+                 fdRcv2
                ]
   xftp ["del", fdRcv1]
     `shouldThrow` anyException

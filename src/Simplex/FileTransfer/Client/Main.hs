@@ -278,10 +278,9 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         fdSnd' = createSndFileDescription fdSnd sentChunks
     (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
     printNoNewLine "File uploaded!"
-    putStrLn "\nPass file descriptions to the recipient(s):"
+    putStrLn $ "\nSender file description: " <> fdSndPath
+    putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
-    putStrLn "Sender file description:"
-    putStrLn fdSndPath
   where
     encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FPRecipient, FileDescription 'FPSender, [XFTPChunkSpec], Int64)
     encryptFile fileName = do
