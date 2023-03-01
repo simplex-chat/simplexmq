@@ -352,7 +352,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         getChunkInfo sndKey XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
           withFile chunkPath ReadMode $ \h -> do
             hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-            digest <- LC.sha512Hash <$> LB.hGet h (fromIntegral chunkSize)
+            digest <- LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
             pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
         getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
         getXFTPServer gen = \case

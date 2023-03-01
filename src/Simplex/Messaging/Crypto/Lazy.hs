@@ -1,14 +1,14 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Crypto.Lazy
-  ( sha512Hash,
+  ( sha256Hash,
+    sha512Hash,
     pad,
     unPad,
     sbEncrypt,
@@ -28,7 +28,7 @@ where
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, hashlazy)
-import Crypto.Hash.Algorithms (SHA512)
+import Crypto.Hash.Algorithms (SHA256, SHA512)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
@@ -44,6 +44,10 @@ import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), DhSecret (..), DhSec
 import Simplex.Messaging.Encoding
 
 type LazyByteString = LB.ByteString
+
+-- | SHA512 digest of a lazy bytestring.
+sha256Hash :: LazyByteString -> ByteString
+sha256Hash = BA.convert . (hashlazy :: LazyByteString -> Digest SHA256)
 
 -- | SHA512 digest of a lazy bytestring.
 sha512Hash :: LazyByteString -> ByteString

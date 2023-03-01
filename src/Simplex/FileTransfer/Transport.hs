@@ -113,5 +113,5 @@ receiveEncFile getBody = receiveFile_ . receive
 receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
-  digest' <- liftIO $ LC.sha512Hash <$> LB.readFile filePath
+  digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
   when (digest' /= chunkDigest) $ throwError DIGEST
