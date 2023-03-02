@@ -32,6 +32,7 @@ import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -59,9 +60,6 @@ smallChunkSize = 1 * mb
 
 fileSizeLen :: Int64
 fileSizeLen = 8
-
-authTagSize :: Int64
-authTagSize = fromIntegral C.authTagSize
 
 mb :: Num a => a
 mb = 1024 * 1024
@@ -213,19 +211,6 @@ runE a =
   runExceptT a >>= \case
     Left (CLIError e) -> putStrLn e >> exitFailure
     _ -> pure ()
-
--- fileExtra is added to allow header extension in future versions
-data FileHeader = FileHeader
-  { fileName :: String,
-    fileExtra :: Maybe String
-  }
-  deriving (Eq, Show)
-
-instance Encoding FileHeader where
-  smpEncode FileHeader {fileName, fileExtra} = smpEncode (fileName, fileExtra)
-  smpP = do
-    (fileName, fileExtra) <- smpP
-    pure FileHeader {fileName, fileExtra}
 
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath} = do

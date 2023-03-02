@@ -20,14 +20,15 @@ CREATE TABLE xftp_servers (
 
 CREATE TABLE rcv_files (
   rcv_file_id INTEGER PRIMARY KEY,
-  size INTEGER NOT NULL, -- ?
+  size INTEGER NOT NULL,
   digest BLOB NOT NULL,
   key BLOB NOT NULL,
   iv BLOB NOT NULL,
   chunk_size INTEGER NOT NULL,
   tmp_path TEXT NOT NULL,
+  save_dir TEXT NOT NULL,
   save_path TEXT,
-  complete INTEGER NOT NULL DEFAULT 0, -- when received and decrypted -- ? store status?
+  status TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
