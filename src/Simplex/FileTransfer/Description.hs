@@ -9,7 +9,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
@@ -28,6 +27,9 @@ module Simplex.FileTransfer.Description
     validateFileDescription,
     groupReplicasByServer,
     replicaServer,
+    kb,
+    mb,
+    gb,
   )
 where
 
@@ -48,6 +50,7 @@ import Data.List (foldl', groupBy, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
+import Data.String
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import GHC.Generics (Generic)
@@ -205,25 +208,33 @@ newtype FileSize a = FileSize {unFileSize :: a}
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
     | b' /= 0 = bshow b
-    | kb' /= 0 = bshow kb <> "kb"
-    | mb' /= 0 = bshow mb <> "mb"
-    | otherwise = bshow gb <> "gb"
+    | ks' /= 0 = bshow ks <> "kb"
+    | ms' /= 0 = bshow ms <> "mb"
+    | otherwise = bshow gs <> "gb"
     where
-      (kb, b') = b `divMod` 1024
-      (mb, kb') = kb `divMod` 1024
-      (gb, mb') = mb `divMod` 1024
+      (ks, b') = b `divMod` 1024
+      (ms, ks') = ks `divMod` 1024
+      (gs, ms') = ms `divMod` 1024
   strP =
     FileSize
       <$> A.choice
-        [ (gb *) <$> A.decimal <* "gb",
-          (mb *) <$> A.decimal <* "mb",
-          (kb *) <$> A.decimal <* "kb",
+        [ gb <$> A.decimal <* "gb",
+          mb <$> A.decimal <* "mb",
+          kb <$> A.decimal <* "kb",
           A.decimal
         ]
-    where
-      kb = 1024
-      mb = 1024 * kb
-      gb = 1024 * mb
+
+kb :: Integral a => a -> a
+kb n = 1024 * n
+
+mb :: Integral a => a -> a
+mb n = 1024 * kb n
+
+gb :: Integral a => a -> a
+gb n = 1024 * mb n
+
+instance (Integral a, Show a) => IsString (FileSize a) where
+  fromString = either error id . strDecode . B.pack
 
 instance (FromField a) => FromField (FileSize a) where fromField f = FileSize <$> fromField f
 

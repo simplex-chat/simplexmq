@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -20,7 +21,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (tryError)
+import Simplex.Messaging.Util (catchAll_, tryError)
 import UnliftIO
 
 type XFTPClientVar = TMVar (Either XFTPClientAgentError XFTPClient)
@@ -114,3 +115,13 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
 showServer :: XFTPServer -> Text
 showServer ProtocolServer {host, port} =
   decodeUtf8 $ strEncode host <> B.pack (if null port then "" else ':' : port)
+
+closeXFTPServerClient :: XFTPClientAgent -> XFTPServer -> IO ()
+closeXFTPServerClient XFTPClientAgent {xftpClients, config} srv =
+  atomically (TM.lookupDelete srv xftpClients) >>= mapM_ closeClient
+  where
+    closeClient cVar = do
+      let NetworkConfig {tcpConnectTimeout} = networkConfig $ xftpConfig config
+      tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
+        Just (Right client) -> closeXFTPClient client `catchAll_` pure ()
+        _ -> pure ()

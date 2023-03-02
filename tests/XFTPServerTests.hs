@@ -19,6 +19,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
+import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
@@ -44,6 +45,7 @@ xftpServerTests =
       it "should delete file chunk (2 clients)" testFileChunkDelete2
       it "should acknowledge file chunk reception (1 client)" testFileChunkAck
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
+      it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
@@ -55,8 +57,8 @@ xftpServerTests =
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
 
-chSize :: Num n => n
-chSize = 128 * 1024
+chSize :: Integral a => a
+chSize = kb 128
 
 testChunkPath :: FilePath
 testChunkPath = "tests/tmp/chunk1"
@@ -81,7 +83,7 @@ runTestFileChunkDelivery s r = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   bytes <- liftIO $ createTestChunk testChunkPath
-  digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
   let file = FileInfo {sndKey, size = chSize, digest}
       chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
   (sId, [rId]) <- createXFTPChunk s spKey file [rcvKey] Nothing
@@ -106,7 +108,7 @@ runTestFileChunkDelete s r = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   bytes <- liftIO $ createTestChunk testChunkPath
-  digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
   let file = FileInfo {sndKey, size = chSize, digest}
       chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
   (sId, [rId]) <- createXFTPChunk s spKey file [rcvKey] Nothing
@@ -134,7 +136,7 @@ runTestFileChunkAck s r = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   bytes <- liftIO $ createTestChunk testChunkPath
-  digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
   let file = FileInfo {sndKey, size = chSize, digest}
       chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
   (sId, [rId]) <- createXFTPChunk s spKey file [rcvKey] Nothing
@@ -149,13 +151,23 @@ runTestFileChunkAck s r = do
   ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
+testWrongChunkSize :: Expectation
+testWrongChunkSize = xftpTest $ \c -> runRight_ $ do
+  (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey, _rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  liftIO $ B.writeFile testChunkPath =<< getRandomBytes (kb 96)
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = kb 96, digest}
+  void (createXFTPChunk c spKey file [rcvKey] Nothing)
+    `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
+
 testFileChunkExpiration :: Expectation
 testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration} $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
     (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
     bytes <- liftIO $ createTestChunk testChunkPath
-    digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+    digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
     let file = FileInfo {sndKey, size = chSize, digest}
         chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
     (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
@@ -178,7 +190,7 @@ testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = J
     (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
     (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
     bytes <- liftIO $ createTestChunk testChunkPath
-    digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+    digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
     let file = FileInfo {sndKey, size = chSize, digest}
         chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
         download rId = do
@@ -205,7 +217,7 @@ testFileLog = do
   (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey1, rpKey1) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
   (rcvKey2, rpKey2) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
-  digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
   sIdVar <- newTVarIO ""
   rIdVar1 <- newTVarIO ""
   rIdVar2 <- newTVarIO ""
@@ -223,6 +235,7 @@ testFileLog = do
     download c rpKey1 rId1 digest bytes
     download c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 3
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   withXFTPServerThreadOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
@@ -245,6 +258,7 @@ testFileLog = do
     -- recipient 2 can download
     download c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 4
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   withXFTPServerStoreLogOn $ \_ -> pure () -- ack is compacted - -1 from log
   logSize testXFTPLogFile `shouldReturn` 3
@@ -261,11 +275,14 @@ testFileLog = do
     -- sender can delete - +1 to log
     deleteXFTPChunk c spKey sId
   logSize testXFTPLogFile `shouldReturn` 4
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   withXFTPServerStoreLogOn $ \_ -> pure () -- compacts on start
   logSize testXFTPLogFile `shouldReturn` 0
+  logSize testXFTPStatsBackupFile `shouldReturn` 11
 
   removeFile testXFTPLogFile
+  removeFile testXFTPStatsBackupFile
   where
     download c rpKey rId digest bytes = do
       downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
@@ -278,7 +295,7 @@ testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success =
       (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
       (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
       bytes <- liftIO $ createTestChunk testChunkPath
-      digest <- liftIO $ LC.sha512Hash <$> LB.readFile testChunkPath
+      digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
       let file = FileInfo {sndKey, size = chSize, digest}
           chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
       if success

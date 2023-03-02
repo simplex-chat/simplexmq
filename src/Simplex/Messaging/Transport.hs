@@ -204,11 +204,10 @@ instance Transport TLS where
   tlsUnique = tlsUniq
   closeConnection tls = closeTLS $ tlsContext tls
 
+  -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
+  -- this function may return less than requested number of bytes
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, tlsBuffer} n = do
-    s <- getBuffered tlsBuffer n (T.recvData tlsContext)
-    -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
-    if B.length s == n then pure s else ioe_EOF
+  cGet TLS {tlsContext, tlsBuffer} n = getBuffered tlsBuffer n (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
   cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
@@ -321,10 +320,11 @@ tPutBlock THandle {connection = c, blockSize} block =
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
-tGetBlock THandle {connection = c, blockSize} =
-  cGet c blockSize >>= \case
-    "" -> ioe_EOF
-    msg -> pure . first (const TELargeMsg) $ C.unPad msg
+tGetBlock THandle {connection = c, blockSize} = do
+  msg <- cGet c blockSize
+  if B.length msg == blockSize
+    then pure . first (const TELargeMsg) $ C.unPad msg
+    else ioe_EOF
 
 -- | Server SMP transport handshake.
 --

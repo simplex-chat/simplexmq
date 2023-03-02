@@ -19,6 +19,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
+import Simplex.FileTransfer.Description (mb)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
@@ -30,6 +31,7 @@ import Simplex.Messaging.Client
     proxyUsername,
     transportClientConfig,
   )
+import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol
@@ -44,8 +46,8 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
+import UnliftIO
 import UnliftIO.Directory
-import UnliftIO.IO
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -53,7 +55,8 @@ data XFTPClient = XFTPClient
   }
 
 data XFTPClientConfig = XFTPClientConfig
-  { networkConfig :: NetworkConfig
+  { networkConfig :: NetworkConfig,
+    uploadTimeoutPerMb :: Int
   }
 
 data XFTPChunkBody = XFTPChunkBody
@@ -72,7 +75,11 @@ data XFTPChunkSpec = XFTPChunkSpec
 type XFTPClientError = ProtocolClientError XFTPErrorType
 
 defaultXFTPClientConfig :: XFTPClientConfig
-defaultXFTPClientConfig = XFTPClientConfig {networkConfig = defaultNetworkConfig}
+defaultXFTPClientConfig =
+  XFTPClientConfig
+    { networkConfig = defaultNetworkConfig,
+      uploadTimeoutPerMb = 10000000 -- 10 seconds
+    }
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfig} disconnected = runExceptT $ do
@@ -81,8 +88,12 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfi
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost networkConfig host
-  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost port (Just keyHash) Nothing http2Config disconnected
+  let usePort = if null port then "443" else port
+  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config disconnected
   pure XFTPClient {http2Client, config}
+
+closeXFTPClient :: XFTPClient -> IO ()
+closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
 
 xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
 xftpHTTP2Config transportConfig XFTPClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} =
@@ -100,12 +111,13 @@ xftpClientError = \case
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand XFTPClient {http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
+sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req
+      reqTimeout = (\XFTPChunkSpec {chunkSize} -> (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1) <$> chunkSpec_
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
@@ -141,7 +153,7 @@ uploadXFTPChunk c spKey fId chunkSpec =
   sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
 
 downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
-downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
+downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath, chunkSize} = do
   (rDhKey, rpDhKey) <- liftIO C.generateKeyPair'
   sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
     (FRFile sDhKey cbNonce, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
@@ -149,9 +161,13 @@ downloadXFTPChunk c rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath} = do
       Just chunkPart -> do
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
-        withExceptT PCEResponseError $
-          receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
-            whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
+        let t = (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
+        t `timeout` download cbState >>= maybe (throwError PCEResponseTimeout) pure
+        where
+          download cbState =
+            withExceptT PCEResponseError $
+              receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
+                whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 

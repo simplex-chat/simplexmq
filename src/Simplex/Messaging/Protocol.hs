@@ -755,7 +755,7 @@ instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
   parseJSON = strParseJSON "ProtocolServer"
 
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance IsString BasicAuth where fromString = BasicAuth . B.pack
 
@@ -775,7 +775,7 @@ basicAuth s
     valid c = isPrint c && not (isSpace c) && c /= '@' && c /= ':' && c /= '/'
 
 data ProtoServerWithAuth p = ProtoServerWithAuth {protoServer :: ProtocolServer p, serverBasicAuth :: Maybe BasicAuth}
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance ProtocolTypeI p => IsString (ProtoServerWithAuth p) where
   fromString = parseString strDecode

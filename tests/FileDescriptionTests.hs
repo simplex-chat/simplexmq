@@ -30,9 +30,6 @@ fileDescPath = "tests/fixtures/file_description.yaml"
 tmpFileDescPath :: FilePath
 tmpFileDescPath = "tests/tmp/file_description.yaml"
 
-mb :: Num a => a
-mb = 1024 * 1024
-
 testSbKey :: C.SbKey
 testSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTFFFOY="
 
@@ -43,7 +40,7 @@ fileDesc :: FileDescription 'FPRecipient
 fileDesc =
   FileDescription
     { party = SRecipient,
-      size = FileSize $ 26 * mb,
+      size = FileSize $ mb 26,
       digest = FileDigest "abc",
       key = testSbKey,
       nonce = testCbNonce,
@@ -79,7 +76,7 @@ fileDesc =
           FileChunk
             { chunkNo = 4,
               digest = chunkDigest,
-              chunkSize = FileSize $ 2 * mb,
+              chunkSize = FileSize $ mb 2,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example2.com", replicaId, replicaKey},
                   FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
@@ -88,7 +85,7 @@ fileDesc =
         ]
     }
   where
-    defaultChunkSize = FileSize $ 8 * mb
+    defaultChunkSize = FileSize $ mb 8
     replicaId = ChunkReplicaId "abc"
     replicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"

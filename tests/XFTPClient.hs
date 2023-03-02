@@ -10,6 +10,7 @@ import Data.String (fromString)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
+import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.Messaging.Protocol (XFTPServer)
@@ -38,7 +39,7 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
 withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile}
+withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
 
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
@@ -79,6 +80,9 @@ xftpServerFiles2 = "tests/tmp/xftp-server-files2"
 testXFTPLogFile :: FilePath
 testXFTPLogFile = "tests/tmp/xftp-server-store.log"
 
+testXFTPStatsBackupFile :: FilePath
+testXFTPStatsBackupFile = "tests/tmp/xftp-server-stats.log"
+
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =
   XFTPServerConfig
@@ -87,6 +91,7 @@ testXFTPServerConfig =
       storeLogFile = Nothing,
       filesPath = xftpServerFiles,
       fileSizeQuota = Nothing,
+      allowedChunkSizes = [kb 128, kb 256, mb 1, mb 4],
       allowNewFiles = True,
       newFileBasicAuth = Nothing,
       fileExpiration = Just defaultFileExpiration,
@@ -95,7 +100,7 @@ testXFTPServerConfig =
       certificateFile = "tests/fixtures/server.crt",
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
-      serverStatsLogFile = "tests/xftp-server-stats.daily.log",
+      serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       logTLSErrors = True
     }

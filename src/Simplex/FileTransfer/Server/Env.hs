@@ -15,6 +15,7 @@ import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
+import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
@@ -37,6 +38,8 @@ data XFTPServerConfig = XFTPServerConfig
     filesPath :: FilePath,
     -- | server storage quota
     fileSizeQuota :: Maybe Int64,
+    -- | allowed file chunk sizes
+    allowedChunkSizes :: [Word32],
     -- | set to False to prohibit creating new files
     allowNewFiles :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new files
