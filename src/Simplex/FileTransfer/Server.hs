@@ -123,7 +123,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
-      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
+      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -136,7 +136,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
           filesDeleted' <- atomically $ swapTVar filesDeleted 0
           files <- atomically $ periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
-          fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
           filesCount' <- atomically $ swapTVar filesCount 0
           filesSize' <- atomically $ swapTVar filesSize 0
           hPutStrLn h $
@@ -151,7 +150,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
                 weekCount files,
                 monthCount files,
                 show fileDownloads',
-                show fileDownloadAcks',
                 show filesCount',
                 show filesSize'
               ]
@@ -233,7 +231,6 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     FPUT -> noFile =<< receiveServerFile fr
     FDEL -> noFile =<< deleteServerFile fr
     FGET rDhKey -> sendServerFile fr rDhKey
-    FACK -> noFile =<< ackFileReception fId fr
     -- it should never get to the commands below, they are passed in other constructors of XFTPRequest
     FNEW {} -> noFile $ FRErr INTERNAL
     PING -> noFile FRPong
@@ -342,15 +339,6 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 
     logFileError :: SomeException -> IO ()
     logFileError e = logError $ "Error deleting file: " <> tshow e
-
-    ackFileReception :: RecipientId -> FileRec -> M FileResponse
-    ackFileReception rId fr = do
-      withFileLog (`logAckFile` rId)
-      st <- asks store
-      atomically $ deleteRecipient st rId fr
-      stats <- asks serverStats
-      atomically $ modifyTVar' (fileDownloadAcks stats) (+ 1)
-      pure FROk
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
 randomId n = do

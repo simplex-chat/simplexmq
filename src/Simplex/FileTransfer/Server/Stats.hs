@@ -21,7 +21,6 @@ data FileServerStats = FileServerStats
     filesDeleted :: TVar Int,
     filesDownloaded :: PeriodStats SenderId,
     fileDownloads :: TVar Int,
-    fileDownloadAcks :: TVar Int,
     filesCount :: TVar Int,
     filesSize :: TVar Int64
   }
@@ -34,7 +33,6 @@ data FileServerStatsData = FileServerStatsData
     _filesDeleted :: Int,
     _filesDownloaded :: PeriodStatsData SenderId,
     _fileDownloads :: Int,
-    _fileDownloadAcks :: Int,
     _filesCount :: Int,
     _filesSize :: Int64
   }
@@ -49,10 +47,9 @@ newFileServerStats ts = do
   filesDeleted <- newTVar 0
   filesDownloaded <- newPeriodStats
   fileDownloads <- newTVar 0
-  fileDownloadAcks <- newTVar 0
   filesCount <- newTVar 0
   filesSize <- newTVar 0
-  pure FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize}
+  pure FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, filesCount, filesSize}
 
 getFileServerStatsData :: FileServerStats -> STM FileServerStatsData
 getFileServerStatsData s = do
@@ -63,10 +60,9 @@ getFileServerStatsData s = do
   _filesDeleted <- readTVar $ filesDeleted s
   _filesDownloaded <- getPeriodStatsData $ filesDownloaded s
   _fileDownloads <- readTVar $ fileDownloads s
-  _fileDownloadAcks <- readTVar $ fileDownloadAcks s
   _filesCount <- readTVar $ filesCount s
   _filesSize <- readTVar $ filesSize s
-  pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize}
+  pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _filesCount, _filesSize}
 
 setFileServerStats :: FileServerStats -> FileServerStatsData -> STM ()
 setFileServerStats s d = do
@@ -77,12 +73,11 @@ setFileServerStats s d = do
   writeTVar (filesDeleted s) $! _filesDeleted d
   setPeriodStats (filesDownloaded s) $! _filesDownloaded d
   writeTVar (fileDownloads s) $! _fileDownloads d
-  writeTVar (fileDownloadAcks s) $! _fileDownloadAcks d
   writeTVar (filesCount s) $! _filesCount d
   writeTVar (filesSize s) $! _filesSize d
 
 instance StrEncoding FileServerStatsData where
-  strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks} =
+  strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "filesCreated=" <> strEncode _filesCreated,
@@ -91,8 +86,7 @@ instance StrEncoding FileServerStatsData where
         "filesDeleted=" <> strEncode _filesDeleted,
         "filesDownloaded:",
         strEncode _filesDownloaded,
-        "fileDownloads=" <> strEncode _fileDownloads,
-        "fileDownloadAcks=" <> strEncode _fileDownloadAcks
+        "fileDownloads=" <> strEncode _fileDownloads
       ]
   strP = do
     _fromTime <- "fromTime=" *> strP <* A.endOfLine
@@ -102,5 +96,4 @@ instance StrEncoding FileServerStatsData where
     _filesDeleted <- "filesDeleted=" *> strP <* A.endOfLine
     _filesDownloaded <- "filesDownloaded:" *> A.endOfLine *> strP <* A.endOfLine
     _fileDownloads <- "fileDownloads=" *> strP <* A.endOfLine
-    _fileDownloadAcks <- "fileDownloadAcks=" *> strP <* A.endOfLine
-    pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount = 0, _filesSize = 0}
+    pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _filesCount = 0, _filesSize = 0}

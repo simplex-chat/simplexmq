@@ -17,7 +17,6 @@ module Simplex.FileTransfer.Server.Store
     deleteRecipient,
     expiredFilePath,
     getFile,
-    ackFile,
   )
 where
 
@@ -128,15 +127,6 @@ expiredFilePath FileStore {files} sId old =
       if systemSeconds createdAt < old
         then readTVar filePath
         else pure Nothing
-
-ackFile :: FileStore -> RecipientId -> STM (Either XFTPErrorType ())
-ackFile st@FileStore {recipients} recipientId = do
-  TM.lookupDelete recipientId recipients >>= \case
-    Just (sId, _) ->
-      withFile st sId $ \FileRec {recipientIds} -> do
-        modifyTVar' recipientIds $ S.delete recipientId
-        pure $ Right ()
-    _ -> pure $ Left AUTH
 
 withFile :: FileStore -> SenderId -> (FileRec -> STM (Either XFTPErrorType a)) -> STM (Either XFTPErrorType a)
 withFile FileStore {files} sId a =

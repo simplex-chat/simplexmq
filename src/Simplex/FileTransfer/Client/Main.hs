@@ -428,7 +428,6 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
       path <- decryptFile encSize chunkPaths key nonce
-      forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do
         printNoNewLine $ "File downloaded: " <> path
@@ -474,12 +473,6 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
-    acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
-    acknowledgeFileChunk a FileChunk {replicas = replica : _} = do
-      let FileChunkReplica {server, replicaId, replicaKey} = replica
-      c <- withRetry retryCount $ getXFTPServerClient a server
-      withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
-    acknowledgeFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
 printProgress :: String -> Int64 -> Int64 -> IO ()
 printProgress s part total = printNoNewLine $ s <> " " <> show ((part * 100) `div` total) <> "%"

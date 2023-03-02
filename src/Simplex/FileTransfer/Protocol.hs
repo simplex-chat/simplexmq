@@ -112,7 +112,6 @@ data FileCommandTag (p :: FileParty) where
   FPUT_ :: FileCommandTag FPSender
   FDEL_ :: FileCommandTag FPSender
   FGET_ :: FileCommandTag FPRecipient
-  FACK_ :: FileCommandTag FPRecipient
   PING_ :: FileCommandTag FPRecipient
 
 deriving instance Show (FileCommandTag p)
@@ -126,7 +125,6 @@ instance FilePartyI p => Encoding (FileCommandTag p) where
     FPUT_ -> "FPUT"
     FDEL_ -> "FDEL"
     FGET_ -> "FGET"
-    FACK_ -> "FACK"
     PING_ -> "PING"
   smpP = messageTagP
 
@@ -141,7 +139,6 @@ instance ProtocolMsgTag FileCmdTag where
     "FPUT" -> Just $ FCT SSender FPUT_
     "FDEL" -> Just $ FCT SSender FDEL_
     "FGET" -> Just $ FCT SRecipient FGET_
-    "FACK" -> Just $ FCT SRecipient FACK_
     "PING" -> Just $ FCT SRecipient PING_
     _ -> Nothing
 
@@ -163,7 +160,6 @@ data FileCommand (p :: FileParty) where
   FPUT :: FileCommand FPSender
   FDEL :: FileCommand FPSender
   FGET :: RcvPublicDhKey -> FileCommand FPRecipient
-  FACK :: FileCommand FPRecipient
   PING :: FileCommand FPRecipient
 
 deriving instance Show (FileCommand p)
@@ -189,7 +185,6 @@ instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
     FPUT -> e FPUT_
     FDEL -> e FDEL_
     FGET rKey -> e (FGET_, ' ', rKey)
-    FACK -> e FACK_
     PING -> e PING_
     where
       e :: Encoding a => a -> ByteString
@@ -228,7 +223,6 @@ instance ProtocolEncoding XFTPErrorType FileCmd where
     FCT SRecipient tag ->
       FileCmd SRecipient <$> case tag of
         FGET_ -> FGET <$> _smpP
-        FACK_ -> pure FACK
         PING_ -> pure PING
 
   fromProtocolError = fromProtocolError @XFTPErrorType @FileResponse

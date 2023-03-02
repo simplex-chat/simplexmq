@@ -80,8 +80,6 @@ data RcvFileChunk = RcvFileChunk
     chunkSize :: FileSize Word32,
     digest :: FileDigest,
     replicas :: [RcvFileChunkReplica],
-    -- received :: Bool, -- computed based on replicas?
-    -- acknowledged :: Bool,
     fileTmpPath :: FilePath,
     chunkTmpPath :: Maybe FilePath,
     nextDelay :: Maybe Int
@@ -94,7 +92,6 @@ data RcvFileChunkReplica = RcvFileChunkReplica
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateSignKey,
     received :: Bool,
-    acknowledged :: Bool,
     retries :: Int
   }
   deriving (Eq, Show)

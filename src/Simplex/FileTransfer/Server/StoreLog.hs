@@ -14,7 +14,6 @@ module Simplex.FileTransfer.Server.StoreLog
     logPutFile,
     logAddRecipients,
     logDeleteFile,
-    logAckFile,
   )
 where
 
@@ -42,7 +41,6 @@ data FileStoreLogRecord
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
-  | AckFile RecipientId
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case
@@ -50,14 +48,12 @@ instance StrEncoding FileStoreLogRecord where
     PutFile sId path -> strEncode (Str "FPUT", sId, path)
     AddRecipients sId rcps -> strEncode (Str "FADD", sId, rcps)
     DeleteFile sId -> strEncode (Str "FDEL", sId)
-    AckFile rId -> strEncode (Str "FACK", rId)
   strP =
     A.choice
       [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP),
         "FPUT " *> (PutFile <$> strP_ <*> strP),
         "FADD " *> (AddRecipients <$> strP_ <*> strP),
-        "FDEL " *> (DeleteFile <$> strP),
-        "FACK " *> (AckFile <$> strP)
+        "FDEL " *> (DeleteFile <$> strP)
       ]
 
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
@@ -74,9 +70,6 @@ logAddRecipients s = logFileStoreRecord s .: AddRecipients
 
 logDeleteFile :: StoreLog 'WriteMode -> SenderId -> IO ()
 logDeleteFile s = logFileStoreRecord s . DeleteFile
-
-logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
-logAckFile s = logFileStoreRecord s . AckFile
 
 readWriteFileStore :: FilePath -> FileStore -> IO (StoreLog 'WriteMode)
 readWriteFileStore f st = do
@@ -101,7 +94,6 @@ readFileStore f st = mapM_ addFileLogRecord . B.lines =<< B.readFile f
       PutFile qId path -> setFilePath st qId path
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
-      AckFile rId -> ackFile st rId
     addRecipients sId rcps = mapM_ (ExceptT . addRecipient st sId) rcps
 
 writeFileStore :: StoreLog 'WriteMode -> FileStore -> IO ()
