@@ -139,7 +139,6 @@ runXFTPLocalWorker c doWork = do
       whenM (doesPathExist tmpPath) $ removeDirectoryRecursive tmpPath
       withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
       -- TODO notify client
-      pure ()
       where
         decrypt :: Int64 -> [FilePath] -> m FilePath
         decrypt encSize chunkPaths = do
