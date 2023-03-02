@@ -57,15 +57,12 @@ sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go
   where
     go sbState 0 = do
-      -- TODO padding somehow also solves timing issue in HTTP2 (?)
-      let authTag = BA.convert (LC.sbAuth sbState) <> B.replicate (fileBlockSize - C.authTagSize) '#'
+      let authTag = BA.convert (LC.sbAuth sbState)
       send $ byteString authTag
     go sbState sz =
       getFileChunk h sz >>= \ch -> do
         let (encCh, sbState') = LC.sbEncryptChunk sbState ch
         send (byteString encCh) `E.catch` \(e :: E.SomeException) -> print e >> E.throwIO e
-        -- TODO remove delay when HTTP2 issue is fixed
-        threadDelay 500
         go sbState' $ sz - fromIntegral (B.length ch)
 
 getFileChunk :: Handle -> Word32 -> IO ByteString
