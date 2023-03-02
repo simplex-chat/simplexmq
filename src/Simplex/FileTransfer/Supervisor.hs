@@ -132,6 +132,7 @@ runXFTPLocalWorker c doWork = do
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFileDescription -> m ()
     decryptFile RcvFileDescription {rcvFileId, key, nonce, tmpPath, saveDir, chunks} = do
+      -- TODO remove tmpPath if exists
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       let chunkPaths = map (\RcvFileChunk {fileTmpPath} -> fileTmpPath) chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
