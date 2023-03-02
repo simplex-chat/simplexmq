@@ -155,6 +155,7 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
+import Simplex.FileTransfer.Protocol (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
@@ -1072,6 +1073,8 @@ data AgentErrorType
     SMP {smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients
     NTF {ntfErr :: ErrorType}
+  | -- | XFTP protocol errors forwarded to agent clients
+    XFTP {xftpErr :: XFTPErrorType}
   | -- | SMP server errors
     BROKER {brokerAddress :: String, brokerErr :: BrokerErrorType}
   | -- | errors of other agents
@@ -1166,6 +1169,7 @@ instance StrEncoding AgentErrorType where
       <|> "CONN " *> (CONN <$> parseRead1)
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
+      <|> "XFTP " *> (XFTP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
       <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
@@ -1179,6 +1183,7 @@ instance StrEncoding AgentErrorType where
     CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
+    XFTP e -> "XFTP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
     BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e

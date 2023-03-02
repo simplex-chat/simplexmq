@@ -32,8 +32,9 @@ instance Encoding FileHeader where
     (fileName, fileExtra) <- smpP
     pure FileHeader {fileName, fileExtra}
 
-data RcvFileDescription = RcvFileDescription
-  { rcvFileId :: Int64,
+data RcvFile = RcvFile
+  { userId :: Int64,
+    rcvFileId :: Int64,
     size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.SbKey,
@@ -74,8 +75,9 @@ instance TextEncoding RcvFileStatus where
     RFSComplete -> "complete"
 
 data RcvFileChunk = RcvFileChunk
-  { rcvFileId :: Int64,
-    rcvFileChunkId :: Int64,
+  { userId :: Int64,
+    rcvFileId :: Int64,
+    rcvChunkId :: Int64,
     chunkNo :: Int,
     chunkSize :: FileSize Word32,
     digest :: FileDigest,
@@ -89,7 +91,7 @@ data RcvFileChunk = RcvFileChunk
   deriving (Eq, Show)
 
 data RcvFileChunkReplica = RcvFileChunkReplica
-  { rcvFileChunkReplicaId :: Int64,
+  { rcvChunkReplicaId :: Int64,
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateSignKey,

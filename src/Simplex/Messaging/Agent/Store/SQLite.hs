@@ -1758,13 +1758,13 @@ createRcvFile db fd@FileDescription {chunks} saveDir tmpPath = do
         "INSERT INTO rcv_file_chunk_replicas (replica_number, rcv_file_chunk_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?)"
         (replicaNo, chunkId, srvId, replicaId, replicaKey)
 
-getRcvFile :: DB.Connection -> Int64 -> IO (Either StoreError RcvFileDescription)
+getRcvFile :: DB.Connection -> Int64 -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
   fd <- ExceptT getFileDescription
   chunks <- liftIO getChunks
-  pure (fd {chunks} :: RcvFileDescription)
+  pure (fd {chunks} :: RcvFile)
   where
-    getFileDescription :: IO (Either StoreError RcvFileDescription)
+    getFileDescription :: IO (Either StoreError RcvFile)
     getFileDescription = do
       firstRow toFileDescription SEFileNotFound $
         DB.query
@@ -1775,9 +1775,10 @@ getRcvFile db rcvFileId = runExceptT $ do
             WHERE rcv_file_id = ?
           |]
           (Only rcvFileId)
-    toFileDescription :: (FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFileDescription
+    toFileDescription :: (FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFile
     toFileDescription (size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status) =
-      RcvFileDescription {rcvFileId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status, chunks = []}
+      -- TODO add userId
+      RcvFile {rcvFileId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status, chunks = []}
     getChunks :: IO [RcvFileChunk]
     getChunks = do
       chunks <-
@@ -1791,12 +1792,12 @@ getRcvFile db rcvFileId = runExceptT $ do
               WHERE f.rcv_file_id = ?
             |]
             (Only rcvFileId)
-      forM chunks $ \chunk@RcvFileChunk {rcvFileChunkId} -> do
-        replicas' <- getChunkReplicas rcvFileChunkId
+      forM chunks $ \chunk@RcvFileChunk {rcvChunkId} -> do
+        replicas' <- getChunkReplicas rcvChunkId
         pure (chunk {replicas = replicas'} :: RcvFileChunk)
     toChunk :: (Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) -> RcvFileChunk
-    toChunk (rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) =
-      RcvFileChunk {rcvFileId, rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay, replicas = []}
+    toChunk (rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) =
+      RcvFileChunk {rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay, replicas = []}
     getChunkReplicas :: Int64 -> IO [RcvFileChunkReplica]
     getChunkReplicas chunkId = do
       map toReplica
@@ -1812,11 +1813,11 @@ getRcvFile db rcvFileId = runExceptT $ do
           |]
           (Only chunkId)
     toReplica :: (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
-    toReplica (rcvFileChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries, host, port, keyHash) =
+    toReplica (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries, host, port, keyHash) =
       let server = XFTPServer host port keyHash
-       in RcvFileChunkReplica {rcvFileChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
+       in RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
 
-updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> Int64 -> FilePath -> IO (Either StoreError RcvFileDescription)
+updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> Int64 -> FilePath -> IO (Either StoreError RcvFile)
 updateRcvFileChunkReceived db rId cId fId chunkTmpPath = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_file_chunk_replicas SET received = 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (updatedAt, rId)
@@ -1838,7 +1839,7 @@ updateRcvFileChunkReplicaRetries db replicaId = do
   -- update rcv_file_chunk_replicas
   undefined
 
-getUnreceivedRcvFiles :: DB.Connection -> IO [RcvFileDescription]
+getUnreceivedRcvFiles :: DB.Connection -> IO [RcvFile]
 getUnreceivedRcvFiles db = do
   -- get unique file ids from rcv_files where status /= complete
   -- getRcvFile for each file id
@@ -1865,22 +1866,21 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
       (host, port, keyHash)
   where
     toChunk :: ((Int64, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int)) -> RcvFileChunk
-    toChunk ((rcvFileId, rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) :. (rcvFileChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries)) =
+    toChunk ((rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) :. (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries)) =
+      -- TODO set userId
       RcvFileChunk
         { rcvFileId,
-          rcvFileChunkId,
+          rcvChunkId,
           chunkNo,
           chunkSize,
           digest,
           fileTmpPath,
           chunkTmpPath,
           nextDelay,
-          replicas =
-            [ RcvFileChunkReplica {rcvFileChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
-            ]
+          replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}]
         }
 
-getNextRcvFileToDecrypt :: DB.Connection -> IO (Maybe RcvFileDescription)
+getNextRcvFileToDecrypt :: DB.Connection -> IO (Maybe RcvFile)
 getNextRcvFileToDecrypt db = do
   fileId_ :: Maybe Int64 <-
     maybeFirstRow fromOnly $

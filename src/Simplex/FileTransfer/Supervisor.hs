@@ -88,25 +88,24 @@ runXFTPWorker c srv doWork = do
                 loop
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     downloadFileChunk :: RcvFileChunk -> m ()
-    downloadFileChunk RcvFileChunk {rcvFileId, rcvFileChunkId, chunkNo, chunkSize, digest, fileTmpPath, replicas = replica : _} = do
-      let RcvFileChunkReplica {rcvFileChunkReplicaId, replicaId, replicaKey} = replica
+    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, replicas = replica : _} = do
       chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      agentXFTPDownloadChunk c replicaKey (unChunkReplicaId replicaId) chunkSpec
+      agentXFTPDownloadChunk c userId replica chunkSpec
       fileReceived <- withStore c $ \db -> runExceptT $ do
         -- both actions can be done in a single store method
-        fd <- ExceptT $ updateRcvFileChunkReceived db rcvFileChunkReplicaId rcvFileChunkId rcvFileId chunkPath
+        fd <- ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId chunkPath
         let fileReceived = allChunksReceived fd
         when fileReceived $
           liftIO $ updateRcvFileStatus db rcvFileId RFSReceived
         pure fileReceived
       -- check if chunk is downloaded and not acknowledged via flag acknowledged?
       -- or just catch and ignore error on acknowledgement? (and remove flag)
-      agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId) `catchError` \_ -> pure ()
+      -- agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId) `catchError` \_ -> pure ()
       when fileReceived $ addWorker c Nothing
       where
-        allChunksReceived :: RcvFileDescription -> Bool
-        allChunksReceived RcvFileDescription {chunks} =
+        allChunksReceived :: RcvFile -> Bool
+        allChunksReceived RcvFile {chunks} =
           all (\RcvFileChunk {replicas} -> any received replicas) chunks
     downloadFileChunk _ = throwError $ INTERNAL "no replica"
 
@@ -130,8 +129,8 @@ runXFTPLocalWorker c doWork = do
                 -- TODO fixed number of retries instead of exponential backoff?
                 loop
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    decryptFile :: RcvFileDescription -> m ()
-    decryptFile RcvFileDescription {rcvFileId, key, nonce, tmpPath, saveDir, chunks} = do
+    decryptFile :: RcvFile -> m ()
+    decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, chunks} = do
       -- TODO remove tmpPath if exists
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       let chunkPaths = map (\RcvFileChunk {fileTmpPath} -> fileTmpPath) chunks
@@ -139,8 +138,9 @@ runXFTPLocalWorker c doWork = do
       path <- decrypt encSize chunkPaths
       whenM (doesPathExist tmpPath) $ removeDirectoryRecursive tmpPath
       withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
-      -- TODO notify client
       where
+        -- TODO notify client
+
         decrypt :: Int64 -> [FilePath] -> m FilePath
         decrypt encSize chunkPaths = do
           lazyChunks <- readChunks chunkPaths

@@ -13,6 +13,7 @@
 
 module Simplex.FileTransfer.Protocol where
 
+import Control.Applicative ((<|>))
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -25,6 +26,7 @@ import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
 import GHC.Generics (Generic)
+import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -55,8 +57,9 @@ import Simplex.Messaging.Protocol
     _smpP,
   )
 import Simplex.Messaging.Transport (SessionId, TransportError (..))
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
+import Test.QuickCheck (Arbitrary (..))
 
 currentXFTPVersion :: Version
 currentXFTPVersion = 1
@@ -353,6 +356,18 @@ data XFTPErrorType
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
+
+instance ToJSON XFTPErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance StrEncoding XFTPErrorType where
+  strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    e -> bshow e
+  strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+
+instance Arbitrary XFTPErrorType where arbitrary = genericArbitraryU
 
 instance Encoding XFTPErrorType where
   smpEncode = \case

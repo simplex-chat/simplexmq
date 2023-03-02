@@ -21,6 +21,7 @@ servers =
   InitialAgentServers
     { smp = M.fromList [(1, L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"])],
       ntf = [],
+      xftp = M.fromList [],
       netCfg = defaultNetworkConfig
     }
 

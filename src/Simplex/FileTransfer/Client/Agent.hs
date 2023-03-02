@@ -68,8 +68,8 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
         first (XFTPClientAgentError srv)
           <$> getXFTPClient (1, srv, Nothing) (xftpConfig config) clientDisconnected
 
-    clientDisconnected :: IO ()
-    clientDisconnected = do
+    clientDisconnected :: XFTPClient -> IO ()
+    clientDisconnected _ = do
       atomically $ TM.delete srv xftpClients
       logInfo $ "disconnected from " <> showServer srv
 
@@ -84,7 +84,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
 
     waitForXFTPClient :: XFTPClientVar -> ME XFTPClient
     waitForXFTPClient clientVar = do
-      let XFTPClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = xftpConfig config
+      let XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} = xftpConfig config
       client_ <- tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
       liftEither $ case client_ of
         Just (Right c) -> Right c
@@ -121,7 +121,7 @@ closeXFTPServerClient XFTPClientAgent {xftpClients, config} srv =
   atomically (TM.lookupDelete srv xftpClients) >>= mapM_ closeClient
   where
     closeClient cVar = do
-      let NetworkConfig {tcpConnectTimeout} = networkConfig $ xftpConfig config
+      let NetworkConfig {tcpConnectTimeout} = xftpNetworkConfig $ xftpConfig config
       tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
         Just (Right client) -> closeXFTPClient client `catchAll_` pure ()
         _ -> pure ()
