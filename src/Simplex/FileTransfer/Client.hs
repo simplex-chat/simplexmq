@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Time (UTCTime)
 import Data.Word (Word32)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
@@ -34,6 +35,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( BasicAuth,
     Protocol (..),
@@ -42,7 +44,7 @@ import Simplex.Messaging.Protocol
     SenderId,
   )
 import Simplex.Messaging.Transport (supportedParameters)
-import Simplex.Messaging.Transport.Client (TransportClientConfig)
+import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
@@ -51,11 +53,12 @@ import UnliftIO.Directory
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
+    transportSession :: TransportSession FileResponse,
     config :: XFTPClientConfig
   }
 
 data XFTPClientConfig = XFTPClientConfig
-  { networkConfig :: NetworkConfig,
+  { xftpNetworkConfig :: NetworkConfig,
     uploadTimeoutPerMb :: Int
   }
 
@@ -77,26 +80,41 @@ type XFTPClientError = ProtocolClientError XFTPErrorType
 defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig =
   XFTPClientConfig
-    { networkConfig = defaultNetworkConfig,
+    { xftpNetworkConfig = defaultNetworkConfig,
       uploadTimeoutPerMb = 10000000 -- 10 seconds
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> IO () -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {networkConfig} disconnected = runExceptT $ do
-  let tcConfig = transportClientConfig networkConfig
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig} disconnected = runExceptT $ do
+  let tcConfig = transportClientConfig xftpNetworkConfig
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
-  useHost <- liftEither $ chooseTransportHost networkConfig host
+  useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
+  clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
-  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config disconnected
-  pure XFTPClient {http2Client, config}
+      clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
+  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
+  let c = XFTPClient {http2Client, transportSession, config}
+  atomically $ writeTVar clientVar $ Just c
+  pure c
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
 
+xftpClientServer :: XFTPClient -> String
+xftpClientServer = B.unpack . strEncode . snd3 . transportSession
+  where
+    snd3 (_, s, _) = s
+
+xftpTransportHost :: XFTPClient -> TransportHost
+xftpTransportHost = (host :: HClient -> TransportHost) . client_ . http2Client
+
+xftpSessionTs :: XFTPClient -> UTCTime
+xftpSessionTs = sessionTs . http2Client
+
 xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
-xftpHTTP2Config transportConfig XFTPClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} =
+xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} =
   defaultHTTP2ClientConfig
     { bodyHeadSize = xftpBlockSize,
       suportedTLSParams = supportedParameters,

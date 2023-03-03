@@ -535,4 +535,8 @@ data StoreError
     SEX3dhKeysNotFound
   | -- | Used to wrap agent errors inside store operations to avoid race conditions
     SEAgentError AgentErrorType
+  | -- | XFTP Server not found.
+    SEXFTPServerNotFound
+  | -- | XFTP File not found.
+    SEFileNotFound
   deriving (Eq, Show, Exception)

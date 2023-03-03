@@ -31,7 +31,7 @@ module Simplex.Messaging.Client
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
-    clientServer,
+    protocolClientServer,
     transportHost',
     transportSession',
 
@@ -254,8 +254,8 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     onionHost = find isOnionHost hosts
     publicHost = find (not . isOnionHost) hosts
 
-clientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient err msg -> String
-clientServer = B.unpack . strEncode . snd3 . transportSession . client_
+protocolClientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient err msg -> String
+protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
 

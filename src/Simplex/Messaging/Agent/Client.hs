@@ -15,6 +15,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
@@ -48,6 +49,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfCreateSubscription,
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
+    agentXFTPDownloadChunk,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -108,10 +110,17 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
+import Data.Time (UTCTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
+import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..))
+import qualified Simplex.FileTransfer.Client as X
+import Simplex.FileTransfer.Description (ChunkReplicaId (..))
+import Simplex.FileTransfer.Protocol (FileResponse, XFTPErrorType)
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec)
+import Simplex.FileTransfer.Types (RcvFileChunkReplica (..))
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Protocol
@@ -151,6 +160,7 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SndPublicVerifyKey,
+    XFTPServerWithAuth,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
@@ -163,15 +173,19 @@ import UnliftIO (mapConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type ClientVar err msg = TMVar (Either AgentErrorType (ProtocolClient err msg))
+type ClientVar msg = TMVar (Either AgentErrorType (Client msg))
 
-type SMPClientVar = TMVar (Either AgentErrorType SMPClient)
+type SMPClientVar = ClientVar SMP.BrokerMsg
 
-type NtfClientVar = TMVar (Either AgentErrorType NtfClient)
+type NtfClientVar = ClientVar NtfResponse
+
+type XFTPClientVar = TMVar (Either AgentErrorType XFTPClient)
 
 type SMPTransportSession = TransportSession SMP.BrokerMsg
 
 type NtfTransportSession = TransportSession NtfResponse
+
+type XFTPTransportSession = TransportSession FileResponse
 
 data AgentClient = AgentClient
   { active :: TVar Bool,
@@ -182,6 +196,8 @@ data AgentClient = AgentClient
     smpClients :: TMap SMPTransportSession SMPClientVar,
     ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfTransportSession NtfClientVar,
+    xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
+    xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar NetworkConfig,
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
@@ -246,7 +262,7 @@ data AgentStatsKey = AgentStatsKey
   deriving (Eq, Ord, Show)
 
 newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
-newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
+newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -256,6 +272,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   smpClients <- TM.empty
   ntfServers <- newTVar ntf
   ntfClients <- TM.empty
+  xftpServers <- newTVar xftp
+  xftpClients <- TM.empty
   useNetworkConfig <- newTVar netCfg
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
@@ -290,6 +308,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
         smpClients,
         ntfServers,
         ntfClients,
+        xftpServers,
+        xftpClients,
         useNetworkConfig,
         subscrConns,
         activeSubs,
@@ -320,17 +340,41 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
 
-class ProtocolServerClient err msg | msg -> err where
-  getProtocolServerClient :: AgentMonad m => AgentClient -> TransportSession msg -> m (ProtocolClient err msg)
+class (Encoding err, Show err) => ProtocolServerClient err msg | msg -> err where
+  type Client msg = c | c -> msg
+  getProtocolServerClient :: AgentMonad m => AgentClient -> TransportSession msg -> m (Client msg)
   clientProtocolError :: err -> AgentErrorType
+  closeProtocolServerClient :: Client msg -> IO ()
+  clientServer :: Client msg -> String
+  clientTransportHost :: Client msg -> TransportHost
+  clientSessionTs :: Client msg -> UTCTime
 
 instance ProtocolServerClient ErrorType BrokerMsg where
+  type Client BrokerMsg = ProtocolClient ErrorType BrokerMsg
   getProtocolServerClient = getSMPServerClient
   clientProtocolError = SMP
+  closeProtocolServerClient = closeProtocolClient
+  clientServer = protocolClientServer
+  clientTransportHost = transportHost'
+  clientSessionTs = sessionTs
 
 instance ProtocolServerClient ErrorType NtfResponse where
+  type Client NtfResponse = ProtocolClient ErrorType NtfResponse
   getProtocolServerClient = getNtfServerClient
   clientProtocolError = NTF
+  closeProtocolServerClient = closeProtocolClient
+  clientServer = protocolClientServer
+  clientTransportHost = transportHost'
+  clientSessionTs = sessionTs
+
+instance ProtocolServerClient XFTPErrorType FileResponse where
+  type Client FileResponse = XFTPClient
+  getProtocolServerClient = getXFTPServerClient
+  clientProtocolError = XFTP
+  closeProtocolServerClient = X.closeXFTPClient
+  clientServer = X.xftpClientServer
+  clientTransportHost = X.xftpTransportHost
+  clientSessionTs = X.xftpSessionTs
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
@@ -420,6 +464,27 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
       atomically $ writeTBQueue (subQ c) ("", "", hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
+getXFTPServerClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m XFTPClient
+getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@(userId, srv, _) = do
+  unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
+  atomically (getClientVar tSess xftpClients)
+    >>= either
+      (newProtocolClient c tSess xftpClients connectClient $ \_ _ -> pure ())
+      (waitForProtocolClient c tSess)
+  where
+    connectClient :: m XFTPClient
+    connectClient = do
+      cfg <- asks $ xftpCfg . config
+      xftpNetworkConfig <- readTVarIO useNetworkConfig
+      liftEitherError (protocolClientError XFTP $ B.unpack $ strEncode srv) (X.getXFTPClient tSess cfg {xftpNetworkConfig} clientDisconnected)
+
+    clientDisconnected :: XFTPClient -> IO ()
+    clientDisconnected client = do
+      atomically $ TM.delete tSess xftpClients
+      incClientStat c userId client "DISCONNECT" ""
+      atomically $ writeTBQueue (subQ c) ("", "", hostEvent DISCONNECT client)
+      logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+
 getClientVar :: forall a s. TransportSession s -> TMap (TransportSession s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
 getClientVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup tSess clients
   where
@@ -429,7 +494,7 @@ getClientVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM
       TM.insert tSess var clients
       pure var
 
-waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (ProtoType msg)) => AgentClient -> TransportSession msg -> ClientVar err msg -> m (ProtocolClient err msg)
+waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (ProtoType msg)) => AgentClient -> TransportSession msg -> ClientVar msg -> m (Client msg)
 waitForProtocolClient c (_, srv, _) clientVar = do
   NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
   client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
@@ -440,17 +505,17 @@ waitForProtocolClient c (_, srv, _) clientVar = do
 
 newProtocolClient ::
   forall err msg m.
-  (AgentMonad m, ProtocolTypeI (ProtoType msg)) =>
+  (AgentMonad m, ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) =>
   AgentClient ->
   TransportSession msg ->
-  TMap (TransportSession msg) (ClientVar err msg) ->
-  m (ProtocolClient err msg) ->
+  TMap (TransportSession msg) (ClientVar msg) ->
+  m (Client msg) ->
   (AgentClient -> TransportSession msg -> m ()) ->
-  ClientVar err msg ->
-  m (ProtocolClient err msg)
+  ClientVar msg ->
+  m (Client msg)
 newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconnectClient clientVar = tryConnectClient pure tryConnectAsync
   where
-    tryConnectClient :: (ProtocolClient err msg -> m a) -> m () -> m a
+    tryConnectClient :: (Client msg -> m a) -> m () -> m a
     tryConnectClient successAction retryAction =
       tryError connectClient >>= \r -> case r of
         Right client -> do
@@ -475,8 +540,8 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
       withRetryInterval ri $ \loop -> void $ tryConnectClient (const $ reconnectClient c tSess) loop
       atomically . removeAsyncAction aId $ asyncClients c
 
-hostEvent :: forall err msg. ProtocolTypeI (ProtoType msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> ProtocolClient err msg -> ACommand 'Agent
-hostEvent event client = event (AProtocolType $ protocolTypeI @(ProtoType msg)) $ transportHost' client
+hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> Client msg -> ACommand 'Agent
+hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
 
 getClientConfig :: AgentMonad m => AgentClient -> (AgentConfig -> ProtocolClientConfig) -> m ProtocolClientConfig
 getClientConfig AgentClient {useNetworkConfig} cfgSel = do
@@ -519,7 +584,7 @@ throwWhenNoDelivery c SndQueue {server, sndId} =
   where
     k = (server, sndId)
 
-closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar err msg)) -> IO ()
+closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
   atomically (swapTVar cs M.empty) >>= mapM_ (forkIO . closeClient)
   where
@@ -527,7 +592,7 @@ closeProtocolServerClients c clientsSel =
     closeClient cVar = do
       NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
       tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
-        Just (Right client) -> closeProtocolClient client `catchAll_` pure ()
+        Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
         _ -> pure ()
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
@@ -542,29 +607,29 @@ withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pur
   where
     newLock = createLock >>= \l -> TM.insert key l locks $> l
 
-withClient_ :: forall a m err msg. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (ProtocolClient err msg -> m a) -> m a
+withClient_ :: forall a m err msg. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do
   cl <- getProtocolServerClient c tSess
   (action cl <* stat cl "OK") `catchError` logServerError cl
   where
     stat cl = liftIO . incClientStat c userId cl statCmd
-    logServerError :: ProtocolClient err msg -> AgentErrorType -> m a
+    logServerError :: Client msg -> AgentErrorType -> m a
     logServerError cl e = do
       logServer "<--" c srv "" $ strEncode e
       stat cl $ strEncode e
       throwError e
 
-withLogClient_ :: (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (ProtocolClient err msg -> m a) -> m a
+withLogClient_ :: (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> m a) -> m a
 withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
   logServer "-->" c srv entId cmdStr
   res <- withClient_ c tSess cmdStr action
   logServer "<--" c srv entId "OK"
   return res
 
-withClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg, ProtocolTypeI (ProtoType msg), Encoding err, Show err) => AgentClient -> TransportSession msg -> ByteString -> (ProtocolClient err msg -> ExceptT (ProtocolClientError err) IO a) -> m a
+withClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> m a
 withClient c tSess statKey action = withClient_ c tSess statKey $ \client -> liftClient (clientProtocolError @err @msg) (clientServer client) $ action client
 
-withLogClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg, ProtocolTypeI (ProtoType msg), Encoding err, Show err) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (ProtocolClient err msg -> ExceptT (ProtocolClientError err) IO a) -> m a
+withLogClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> m a
 withLogClient c tSess entId cmdStr action = withLogClient_ c tSess entId cmdStr $ \client -> liftClient (clientProtocolError @err @msg) (clientServer client) $ action client
 
 withSMPClient :: (AgentMonad m, SMPQueueRec q) => AgentClient -> q -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
@@ -579,6 +644,17 @@ withSMPClient_ c q cmdStr action = do
 
 withNtfClient :: forall m a. AgentMonad m => AgentClient -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> m a
 withNtfClient c srv = withLogClient c (0, srv, Nothing)
+
+withXFTPClient ::
+  (AgentMonad m, ProtocolServerClient err msg) =>
+  AgentClient ->
+  (UserId, ProtoServer msg, EntityId) ->
+  ByteString ->
+  (Client msg -> ExceptT (ProtocolClientError err) IO b) ->
+  m b
+withXFTPClient c (userId, srv, fId) cmdStr action = do
+  tSess <- mkTransportSession c userId srv fId
+  withLogClient c tSess (strEncode fId) cmdStr action
 
 liftClient :: (AgentMonad m, Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> m a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
@@ -912,6 +988,10 @@ agentNtfDeleteSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
 
+agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
+agentXFTPDownloadChunk c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, fId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
   cmNonce <- liftIO C.randomCbNonce
@@ -1041,7 +1121,7 @@ incStat AgentClient {agentStats} n k = do
     Just v -> modifyTVar' v (+ n)
     _ -> newTVar n >>= \v -> TM.insert k v agentStats
 
-incClientStat :: AgentClient -> UserId -> ProtocolClient err msg -> ByteString -> ByteString -> IO ()
+incClientStat :: ProtocolServerClient err msg => AgentClient -> UserId -> Client msg -> ByteString -> ByteString -> IO ()
 incClientStat c userId pc = incClientStatN c userId pc 1
 
 incServerStat :: AgentClient -> UserId -> ProtocolServer p -> ByteString -> ByteString -> IO ()
@@ -1051,8 +1131,8 @@ incServerStat c userId ProtocolServer {host} cmd res = do
   where
     statsKey = AgentStatsKey {userId, host = strEncode $ L.head host, clientTs = "", cmd, res}
 
-incClientStatN :: AgentClient -> UserId -> ProtocolClient err msg -> Int -> ByteString -> ByteString -> IO ()
+incClientStatN :: ProtocolServerClient err msg => AgentClient -> UserId -> Client msg -> Int -> ByteString -> ByteString -> IO ()
 incClientStatN c userId pc n cmd res = do
   atomically $ incStat c n statsKey
   where
-    statsKey = AgentStatsKey {userId, host = strEncode $ transportHost' pc, clientTs = strEncode $ sessionTs pc, cmd, res}
+    statsKey = AgentStatsKey {userId, host = strEncode $ clientTransportHost pc, clientTs = strEncode $ clientSessionTs pc, cmd, res}

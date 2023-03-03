@@ -43,6 +43,8 @@ import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import Simplex.FileTransfer.Types
+import Simplex.FileTransfer.Util (uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
@@ -52,7 +54,7 @@ import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivat
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (ifM, tshow, whenM)
 import System.Exit (exitFailure)
-import System.FilePath (splitExtensions, splitFileName, (</>))
+import System.FilePath (splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
 import System.Random (StdGen, newStdGen, randomR)
 import UnliftIO
@@ -78,9 +80,6 @@ maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
 
 fileSizeLen :: Int64
 fileSizeLen = 8
-
-authTagSize :: Int64
-authTagSize = fromIntegral C.authTagSize
 
 newtype CLIError = CLIError String
   deriving (Eq, Show, Exception)
@@ -256,19 +255,6 @@ runE a =
   runExceptT a >>= \case
     Left (CLIError e) -> putStrLn e >> exitFailure
     _ -> pure ()
-
--- fileExtra is added to allow header extension in future versions
-data FileHeader = FileHeader
-  { fileName :: String,
-    fileExtra :: Maybe String
-  }
-  deriving (Eq, Show)
-
-instance Encoding FileHeader where
-  smpEncode FileHeader {fileName, fileExtra} = smpEncode (fileName, fileExtra)
-  smpP = do
-    (fileName, fileExtra) <- smpP
-    pure FileHeader {fileName, fileExtra}
 
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} = do
@@ -577,15 +563,6 @@ prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) c
 
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
 getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
-
-uniqueCombine :: MonadIO m => FilePath -> String -> m FilePath
-uniqueCombine filePath fileName = tryCombine (0 :: Int)
-  where
-    tryCombine n =
-      let (name, ext) = splitExtensions fileName
-          suffix = if n == 0 then "" else "_" <> show n
-          f = filePath </> (name <> suffix <> ext)
-       in ifM (doesPathExist f) (tryCombine $ n + 1) (pure f)
 
 withReconnect :: Show e => XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
 withReconnect a srv n run = withRetry n $ do

@@ -16,6 +16,7 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
+import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
 
@@ -46,4 +47,5 @@ main = do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
+          describe "XFTP agent" xftpAgentTests
         describe "Server CLIs" cliTests

@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent
     getNtfToken,
     getNtfTokenData,
     toggleConnectionNtfs,
+    xftpReceiveFile,
     activateAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -113,6 +114,10 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
+import Simplex.FileTransfer.Agent (receiveFile)
+import Simplex.FileTransfer.Description (ValidFileDescription)
+import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Types (RcvFileId)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock (withLock)
@@ -321,6 +326,10 @@ getNtfTokenData c = withAgentEnv c $ getNtfTokenData' c
 -- | Set connection notifications on/off
 toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ()
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
+
+-- | Receive XFTP file
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
+xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Activate operations
 activateAgent :: AgentErrorMonad m => AgentClient -> m ()

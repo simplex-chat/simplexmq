@@ -1032,6 +1032,10 @@ instance ToJSON CbNonce where
 instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
+instance FromField CbNonce where fromField f = CryptoBoxNonce <$> fromField f
+
+instance ToField CbNonce where toField (CryptoBoxNonce s) = toField s
+
 cbNonce :: ByteString -> CbNonce
 cbNonce s
   | len == 24 = CryptoBoxNonce s
@@ -1071,6 +1075,10 @@ instance ToJSON SbKey where
 
 instance FromJSON SbKey where
   parseJSON = strParseJSON "SbKey"
+
+instance FromField SbKey where fromField f = SecretBoxKey <$> fromField f
+
+instance ToField SbKey where toField (SecretBoxKey s) = toField s
 
 sbKey :: ByteString -> Either String SbKey
 sbKey s

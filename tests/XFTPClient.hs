@@ -110,6 +110,6 @@ testXFTPClientConfig = defaultXFTPClientConfig
 
 testXFTPClient :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
 testXFTPClient client =
-  getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (pure ()) >>= \case
+  getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e

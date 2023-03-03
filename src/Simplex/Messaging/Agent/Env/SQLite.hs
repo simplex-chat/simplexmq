@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
+    XFTPAgent (..),
   )
 where
 
@@ -37,6 +38,7 @@ import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
+import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (UserId)
@@ -47,7 +49,7 @@ import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -63,6 +65,7 @@ type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorTy
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),
     ntf :: [NtfServer],
+    xftp :: Map UserId (NonEmpty XFTPServerWithAuth),
     netCfg :: NetworkConfig
   }
 
@@ -84,6 +87,7 @@ data AgentConfig = AgentConfig
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
+    xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
@@ -144,6 +148,7 @@ defaultAgentConfig =
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
+      xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
@@ -173,7 +178,8 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
-    ntfSupervisor :: NtfSupervisor
+    ntfSupervisor :: NtfSupervisor,
+    xftpAgent :: XFTPAgent
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -185,7 +191,8 @@ newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} =
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+  xftpAgent <- atomically newXFTPAgent
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
 createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
@@ -207,3 +214,12 @@ newNtfSubSupervisor qSize = do
   ntfWorkers <- TM.empty
   ntfSMPWorkers <- TM.empty
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+
+data XFTPAgent = XFTPAgent
+  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
+  }
+
+newXFTPAgent :: STM XFTPAgent
+newXFTPAgent = do
+  xftpWorkers <- TM.empty
+  pure XFTPAgent {xftpWorkers}

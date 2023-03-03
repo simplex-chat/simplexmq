@@ -39,6 +39,8 @@ import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -96,6 +98,10 @@ instance ToJSON FileDigest where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance FromField FileDigest where fromField f = FileDigest <$> fromField f
+
+instance ToField FileDigest where toField (FileDigest s) = toField s
+
 data FileChunk = FileChunk
   { chunkNo :: Int,
     chunkSize :: FileSize Word32,
@@ -124,6 +130,10 @@ instance FromJSON ChunkReplicaId where
 instance ToJSON ChunkReplicaId where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance FromField ChunkReplicaId where fromField f = ChunkReplicaId <$> fromField f
+
+instance ToField ChunkReplicaId where toField (ChunkReplicaId s) = toField s
 
 data YAMLFileDescription = YAMLFileDescription
   { party :: FileParty,
@@ -225,6 +235,10 @@ gb n = 1024 * mb n
 
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
+
+instance (FromField a) => FromField (FileSize a) where fromField f = FileSize <$> fromField f
+
+instance (ToField a) => ToField (FileSize a) where toField (FileSize s) = toField s
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
 groupReplicasByServer defChunkSize =
