@@ -156,7 +156,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
           atomically $ modifyTVar' (asyncClients ca) (a :)
         connectAsync :: ExceptT SMPClientError IO ()
         connectAsync =
-          withRetryInterval (reconnectInterval agentCfg) $ \loop ->
+          withRetryInterval (reconnectInterval agentCfg) $ \_ loop ->
             void $ tryConnectClient (const reconnectClient) loop
 
     connectClient :: ExceptT SMPClientError IO SMPClient
@@ -195,7 +195,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
 
     tryReconnectClient :: ExceptT SMPClientError IO ()
     tryReconnectClient = do
-      withRetryInterval (reconnectInterval agentCfg) $ \loop ->
+      withRetryInterval (reconnectInterval agentCfg) $ \_ loop ->
         reconnectClient `catchE` const loop
 
     reconnectClient :: ExceptT SMPClientError IO ()

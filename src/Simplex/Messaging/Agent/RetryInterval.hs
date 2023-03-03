@@ -29,13 +29,13 @@ data RetryInterval2 = RetryInterval2
   }
 
 data RetryIntervalMode = RISlow | RIFast
-  deriving (Eq)
+  deriving (Eq, Show)
 
-withRetryInterval :: forall m. MonadIO m => RetryInterval -> (m () -> m ()) -> m ()
+withRetryInterval :: forall m. MonadIO m => RetryInterval -> (Int -> m () -> m ()) -> m ()
 withRetryInterval ri action = callAction 0 $ initialInterval ri
   where
     callAction :: Int -> Int -> m ()
-    callAction elapsed delay = action loop
+    callAction elapsed delay = action delay loop
       where
         loop = do
           liftIO $ threadDelay delay
@@ -43,20 +43,23 @@ withRetryInterval ri action = callAction 0 $ initialInterval ri
           callAction elapsed' $ nextDelay elapsed' delay ri
 
 -- This function allows action to toggle between slow and fast retry intervals.
-withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> ((RetryIntervalMode -> m ()) -> m ()) -> m ()
+withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> ((RetryIntervalMode, Int) -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
 withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
-  callAction (0, initialInterval riSlow) (0, initialInterval riFast)
+  callAction (RIFast, 0) (0, initialInterval riSlow) (0, initialInterval riFast)
   where
-    callAction :: (Int, Int) -> (Int, Int) -> m ()
-    callAction slow fast = action loop
+    callAction :: (RetryIntervalMode, Int) -> (Int, Int) -> (Int, Int) -> m ()
+    callAction retryState slow fast = action retryState loop
       where
-        loop = \case
-          RISlow -> run slow riSlow (`callAction` fast)
-          RIFast -> run fast riFast (callAction slow)
+        loop mode = case mode of
+          RISlow -> run slow riSlow (\ri -> callAction (state ri) ri fast)
+          RIFast -> run fast riFast (\ri -> callAction (state ri) slow ri)
+          where
+            state ri = (mode, snd ri)
         run (elapsed, delay) ri call = do
           wait delay
           let elapsed' = elapsed + delay
-          call (elapsed', nextDelay elapsed' delay ri)
+              delay' = nextDelay elapsed' delay ri
+          call (elapsed', delay')
         wait delay = do
           waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
