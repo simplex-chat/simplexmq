@@ -114,9 +114,10 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
+import Simplex.FileTransfer.Agent (receiveFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Supervisor (receiveFile)
+import Simplex.FileTransfer.Types (RcvFileId)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock (withLock)
@@ -144,7 +145,6 @@ import UnliftIO.Async (async, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Simplex.FileTransfer.Types (RcvFileId)
 
 -- import GHC.Conc (unsafeIOToSTM)
 

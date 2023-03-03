@@ -8,7 +8,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Supervisor
+module Simplex.FileTransfer.Agent
   ( receiveFile,
   )
 where
@@ -55,7 +55,7 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath
 
 addWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
 addWorker c srv_ = do
-  ws <- asks $ xftpWorkers . xftpSupervisor
+  ws <- asks $ xftpWorkers . xftpAgent
   atomically (TM.lookup srv_ ws) >>= \case
     Nothing -> do
       doWork <- newTMVarIO ()

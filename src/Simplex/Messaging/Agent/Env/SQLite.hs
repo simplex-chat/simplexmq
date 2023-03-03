@@ -24,7 +24,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
-    XFTPSupervisor (..),
+    XFTPAgent (..),
   )
 where
 
@@ -179,7 +179,7 @@ data Env = Env
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
-    xftpSupervisor :: XFTPSupervisor
+    xftpAgent :: XFTPAgent
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -191,8 +191,8 @@ newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} =
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  xftpSupervisor <- atomically newXFTPSupervisor
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpSupervisor}
+  xftpAgent <- atomically newXFTPAgent
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
 createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
@@ -215,11 +215,11 @@ newNtfSubSupervisor qSize = do
   ntfSMPWorkers <- TM.empty
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
-data XFTPSupervisor = XFTPSupervisor
+data XFTPAgent = XFTPAgent
   { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
   }
 
-newXFTPSupervisor :: STM XFTPSupervisor
-newXFTPSupervisor = do
+newXFTPAgent :: STM XFTPAgent
+newXFTPAgent = do
   xftpWorkers <- TM.empty
-  pure XFTPSupervisor {xftpWorkers}
+  pure XFTPAgent {xftpWorkers}
