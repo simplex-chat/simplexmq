@@ -887,7 +887,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           withStore c (`getConn` connId) >>= \case
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
-        tryCommand action = withRetryInterval ri $ \loop ->
+        tryCommand action = withRetryInterval ri $ \_ loop ->
           tryError action >>= \case
             Left e
               | temporaryOrHostError e -> retrySndOp c loop
@@ -993,7 +993,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
       Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, internalTs}) ->
-        withRetryLock2 ri qLock $ \loop -> do
+        withRetryLock2 ri qLock $ \_ loop -> do
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             _ -> sendAgentMessage c sq msgFlags msgBody

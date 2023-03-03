@@ -175,7 +175,7 @@ runNtfWorker c srv doWork = do
         Nothing -> noWorkToDo
         Just a@(NtfSubscription {connId}, _, _) -> do
           ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \loop ->
+          withRetryInterval ri $ \_ loop ->
             processAction a
               `catchError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
@@ -259,7 +259,7 @@ runNtfSMPWorker c srv doWork = do
         Nothing -> noWorkToDo
         Just a@(NtfSubscription {connId}, _, _) -> do
           ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \loop ->
+          withRetryInterval ri $ \_ loop ->
             processAction a
               `catchError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
