@@ -39,6 +39,7 @@ library
       Simplex.FileTransfer.Client
       Simplex.FileTransfer.Client.Agent
       Simplex.FileTransfer.Client.Main
+      Simplex.FileTransfer.Client.Presets
       Simplex.FileTransfer.Description
       Simplex.FileTransfer.Protocol
       Simplex.FileTransfer.Server
