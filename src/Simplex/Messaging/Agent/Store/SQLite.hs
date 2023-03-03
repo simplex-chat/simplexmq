@@ -1731,8 +1731,8 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
   firstRow fromOnly SEXFTPServerNotFound $
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-createRcvFile :: DB.Connection -> FileDescription 'FPRecipient -> FilePath -> FilePath -> IO ()
-createRcvFile db fd@FileDescription {chunks} saveDir tmpPath = do
+createRcvFile :: DB.Connection -> UserId -> FileDescription 'FPRecipient -> FilePath -> FilePath -> IO ()
+createRcvFile db userId fd@FileDescription {chunks} saveDir tmpPath = do
   rcvFileId <- insertRcvFile fd
   forM_ chunks $ \fc@FileChunk {replicas} -> do
     chunkId <- insertChunk fc rcvFileId
@@ -1741,8 +1741,8 @@ createRcvFile db fd@FileDescription {chunks} saveDir tmpPath = do
     insertRcvFile FileDescription {size, digest, key, nonce, chunkSize} = do
       DB.execute
         db
-        "INSERT INTO rcv_files (size, digest, key, iv, chunk_size, tmp_path, save_dir, status) VALUES (?,?,?,?,?,?,?)"
-        (size, digest, key, nonce, chunkSize, tmpPath, saveDir, RFSReceiving)
+        "INSERT INTO rcv_files (user_id, size, digest, key, nonce, chunk_size, tmp_path, save_dir, status) VALUES (?,?,?,?,?,?,?,?)"
+        (userId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, RFSReceiving)
       insertedRowId db
     insertChunk FileChunk {chunkNo, chunkSize, digest} rcvFileId = do
       DB.execute
@@ -1760,44 +1760,44 @@ createRcvFile db fd@FileDescription {chunks} saveDir tmpPath = do
 
 getRcvFile :: DB.Connection -> Int64 -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
-  fd <- ExceptT getFileDescription
-  chunks <- liftIO getChunks
+  fd@RcvFile {userId, tmpPath} <- ExceptT getFile
+  chunks <- liftIO $ getChunks userId tmpPath
   pure (fd {chunks} :: RcvFile)
   where
-    getFileDescription :: IO (Either StoreError RcvFile)
-    getFileDescription = do
-      firstRow toFileDescription SEFileNotFound $
+    getFile :: IO (Either StoreError RcvFile)
+    getFile = do
+      firstRow toFile SEFileNotFound $
         DB.query
           db
           [sql|
-            SELECT size, digest, key, iv, chunk_size, tmp_path, save_dir, save_path, status
+            SELECT user_id, size, digest, key, nonce, chunk_size, tmp_path, save_dir, save_path, status
             FROM rcv_files
             WHERE rcv_file_id = ?
           |]
           (Only rcvFileId)
-    toFileDescription :: (FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFile
-    toFileDescription (size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status) =
-      -- TODO add userId
-      RcvFile {rcvFileId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status, chunks = []}
-    getChunks :: IO [RcvFileChunk]
-    getChunks = do
+      where
+        toFile :: (UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFile
+        toFile (userId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status) =
+          RcvFile {userId, rcvFileId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status, chunks = []}
+    getChunks :: UserId -> FilePath -> IO [RcvFileChunk]
+    getChunks userId fileTmpPath = do
       chunks <-
         map toChunk
           <$> DB.query
             db
             [sql|
-              SELECT c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path, c.next_delay,
-              FROM rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
-              JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
-              WHERE f.rcv_file_id = ?
+              SELECT rcv_file_chunk_id, chunk_no, chunk_size, digest, tmp_path, next_delay,
+              FROM rcv_file_chunks
+              WHERE rcv_file_id = ?
             |]
             (Only rcvFileId)
       forM chunks $ \chunk@RcvFileChunk {rcvChunkId} -> do
         replicas' <- getChunkReplicas rcvChunkId
         pure (chunk {replicas = replicas'} :: RcvFileChunk)
-    toChunk :: (Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) -> RcvFileChunk
-    toChunk (rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) =
-      RcvFileChunk {rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay, replicas = []}
+      where
+        toChunk :: (Int64, Int, FileSize Word32, FileDigest, Maybe FilePath, Maybe Int) -> RcvFileChunk
+        toChunk (rcvChunkId, chunkNo, chunkSize, digest, chunkTmpPath, nextDelay) =
+          RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay, replicas = []}
     getChunkReplicas :: Int64 -> IO [RcvFileChunkReplica]
     getChunkReplicas chunkId = do
       map toReplica
@@ -1812,10 +1812,11 @@ getRcvFile db rcvFileId = runExceptT $ do
             WHERE rcv_file_chunk_id = ?
           |]
           (Only chunkId)
-    toReplica :: (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
-    toReplica (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries, host, port, keyHash) =
-      let server = XFTPServer host port keyHash
-       in RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
+      where
+        toReplica :: (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
+        toReplica (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries, host, port, keyHash) =
+          let server = XFTPServer host port keyHash
+           in RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
 
 updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> Int64 -> FilePath -> IO (Either StoreError RcvFile)
 updateRcvFileChunkReceived db rId cId fId chunkTmpPath = do
@@ -1852,7 +1853,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
       db
       [sql|
         SELECT
-          f.rcv_file_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path, c.next_delay,
+          f.user_id, f.rcv_file_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path, c.next_delay,
           r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.acknowledged, r.retries
         FROM rcv_file_chunk_replicas r
         JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -1865,11 +1866,11 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
       |]
       (host, port, keyHash)
   where
-    toChunk :: ((Int64, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int)) -> RcvFileChunk
-    toChunk ((rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) :. (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries)) =
-      -- TODO set userId
+    toChunk :: ((UserId, Int64, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int)) -> RcvFileChunk
+    toChunk ((userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) :. (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries)) =
       RcvFileChunk
-        { rcvFileId,
+        { userId,
+          rcvFileId,
           rcvChunkId,
           chunkNo,
           chunkSize,

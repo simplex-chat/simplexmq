@@ -29,6 +29,7 @@ import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (INTERNAL))
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
@@ -39,11 +40,11 @@ import UnliftIO
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> FileDescription 'FPRecipient -> FilePath -> m ()
-receiveFile c fd@FileDescription {chunks} xftpPath = do
+receiveFile :: AgentMonad m => AgentClient -> UserId -> FileDescription 'FPRecipient -> FilePath -> m ()
+receiveFile c userId fd@FileDescription {chunks} xftpPath = do
   encPath <- uniqueCombine xftpPath "xftp.encrypted"
   createDirectory encPath
-  withStore' c $ \db -> createRcvFile db fd xftpPath encPath
+  withStore' c $ \db -> createRcvFile db userId fd xftpPath encPath
   forM_ chunks downloadChunk
   where
     downloadChunk :: AgentMonad m => FileChunk -> m ()

@@ -20,10 +20,11 @@ CREATE TABLE xftp_servers (
 
 CREATE TABLE rcv_files (
   rcv_file_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   size INTEGER NOT NULL,
   digest BLOB NOT NULL,
   key BLOB NOT NULL,
-  iv BLOB NOT NULL,
+  nonce BLOB NOT NULL,
   chunk_size INTEGER NOT NULL,
   tmp_path TEXT NOT NULL,
   save_dir TEXT NOT NULL,
@@ -33,14 +34,14 @@ CREATE TABLE rcv_files (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX idx_rcv_files_user_id ON rcv_files(user_id);
+
 CREATE TABLE rcv_file_chunks (
   rcv_file_chunk_id INTEGER PRIMARY KEY,
   rcv_file_id INTEGER NOT NULL REFERENCES rcv_files ON DELETE CASCADE,
   chunk_no INTEGER NOT NULL,
   chunk_size INTEGER NOT NULL,
   digest BLOB NOT NULL,
-  -- received INTEGER NOT NULL DEFAULT 0, -- ? duplicate
-  -- acknowledged NOT NULL DEFAULT 0, -- ? duplicate
   tmp_path TEXT,
   next_delay INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),

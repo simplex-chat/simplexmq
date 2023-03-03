@@ -82,8 +82,6 @@ data RcvFileChunk = RcvFileChunk
     chunkSize :: FileSize Word32,
     digest :: FileDigest,
     replicas :: [RcvFileChunkReplica],
-    -- received :: Bool, -- computed based on replicas?
-    -- acknowledged :: Bool,
     fileTmpPath :: FilePath,
     chunkTmpPath :: Maybe FilePath,
     nextDelay :: Maybe Int
