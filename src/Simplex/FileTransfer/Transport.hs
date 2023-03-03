@@ -15,7 +15,6 @@ module Simplex.FileTransfer.Transport
   )
 where
 
-import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Monad.Except
 import qualified Data.ByteArray as BA
