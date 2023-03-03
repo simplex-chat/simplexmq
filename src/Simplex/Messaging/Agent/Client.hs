@@ -421,7 +421,7 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
   where
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \loop ->
+      withRetryInterval ri $ \_ loop ->
         reconnectSMPClient c tSess `catchError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
@@ -537,7 +537,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
     connectAsync :: Int -> m ()
     connectAsync aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \loop -> void $ tryConnectClient (const $ reconnectClient c tSess) loop
+      withRetryInterval ri $ \_ loop -> void $ tryConnectClient (const $ reconnectClient c tSess) loop
       atomically . removeAsyncAction aId $ asyncClients c
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> Client msg -> ACommand 'Agent

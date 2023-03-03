@@ -113,15 +113,15 @@ On Linux, you can deploy smp server using Docker. This will download image from 
    mkdir -p ~/simplex/{config,logs}
    ```
 
-2. Run your Docker container. You must change **your_ip_or_domain**. `-e pass="password"` is optional variable to password-protect your `smp` server:
+2. Run your Docker container. You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
    ```sh
    docker run -d \
-       -e addr="your_ip_or_domain" \
-       -e pass="password" \
+       -e "addr=your_ip_or_domain" \
+       -e "pass=password" \
        -p 5223:5223 \
        -v $HOME/simplex/config:/etc/opt/simplex:z \
        -v $HOME/simplex/logs:/var/opt/simplex:z \
-       simplexchat/simplexmq
+       simplexchat/simplexmq:latest
    ```
 
 #### Ubuntu
@@ -154,8 +154,8 @@ On Linux, you can build smp server using Docker.
 3. Run your Docker container. You must change **your_ip_or_domain**. `-e pass="password"` is optional variable to password-protect your `smp` server::
    ```sh
    docker run -d \
-       -e addr="your_ip_or_domain" \
-       -e pass="password" \
+       -e "addr=your_ip_or_domain" \
+       -e "pass=password" \
        -p 5223:5223 \
        -v $HOME/simplex/config:/etc/opt/simplex:z \
        -v $HOME/simplex/logs:/var/opt/simplex:z \
