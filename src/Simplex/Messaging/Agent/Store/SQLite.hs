@@ -1805,17 +1805,17 @@ getRcvFile db rcvFileId = runExceptT $ do
           db
           [sql|
             SELECT
-              r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.acknowledged, r.retries,
+              r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.retries,
               s.xftp_host, s.xftp_port, s.xftp_key_hash
             FROM rcv_file_chunk_replicas
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
             WHERE rcv_file_chunk_id = ?
           |]
           (Only chunkId)
-    toReplica :: (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
-    toReplica (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries, host, port, keyHash) =
+    toReplica :: (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
+    toReplica (rcvChunkReplicaId, replicaId, replicaKey, received, retries, host, port, keyHash) =
       let server = XFTPServer host port keyHash
-       in RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}
+       in RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, retries}
 
 updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> Int64 -> FilePath -> IO (Either StoreError RcvFile)
 updateRcvFileChunkReceived db rId cId fId chunkTmpPath = do
@@ -1853,7 +1853,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
       [sql|
         SELECT
           f.rcv_file_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path, c.next_delay,
-          r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.acknowledged, r.retries
+          r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.retries
         FROM rcv_file_chunk_replicas r
         JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
         JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
@@ -1865,8 +1865,8 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
       |]
       (host, port, keyHash)
   where
-    toChunk :: ((Int64, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int)) -> RcvFileChunk
-    toChunk ((rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) :. (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries)) =
+    toChunk :: ((Int64, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Int)) -> RcvFileChunk
+    toChunk ((rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, nextDelay) :. (rcvChunkReplicaId, replicaId, replicaKey, received, retries)) =
       -- TODO set userId
       RcvFileChunk
         { rcvFileId,
@@ -1877,7 +1877,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
           fileTmpPath,
           chunkTmpPath,
           nextDelay,
-          replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, acknowledged, retries}]
+          replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, retries}]
         }
 
 getNextRcvFileToDecrypt :: DB.Connection -> IO (Maybe RcvFile)

@@ -99,9 +99,6 @@ runXFTPWorker c srv doWork = do
         when fileReceived $
           liftIO $ updateRcvFileStatus db rcvFileId RFSReceived
         pure fileReceived
-      -- check if chunk is downloaded and not acknowledged via flag acknowledged?
-      -- or just catch and ignore error on acknowledgement? (and remove flag)
-      -- agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId) `catchError` \_ -> pure ()
       when fileReceived $ addWorker c Nothing
       where
         allChunksReceived :: RcvFile -> Bool

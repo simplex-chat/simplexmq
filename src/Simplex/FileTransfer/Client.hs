@@ -192,9 +192,6 @@ downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {fi
 deleteXFTPChunk :: XFTPClient -> C.APrivateSignKey -> SenderId -> ExceptT XFTPClientError IO ()
 deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse
 
-ackXFTPChunk :: XFTPClient -> C.APrivateSignKey -> RecipientId -> ExceptT XFTPClientError IO ()
-ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing >>= okResponse
-
 okResponse :: (FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO ()
 okResponse = \case
   (FROk, body) -> noFile body ()
@@ -208,5 +205,4 @@ noFile HTTP2Body {bodyPart} a = case bodyPart of
 
 -- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
 -- FDEL :: FileCommand Sender
--- FACK :: FileCommand Recipient
 -- PING :: FileCommand Recipient
