@@ -10,7 +10,7 @@ import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
 import SMPAgentClient (agentCfg, initAgentServers)
-import Simplex.FileTransfer.Description (AFileDescription, AValidFileDescription (..), ValidFileDescription, mb, validateFileDescription)
+import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), checkParty)
 import Simplex.Messaging.Agent (getSMPAgentClient, xftpReceiveFile)
 import Simplex.Messaging.Agent.Protocol (ACommand (FRCVD), AgentErrorType (..))
