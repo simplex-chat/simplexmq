@@ -78,16 +78,15 @@ runXFTPWorker c srv doWork = do
       nextChunk <- withStore' c (`getNextRcvChunkToDownload` srv)
       case nextChunk of
         Nothing -> noWorkToDo
-        Just fc@RcvFileChunk {nextDelay} -> do
+        Just fc@RcvFileChunk {rcvChunkId, delay} -> do
           ri <- asks $ reconnectInterval . config
-          let ri' = maybe ri (\d -> ri {initialInterval = d}) nextDelay
-          withRetryInterval ri' $ \loop ->
+          let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
+          withRetryInterval ri' $ \delay' loop ->
             downloadFileChunk fc
-              `catchError` \e -> do
-                liftIO $ print e
+              `catchError` \_ -> do
+                withStore' c $ \db -> updateRcvFileChunkDelay db rcvChunkId delay'
                 -- TODO don't loop on permanent errors
                 -- TODO increase replica retries count
-                -- TODO update nextDelay (modify withRetryInterval to expose current delay)
                 loop
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     downloadFileChunk :: RcvFileChunk -> m ()
@@ -125,10 +124,9 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
         Nothing -> noWorkToDo
         Just fd -> do
           ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \loop ->
+          withRetryInterval ri $ \_ loop ->
             decryptFile fd
-              `catchError` \e -> do
-                liftIO $ print e
+              `catchError` \_ -> do
                 -- TODO don't loop on permanent errors
                 -- TODO fixed number of retries instead of exponential backoff?
                 loop

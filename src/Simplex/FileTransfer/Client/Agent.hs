@@ -110,7 +110,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
               throwError e
         tryConnectAsync :: ME ()
         tryConnectAsync = void . async $ do
-          withRetryInterval (reconnectInterval config) $ void . tryConnectClient
+          withRetryInterval (reconnectInterval config) $ \_ loop -> void $ tryConnectClient loop
 
 showServer :: XFTPServer -> Text
 showServer ProtocolServer {host, port} =
