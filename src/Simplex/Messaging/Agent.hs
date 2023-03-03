@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent
     getNtfToken,
     getNtfTokenData,
     toggleConnectionNtfs,
+    xftpReceiveFile,
     activateAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -113,6 +114,9 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
+import Simplex.FileTransfer.Description (ValidFileDescription)
+import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Supervisor (receiveFile)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock (withLock)
@@ -140,6 +144,7 @@ import UnliftIO.Async (async, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Simplex.FileTransfer.Types (RcvFileId)
 
 -- import GHC.Conc (unsafeIOToSTM)
 
@@ -321,6 +326,10 @@ getNtfTokenData c = withAgentEnv c $ getNtfTokenData' c
 -- | Set connection notifications on/off
 toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ()
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
+
+-- | Receive XFTP file
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
+xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Activate operations
 activateAgent :: AgentErrorMonad m => AgentClient -> m ()

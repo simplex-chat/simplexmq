@@ -33,16 +33,19 @@ senderFiles = "tests/tmp/xftp-sender-files"
 recipientFiles :: FilePath
 recipientFiles = "tests/tmp/xftp-recipient-files"
 
+xftpCLI :: [String] -> IO [String]
+xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
+
 testXFTPCLISendReceive :: IO ()
 testXFTPCLISendReceive = withXFTPServer $ do
   let filePath = senderFiles </> "testfile"
-  xftp ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
+  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
   getFileSize filePath `shouldReturn` mb 17
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
+  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
   sendResult
     `shouldBe` [ "Sender file description: " <> fdSnd,
@@ -55,15 +58,14 @@ testXFTPCLISendReceive = withXFTPServer $ do
   testInfoFile fdRcv2 "Recipient"
   testReceiveFile fdRcv2 "testfile_1" file
   testInfoFile fdSnd "Sender"
-  xftp ["recv", fdSnd, recipientFiles, "--tmp=tests/tmp"]
+  xftpCLI ["recv", fdSnd, recipientFiles, "--tmp=tests/tmp"]
     `shouldThrow` anyException
   where
-    xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testInfoFile fd party = do
-      xftp ["info", fd]
+      xftpCLI ["info", fd]
         `shouldReturn` [party <> " file description", "File download size: 18mb", "File server(s):", testXFTPServerStr <> ": 18mb"]
     testReceiveFile fd fileName file = do
-      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
+      progress : recvResult <- xftpCLI ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
       progress `shouldSatisfy` downloadProgress fileName
       recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
@@ -71,13 +73,13 @@ testXFTPCLISendReceive = withXFTPServer $ do
 testXFTPCLISendReceive2servers :: IO ()
 testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   let filePath = senderFiles </> "testfile"
-  xftp ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
+  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
   getFileSize filePath `shouldReturn` mb 17
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
+  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
   sendResult
     `shouldBe` [ "Sender file description: " <> fdSnd,
@@ -88,9 +90,8 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
   testReceiveFile fdRcv1 "testfile" file
   testReceiveFile fdRcv2 "testfile_1" file
   where
-    xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
     testReceiveFile fd fileName file = do
-      partyStr : sizeStr : srvStr : srvs <- xftp ["info", fd]
+      partyStr : sizeStr : srvStr : srvs <- xftpCLI ["info", fd]
       partyStr `shouldContain` "Recipient file description"
       sizeStr `shouldBe` "File download size: 18mb"
       srvStr `shouldBe` "File server(s):"
@@ -100,7 +101,7 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
           srv1 `shouldContain` testXFTPServerStr
           srv2 `shouldContain` testXFTPServerStr2
         _ -> print srvs >> error "more than 2 servers returned"
-      progress : recvResult <- xftp ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
+      progress : recvResult <- xftpCLI ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
       progress `shouldSatisfy` downloadProgress fileName
       recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
@@ -108,13 +109,13 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
 testXFTPCLIDelete :: IO ()
 testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
   let filePath = senderFiles </> "testfile"
-  xftp ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
+  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
   getFileSize filePath `shouldReturn` mb 17
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  progress : sendResult <- xftp ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
+  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
   sendResult
     `shouldBe` [ "Sender file description: " <> fdSnd,
@@ -122,23 +123,21 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
                  fdRcv1,
                  fdRcv2
                ]
-  xftp ["del", fdRcv1]
+  xftpCLI ["del", fdRcv1]
     `shouldThrow` anyException
-  progress1 : recvResult <- xftp ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp", "-y"]
+  progress1 : recvResult <- xftpCLI ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp", "-y"]
   progress1 `shouldSatisfy` downloadProgress "testfile"
   recvResult `shouldBe` ["File description " <> fdRcv1 <> " is deleted."]
   LB.readFile (recipientFiles </> "testfile") `shouldReturn` file
   fs1 <- listDirectory xftpServerFiles
   fs2 <- listDirectory xftpServerFiles2
   length fs1 + length fs2 `shouldBe` 6
-  xftp ["del", fdSnd, "-y"]
+  xftpCLI ["del", fdSnd, "-y"]
     `shouldReturn` ["File deleted!            \r", "File description " <> fdSnd <> " is deleted."]
   listDirectory xftpServerFiles >>= (`shouldBe` [])
   listDirectory xftpServerFiles2 >>= (`shouldBe` [])
-  xftp ["recv", fdRcv2, recipientFiles, "--tmp=tests/tmp"]
+  xftpCLI ["recv", fdRcv2, recipientFiles, "--tmp=tests/tmp"]
     `shouldThrow` anyException
-  where
-    xftp params = lines <$> capture_ (withArgs params xftpClientCLI)
 
 testPrepareChunkSizes :: IO ()
 testPrepareChunkSizes = do

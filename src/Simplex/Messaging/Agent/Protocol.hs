@@ -156,6 +156,7 @@ import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Protocol (XFTPErrorType)
+import Simplex.FileTransfer.Types (RcvFileId)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
@@ -283,6 +284,7 @@ data ACommand (p :: AParty) where
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
+  FRCVD :: RcvFileId -> FilePath -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
@@ -325,6 +327,7 @@ data ACommandTag (p :: AParty) where
   OK_ :: ACommandTag Agent
   ERR_ :: ACommandTag Agent
   SUSPENDED_ :: ACommandTag Agent
+  FRCVD_ :: ACommandTag Agent
 
 deriving instance Eq (ACommandTag p)
 
@@ -366,6 +369,7 @@ aCommandTag = \case
   OK -> OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
+  FRCVD {} -> FRCVD_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -1287,6 +1291,7 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     OK_ -> "OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
+    FRCVD_ -> "FRCVD"
   strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
@@ -1337,6 +1342,7 @@ commandP binaryP =
           OK_ -> pure OK
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
+          FRCVD_ -> s (FRCVD <$> A.decimal <* A.space <*> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1390,6 +1396,7 @@ serializeCommand = \case
   ERR e -> s (ERR_, e)
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
+  FRCVD fId fPath -> s (FRCVD_, Str $ bshow fId, fPath)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode

@@ -27,7 +27,7 @@ import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (INTERNAL))
+import Simplex.Messaging.Agent.Protocol (ACommand (FRCVD), AParty (..), AgentErrorType (INTERNAL))
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
@@ -40,12 +40,13 @@ import UnliftIO
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> FileDescription 'FPRecipient -> FilePath -> m ()
-receiveFile c userId fd@FileDescription {chunks} xftpPath = do
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m Int64
+receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath = do
   encPath <- uniqueCombine xftpPath "xftp.encrypted"
   createDirectory encPath
-  withStore' c $ \db -> createRcvFile db userId fd xftpPath encPath
+  fId <- withStore' c $ \db -> createRcvFile db userId fd xftpPath encPath
   forM_ chunks downloadChunk
+  pure fId
   where
     downloadChunk :: AgentMonad m => FileChunk -> m ()
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
@@ -82,7 +83,8 @@ runXFTPWorker c srv doWork = do
           let ri' = maybe ri (\d -> ri {initialInterval = d}) nextDelay
           withRetryInterval ri' $ \loop ->
             downloadFileChunk fc
-              `catchError` \_ -> do
+              `catchError` \e -> do
+                liftIO $ print e
                 -- TODO don't loop on permanent errors
                 -- TODO increase replica retries count
                 -- TODO update nextDelay (modify withRetryInterval to expose current delay)
@@ -111,10 +113,10 @@ runXFTPWorker c srv doWork = do
     downloadFileChunk _ = throwError $ INTERNAL "no replica"
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
-runXFTPLocalWorker c doWork = do
+runXFTPLocalWorker c@AgentClient {subQ} doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AODatabase throwWhenInactive runXftpOperation
+    runXftpOperation
   where
     runXftpOperation :: m ()
     runXftpOperation = do
@@ -125,7 +127,8 @@ runXFTPLocalWorker c doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \loop ->
             decryptFile fd
-              `catchError` \_ -> do
+              `catchError` \e -> do
+                liftIO $ print e
                 -- TODO don't loop on permanent errors
                 -- TODO fixed number of retries instead of exponential backoff?
                 loop
@@ -134,14 +137,22 @@ runXFTPLocalWorker c doWork = do
     decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, chunks} = do
       -- TODO remove tmpPath if exists
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
-      let chunkPaths = map (\RcvFileChunk {fileTmpPath} -> fileTmpPath) chunks
+      chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       path <- decrypt encSize chunkPaths
       whenM (doesPathExist tmpPath) $ removeDirectoryRecursive tmpPath
       withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
+      notify $ FRCVD rcvFileId path
       where
-        -- TODO notify client
-
+        notify :: ACommand 'Agent -> m ()
+        notify cmd = atomically $ writeTBQueue subQ ("", "", cmd)
+        getChunkPaths :: [RcvFileChunk] -> m [FilePath]
+        getChunkPaths [] = pure []
+        getChunkPaths (RcvFileChunk {chunkTmpPath = Just path} : cs) = do
+          ps <- getChunkPaths cs
+          pure $ path : ps
+        getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
+          throwError $ INTERNAL "no chunk path"
         decrypt :: Int64 -> [FilePath] -> m FilePath
         decrypt encSize chunkPaths = do
           lazyChunks <- readChunks chunkPaths
@@ -154,7 +165,8 @@ runXFTPLocalWorker c doWork = do
             A.Fail _ _ e -> throwError $ INTERNAL $ "Invalid file header: " <> e
             A.Partial _ -> throwError $ INTERNAL "Invalid file header"
             A.Done rest FileHeader {fileName} -> do
-              path <- uniqueCombine saveDir $ show fileName
+              -- TODO touch file in agent bracket
+              path <- uniqueCombine saveDir fileName
               liftIO $ LB.writeFile path $ LB.fromStrict rest <> f'
               unless authOk $ do
                 removeFile path

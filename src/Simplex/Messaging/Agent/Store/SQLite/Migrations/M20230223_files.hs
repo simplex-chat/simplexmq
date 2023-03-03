@@ -19,7 +19,7 @@ CREATE TABLE xftp_servers (
 );
 
 CREATE TABLE rcv_files (
-  rcv_file_id INTEGER PRIMARY KEY,
+  rcv_file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   size INTEGER NOT NULL,
   digest BLOB NOT NULL,

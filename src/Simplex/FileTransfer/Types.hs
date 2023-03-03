@@ -32,9 +32,11 @@ instance Encoding FileHeader where
     (fileName, fileExtra) <- smpP
     pure FileHeader {fileName, fileExtra}
 
+type RcvFileId = Int64
+
 data RcvFile = RcvFile
   { userId :: Int64,
-    rcvFileId :: Int64,
+    rcvFileId :: RcvFileId,
     size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.SbKey,
@@ -76,7 +78,7 @@ instance TextEncoding RcvFileStatus where
 
 data RcvFileChunk = RcvFileChunk
   { userId :: Int64,
-    rcvFileId :: Int64,
+    rcvFileId :: RcvFileId,
     rcvChunkId :: Int64,
     chunkNo :: Int,
     chunkSize :: FileSize Word32,
