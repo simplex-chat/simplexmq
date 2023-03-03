@@ -43,7 +43,7 @@ CREATE TABLE rcv_file_chunks (
   chunk_size INTEGER NOT NULL,
   digest BLOB NOT NULL,
   tmp_path TEXT,
-  next_delay INTEGER,
+  delay INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

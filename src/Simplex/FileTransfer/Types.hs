@@ -86,7 +86,7 @@ data RcvFileChunk = RcvFileChunk
     replicas :: [RcvFileChunkReplica],
     fileTmpPath :: FilePath,
     chunkTmpPath :: Maybe FilePath,
-    nextDelay :: Maybe Int
+    delay :: Maybe Int
   }
   deriving (Eq, Show)
 
