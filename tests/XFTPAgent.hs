@@ -83,7 +83,7 @@ testXFTPAgentReceiveRestore = do
   runRight_ $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     void $ xftpReceiveFile rcp 1 fd recipientFiles
-    liftIO $ timeout 1000000 (get rcp) `shouldReturn` Nothing
+    liftIO $ timeout 1000000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
   disconnectAgentClient rcp
 
   rcp' <- getSMPAgentClient agentCfg initAgentServers
