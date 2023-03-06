@@ -114,7 +114,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (receiveFile)
+import Simplex.FileTransfer.Agent (addXFTPWorker, receiveFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId)
@@ -155,7 +155,17 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
     runAgent = do
       c <- getAgentClient initServers
       void $ raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c] `forkFinally` const (disconnectAgentClient c)
+      runExceptT (startFiles c) >>= \case
+        Left e -> liftIO $ print e
+        Right _ -> pure ()
       pure c
+    startFiles c = do
+      pendingRcvServers <- withStore' c getPendingRcvFilesServers
+      forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
+      -- start local worker for files pending decryption,
+      -- no need to make an extra query for the check
+      -- as the worker will check the store anyway
+      addXFTPWorker c Nothing
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns}} = do

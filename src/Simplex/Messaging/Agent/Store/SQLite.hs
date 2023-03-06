@@ -133,7 +133,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileChunkReplicaRetries,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
-    getUnreceivedRcvFiles,
+    getPendingRcvFilesServers,
 
     -- * utilities
     withConnection,
@@ -1893,8 +1893,18 @@ getNextRcvFileToDecrypt db = do
     Nothing -> pure Nothing
     Just fileId -> eitherToMaybe <$> getRcvFile db fileId
 
-getUnreceivedRcvFiles :: DB.Connection -> IO [RcvFile]
-getUnreceivedRcvFiles _db = do
-  -- get unique file ids from rcv_files where status /= complete
-  -- getRcvFile for each file id
-  undefined
+getPendingRcvFilesServers :: DB.Connection -> IO [XFTPServer]
+getPendingRcvFilesServers db = do
+  map toServer
+    <$> DB.query_
+      db
+      [sql|
+        SELECT DISTINCT
+          s.xftp_host, s.xftp_port, s.xftp_key_hash
+        FROM rcv_file_chunk_replicas r
+        JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+        WHERE r.received = 0 AND r.replica_number = 1
+      |]
+  where
+    toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
+    toServer (host, port, keyHash) = XFTPServer host port keyHash
