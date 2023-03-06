@@ -6,7 +6,6 @@
 module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, runRight_)
-import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
@@ -18,6 +17,7 @@ import Simplex.Messaging.Agent.Protocol (ACommand (FRCVD), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (getFileSize)
 import System.FilePath ((</>))
+import System.Timeout (timeout)
 import Test.Hspec
 import XFTPCLI
 import XFTPClient
@@ -83,7 +83,7 @@ testXFTPAgentReceiveRestore = do
   runRight_ $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     void $ xftpReceiveFile rcp 1 fd recipientFiles
-    liftIO $ threadDelay 1000000 -- wait for worker attempt
+    liftIO $ timeout 1000000 (get rcp) `shouldReturn` Nothing
   disconnectAgentClient rcp
 
   rcp' <- getSMPAgentClient agentCfg initAgentServers
