@@ -200,7 +200,7 @@ runXFTPSndLocalWorker c@AgentClient {subQ} doWork = do
     runXftpOperation = do
       -- db: get next snd file to encrypt (in status New)
       -- ? (or Encrypted to retry create? - see below)
-      -- with retry (?) encryptFile
+      -- with fixed retries (?) encryptFile
       undefined
     encryptFile :: SndFile -> m ()
     encryptFile sndFile = do
@@ -234,7 +234,9 @@ runXFTPSndWorker c srv doWork = do
     runXftpOperation :: m ()
     runXftpOperation = do
       -- db: get next snd chunk to upload (replica is not uploaded)
-      -- with retry uploadChunk
+      -- with retry interval uploadChunk
+      --   - with fixed retries, repeat N times:
+      --     check if other files are in upload, delay (see xftpSndFiles in XFTPAgent)
       undefined
     uploadFileChunk :: SndFileChunk -> m ()
     uploadFileChunk sndFileChunk = do
