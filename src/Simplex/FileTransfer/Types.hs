@@ -9,6 +9,7 @@ import Data.Int (Int64)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -46,7 +47,6 @@ data RcvFile = RcvFile
     tmpPath :: FilePath,
     saveDir :: FilePath,
     savePath :: Maybe FilePath,
-    status :: RcvFileStatus,
     status :: RcvFileStatus
   }
   deriving (Eq, Show)
@@ -98,5 +98,82 @@ data RcvFileChunkReplica = RcvFileChunkReplica
     received :: Bool,
     acknowledged :: Bool,
     retries :: Int
+  }
+  deriving (Eq, Show)
+
+-- Sending files
+
+type SndFileId = Int64
+
+data SndFile = SndFile
+  { userId :: Int64,
+    sndFileId :: SndFileId,
+    size :: FileSize Int64,
+    digest :: FileDigest,
+    key :: C.SbKey,
+    nonce :: C.CbNonce,
+    chunkSize :: FileSize Word32,
+    chunks :: [RcvFileChunk],
+    path :: FilePath,
+    encPath :: Maybe FilePath,
+    status :: SndFileStatus
+  }
+  deriving (Eq, Show)
+
+data SndFileStatus
+  = SFSNew
+  | SFSEncrypting
+  | SFSEncrypted
+  | SFSUploading
+  | SFSComplete
+  deriving (Eq, Show)
+
+instance FromField SndFileStatus where fromField = fromTextField_ textDecode
+
+instance ToField SndFileStatus where toField = toField . textEncode
+
+instance TextEncoding SndFileStatus where
+  textDecode = \case
+    "new" -> Just SFSNew
+    "encrypting" -> Just SFSEncrypting
+    "encrypted" -> Just SFSEncrypted
+    "uploading" -> Just SFSUploading
+    "complete" -> Just SFSComplete
+    _ -> Nothing
+  textEncode = \case
+    SFSNew -> "new"
+    SFSEncrypting -> "encrypting"
+    SFSEncrypted -> "encrypted"
+    SFSUploading -> "uploading"
+    SFSComplete -> "complete"
+
+data SndFileChunk = SndFileChunk
+  { userId :: Int64,
+    sndFileId :: SndFileId,
+    sndChunkId :: Int64,
+    chunkNo :: Int,
+    chunkSpec :: XFTPChunkSpec,
+    digest :: FileDigest,
+    replicas :: [SndFileChunkReplica],
+    delay :: Maybe Int
+  }
+  deriving (Eq, Show)
+
+data SndFileChunkReplica = SndFileChunkReplica
+  { sndChunkReplicaId :: Int64,
+    server :: XFTPServer,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey,
+    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateSignKey)],
+    -- created :: Bool,
+    uploaded :: Bool,
+    retries :: Int
+  }
+  deriving (Eq, Show)
+
+-- to be used in reply to client
+data SndFileDescription = SndFileDescription
+  { description :: String,
+    sender :: Bool
   }
   deriving (Eq, Show)

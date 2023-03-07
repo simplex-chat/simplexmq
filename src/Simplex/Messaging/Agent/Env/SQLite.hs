@@ -34,11 +34,13 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
+import Data.Set (Set)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
+import Simplex.FileTransfer.Types (SndFileId)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (UserId)
@@ -58,6 +60,7 @@ import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
+import qualified Data.Set as S
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -216,10 +219,16 @@ newNtfSubSupervisor qSize = do
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 data XFTPAgent = XFTPAgent
-  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
+  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    -- separate send workers for unhindered concurrency between download and upload
+    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    -- files currently in upload - to throttle upload of other files' chunks
+    xftpSndFiles :: TVar (Set SndFileId)
   }
 
 newXFTPAgent :: STM XFTPAgent
 newXFTPAgent = do
   xftpWorkers <- TM.empty
-  pure XFTPAgent {xftpWorkers}
+  xftpSndWorkers <- TM.empty
+  xftpSndFiles <- newTVar S.empty
+  pure XFTPAgent {xftpWorkers, xftpSndWorkers, xftpSndFiles}
