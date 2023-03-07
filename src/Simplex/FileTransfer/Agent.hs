@@ -10,6 +10,7 @@
 
 module Simplex.FileTransfer.Agent
   ( receiveFile,
+    addXFTPWorker,
   )
 where
 
@@ -50,11 +51,11 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath
   where
     downloadChunk :: AgentMonad m => FileChunk -> m ()
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
-      addWorker c (Just server)
+      addXFTPWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
-addWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
-addWorker c srv_ = do
+addXFTPWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
+addXFTPWorker c srv_ = do
   ws <- asks $ xftpWorkers . xftpAgent
   atomically (TM.lookup srv_ ws) >>= \case
     Nothing -> do
@@ -104,7 +105,7 @@ runXFTPWorker c srv doWork = do
       -- check if chunk is downloaded and not acknowledged via flag acknowledged?
       -- or just catch and ignore error on acknowledgement? (and remove flag)
       -- agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId) `catchError` \_ -> pure ()
-      when fileReceived $ addWorker c Nothing
+      when fileReceived $ addXFTPWorker c Nothing
       where
         allChunksReceived :: RcvFile -> Bool
         allChunksReceived RcvFile {chunks} =
