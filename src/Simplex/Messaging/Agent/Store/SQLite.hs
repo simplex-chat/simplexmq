@@ -127,6 +127,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createRcvFile,
     getRcvFile,
     updateRcvFileChunkDelay,
+    increaseRcvChunkReplicaRetries,
     updateRcvFileChunkReceived,
     updateRcvFileStatus,
     updateRcvFileComplete,
@@ -1827,6 +1828,11 @@ updateRcvFileChunkDelay db chunkId delay = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_file_chunks SET delay = ?, updated_at = ? WHERE rcv_file_chunk_id = ?" (delay, updatedAt, chunkId)
 
+increaseRcvChunkReplicaRetries :: DB.Connection -> Int64 -> IO ()
+increaseRcvChunkReplicaRetries db replicaId = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE rcv_file_chunk_replicas SET retries = retries + 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (updatedAt, replicaId)
+
 updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> RcvFileId -> FilePath -> IO (Either StoreError RcvFile)
 updateRcvFileChunkReceived db rId cId fId chunkTmpPath = do
   updatedAt <- getCurrentTime
@@ -1863,11 +1869,11 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
         JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
         JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
         WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-          AND r.received = 0 AND r.replica_number = 1
+          AND r.received = 0 AND r.replica_number = 1 AND f.status = ?
         ORDER BY r.created_at ASC
         LIMIT 1
       |]
-      (host, port, keyHash)
+      (host, port, keyHash, RFSReceiving)
   where
     toChunk :: ((UserId, RcvFileId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath, Maybe Int) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Bool, Int)) -> RcvFileChunk
     toChunk ((userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath, delay) :. (rcvChunkReplicaId, replicaId, replicaKey, received, acknowledged, retries)) =
@@ -1896,15 +1902,18 @@ getNextRcvFileToDecrypt db = do
 getPendingRcvFilesServers :: DB.Connection -> IO [XFTPServer]
 getPendingRcvFilesServers db = do
   map toServer
-    <$> DB.query_
+    <$> DB.query
       db
       [sql|
         SELECT DISTINCT
           s.xftp_host, s.xftp_port, s.xftp_key_hash
         FROM rcv_file_chunk_replicas r
         JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-        WHERE r.received = 0 AND r.replica_number = 1
+        JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+        JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+        WHERE r.received = 0 AND r.replica_number = 1 AND f.status = ?
       |]
+      (Only RFSReceiving)
   where
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash

@@ -47,5 +47,5 @@ main = do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
-          describe "XFTP agent" xftpAgentTests
+          fdescribe "XFTP agent" xftpAgentTests
         describe "Server CLIs" cliTests

@@ -51,12 +51,12 @@ data RcvFile = RcvFile
   }
   deriving (Eq, Show)
 
--- TODO add error status?
 data RcvFileStatus
   = RFSReceiving
   | RFSReceived
   | RFSDecrypting
   | RFSComplete
+  | RFSError
   deriving (Eq, Show)
 
 instance FromField RcvFileStatus where fromField = fromTextField_ textDecode
@@ -69,12 +69,14 @@ instance TextEncoding RcvFileStatus where
     "received" -> Just RFSReceived
     "decrypting" -> Just RFSDecrypting
     "complete" -> Just RFSComplete
+    "error" -> Just RFSError
     _ -> Nothing
   textEncode = \case
     RFSReceiving -> "receiving"
     RFSReceived -> "received"
     RFSDecrypting -> "decrypting"
     RFSComplete -> "complete"
+    RFSError -> "error"
 
 data RcvFileChunk = RcvFileChunk
   { userId :: Int64,
