@@ -35,6 +35,7 @@ import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
@@ -60,7 +61,6 @@ import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
-import qualified Data.Set as S
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
