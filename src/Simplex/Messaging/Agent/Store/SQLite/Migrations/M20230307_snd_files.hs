@@ -50,8 +50,6 @@ CREATE TABLE snd_file_chunk_replicas (
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
   replica_id BLOB NOT NULL,
   replica_key BLOB NOT NULL,
-  rcv_replica_id BLOB NOT NULL,
-  rcv_replica_key BLOB NOT NULL,
   -- created INTEGER NOT NULL DEFAULT 0, -- as in XFTP create - registered on server
   uploaded INTEGER NOT NULL DEFAULT 0,
   retries INTEGER NOT NULL DEFAULT 0,
@@ -61,6 +59,17 @@ CREATE TABLE snd_file_chunk_replicas (
 
 CREATE INDEX idx_snd_file_chunk_replicas_snd_file_chunk_id ON snd_file_chunk_replicas(snd_file_chunk_id);
 CREATE INDEX idx_snd_file_chunk_replicas_xftp_server_id ON snd_file_chunk_replicas(xftp_server_id);
+
+CREATE TABLE snd_file_chunk_replica_recipients (
+  snd_file_chunk_replica_recipient_id INTEGER PRIMARY KEY,
+  snd_file_chunk_replica_id INTEGER NOT NULL REFERENCES snd_file_chunk_replicas ON DELETE CASCADE,
+  rcv_replica_id BLOB NOT NULL,
+  rcv_replica_key BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_snd_file_chunk_replica_recipients_snd_file_chunk_replica_id ON snd_file_chunk_replica_recipients(snd_file_chunk_replica_id);
 
 CREATE TABLE snd_file_descriptions (
   snd_file_description_id INTEGER PRIMARY KEY,

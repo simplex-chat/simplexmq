@@ -240,8 +240,10 @@ runXFTPSndWorker c srv doWork = do
       undefined
     uploadFileChunk :: SndFileChunk -> m ()
     uploadFileChunk sndFileChunk = do
+      -- add file id to xftpSndFiles
       -- XFTP upload chunk
       -- db: update replica status to Uploaded, return SndFile
-      -- if all SndFile's replicas are uploaded,
-      --   serialize file descriptions and notify client
+      -- if all SndFile's replicas are uploaded:
+      --   - serialize file descriptions and notify client
+      --   - remove file id from xftpSndFiles
       undefined
