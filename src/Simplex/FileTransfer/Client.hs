@@ -73,7 +73,7 @@ data XFTPChunkSpec = XFTPChunkSpec
     chunkOffset :: Int64,
     chunkSize :: Word32
   }
-  deriving (Show)
+  deriving (Eq, Show)
 
 type XFTPClientError = ProtocolClientError XFTPErrorType
 

@@ -9,8 +9,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Agent
-  ( receiveFile,
+  ( -- Receiving files
+    receiveFile,
     addXFTPWorker,
+    -- Sending files
+    sendFile,
   )
 where
 
@@ -179,3 +182,68 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
                 pure $ s <> chunk
             )
             LB.empty
+
+sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> FilePath -> m Int64
+sendFile c userId xftpPath filePath = do
+  -- db: create file in status New without chunks
+  -- add local snd worker for encryption
+  -- return file id to client
+  undefined
+
+runXFTPSndLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
+runXFTPSndLocalWorker c@AgentClient {subQ} doWork = do
+  forever $ do
+    void . atomically $ readTMVar doWork
+    runXftpOperation
+  where
+    runXftpOperation :: m ()
+    runXftpOperation = do
+      -- db: get next snd file to encrypt (in status New)
+      -- ? (or Encrypted to retry create? - see below)
+      -- with fixed retries (?) encryptFile
+      undefined
+    encryptFile :: SndFile -> m ()
+    encryptFile sndFile = do
+      -- if enc path exists, remove it
+      -- if enc path doesn't exist:
+      --   - choose enc path
+      --   - touch file, db: update enc path (?)
+      -- calculate chunk sizes, encrypt file to enc path
+      -- calculate digest
+      -- prepare chunk specs
+      -- db:
+      --   - update file status to Encrypted
+      --   - create chunks according to chunk specs
+      -- ? since which servers are online is unknown,
+      -- ? we can't blindly assign servers to replicas.
+      -- ? should we XFTP create chunks on servers here,
+      -- ? with retrying for different servers,
+      -- ? keeping a list of servers that were tried?
+      -- ? then we can add replicas to chunks in db
+      -- ? and update file status to Uploading,
+      -- ? probably in same transaction as creating chunks,
+      -- ? and add XFTP snd workers for uploading chunks.
+      undefined
+
+runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
+runXFTPSndWorker c srv doWork = do
+  forever $ do
+    void . atomically $ readTMVar doWork
+    agentOperationBracket c AOSndNetwork throwWhenInactive runXftpOperation
+  where
+    runXftpOperation :: m ()
+    runXftpOperation = do
+      -- db: get next snd chunk to upload (replica is not uploaded)
+      -- with retry interval uploadChunk
+      --   - with fixed retries, repeat N times:
+      --     check if other files are in upload, delay (see xftpSndFiles in XFTPAgent)
+      undefined
+    uploadFileChunk :: SndFileChunk -> m ()
+    uploadFileChunk sndFileChunk = do
+      -- add file id to xftpSndFiles
+      -- XFTP upload chunk
+      -- db: update replica status to Uploaded, return SndFile
+      -- if all SndFile's replicas are uploaded:
+      --   - serialize file descriptions and notify client
+      --   - remove file id from xftpSndFiles
+      undefined
