@@ -223,6 +223,7 @@ data XFTPAgent = XFTPAgent
     -- separate send workers for unhindered concurrency between download and upload
     xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
     -- files currently in upload - to throttle upload of other files' chunks
+    -- this optimization can be dropped for the MVP
     xftpSndFiles :: TVar (Set SndFileId)
   }
 

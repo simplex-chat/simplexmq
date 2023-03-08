@@ -5,6 +5,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230307_snd_files where
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
+-- this migration is a draft - it is not included in the list of migrations
 m20230307_snd_files :: Query
 m20230307_snd_files =
   [sql|

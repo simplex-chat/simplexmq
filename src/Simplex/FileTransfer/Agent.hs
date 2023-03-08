@@ -223,8 +223,6 @@ runXFTPSndLocalWorker c@AgentClient {subQ} doWork = do
       -- ? and update file status to Uploading,
       -- ? probably in same transaction as creating chunks,
       -- ? and add XFTP snd workers for uploading chunks.
-      --
-      -- ? maintain chunks per servers?
       undefined
 
 runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
