@@ -132,10 +132,11 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileStatus,
     updateRcvFileError,
     updateRcvFileComplete,
-    updateRcvFileChunkReplicaRetries,
+    updateRcvFileNoSavePath,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
     getPendingRcvFilesServers,
+    getTmpFilePaths,
 
     -- * utilities
     withConnection,
@@ -1856,10 +1857,10 @@ updateRcvFileComplete db rcvFileId savePath = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET save_path = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (savePath, RFSComplete, updatedAt, rcvFileId)
 
-updateRcvFileChunkReplicaRetries :: DB.Connection -> Int64 -> IO ()
-updateRcvFileChunkReplicaRetries _db _replicaId = do
-  -- update rcv_file_chunk_replicas
-  undefined
+updateRcvFileNoSavePath :: DB.Connection -> RcvFileId -> IO ()
+updateRcvFileNoSavePath db rcvFileId = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE rcv_files SET save_path = NULL, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
 
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> IO (Maybe RcvFileChunk)
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
@@ -1923,3 +1924,8 @@ getPendingRcvFilesServers db = do
   where
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash
+
+-- TODO select snd files tmp paths as well
+getTmpFilePaths :: DB.Connection -> IO [FilePath]
+getTmpFilePaths db =
+  map fromOnly <$> DB.query db "SELECT tmp_path FROM rcv_files WHERE status IN (?,?)" (RFSComplete, RFSError)

@@ -29,7 +29,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
-import Simplex.FileTransfer.Util (uniqueCombine)
+import Simplex.FileTransfer.Util (removePath, uniqueCombine)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
@@ -151,8 +151,12 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
           decryptFile f `catchError` (workerInternalError c rcvFileId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, chunks} = do
-      -- TODO remove tmpPath if exists
+    decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, savePath, chunks} = do
+      -- currently this check is obsolete, because getNextRcvFileToDecrypt filters by RFSReceived status
+      -- and therefore file can't have savePath here - maybe better to remove this logic altogether
+      forM_ savePath $ \p -> do
+        removePath p
+        withStore' c (`updateRcvFileNoSavePath` rcvFileId)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
