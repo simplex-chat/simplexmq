@@ -1276,44 +1276,48 @@ instance StrEncoding ACmdTag where
   strEncode (ACmdTag _ _ cmd) = strEncode cmd
   strP =
     A.takeTill (== ' ') >>= \case
-      "NEW" -> pure $ ACmdTag SClient SAEConn NEW_
-      "INV" -> pure $ ACmdTag SAgent SAEConn INV_
-      "JOIN" -> pure $ ACmdTag SClient SAEConn JOIN_
-      "CONF" -> pure $ ACmdTag SAgent SAEConn CONF_
-      "LET" -> pure $ ACmdTag SClient SAEConn LET_
-      "REQ" -> pure $ ACmdTag SAgent SAEConn REQ_
-      "ACPT" -> pure $ ACmdTag SClient SAEConn ACPT_
-      "RJCT" -> pure $ ACmdTag SClient SAEConn RJCT_
-      "INFO" -> pure $ ACmdTag SAgent SAEConn INFO_
-      "CON" -> pure $ ACmdTag SAgent SAEConn CON_
-      "SUB" -> pure $ ACmdTag SClient SAEConn SUB_
-      "END" -> pure $ ACmdTag SAgent SAEConn END_
-      "CONNECT" -> pure $ ACmdTag SAgent SAENone CONNECT_
-      "DISCONNECT" -> pure $ ACmdTag SAgent SAENone DISCONNECT_
-      "DOWN" -> pure $ ACmdTag SAgent SAEConn DOWN_
-      "UP" -> pure $ ACmdTag SAgent SAEConn UP_
-      "SWITCH" -> pure $ ACmdTag SAgent SAEConn SWITCH_
-      "SEND" -> pure $ ACmdTag SClient SAEConn SEND_
-      "MID" -> pure $ ACmdTag SAgent SAEConn MID_
-      "SENT" -> pure $ ACmdTag SAgent SAEConn SENT_
-      "MERR" -> pure $ ACmdTag SAgent SAEConn MERR_
-      "MSG" -> pure $ ACmdTag SAgent SAEConn MSG_
-      "ACK" -> pure $ ACmdTag SClient SAEConn ACK_
-      "SWCH" -> pure $ ACmdTag SClient SAEConn SWCH_
-      "OFF" -> pure $ ACmdTag SClient SAEConn OFF_
-      "DEL" -> pure $ ACmdTag SClient SAEConn DEL_
-      "DEL_RCVQ" -> pure $ ACmdTag SAgent SAEConn DEL_RCVQ_
-      "DEL_CONN" -> pure $ ACmdTag SAgent SAEConn DEL_CONN_
-      "DEL_USER" -> pure $ ACmdTag SAgent SAENone DEL_USER_
-      "CHK" -> pure $ ACmdTag SClient SAEConn CHK_
-      "STAT" -> pure $ ACmdTag SAgent SAEConn STAT_
-      "OK" -> pure $ ACmdTag SAgent SAEConn OK_
-      "ERR" -> pure $ ACmdTag SAgent SAEConn ERR_
-      "SUSPENDED" -> pure $ ACmdTag SAgent SAENone SUSPENDED_
-      "RFPROG" -> pure $ ACmdTag SAgent SAERcvFile RFPROG_
-      "RFDONE" -> pure $ ACmdTag SAgent SAERcvFile RFDONE_
-      "RFERR" -> pure $ ACmdTag SAgent SAERcvFile RFERR_
+      "NEW" -> t NEW_
+      "INV" -> ct INV_
+      "JOIN" -> t JOIN_
+      "CONF" -> ct CONF_
+      "LET" -> t LET_
+      "REQ" -> ct REQ_
+      "ACPT" -> t ACPT_
+      "RJCT" -> t RJCT_
+      "INFO" -> ct INFO_
+      "CON" -> ct CON_
+      "SUB" -> t SUB_
+      "END" -> ct END_
+      "CONNECT" -> at SAENone CONNECT_
+      "DISCONNECT" -> at SAENone DISCONNECT_
+      "DOWN" -> ct DOWN_
+      "UP" -> ct UP_
+      "SWITCH" -> ct SWITCH_
+      "SEND" -> t SEND_
+      "MID" -> ct MID_
+      "SENT" -> ct SENT_
+      "MERR" -> ct MERR_
+      "MSG" -> ct MSG_
+      "ACK" -> t ACK_
+      "SWCH" -> t SWCH_
+      "OFF" -> t OFF_
+      "DEL" -> t DEL_
+      "DEL_RCVQ" -> ct DEL_RCVQ_
+      "DEL_CONN" -> ct DEL_CONN_
+      "DEL_USER" -> at SAENone DEL_USER_
+      "CHK" -> t CHK_
+      "STAT" -> ct STAT_
+      "OK" -> ct OK_
+      "ERR" -> ct ERR_
+      "SUSPENDED" -> at SAENone SUSPENDED_
+      "RFPROG" -> at SAERcvFile RFPROG_
+      "RFDONE" -> at SAERcvFile RFDONE_
+      "RFERR" -> at SAERcvFile RFERR_
       _ -> fail "bad ACmdTag"
+    where
+      t = pure . ACmdTag SClient SAEConn
+      at e = pure . ACmdTag SAgent e
+      ct = at SAEConn
 
 instance APartyI p => StrEncoding (APartyCmdTag p) where
   strEncode (APCT _ cmd) = strEncode cmd
