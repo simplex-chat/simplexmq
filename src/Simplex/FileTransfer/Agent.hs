@@ -151,13 +151,6 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
         Nothing -> noWorkToDo
         Just f@RcvFile {rcvFileId} ->
           decryptFile f `catchError` (workerInternalError c rcvFileId . show)
-    -- ri <- asks $ reconnectInterval . config
-    -- withRetryInterval ri $ \_ loop ->
-    --   decryptFile f
-    --     `catchError` \_ -> do
-    --       -- TODO don't loop on permanent errors
-    --       -- TODO fixed number of retries instead of exponential backoff?
-    --       loop
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, chunks} = do
