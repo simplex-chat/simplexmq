@@ -30,6 +30,7 @@ CREATE TABLE rcv_files (
   save_dir TEXT NOT NULL,
   save_path TEXT,
   status TEXT NOT NULL,
+  error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -58,7 +59,7 @@ CREATE TABLE rcv_file_chunk_replicas (
   replica_id BLOB NOT NULL,
   replica_key BLOB NOT NULL,
   received INTEGER NOT NULL DEFAULT 0,
-  acknowledged INTEGER NOT NULL DEFAULT 0,
+  -- acknowledged INTEGER NOT NULL DEFAULT 0,
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))

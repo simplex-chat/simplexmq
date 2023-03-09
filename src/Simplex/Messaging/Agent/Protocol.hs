@@ -285,6 +285,7 @@ data ACommand (p :: AParty) where
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
   FRCVD :: RcvFileId -> FilePath -> ACommand Agent
+  FRCVERR :: RcvFileId -> AgentErrorType -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
@@ -328,6 +329,7 @@ data ACommandTag (p :: AParty) where
   ERR_ :: ACommandTag Agent
   SUSPENDED_ :: ACommandTag Agent
   FRCVD_ :: ACommandTag Agent
+  FRCVERR_ :: ACommandTag Agent
 
 deriving instance Eq (ACommandTag p)
 
@@ -370,6 +372,7 @@ aCommandTag = \case
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
   FRCVD {} -> FRCVD_
+  FRCVERR {} -> FRCVERR_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -1292,6 +1295,7 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
     FRCVD_ -> "FRCVD"
+    FRCVERR_ -> "FRCVERR"
   strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
@@ -1343,6 +1347,7 @@ commandP binaryP =
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
           FRCVD_ -> s (FRCVD <$> A.decimal <* A.space <*> strP)
+          FRCVERR_ -> s (FRCVERR <$> A.decimal <* A.space <*> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1397,6 +1402,7 @@ serializeCommand = \case
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
   FRCVD fId fPath -> s (FRCVD_, Str $ bshow fId, fPath)
+  FRCVERR fId e -> s (FRCVERR_, Str $ bshow fId, e)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
