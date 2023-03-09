@@ -65,6 +65,7 @@ module Simplex.Messaging.Protocol
     PrivHeader (..),
     Protocol (..),
     ProtocolType (..),
+    SProtocolType (..),
     AProtocolType (..),
     ProtocolTypeI (..),
     ProtocolServer (..),
@@ -78,6 +79,7 @@ module Simplex.Messaging.Protocol
     pattern XFTPServer,
     XFTPServerWithAuth,
     ProtoServerWithAuth (..),
+    AProtoServerWithAuth (..),
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
@@ -729,6 +731,8 @@ data ProtocolServer p = ProtocolServer
   }
   deriving (Eq, Ord, Show)
 
+data AProtocolServer = forall p. ProtocolTypeI p => AProtocolServer (SProtocolType p) (ProtocolServer p)
+
 instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
 
@@ -744,7 +748,7 @@ instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
     strEncodeServer scheme (strEncode host) port keyHash Nothing
   strP =
     serverStrP >>= \case
-      (srv, Nothing) -> pure srv
+      (AProtocolServer _ srv, Nothing) -> either fail pure $ checkProtocolType srv
       _ -> fail "ProtocolServer with basic auth not allowed"
 
 instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
@@ -780,10 +784,20 @@ data ProtoServerWithAuth p = ProtoServerWithAuth {protoServer :: ProtocolServer 
 instance ProtocolTypeI p => IsString (ProtoServerWithAuth p) where
   fromString = parseString strDecode
 
+data AProtoServerWithAuth = forall p. ProtocolTypeI p => AProtoServerWithAuth (SProtocolType p) (ProtoServerWithAuth p)
+
+deriving instance Show AProtoServerWithAuth
+
 instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
   strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
     strEncodeServer scheme (strEncode host) port keyHash auth_
-  strP = uncurry ProtoServerWithAuth <$> serverStrP
+  strP = (\(AProtoServerWithAuth _ srv) -> checkProtocolType srv) <$?> strP
+
+instance StrEncoding AProtoServerWithAuth where
+  strEncode (AProtoServerWithAuth _ srv) = strEncode srv
+  strP =
+    serverStrP >>= \(AProtocolServer p srv, auth) ->
+      pure $ AProtoServerWithAuth p (ProtoServerWithAuth srv auth)
 
 instance ProtocolTypeI p => ToJSON (ProtoServerWithAuth p) where
   toJSON = strToJSON
@@ -791,6 +805,13 @@ instance ProtocolTypeI p => ToJSON (ProtoServerWithAuth p) where
 
 instance ProtocolTypeI p => FromJSON (ProtoServerWithAuth p) where
   parseJSON = strParseJSON "ProtoServerWithAuth"
+
+instance ToJSON AProtoServerWithAuth where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON AProtoServerWithAuth where
+  parseJSON = strParseJSON "AProtoServerWithAuth"
 
 noAuthSrv :: ProtocolServer p -> ProtoServerWithAuth p
 noAuthSrv srv = ProtoServerWithAuth srv Nothing
@@ -814,14 +835,15 @@ strEncodeServer scheme host port keyHash auth_ =
   where
     portStr = B.pack $ if null port then "" else ':' : port
 
-serverStrP :: ProtocolTypeI p => Parser (ProtocolServer p, Maybe BasicAuth)
+serverStrP :: Parser (AProtocolServer, Maybe BasicAuth)
 serverStrP = do
   scheme <- strP <* "://"
   keyHash <- strP
   auth_ <- optional $ A.char ':' *> strP
   TransportHosts host <- A.char '@' *> strP
   port <- portP <|> pure ""
-  pure (ProtocolServer {scheme, host, port, keyHash}, auth_)
+  pure $ case scheme of
+    AProtocolType s -> (AProtocolServer s $ ProtocolServer {scheme = s, host, port, keyHash}, auth_)
   where
     portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
