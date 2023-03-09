@@ -287,6 +287,7 @@ data ACommand (p :: AParty) where
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
   -- XFTP commands and responses
+  RFPROG :: RcvFileId -> Int -> Int -> ACommand Agent
   RFDONE :: RcvFileId -> FilePath -> ACommand Agent
   RFERR :: RcvFileId -> AgentErrorType -> ACommand Agent
 
@@ -333,6 +334,7 @@ data ACommandTag (p :: AParty) where
   SUSPENDED_ :: ACommandTag Agent
   -- XFTP commands and responses
   RFDONE_ :: ACommandTag Agent
+  RFPROG_ :: ACommandTag Agent
   RFERR_ :: ACommandTag Agent
 
 deriving instance Eq (ACommandTag p)
@@ -375,6 +377,7 @@ aCommandTag = \case
   OK -> OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
+  RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
 
@@ -420,6 +423,7 @@ aCommandTagEntity = \case
   OK_ -> Just AEConn
   ERR_ -> Just AEConn
   SUSPENDED_ -> Nothing
+  RFPROG_ -> Just AERcvFile
   RFDONE_ -> Just AERcvFile
   RFERR_ -> Just AERcvFile
 
@@ -1307,6 +1311,9 @@ instance StrEncoding ACmdTag where
       "OK" -> pure $ ACmdTag SAgent OK_
       "ERR" -> pure $ ACmdTag SAgent ERR_
       "SUSPENDED" -> pure $ ACmdTag SAgent SUSPENDED_
+      "RFPROG" -> pure $ ACmdTag SAgent RFPROG_
+      "RFDONE" -> pure $ ACmdTag SAgent RFDONE_
+      "RFERR" -> pure $ ACmdTag SAgent RFERR_
       _ -> fail "bad ACmdTag"
 
 instance APartyI p => StrEncoding (ACommandTag p) where
@@ -1345,6 +1352,7 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     OK_ -> "OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
+    RFPROG_ -> "RFPROG"
     RFDONE_ -> "RFDONE"
     RFERR_ -> "RFERR"
   strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
@@ -1397,6 +1405,7 @@ commandP binaryP =
           OK_ -> pure OK
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
+          RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal <* A.space <*> A.decimal)
           RFDONE_ -> s (RFDONE <$> A.decimal <* A.space <*> strP)
           RFERR_ -> s (RFERR <$> A.decimal <* A.space <*> strP)
   where
@@ -1452,6 +1461,7 @@ serializeCommand = \case
   ERR e -> s (ERR_, e)
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
+  RFPROG fId rcvd total -> s (RFPROG_, Str $ bshow fId, rcvd, total)
   RFDONE fId fPath -> s (RFDONE_, Str $ bshow fId, fPath)
   RFERR fId e -> s (RFERR_, Str $ bshow fId, e)
   where
@@ -1494,10 +1504,10 @@ tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmis
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
-    tParseLoadBody t@(corrId, connId, command) = do
+    tParseLoadBody t@(corrId, entId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tConnId t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (corrId, connId, fullCmd)
+      return (corrId, entId, fullCmd)
 
     fromParty :: ACmd -> Either AgentErrorType (ACommand p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
@@ -1505,20 +1515,21 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       _ -> Left $ CMD PROHIBITED
 
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
-    tConnId (_, connId, _) cmd = case cmd of
-      -- NEW, JOIN and ACPT have optional connId
+    tConnId (_, entId, _) cmd = case cmd of
+      -- NEW, JOIN and ACPT have optional connection ID
       NEW {} -> Right cmd
       JOIN {} -> Right cmd
       ACPT {} -> Right cmd
-      -- ERROR response does not always have connId
+      -- ERROR response does not always have connection ID
       ERR _ -> Right cmd
       CONNECT {} -> Right cmd
       DISCONNECT {} -> Right cmd
       DOWN {} -> Right cmd
       UP {} -> Right cmd
-      -- other responses must have connId
+      SUSPENDED {} -> Right cmd
+      -- other responses must have connection ID
       _
-        | B.null connId -> Left $ CMD NO_CONN
+        | B.null entId -> Left $ CMD NO_CONN
         | otherwise -> Right cmd
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
