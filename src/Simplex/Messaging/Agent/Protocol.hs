@@ -339,6 +339,11 @@ data ACmdTag = forall p e. (APartyI p, AEntityI e) => ACmdTag (SAParty p) (SAEnt
 
 data APartyCmdTag p = forall e. AEntityI e => APCT (SAEntity e) (ACommandTag p e)
 
+instance Eq (APartyCmdTag p) where
+  APCT e cmd == APCT e' cmd' = case testEquality e e' of
+    Just Refl -> cmd == cmd'
+    Nothing -> False
+
 deriving instance Show (APartyCmdTag p)
 
 data ACommandTag (p :: AParty) (e :: AEntity) where
