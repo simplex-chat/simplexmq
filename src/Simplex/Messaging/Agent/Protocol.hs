@@ -45,6 +45,8 @@ module Simplex.Messaging.Agent.Protocol
     ACmd (..),
     ACmdTag (..),
     AParty (..),
+    AEntity (..),
+    aCommandEntity,
     SAParty (..),
     APartyI (..),
     MsgHash,
@@ -211,10 +213,10 @@ e2eEncUserMsgLength = 15856
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
 -- | Parsed SMP agent protocol transmission.
-type ATransmission p = (ACorrId, ConnId, ACommand p)
+type ATransmission p = (ACorrId, EntityId, ACommand p)
 
 -- | SMP agent protocol transmission or transmission error.
-type ATransmissionOrError p = (ACorrId, ConnId, Either AgentErrorType (ACommand p))
+type ATransmissionOrError p = (ACorrId, EntityId, Either AgentErrorType (ACommand p))
 
 type ACorrId = ByteString
 
@@ -284,8 +286,9 @@ data ACommand (p :: AParty) where
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
-  FRCVD :: RcvFileId -> FilePath -> ACommand Agent
-  FRCVERR :: RcvFileId -> AgentErrorType -> ACommand Agent
+  -- XFTP commands and responses
+  RFDONE :: RcvFileId -> FilePath -> ACommand Agent
+  RFERR :: RcvFileId -> AgentErrorType -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
@@ -328,8 +331,9 @@ data ACommandTag (p :: AParty) where
   OK_ :: ACommandTag Agent
   ERR_ :: ACommandTag Agent
   SUSPENDED_ :: ACommandTag Agent
-  FRCVD_ :: ACommandTag Agent
-  FRCVERR_ :: ACommandTag Agent
+  -- XFTP commands and responses
+  RFDONE_ :: ACommandTag Agent
+  RFERR_ :: ACommandTag Agent
 
 deriving instance Eq (ACommandTag p)
 
@@ -371,8 +375,53 @@ aCommandTag = \case
   OK -> OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
-  FRCVD {} -> FRCVD_
-  FRCVERR {} -> FRCVERR_
+  RFDONE {} -> RFDONE_
+  RFERR {} -> RFERR_
+
+data AEntity = AEConn | AERcvFile
+  deriving (Eq, Show)
+
+aCommandEntity :: ACommand p -> Maybe AEntity
+aCommandEntity = aCommandTagEntity . aCommandTag
+
+aCommandTagEntity :: ACommandTag p -> Maybe AEntity
+aCommandTagEntity = \case
+  NEW_ -> Just AEConn
+  INV_ -> Just AEConn
+  JOIN_ -> Just AEConn
+  CONF_ -> Just AEConn
+  LET_ -> Just AEConn
+  REQ_ -> Just AEConn
+  ACPT_ -> Just AEConn
+  RJCT_ -> Just AEConn
+  INFO_ -> Just AEConn
+  CON_ -> Just AEConn
+  SUB_ -> Just AEConn
+  END_ -> Just AEConn
+  CONNECT_ -> Just AEConn
+  DISCONNECT_ -> Just AEConn
+  DOWN_ -> Just AEConn
+  UP_ -> Just AEConn
+  SWITCH_ -> Just AEConn
+  SEND_ -> Just AEConn
+  MID_ -> Just AEConn
+  SENT_ -> Just AEConn
+  MERR_ -> Just AEConn
+  MSG_ -> Just AEConn
+  ACK_ -> Just AEConn
+  SWCH_ -> Just AEConn
+  OFF_ -> Just AEConn
+  DEL_ -> Just AEConn
+  DEL_RCVQ_ -> Just AEConn
+  DEL_CONN_ -> Just AEConn
+  DEL_USER_ -> Nothing
+  CHK_ -> Just AEConn
+  STAT_ -> Just AEConn
+  OK_ -> Just AEConn
+  ERR_ -> Just AEConn
+  SUSPENDED_ -> Nothing
+  RFDONE_ -> Just AERcvFile
+  RFERR_ -> Just AERcvFile
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -820,6 +869,8 @@ connModeT = \case
 
 -- | SMP agent connection ID.
 type ConnId = ByteString
+
+type EntityId = ByteString
 
 type ConfirmationId = ByteString
 
@@ -1294,8 +1345,8 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     OK_ -> "OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
-    FRCVD_ -> "FRCVD"
-    FRCVERR_ -> "FRCVERR"
+    RFDONE_ -> "RFDONE"
+    RFERR_ -> "RFERR"
   strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
@@ -1346,8 +1397,8 @@ commandP binaryP =
           OK_ -> pure OK
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
-          FRCVD_ -> s (FRCVD <$> A.decimal <* A.space <*> strP)
-          FRCVERR_ -> s (FRCVERR <$> A.decimal <* A.space <*> strP)
+          RFDONE_ -> s (RFDONE <$> A.decimal <* A.space <*> strP)
+          RFERR_ -> s (RFERR <$> A.decimal <* A.space <*> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1401,8 +1452,8 @@ serializeCommand = \case
   ERR e -> s (ERR_, e)
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
-  FRCVD fId fPath -> s (FRCVD_, Str $ bshow fId, fPath)
-  FRCVERR fId e -> s (FRCVERR_, Str $ bshow fId, e)
+  RFDONE fId fPath -> s (RFDONE_, Str $ bshow fId, fPath)
+  RFERR fId e -> s (RFERR_, Str $ bshow fId, e)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
