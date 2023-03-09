@@ -413,8 +413,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
             atomically $ mapM_ (releaseGetLock c) qs
             unliftIO u $ reconnectServer c tSess
 
-        notifySub :: ConnId -> ACommand 'Agent -> IO ()
-        notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
+        notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
+        notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
 reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
@@ -441,8 +441,8 @@ reconnectSMPClient c tSess@(_, srv, _) =
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       mapM_ (throwError . snd) $ listToMaybe tempErrs
-    notifySub :: ConnId -> ACommand 'Agent -> IO ()
-    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
+    notifySub :: ConnId -> ACommand 'Agent 'AEConn -> IO ()
+    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC SAEConn cmd)
 
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfTransportSession -> m NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = do
@@ -461,7 +461,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
     clientDisconnected client = do
       atomically $ TM.delete tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
-      atomically $ writeTBQueue (subQ c) ("", "", hostEvent DISCONNECT client)
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m XFTPClient
@@ -482,7 +482,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
     clientDisconnected client = do
       atomically $ TM.delete tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
-      atomically $ writeTBQueue (subQ c) ("", "", hostEvent DISCONNECT client)
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getClientVar :: forall a s. TransportSession s -> TMap (TransportSession s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
@@ -522,7 +522,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
           atomically $ putTMVar clientVar r
           liftIO $ incClientStat c userId client "CLIENT" "OK"
-          atomically $ writeTBQueue (subQ c) ("", "", hostEvent CONNECT client)
+          atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
           successAction client
         Left e -> do
           liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
@@ -540,7 +540,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
       withRetryInterval ri $ \_ loop -> void $ tryConnectClient (const $ reconnectClient c tSess) loop
       atomically . removeAsyncAction aId $ asyncClients c
 
-hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> Client msg -> ACommand 'Agent
+hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
 
 getClientConfig :: AgentMonad m => AgentClient -> (AgentConfig -> ProtocolClientConfig) -> m ProtocolClientConfig
@@ -1059,7 +1059,7 @@ suspendOperation c op endedAction = do
 notifySuspended :: AgentClient -> STM ()
 notifySuspended c = do
   -- unsafeIOToSTM $ putStrLn "notifySuspended"
-  writeTBQueue (subQ c) ("", "", SUSPENDED)
+  writeTBQueue (subQ c) ("", "", APC SAENone SUSPENDED)
   writeTVar (agentState c) ASSuspended
 
 endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()

@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Agent
   ( -- Receiving files
@@ -134,7 +135,7 @@ workerInternalError c rcvFileId internalErrStr = do
   notifyInternalError c rcvFileId internalErrStr
 
 notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
-notifyInternalError AgentClient {subQ} rcvFileId internalErrStr = atomically $ writeTBQueue subQ ("", "", RFERR rcvFileId $ INTERNAL internalErrStr)
+notifyInternalError AgentClient {subQ} rcvFileId internalErrStr = atomically $ writeTBQueue subQ ("", "", APC SAERcvFile $ RFERR rcvFileId $ INTERNAL internalErrStr)
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c@AgentClient {subQ} doWork = do
@@ -161,8 +162,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
       notify $ RFDONE rcvFileId path
       where
-        notify :: ACommand 'Agent -> m ()
-        notify cmd = atomically $ writeTBQueue subQ ("", "", cmd)
+        notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
+        notify cmd = atomically $ writeTBQueue subQ ("", "", APC (sAEntity @e) cmd)
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
         getChunkPaths (RcvFileChunk {chunkTmpPath = Just path} : cs) = do
