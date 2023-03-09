@@ -30,6 +30,7 @@ CREATE TABLE rcv_files (
   save_dir TEXT NOT NULL,
   save_path TEXT,
   status TEXT NOT NULL,
+  error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

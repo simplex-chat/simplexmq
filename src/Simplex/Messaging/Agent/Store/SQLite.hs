@@ -130,6 +130,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     increaseRcvChunkReplicaRetries,
     updateRcvFileChunkReceived,
     updateRcvFileStatus,
+    updateRcvFileError,
     updateRcvFileComplete,
     updateRcvFileChunkReplicaRetries,
     getNextRcvChunkToDownload,
@@ -1844,6 +1845,11 @@ updateRcvFileStatus :: DB.Connection -> RcvFileId -> RcvFileStatus -> IO ()
 updateRcvFileStatus db rcvFileId status = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET status = ?, updated_at = ? WHERE rcv_file_id = ?" (status, updatedAt, rcvFileId)
+
+updateRcvFileError :: DB.Connection -> RcvFileId -> String -> IO ()
+updateRcvFileError db rcvFileId errStr = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE rcv_files SET error = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (errStr, RFSError, updatedAt, rcvFileId)
 
 updateRcvFileComplete :: DB.Connection -> RcvFileId -> FilePath -> IO ()
 updateRcvFileComplete db rcvFileId savePath = do

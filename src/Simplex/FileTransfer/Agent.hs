@@ -132,7 +132,7 @@ runXFTPWorker c srv doWork = do
 
 workerInternalError :: AgentMonad m => AgentClient -> RcvFileId -> String -> m ()
 workerInternalError c rcvFileId internalErrStr = do
-  withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSError
+  withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
   notifyInternalError c rcvFileId internalErrStr
 
 notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
