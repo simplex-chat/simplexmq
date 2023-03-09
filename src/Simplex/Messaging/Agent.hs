@@ -1590,7 +1590,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Left e -> liftIO $ print e
       Right _ -> return ()
 
-cleanupManager :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+cleanupManager :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 cleanupManager c = do
   threadDelay =<< asks (initialCleanupDelay . config)
   int <- asks (cleanupInterval . config)
