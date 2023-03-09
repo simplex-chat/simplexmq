@@ -33,7 +33,6 @@ import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
-import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
@@ -96,10 +95,9 @@ runXFTPWorker c srv doWork = do
             retryOnError :: Int -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
             retryOnError chunkDelay loop done e = do
               logError $ "XFTP worker error: " <> tshow e
-              case e of
-                BROKER _ NETWORK -> retryLoop
-                BROKER _ TIMEOUT -> retryLoop
-                _ -> done e
+              if temporaryAgentError e
+                then retryLoop
+                else done e
               where
                 retryLoop = do
                   withStore' c $ \db -> do
@@ -136,7 +134,7 @@ workerInternalError c rcvFileId internalErrStr = do
   notifyInternalError c rcvFileId internalErrStr
 
 notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
-notifyInternalError AgentClient {subQ} rcvFileId internalErrStr = atomically $ writeTBQueue subQ ("", "", AP.FRCVERR rcvFileId $ AP.INTERNAL internalErrStr)
+notifyInternalError AgentClient {subQ} rcvFileId internalErrStr = atomically $ writeTBQueue subQ ("", "", FRCVERR rcvFileId $ INTERNAL internalErrStr)
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c@AgentClient {subQ} doWork = do
