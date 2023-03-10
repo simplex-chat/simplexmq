@@ -10,6 +10,8 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
+import Data.List.NonEmpty (nonEmpty)
+import qualified Data.List.NonEmpty as L
 import SMPAgentClient (agentCfg, initAgentServers)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), checkParty)
@@ -156,11 +158,15 @@ testXFTPAgentSendExperimental = do
 
   -- send file using experimental agent API
   sndr <- getSMPAgentClient agentCfg initAgentServers
-  runRight_ $ do
+  rcvDescrs <- runRight $ do
     sfId <- xftpSendFile sndr 1 2 senderFiles filePath
-    ("", sfId', SFDONE _ _) <- sfGet sndr
-    liftIO $ sfId' `shouldBe` sfId
-  let fdRcv = senderFiles </> "testfile.descr/testfile.xftp/rcv1.xftp" -- TODO use from SFDONE
+    ("", sfId', SFDONE sndDescr rcvDescrs) <- sfGet sndr
+    liftIO $ do
+      sfId' `shouldBe` sfId
+      sndDescr `shouldBe` senderFiles </> "testfile.descr/testfile.xftp/snd.xftp.private"
+      rcvDescrs `shouldBe` [senderFiles </> "testfile.descr/testfile.xftp/rcv1.xftp", senderFiles </> "testfile.descr/testfile.xftp/rcv2.xftp"]
+    pure rcvDescrs
+  let fdRcv = maybe "" L.head (nonEmpty rcvDescrs)
 
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
