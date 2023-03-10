@@ -14,18 +14,27 @@ module Simplex.FileTransfer.Agent
     receiveFile,
     addXFTPWorker,
     -- Sending files
+    sendFileExperimental,
     _sendFile,
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
+import Data.List (isSuffixOf, partition)
+import Data.List.NonEmpty (nonEmpty)
+import qualified Data.List.NonEmpty as L
+import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
@@ -42,7 +51,9 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (tshow)
+import System.FilePath (takeFileName, (</>))
 import UnliftIO
+import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
@@ -203,9 +214,50 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
             )
             LB.empty
 
--- _sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> FilePath -> m Int64
-_sendFile :: AgentClient -> UserId -> FilePath -> FilePath -> m Int64
-_sendFile _c _userId _xftpPath _filePath = do
+sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
+sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath = do
+  g <- asks idsDrg
+  sndFileEntityId <- liftIO $ randomId g 12
+  void $ forkIO $ sendCLI sndFileEntityId
+  pure sndFileEntityId
+  where
+    randomId :: TVar ChaChaDRG -> Int -> IO ByteString
+    randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+    sendCLI :: SndFileEntityId -> m ()
+    sendCLI sndFileEntityId = do
+      let fileName = takeFileName filePath
+      outputDir <- uniqueCombine xftpPath (fileName <> ".descr")
+      createDirectory outputDir
+      let tempPath = xftpPath </> "snd"
+      createDirectoryIfMissing False tempPath
+      let sendOptions =
+            SendOptions
+              { filePath,
+                outputDir = Just outputDir,
+                numRecipients,
+                xftpServers = [],
+                retryCount = 3,
+                tempPath = Just tempPath,
+                verbose = False
+              }
+      liftCLI $ cliSendFile sendOptions
+      (sndDescr, rcvDescrs) <- readDescrs outputDir
+      notify sndFileEntityId $ SFDONE sndDescr rcvDescrs
+    liftCLI :: ExceptT CLIError IO () -> m ()
+    liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
+    readDescrs :: FilePath -> m (String, [String])
+    readDescrs outDir = do
+      files <- listDirectory outDir
+      let (sdFiles, rdFiles) = partition ("snd.xftp.private" `isSuffixOf`) files
+          sdFile = maybe "" L.head (nonEmpty sdFiles)
+      -- TODO map files to contents
+      pure (sdFile, rdFiles)
+    notify :: forall e. AEntityI e => SndFileEntityId -> ACommand 'Agent e -> m ()
+    notify sndFileEntityId cmd = atomically $ writeTBQueue subQ ("", sndFileEntityId, APC (sAEntity @e) cmd)
+
+-- _sendFile :: AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
+_sendFile :: AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
+_sendFile _c _userId _numRecipients _xftpPath _filePath = do
   -- db: create file in status New without chunks
   -- add local snd worker for encryption
   -- return file id to client
