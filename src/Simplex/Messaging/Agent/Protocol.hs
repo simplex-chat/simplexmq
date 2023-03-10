@@ -890,7 +890,7 @@ type ConnId = ByteString
 
 type RcvFileId = ByteString
 
-type SndFileEntityId = ByteString
+type SndFileId = ByteString
 
 type ConfirmationId = ByteString
 

@@ -214,7 +214,7 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
             )
             LB.empty
 
-sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
+sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
 sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath = do
   g <- asks idsDrg
   sndFileEntityId <- liftIO $ randomId g 12
@@ -223,7 +223,7 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
   where
     randomId :: TVar ChaChaDRG -> Int -> IO ByteString
     randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
-    sendCLI :: SndFileEntityId -> m ()
+    sendCLI :: SndFileId -> m ()
     sendCLI sndFileEntityId = do
       let fileName = takeFileName filePath
       outputDir <- uniqueCombine xftpPath (fileName <> ".descr")
@@ -252,11 +252,11 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
           sdFile = maybe "" L.head (nonEmpty sdFiles)
       -- TODO map files to contents
       pure (sdFile, rdFiles)
-    notify :: forall e. AEntityI e => SndFileEntityId -> ACommand 'Agent e -> m ()
+    notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
     notify sndFileEntityId cmd = atomically $ writeTBQueue subQ ("", sndFileEntityId, APC (sAEntity @e) cmd)
 
--- _sendFile :: AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
-_sendFile :: AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
+-- _sendFile :: AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
+_sendFile :: AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
 _sendFile _c _userId _numRecipients _xftpPath _filePath = do
   -- db: create file in status New without chunks
   -- add local snd worker for encryption

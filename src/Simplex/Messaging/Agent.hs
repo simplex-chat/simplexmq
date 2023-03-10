@@ -343,7 +343,7 @@ xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescri
 xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Send XFTP file
-xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileEntityId
+xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
 xftpSendFile c userId n xftpPath filePath = withAgentEnv c $ sendFileExperimental c userId n xftpPath filePath
 
 -- | Activate operations
