@@ -5,6 +5,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PostfixOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests (agentTests) where
@@ -19,6 +20,7 @@ import Control.Concurrent
 import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Type.Equality
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
@@ -81,43 +83,53 @@ agentTests (ATransport t) = do
     it "should resume delivering messages after exceeding quota once all messages are received" $
       smpAgentTest2_2_1 $ testResumeDeliveryQuotaExceeded t
 
-tGetAgent :: Transport c => c -> IO (ATransmissionOrError 'Agent)
-tGetAgent h = do
-  t@(_, _, cmd) <- tGet SAgent h
-  case cmd of
-    Right CONNECT {} -> tGetAgent h
-    Right DISCONNECT {} -> tGetAgent h
-    _ -> pure t
+type AEntityTransmission p e = (ACorrId, ConnId, ACommand p e)
+
+type AEntityTransmissionOrError p e = (ACorrId, ConnId, Either AgentErrorType (ACommand p e))
+
+tGetAgent :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
+tGetAgent = tGetAgent'
+
+tGetAgent' :: forall c e. (Transport c, AEntityI e) => c -> IO (AEntityTransmissionOrError 'Agent e)
+tGetAgent' h = do
+  (corrId, connId, cmdOrErr) <- tGet SAgent h
+  case cmdOrErr of
+    Right (APC _ CONNECT {}) -> tGetAgent' h
+    Right (APC _ DISCONNECT {}) -> tGetAgent' h
+    Right (APC e cmd) -> case testEquality e (sAEntity @e) of
+      Just Refl -> pure (corrId, connId, Right cmd)
+      _ -> error $ "unexpected command " <> show cmd
+    Left err -> pure (corrId, connId, Left err)
 
 -- | receive message to handle `h`
-(<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
+(<#:) :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
 (<#:) = tGetAgent
 
 -- | send transmission `t` to handle `h` and get response
-(#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
+(#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
 h #: t = tPutRaw h t >> (<#:) h
 
 -- | action and expected response
 -- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
-(#>) :: IO (ATransmissionOrError 'Agent) -> ATransmission 'Agent -> Expectation
+(#>) :: IO (AEntityTransmissionOrError 'Agent 'AEConn) -> AEntityTransmission 'Agent 'AEConn -> Expectation
 action #> (corrId, connId, cmd) = action `shouldReturn` (corrId, connId, Right cmd)
 
 -- | action and predicate for the response
 -- `h #:t =#> p` is the test that sends `t` to `h` and validates the response using `p`
-(=#>) :: IO (ATransmissionOrError 'Agent) -> (ATransmission 'Agent -> Bool) -> Expectation
+(=#>) :: IO (AEntityTransmissionOrError 'Agent 'AEConn) -> (AEntityTransmission 'Agent 'AEConn -> Bool) -> Expectation
 action =#> p = action >>= (`shouldSatisfy` p . correctTransmission)
 
-correctTransmission :: ATransmissionOrError a -> ATransmission a
+correctTransmission :: AEntityTransmissionOrError p e -> AEntityTransmission p e
 correctTransmission (corrId, connId, cmdOrErr) = case cmdOrErr of
   Right cmd -> (corrId, connId, cmd)
   Left e -> error $ show e
 
 -- | receive message to handle `h` and validate that it is the expected one
-(<#) :: Transport c => c -> ATransmission 'Agent -> Expectation
+(<#) :: Transport c => c -> AEntityTransmission 'Agent 'AEConn -> Expectation
 h <# (corrId, connId, cmd) = (h <#:) `shouldReturn` (corrId, connId, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
-(<#=) :: Transport c => c -> (ATransmission 'Agent -> Bool) -> Expectation
+(<#=) :: Transport c => c -> (AEntityTransmission 'Agent 'AEConn -> Bool) -> Expectation
 h <#= p = (h <#:) >>= (`shouldSatisfy` p . correctTransmission)
 
 -- | test that nothing is delivered to handle `h` during 10ms
@@ -129,7 +141,7 @@ h #:# err = tryGet `shouldReturn` ()
         Just _ -> error err
         _ -> return ()
 
-pattern Msg :: MsgBody -> ACommand 'Agent
+pattern Msg :: MsgBody -> ACommand 'Agent 'AEConn
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()

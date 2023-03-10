@@ -8,6 +8,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
@@ -19,6 +20,8 @@ module AgentTests.FunctionalAPITests
     runRight,
     runRight_,
     get,
+    get',
+    rfGet,
     (##>),
     (=##>),
     pattern Msg,
@@ -38,6 +41,7 @@ import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import Data.Type.Equality
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
@@ -58,21 +62,31 @@ import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO
 
-(##>) :: (HasCallStack, MonadIO m) => m (ATransmission 'Agent) -> ATransmission 'Agent -> m ()
+type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
+
+(##>) :: (HasCallStack, MonadIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
 a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
 
-(=##>) :: (HasCallStack, MonadIO m) => m (ATransmission 'Agent) -> (ATransmission 'Agent -> Bool) -> m ()
+(=##>) :: (HasCallStack, MonadIO m) => m (AEntityTransmission e) -> (AEntityTransmission e -> Bool) -> m ()
 a =##> p = a >>= \t -> liftIO (t `shouldSatisfy` p)
 
-get :: MonadIO m => AgentClient -> m (ATransmission 'Agent)
-get c = do
-  t@(_, _, cmd) <- atomically (readTBQueue $ subQ c)
-  case cmd of
-    CONNECT {} -> get c
-    DISCONNECT {} -> get c
-    _ -> pure t
+get :: MonadIO m => AgentClient -> m (AEntityTransmission 'AEConn)
+get = get' @'AEConn
 
-pattern Msg :: MsgBody -> ACommand 'Agent
+rfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AERcvFile)
+rfGet = get' @'AERcvFile
+
+get' :: forall e m. (MonadIO m, AEntityI e) => AgentClient -> m (AEntityTransmission e)
+get' c = do
+  (corrId, connId, APC e cmd) <- atomically (readTBQueue $ subQ c)
+  case cmd of
+    CONNECT {} -> get' c
+    DISCONNECT {} -> get' c
+    _ -> case testEquality e (sAEntity @e) of
+      Just Refl -> pure (corrId, connId, cmd)
+      _ -> error $ "unexpected command " <> show cmd
+
+pattern Msg :: MsgBody -> ACommand 'Agent 'AEConn
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 smpCfgV1 :: ProtocolClientConfig
@@ -524,7 +538,7 @@ testSuspendingAgent = do
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4
     suspendAgent b 1000000
-    get b ##> ("", "", SUSPENDED)
+    get' b ##> ("", "", SUSPENDED)
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
@@ -551,11 +565,11 @@ testSuspendingAgentCompleteSending t = do
     liftIO $ threadDelay 100000
     suspendAgent b 5000000
 
-  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
     get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
     get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
     get b =##> \case ("", c, SENT 6) -> c == aId; ("", "", UP {}) -> True; _ -> False
-    ("", "", SUSPENDED) <- get b
+    ("", "", SUSPENDED) <- get' @'AENone b
 
     get a =##> \case ("", c, Msg "hello too") -> c == bId; ("", "", UP {}) -> True; _ -> False
     get a =##> \case ("", c, Msg "hello too") -> c == bId; ("", "", UP {}) -> True; _ -> False
@@ -581,7 +595,7 @@ testSuspendingAgentTimeout t = do
     5 <- sendMessage b aId SMP.noMsgFlags "hello too"
     6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     suspendAgent b 100000
-    ("", "", SUSPENDED) <- get b
+    ("", "", SUSPENDED) <- get' @'AENone b
     pure ()
 
 testBatchedSubscriptions :: ATransport -> IO ()
@@ -777,7 +791,7 @@ testUsers = do
     deleteUser a auId True
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId'; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
-    get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    get' @'AENone a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     exchangeGreetingsMsgId 6 a bId b aId
     liftIO $ noMessages a "nothing else should be delivered to alice"
 
@@ -813,7 +827,7 @@ testUsersNoServer t = do
     deleteUser a auId True
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
-    get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    get' @'AENone a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
     get a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False

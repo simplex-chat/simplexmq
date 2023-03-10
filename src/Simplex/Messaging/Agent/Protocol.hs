@@ -40,13 +40,19 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     ACommand (..),
+    APartyCmd (..),
     ACommandTag (..),
     aCommandTag,
+    aPartyCmdTag,
     ACmd (..),
+    APartyCmdTag (..),
     ACmdTag (..),
     AParty (..),
+    AEntity (..),
     SAParty (..),
+    SAEntity (..),
     APartyI (..),
+    AEntityI (..),
     MsgHash,
     MsgMeta (..),
     ConnectionStats (..),
@@ -165,6 +171,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
+    EntityId,
     ErrorType,
     MsgBody,
     MsgFlags,
@@ -211,10 +218,10 @@ e2eEncUserMsgLength = 15856
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
 -- | Parsed SMP agent protocol transmission.
-type ATransmission p = (ACorrId, ConnId, ACommand p)
+type ATransmission p = (ACorrId, EntityId, APartyCmd p)
 
 -- | SMP agent protocol transmission or transmission error.
-type ATransmissionOrError p = (ACorrId, ConnId, Either AgentErrorType (ACommand p))
+type ATransmissionOrError p = (ACorrId, EntityId, Either AgentErrorType (APartyCmd p))
 
 type ACorrId = ByteString
 
@@ -242,100 +249,151 @@ instance APartyI Agent where sAParty = SAgent
 
 instance APartyI Client where sAParty = SClient
 
-data ACmd = forall p. APartyI p => ACmd (SAParty p) (ACommand p)
+data AEntity = AEConn | AERcvFile | AENone
+  deriving (Eq, Show)
+
+data SAEntity :: AEntity -> Type where
+  SAEConn :: SAEntity AEConn
+  SAERcvFile :: SAEntity AERcvFile
+  SAENone :: SAEntity AENone
+
+deriving instance Show (SAEntity e)
+
+deriving instance Eq (SAEntity e)
+
+instance TestEquality SAEntity where
+  testEquality SAEConn SAEConn = Just Refl
+  testEquality SAERcvFile SAERcvFile = Just Refl
+  testEquality SAENone SAENone = Just Refl
+  testEquality _ _ = Nothing
+
+class AEntityI (e :: AEntity) where sAEntity :: SAEntity e
+
+instance AEntityI AEConn where sAEntity = SAEConn
+
+instance AEntityI AERcvFile where sAEntity = SAERcvFile
+
+instance AEntityI AENone where sAEntity = SAENone
+
+data ACmd = forall p e. (APartyI p, AEntityI e) => ACmd (SAParty p) (SAEntity e) (ACommand p e)
 
 deriving instance Show ACmd
+
+data APartyCmd p = forall e. AEntityI e => APC (SAEntity e) (ACommand p e)
+
+instance Eq (APartyCmd p) where
+  APC e cmd == APC e' cmd' = case testEquality e e' of
+    Just Refl -> cmd == cmd'
+    Nothing -> False
+
+deriving instance Show (APartyCmd p)
 
 type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
-data ACommand (p :: AParty) where
-  NEW :: Bool -> AConnectionMode -> ACommand Client -- response INV
-  INV :: AConnectionRequestUri -> ACommand Agent
-  JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
-  CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
-  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
-  REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
-  RJCT :: InvitationId -> ACommand Client
-  INFO :: ConnInfo -> ACommand Agent
-  CON :: ACommand Agent -- notification that connection is established
-  SUB :: ACommand Client
-  END :: ACommand Agent
-  CONNECT :: AProtocolType -> TransportHost -> ACommand Agent
-  DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent
-  DOWN :: SMPServer -> [ConnId] -> ACommand Agent
-  UP :: SMPServer -> [ConnId] -> ACommand Agent
-  SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent
-  SEND :: MsgFlags -> MsgBody -> ACommand Client
-  MID :: AgentMsgId -> ACommand Agent
-  SENT :: AgentMsgId -> ACommand Agent
-  MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
-  MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent
-  ACK :: AgentMsgId -> ACommand Client
-  SWCH :: ACommand Client
-  OFF :: ACommand Client
-  DEL :: ACommand Client
-  DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> ACommand Agent
-  DEL_CONN :: ACommand Agent
-  DEL_USER :: Int64 -> ACommand Agent
-  CHK :: ACommand Client
-  STAT :: ConnectionStats -> ACommand Agent
-  OK :: ACommand Agent
-  ERR :: AgentErrorType -> ACommand Agent
-  SUSPENDED :: ACommand Agent
-  FRCVD :: RcvFileId -> FilePath -> ACommand Agent
-  FRCVERR :: RcvFileId -> AgentErrorType -> ACommand Agent
+data ACommand (p :: AParty) (e :: AEntity) where
+  NEW :: Bool -> AConnectionMode -> ACommand Client AEConn -- response INV
+  INV :: AConnectionRequestUri -> ACommand Agent AEConn
+  JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client AEConn -- response OK
+  CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
+  LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
+  REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
+  ACPT :: InvitationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
+  RJCT :: InvitationId -> ACommand Client AEConn
+  INFO :: ConnInfo -> ACommand Agent AEConn
+  CON :: ACommand Agent AEConn -- notification that connection is established
+  SUB :: ACommand Client AEConn
+  END :: ACommand Agent AEConn
+  CONNECT :: AProtocolType -> TransportHost -> ACommand Agent AENone
+  DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent AENone
+  DOWN :: SMPServer -> [ConnId] -> ACommand Agent AEConn
+  UP :: SMPServer -> [ConnId] -> ACommand Agent AEConn
+  SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
+  SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
+  MID :: AgentMsgId -> ACommand Agent AEConn
+  SENT :: AgentMsgId -> ACommand Agent AEConn
+  MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
+  MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
+  ACK :: AgentMsgId -> ACommand Client AEConn
+  SWCH :: ACommand Client AEConn
+  OFF :: ACommand Client AEConn
+  DEL :: ACommand Client AEConn
+  DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> ACommand Agent AEConn
+  DEL_CONN :: ACommand Agent AEConn
+  DEL_USER :: Int64 -> ACommand Agent AENone
+  CHK :: ACommand Client AEConn
+  STAT :: ConnectionStats -> ACommand Agent AEConn
+  OK :: ACommand Agent AEConn
+  ERR :: AgentErrorType -> ACommand Agent AEConn
+  SUSPENDED :: ACommand Agent AENone
+  -- XFTP commands and responses
+  RFPROG :: RcvFileId -> Int -> Int -> ACommand Agent AERcvFile
+  RFDONE :: RcvFileId -> FilePath -> ACommand Agent AERcvFile
+  RFERR :: RcvFileId -> AgentErrorType -> ACommand Agent AERcvFile
 
-deriving instance Eq (ACommand p)
+deriving instance Eq (ACommand p e)
 
-deriving instance Show (ACommand p)
+deriving instance Show (ACommand p e)
 
-data ACmdTag = forall p. APartyI p => ACmdTag (SAParty p) (ACommandTag p)
+data ACmdTag = forall p e. (APartyI p, AEntityI e) => ACmdTag (SAParty p) (SAEntity e) (ACommandTag p e)
 
-data ACommandTag (p :: AParty) where
-  NEW_ :: ACommandTag Client
-  INV_ :: ACommandTag Agent
-  JOIN_ :: ACommandTag Client
-  CONF_ :: ACommandTag Agent
-  LET_ :: ACommandTag Client
-  REQ_ :: ACommandTag Agent
-  ACPT_ :: ACommandTag Client
-  RJCT_ :: ACommandTag Client
-  INFO_ :: ACommandTag Agent
-  CON_ :: ACommandTag Agent
-  SUB_ :: ACommandTag Client
-  END_ :: ACommandTag Agent
-  CONNECT_ :: ACommandTag Agent
-  DISCONNECT_ :: ACommandTag Agent
-  DOWN_ :: ACommandTag Agent
-  UP_ :: ACommandTag Agent
-  SWITCH_ :: ACommandTag Agent
-  SEND_ :: ACommandTag Client
-  MID_ :: ACommandTag Agent
-  SENT_ :: ACommandTag Agent
-  MERR_ :: ACommandTag Agent
-  MSG_ :: ACommandTag Agent
-  ACK_ :: ACommandTag Client
-  SWCH_ :: ACommandTag Client
-  OFF_ :: ACommandTag Client
-  DEL_ :: ACommandTag Client
-  DEL_RCVQ_ :: ACommandTag Agent
-  DEL_CONN_ :: ACommandTag Agent
-  DEL_USER_ :: ACommandTag Agent
-  CHK_ :: ACommandTag Client
-  STAT_ :: ACommandTag Agent
-  OK_ :: ACommandTag Agent
-  ERR_ :: ACommandTag Agent
-  SUSPENDED_ :: ACommandTag Agent
-  FRCVD_ :: ACommandTag Agent
-  FRCVERR_ :: ACommandTag Agent
+data APartyCmdTag p = forall e. AEntityI e => APCT (SAEntity e) (ACommandTag p e)
 
-deriving instance Eq (ACommandTag p)
+instance Eq (APartyCmdTag p) where
+  APCT e cmd == APCT e' cmd' = case testEquality e e' of
+    Just Refl -> cmd == cmd'
+    Nothing -> False
 
-deriving instance Show (ACommandTag p)
+deriving instance Show (APartyCmdTag p)
 
-aCommandTag :: ACommand p -> ACommandTag p
+data ACommandTag (p :: AParty) (e :: AEntity) where
+  NEW_ :: ACommandTag Client AEConn
+  INV_ :: ACommandTag Agent AEConn
+  JOIN_ :: ACommandTag Client AEConn
+  CONF_ :: ACommandTag Agent AEConn
+  LET_ :: ACommandTag Client AEConn
+  REQ_ :: ACommandTag Agent AEConn
+  ACPT_ :: ACommandTag Client AEConn
+  RJCT_ :: ACommandTag Client AEConn
+  INFO_ :: ACommandTag Agent AEConn
+  CON_ :: ACommandTag Agent AEConn
+  SUB_ :: ACommandTag Client AEConn
+  END_ :: ACommandTag Agent AEConn
+  CONNECT_ :: ACommandTag Agent AENone
+  DISCONNECT_ :: ACommandTag Agent AENone
+  DOWN_ :: ACommandTag Agent AEConn
+  UP_ :: ACommandTag Agent AEConn
+  SWITCH_ :: ACommandTag Agent AEConn
+  SEND_ :: ACommandTag Client AEConn
+  MID_ :: ACommandTag Agent AEConn
+  SENT_ :: ACommandTag Agent AEConn
+  MERR_ :: ACommandTag Agent AEConn
+  MSG_ :: ACommandTag Agent AEConn
+  ACK_ :: ACommandTag Client AEConn
+  SWCH_ :: ACommandTag Client AEConn
+  OFF_ :: ACommandTag Client AEConn
+  DEL_ :: ACommandTag Client AEConn
+  DEL_RCVQ_ :: ACommandTag Agent AEConn
+  DEL_CONN_ :: ACommandTag Agent AEConn
+  DEL_USER_ :: ACommandTag Agent AENone
+  CHK_ :: ACommandTag Client AEConn
+  STAT_ :: ACommandTag Agent AEConn
+  OK_ :: ACommandTag Agent AEConn
+  ERR_ :: ACommandTag Agent AEConn
+  SUSPENDED_ :: ACommandTag Agent AENone
+  -- XFTP commands and responses
+  RFDONE_ :: ACommandTag Agent AERcvFile
+  RFPROG_ :: ACommandTag Agent AERcvFile
+  RFERR_ :: ACommandTag Agent AERcvFile
+
+deriving instance Eq (ACommandTag p e)
+
+deriving instance Show (ACommandTag p e)
+
+aPartyCmdTag :: APartyCmd p -> APartyCmdTag p
+aPartyCmdTag (APC e cmd) = APCT e $ aCommandTag cmd
+
+aCommandTag :: ACommand p e -> ACommandTag p e
 aCommandTag = \case
   NEW {} -> NEW_
   INV _ -> INV_
@@ -371,8 +429,9 @@ aCommandTag = \case
   OK -> OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
-  FRCVD {} -> FRCVD_
-  FRCVERR {} -> FRCVERR_
+  RFPROG {} -> RFPROG_
+  RFDONE {} -> RFDONE_
+  RFERR {} -> RFERR_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -1219,46 +1278,57 @@ dbCommandP :: Parser ACmd
 dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
 
 instance StrEncoding ACmdTag where
-  strEncode (ACmdTag _ cmd) = strEncode cmd
+  strEncode (ACmdTag _ _ cmd) = strEncode cmd
   strP =
     A.takeTill (== ' ') >>= \case
-      "NEW" -> pure $ ACmdTag SClient NEW_
-      "INV" -> pure $ ACmdTag SAgent INV_
-      "JOIN" -> pure $ ACmdTag SClient JOIN_
-      "CONF" -> pure $ ACmdTag SAgent CONF_
-      "LET" -> pure $ ACmdTag SClient LET_
-      "REQ" -> pure $ ACmdTag SAgent REQ_
-      "ACPT" -> pure $ ACmdTag SClient ACPT_
-      "RJCT" -> pure $ ACmdTag SClient RJCT_
-      "INFO" -> pure $ ACmdTag SAgent INFO_
-      "CON" -> pure $ ACmdTag SAgent CON_
-      "SUB" -> pure $ ACmdTag SClient SUB_
-      "END" -> pure $ ACmdTag SAgent END_
-      "CONNECT" -> pure $ ACmdTag SAgent CONNECT_
-      "DISCONNECT" -> pure $ ACmdTag SAgent DISCONNECT_
-      "DOWN" -> pure $ ACmdTag SAgent DOWN_
-      "UP" -> pure $ ACmdTag SAgent UP_
-      "SWITCH" -> pure $ ACmdTag SAgent SWITCH_
-      "SEND" -> pure $ ACmdTag SClient SEND_
-      "MID" -> pure $ ACmdTag SAgent MID_
-      "SENT" -> pure $ ACmdTag SAgent SENT_
-      "MERR" -> pure $ ACmdTag SAgent MERR_
-      "MSG" -> pure $ ACmdTag SAgent MSG_
-      "ACK" -> pure $ ACmdTag SClient ACK_
-      "SWCH" -> pure $ ACmdTag SClient SWCH_
-      "OFF" -> pure $ ACmdTag SClient OFF_
-      "DEL" -> pure $ ACmdTag SClient DEL_
-      "DEL_RCVQ" -> pure $ ACmdTag SAgent DEL_RCVQ_
-      "DEL_CONN" -> pure $ ACmdTag SAgent DEL_CONN_
-      "DEL_USER" -> pure $ ACmdTag SAgent DEL_USER_
-      "CHK" -> pure $ ACmdTag SClient CHK_
-      "STAT" -> pure $ ACmdTag SAgent STAT_
-      "OK" -> pure $ ACmdTag SAgent OK_
-      "ERR" -> pure $ ACmdTag SAgent ERR_
-      "SUSPENDED" -> pure $ ACmdTag SAgent SUSPENDED_
+      "NEW" -> t NEW_
+      "INV" -> ct INV_
+      "JOIN" -> t JOIN_
+      "CONF" -> ct CONF_
+      "LET" -> t LET_
+      "REQ" -> ct REQ_
+      "ACPT" -> t ACPT_
+      "RJCT" -> t RJCT_
+      "INFO" -> ct INFO_
+      "CON" -> ct CON_
+      "SUB" -> t SUB_
+      "END" -> ct END_
+      "CONNECT" -> at SAENone CONNECT_
+      "DISCONNECT" -> at SAENone DISCONNECT_
+      "DOWN" -> ct DOWN_
+      "UP" -> ct UP_
+      "SWITCH" -> ct SWITCH_
+      "SEND" -> t SEND_
+      "MID" -> ct MID_
+      "SENT" -> ct SENT_
+      "MERR" -> ct MERR_
+      "MSG" -> ct MSG_
+      "ACK" -> t ACK_
+      "SWCH" -> t SWCH_
+      "OFF" -> t OFF_
+      "DEL" -> t DEL_
+      "DEL_RCVQ" -> ct DEL_RCVQ_
+      "DEL_CONN" -> ct DEL_CONN_
+      "DEL_USER" -> at SAENone DEL_USER_
+      "CHK" -> t CHK_
+      "STAT" -> ct STAT_
+      "OK" -> ct OK_
+      "ERR" -> ct ERR_
+      "SUSPENDED" -> at SAENone SUSPENDED_
+      "RFPROG" -> at SAERcvFile RFPROG_
+      "RFDONE" -> at SAERcvFile RFDONE_
+      "RFERR" -> at SAERcvFile RFERR_
       _ -> fail "bad ACmdTag"
+    where
+      t = pure . ACmdTag SClient SAEConn
+      at e = pure . ACmdTag SAgent e
+      ct = at SAEConn
 
-instance APartyI p => StrEncoding (ACommandTag p) where
+instance APartyI p => StrEncoding (APartyCmdTag p) where
+  strEncode (APCT _ cmd) = strEncode cmd
+  strP = (\(ACmdTag _ e t) -> checkParty $ APCT e t) <$?> strP
+
+instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
   strEncode = \case
     NEW_ -> "NEW"
     INV_ -> "INV"
@@ -1294,22 +1364,28 @@ instance APartyI p => StrEncoding (ACommandTag p) where
     OK_ -> "OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
-    FRCVD_ -> "FRCVD"
-    FRCVERR_ -> "FRCVERR"
-  strP = (\(ACmdTag _ t) -> checkParty t) <$?> strP
+    RFPROG_ -> "RFPROG"
+    RFDONE_ -> "RFDONE"
+    RFERR_ -> "RFERR"
+  strP = (\(APCT _ t) -> checkEntity t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
 checkParty x = case testEquality (sAParty @p) (sAParty @p') of
   Just Refl -> Right x
   Nothing -> Left "bad party"
 
+checkEntity :: forall t e e'. (AEntityI e, AEntityI e') => t e' -> Either String (t e)
+checkEntity x = case testEquality (sAEntity @e) (sAEntity @e') of
+  Just Refl -> Right x
+  Nothing -> Left "bad entity"
+
 -- | SMP agent command and response parser
 commandP :: Parser ByteString -> Parser ACmd
 commandP binaryP =
   strP
     >>= \case
-      ACmdTag SClient cmd ->
-        ACmd SClient <$> case cmd of
+      ACmdTag SClient e cmd ->
+        ACmd SClient e <$> case cmd of
           NEW_ -> s (NEW <$> strP_ <*> strP)
           JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
@@ -1322,8 +1398,8 @@ commandP binaryP =
           OFF_ -> pure OFF
           DEL_ -> pure DEL
           CHK_ -> pure CHK
-      ACmdTag SAgent cmd ->
-        ACmd SAgent <$> case cmd of
+      ACmdTag SAgent e cmd ->
+        ACmd SAgent e <$> case cmd of
           INV_ -> s (INV <$> strP)
           CONF_ -> s (CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> binaryP)
           REQ_ -> s (REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> binaryP)
@@ -1346,8 +1422,9 @@ commandP binaryP =
           OK_ -> pure OK
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
-          FRCVD_ -> s (FRCVD <$> A.decimal <* A.space <*> strP)
-          FRCVERR_ -> s (FRCVERR <$> A.decimal <* A.space <*> strP)
+          RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal <* A.space <*> A.decimal)
+          RFDONE_ -> s (RFDONE <$> A.decimal <* A.space <*> strP)
+          RFERR_ -> s (RFERR <$> A.decimal <* A.space <*> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1365,7 +1442,7 @@ parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 
 -- | Serialize SMP agent command.
-serializeCommand :: ACommand p -> ByteString
+serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
   NEW ntfs cMode -> s (NEW_, ntfs, cMode)
   INV cReq -> s (INV_, cReq)
@@ -1401,8 +1478,9 @@ serializeCommand = \case
   ERR e -> s (ERR_, e)
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
-  FRCVD fId fPath -> s (FRCVD_, Str $ bshow fId, fPath)
-  FRCVERR fId e -> s (FRCVERR_, Str $ bshow fId, e)
+  RFPROG fId rcvd total -> s (RFPROG_, Str $ bshow fId, rcvd, total)
+  RFDONE fId fPath -> s (RFDONE_, Str $ bshow fId, fPath)
+  RFERR fId e -> s (RFERR_, Str $ bshow fId, e)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
@@ -1435,52 +1513,55 @@ tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
-tPut h (corrId, connId, command) =
-  liftIO $ tPutRaw h (corrId, connId, serializeCommand command)
+tPut h (corrId, connId, APC _ cmd) =
+  liftIO $ tPutRaw h (corrId, connId, serializeCommand cmd)
 
 -- | Receive client and agent transmissions from TCP connection.
 tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
-    tParseLoadBody t@(corrId, connId, command) = do
+    tParseLoadBody t@(corrId, entId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tConnId t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (corrId, connId, fullCmd)
+      return (corrId, entId, fullCmd)
 
-    fromParty :: ACmd -> Either AgentErrorType (ACommand p)
-    fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
-      Just Refl -> Right cmd
+    fromParty :: ACmd -> Either AgentErrorType (APartyCmd p)
+    fromParty (ACmd (p :: p1) e cmd) = case testEquality party p of
+      Just Refl -> Right $ APC e cmd
       _ -> Left $ CMD PROHIBITED
 
-    tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
-    tConnId (_, connId, _) cmd = case cmd of
-      -- NEW, JOIN and ACPT have optional connId
-      NEW {} -> Right cmd
-      JOIN {} -> Right cmd
-      ACPT {} -> Right cmd
-      -- ERROR response does not always have connId
-      ERR _ -> Right cmd
-      CONNECT {} -> Right cmd
-      DISCONNECT {} -> Right cmd
-      DOWN {} -> Right cmd
-      UP {} -> Right cmd
-      -- other responses must have connId
-      _
-        | B.null connId -> Left $ CMD NO_CONN
-        | otherwise -> Right cmd
+    tConnId :: ARawTransmission -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
+    tConnId (_, entId, _) (APC e cmd) =
+      APC e <$> case cmd of
+        -- NEW, JOIN and ACPT have optional connection ID
+        NEW {} -> Right cmd
+        JOIN {} -> Right cmd
+        ACPT {} -> Right cmd
+        -- ERROR response does not always have connection ID
+        ERR _ -> Right cmd
+        CONNECT {} -> Right cmd
+        DISCONNECT {} -> Right cmd
+        DOWN {} -> Right cmd
+        UP {} -> Right cmd
+        SUSPENDED {} -> Right cmd
+        -- other responses must have connection ID
+        _
+          | B.null entId -> Left $ CMD NO_CONN
+          | otherwise -> Right cmd
 
-    cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
-    cmdWithMsgBody = \case
-      SEND msgFlags body -> SEND msgFlags <$$> getBody body
-      MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-      JOIN ntfs qUri cInfo -> JOIN ntfs qUri <$$> getBody cInfo
-      CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
-      LET confId cInfo -> LET confId <$$> getBody cInfo
-      REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
-      ACPT invId cInfo -> ACPT invId <$$> getBody cInfo
-      INFO cInfo -> INFO <$$> getBody cInfo
-      cmd -> pure $ Right cmd
+    cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
+    cmdWithMsgBody (APC e cmd) =
+      APC e <$$> case cmd of
+        SEND msgFlags body -> SEND msgFlags <$$> getBody body
+        MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
+        JOIN ntfs qUri cInfo -> JOIN ntfs qUri <$$> getBody cInfo
+        CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
+        LET confId cInfo -> LET confId <$$> getBody cInfo
+        REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
+        ACPT invId cInfo -> ACPT invId <$$> getBody cInfo
+        INFO cInfo -> INFO <$$> getBody cInfo
+        _ -> pure $ Right cmd
 
     getBody :: ByteString -> m (Either AgentErrorType ByteString)
     getBody binary =
