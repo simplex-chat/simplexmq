@@ -133,6 +133,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileError,
     updateRcvFileComplete,
     updateRcvFileNoSavePath,
+    updateRcvFileNoTmpPath,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
     getPendingRcvFilesServers,
@@ -1862,6 +1863,11 @@ updateRcvFileNoSavePath db rcvFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET save_path = NULL, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
 
+updateRcvFileNoTmpPath :: DB.Connection -> RcvFileId -> IO ()
+updateRcvFileNoTmpPath db rcvFileId = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
+
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> IO (Maybe RcvFileChunk)
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
   maybeFirstRow toChunk $
@@ -1926,6 +1932,6 @@ getPendingRcvFilesServers db = do
     toServer (host, port, keyHash) = XFTPServer host port keyHash
 
 -- TODO select snd files tmp paths as well
-getTmpFilePaths :: DB.Connection -> IO [FilePath]
+getTmpFilePaths :: DB.Connection -> IO [(RcvFileId, FilePath)]
 getTmpFilePaths db =
-  map fromOnly <$> DB.query db "SELECT tmp_path FROM rcv_files WHERE status IN (?,?) AND tmp_path IS NOT NULL" (RFSComplete, RFSError)
+  DB.query db "SELECT rcv_file_id, tmp_path FROM rcv_files WHERE status IN (?,?) AND tmp_path IS NOT NULL" (RFSComplete, RFSError)

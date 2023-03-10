@@ -1607,7 +1607,9 @@ cleanupManager c = do
     notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", DEL_USER userId)
     deleteTmpPaths = do
       tmpPaths <- withStore' c getTmpFilePaths
-      forM_ tmpPaths removePath
+      forM_ tmpPaths $ \(fId, p) -> do
+        removePath p
+        withStore' c (`updateRcvFileNoTmpPath` fId)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
