@@ -153,8 +153,6 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, savePath, chunks} = do
-      -- currently this check is obsolete, because getNextRcvFileToDecrypt filters by RFSReceived status
-      -- and therefore file can't have savePath here - maybe better to remove this logic altogether
       forM_ savePath $ \p -> do
         removePath p
         withStore' c (`updateRcvFileNoSavePath` rcvFileId)

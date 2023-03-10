@@ -1901,7 +1901,7 @@ getNextRcvFileToDecrypt :: DB.Connection -> IO (Maybe RcvFile)
 getNextRcvFileToDecrypt db = do
   fileId_ :: Maybe RcvFileId <-
     maybeFirstRow fromOnly $
-      DB.query db "SELECT rcv_file_id FROM rcv_files WHERE status = ? ORDER BY created_at ASC LIMIT 1" (Only RFSReceived)
+      DB.query db "SELECT rcv_file_id FROM rcv_files WHERE status IN (?,?) ORDER BY created_at ASC LIMIT 1" (RFSReceived, RFSDecrypting)
   case fileId_ of
     Nothing -> pure Nothing
     Just fileId -> eitherToMaybe <$> getRcvFile db fileId
