@@ -40,7 +40,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (tshow, whenM)
+import Simplex.Messaging.Util (tshow)
 import UnliftIO
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
@@ -84,13 +84,13 @@ runXFTPWorker c srv doWork = do
       nextChunk <- withStore' c (`getNextRcvChunkToDownload` srv)
       case nextChunk of
         Nothing -> noWorkToDo
-        Just RcvFileChunk {rcvFileId, replicas = []} -> workerInternalError c rcvFileId "chunk has no replicas"
-        Just fc@RcvFileChunk {rcvFileId, rcvChunkId, delay, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId} : _} -> do
+        Just RcvFileChunk {rcvFileId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId (Just fileTmpPath) "chunk has no replicas"
+        Just fc@RcvFileChunk {rcvFileId, rcvChunkId, fileTmpPath, delay, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
             downloadFileChunk fc replica
-              `catchError` retryOnError delay' loop (workerInternalError c rcvFileId . show)
+              `catchError` retryOnError delay' loop (workerInternalError c rcvFileId (Just fileTmpPath) . show)
           where
             retryOnError :: Int -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
             retryOnError chunkDelay loop done e = do
@@ -128,8 +128,9 @@ runXFTPWorker c srv doWork = do
         allChunksReceived RcvFile {chunks} =
           all (\RcvFileChunk {replicas} -> any received replicas) chunks
 
-workerInternalError :: AgentMonad m => AgentClient -> RcvFileId -> String -> m ()
-workerInternalError c rcvFileId internalErrStr = do
+workerInternalError :: AgentMonad m => AgentClient -> RcvFileId -> Maybe FilePath -> String -> m ()
+workerInternalError c rcvFileId tmpPath internalErrStr = do
+  forM_ tmpPath removePath
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
   notifyInternalError c rcvFileId internalErrStr
 
@@ -147,8 +148,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       nextFile <- withStore' c getNextRcvFileToDecrypt
       case nextFile of
         Nothing -> noWorkToDo
-        Just f@RcvFile {rcvFileId} ->
-          decryptFile f `catchError` (workerInternalError c rcvFileId . show)
+        Just f@RcvFile {rcvFileId, tmpPath} ->
+          decryptFile f `catchError` (workerInternalError c rcvFileId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, savePath, chunks} = do
@@ -161,7 +162,7 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       path <- decrypt encSize chunkPaths
-      whenM (doesPathExist tmpPath) $ removeDirectoryRecursive tmpPath
+      forM_ tmpPath removePath
       withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
       notify $ FRCVD rcvFileId path
       where

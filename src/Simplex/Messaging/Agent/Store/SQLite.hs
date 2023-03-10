@@ -1768,7 +1768,7 @@ createRcvFile db userId fd@FileDescription {chunks} saveDir tmpPath = do
 getRcvFile :: DB.Connection -> RcvFileId -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
   fd@RcvFile {userId, tmpPath} <- ExceptT getFile
-  chunks <- liftIO $ getChunks userId tmpPath
+  chunks <- maybe (pure []) (liftIO . getChunks userId) tmpPath
   pure (fd {chunks} :: RcvFile)
   where
     getFile :: IO (Either StoreError RcvFile)
@@ -1783,7 +1783,7 @@ getRcvFile db rcvFileId = runExceptT $ do
           |]
           (Only rcvFileId)
       where
-        toFile :: (UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFile
+        toFile :: (UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, Maybe FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFile
         toFile (userId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status) =
           RcvFile {userId, rcvFileId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status, chunks = []}
     getChunks :: UserId -> FilePath -> IO [RcvFileChunk]
@@ -1850,12 +1850,12 @@ updateRcvFileStatus db rcvFileId status = do
 updateRcvFileError :: DB.Connection -> RcvFileId -> String -> IO ()
 updateRcvFileError db rcvFileId errStr = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET error = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (errStr, RFSError, updatedAt, rcvFileId)
+  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, error = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (errStr, RFSError, updatedAt, rcvFileId)
 
 updateRcvFileComplete :: DB.Connection -> RcvFileId -> FilePath -> IO ()
 updateRcvFileComplete db rcvFileId savePath = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET save_path = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (savePath, RFSComplete, updatedAt, rcvFileId)
+  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, save_path = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (savePath, RFSComplete, updatedAt, rcvFileId)
 
 updateRcvFileNoSavePath :: DB.Connection -> RcvFileId -> IO ()
 updateRcvFileNoSavePath db rcvFileId = do
@@ -1928,4 +1928,4 @@ getPendingRcvFilesServers db = do
 -- TODO select snd files tmp paths as well
 getTmpFilePaths :: DB.Connection -> IO [FilePath]
 getTmpFilePaths db =
-  map fromOnly <$> DB.query db "SELECT tmp_path FROM rcv_files WHERE status IN (?,?)" (RFSComplete, RFSError)
+  map fromOnly <$> DB.query db "SELECT tmp_path FROM rcv_files WHERE status IN (?,?) AND tmp_path IS NOT NULL" (RFSComplete, RFSError)

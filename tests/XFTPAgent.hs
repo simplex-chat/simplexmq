@@ -5,8 +5,7 @@
 
 module XFTPAgent where
 
-import AgentTests.FunctionalAPITests (get, runRight_)
-import Control.Concurrent (threadDelay)
+import AgentTests.FunctionalAPITests (get, runRight, runRight_)
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
@@ -14,7 +13,6 @@ import SMPAgentClient (agentCfg, initAgentServers)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), checkParty)
 import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpReceiveFile)
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (FRCVD, FRCVERR), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize)
@@ -86,7 +84,7 @@ testXFTPAgentReceiveRestore = do
   runRight_ $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     void $ xftpReceiveFile rcp 1 fd recipientFiles
-    liftIO $ timeout 1000000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
+    liftIO $ timeout 100000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
   disconnectAgentClient rcp
 
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` True
@@ -121,19 +119,22 @@ testXFTPAgentReceiveCleanup = do
                    fdRcv
                  ]
 
-  -- receive file using agent - should fail with AUTH error
+  -- receive file using agent - should not succeed due to server being down
   rcp <- getSMPAgentClient agentCfg initAgentServers
-  withXFTPServerThreadOn $ \_ -> runRight_ $ do
+  fId <- runRight $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
-    ("", "", FRCVERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- get rcp
-    liftIO $ fId' `shouldBe` fId
+    liftIO $ timeout 100000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
+    pure fId
   disconnectAgentClient rcp
 
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` True
 
-  -- restart agent - should cleanup tmp path
-  void $ getSMPAgentClient agentCfg {initialCleanupDelay = 10000} initAgentServers
-  threadDelay 20000
+  -- receive file using agent - should fail with AUTH error
+  rcp' <- getSMPAgentClient agentCfg initAgentServers
+  withXFTPServerThreadOn $ \_ -> do
+    ("", "", FRCVERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- get rcp'
+    liftIO $ fId' `shouldBe` fId
 
+  -- tmp path should be removed after permanent error
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
