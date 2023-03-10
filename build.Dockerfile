@@ -28,7 +28,7 @@ RUN cabal install
 FROM final
 
 # Install OpenSSL dependency
-RUN apt-get update && apt-get install -y openssl
+RUN apt-get update && apt-get install -y openssl libnuma-dev
 
 # Copy compiled smp-server from build stage
 COPY --from=build /root/.cabal/bin/smp-server /usr/bin/smp-server
