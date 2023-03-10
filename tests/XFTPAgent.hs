@@ -6,6 +6,7 @@
 module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_)
+import Control.Logger.Simple
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
@@ -61,8 +62,11 @@ getFileDescription path = do
   case vfd of
     AVFD fd' -> either (throwError . INTERNAL) pure $ checkParty fd'
 
+logCfgNoLogs :: LogConfig
+logCfgNoLogs = LogConfig {lc_file = Nothing, lc_stderr = False}
+
 testXFTPAgentReceiveRestore :: IO ()
-testXFTPAgentReceiveRestore = do
+testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
   let filePath = senderFiles </> "testfile"
       fdRcv = filePath <> ".xftp" </> "rcv1.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
@@ -103,7 +107,7 @@ testXFTPAgentReceiveRestore = do
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
 
 testXFTPAgentReceiveCleanup :: IO ()
-testXFTPAgentReceiveCleanup = do
+testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   let filePath = senderFiles </> "testfile"
       fdRcv = filePath <> ".xftp" </> "rcv1.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
