@@ -117,7 +117,6 @@ import qualified Database.SQLite.Simple as DB
 import Simplex.FileTransfer.Agent (addXFTPWorker, receiveFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Types (RcvFileId)
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -339,7 +338,7 @@ toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m 
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileEntityId
 xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Activate operations

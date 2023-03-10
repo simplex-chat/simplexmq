@@ -97,6 +97,7 @@ module Simplex.Messaging.Agent.Protocol
     ATransmissionOrError,
     ARawTransmission,
     ConnId,
+    RcvFileEntityId,
     ConfirmationId,
     InvitationId,
     MsgIntegrity (..),
@@ -162,7 +163,6 @@ import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Protocol (XFTPErrorType)
-import Simplex.FileTransfer.Types (RcvFileId)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
@@ -327,9 +327,9 @@ data ACommand (p :: AParty) (e :: AEntity) where
   ERR :: AgentErrorType -> ACommand Agent AEConn
   SUSPENDED :: ACommand Agent AENone
   -- XFTP commands and responses
-  RFPROG :: RcvFileId -> Int -> Int -> ACommand Agent AERcvFile
-  RFDONE :: RcvFileId -> FilePath -> ACommand Agent AERcvFile
-  RFERR :: RcvFileId -> AgentErrorType -> ACommand Agent AERcvFile
+  RFPROG :: Int -> Int -> ACommand Agent AERcvFile
+  RFDONE :: FilePath -> ACommand Agent AERcvFile
+  RFERR :: AgentErrorType -> ACommand Agent AERcvFile
 
 deriving instance Eq (ACommand p e)
 
@@ -880,6 +880,8 @@ connModeT = \case
 -- | SMP agent connection ID.
 type ConnId = ByteString
 
+type RcvFileEntityId = ByteString
+
 type ConfirmationId = ByteString
 
 type InvitationId = ByteString
@@ -1422,9 +1424,9 @@ commandP binaryP =
           OK_ -> pure OK
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
-          RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal <* A.space <*> A.decimal)
-          RFDONE_ -> s (RFDONE <$> A.decimal <* A.space <*> strP)
-          RFERR_ -> s (RFERR <$> A.decimal <* A.space <*> strP)
+          RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal)
+          RFDONE_ -> s (RFDONE <$> strP)
+          RFERR_ -> s (RFERR <$> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1478,9 +1480,9 @@ serializeCommand = \case
   ERR e -> s (ERR_, e)
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
-  RFPROG fId rcvd total -> s (RFPROG_, Str $ bshow fId, rcvd, total)
-  RFDONE fId fPath -> s (RFDONE_, Str $ bshow fId, fPath)
-  RFERR fId e -> s (RFERR_, Str $ bshow fId, e)
+  RFPROG rcvd total -> s (RFPROG_, rcvd, total)
+  RFDONE fPath -> s (RFDONE_, fPath)
+  RFERR e -> s (RFERR_, e)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode

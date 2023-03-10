@@ -11,6 +11,7 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
+import Simplex.Messaging.Agent.Protocol (RcvFileEntityId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -36,8 +37,9 @@ instance Encoding FileHeader where
 type RcvFileId = Int64
 
 data RcvFile = RcvFile
-  { userId :: Int64,
-    rcvFileId :: RcvFileId,
+  { rcvFileId :: RcvFileId,
+    rcvFileEntityId :: RcvFileEntityId,
+    userId :: Int64,
     size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.SbKey,
@@ -79,8 +81,9 @@ instance TextEncoding RcvFileStatus where
     RFSError -> "error"
 
 data RcvFileChunk = RcvFileChunk
-  { userId :: Int64,
-    rcvFileId :: RcvFileId,
+  { rcvFileId :: RcvFileId,
+    rcvFileEntityId :: RcvFileEntityId,
+    userId :: Int64,
     rcvChunkId :: Int64,
     chunkNo :: Int,
     chunkSize :: FileSize Word32,
