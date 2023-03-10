@@ -5,7 +5,7 @@
 
 module XFTPAgent where
 
-import AgentTests.FunctionalAPITests (get, runRight, runRight_)
+import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_)
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
@@ -13,7 +13,7 @@ import SMPAgentClient (agentCfg, initAgentServers)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), checkParty)
 import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpReceiveFile)
-import Simplex.Messaging.Agent.Protocol (ACommand (FRCVD, FRCVERR), AgentErrorType (..))
+import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize)
 import System.FilePath ((</>))
@@ -49,7 +49,7 @@ testXFTPAgentReceive = withXFTPServer $ do
   runRight_ $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
-    ("", "", FRCVD fId' path) <- get rcp
+    ("", "", RFDONE fId' path) <- rfGet rcp
     liftIO $ do
       fId' `shouldBe` fId
       LB.readFile path `shouldReturn` file
@@ -92,7 +92,7 @@ testXFTPAgentReceiveRestore = do
   rcp' <- getSMPAgentClient agentCfg initAgentServers
   withXFTPServerStoreLogOn $ \_ -> do
     -- receive file using agent - should succeed with server up
-    ("", "", FRCVD fId' path) <- get rcp'
+    ("", "", RFDONE fId' path) <- rfGet rcp'
     liftIO $ do
       fId' `shouldBe` 1
       file <- LB.readFile filePath

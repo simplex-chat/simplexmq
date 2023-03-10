@@ -66,8 +66,8 @@ smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
     get h = do
       t@(_, _, cmdStr) <- tGetRaw h
       case parseAll networkCommandP cmdStr of
-        Right (ACmd SAgent CONNECT {}) -> get h
-        Right (ACmd SAgent DISCONNECT {}) -> get h
+        Right (ACmd SAgent _ CONNECT {}) -> get h
+        Right (ACmd SAgent _ DISCONNECT {}) -> get h
         _ -> pure t
 
 runSmpAgentTest :: forall c a. Transport c => (c -> IO a) -> IO a
