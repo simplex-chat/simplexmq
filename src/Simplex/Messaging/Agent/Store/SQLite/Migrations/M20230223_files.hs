@@ -26,7 +26,7 @@ CREATE TABLE rcv_files (
   key BLOB NOT NULL,
   nonce BLOB NOT NULL,
   chunk_size INTEGER NOT NULL,
-  tmp_path TEXT NOT NULL,
+  tmp_path TEXT,
   save_dir TEXT NOT NULL,
   save_path TEXT,
   status TEXT NOT NULL,

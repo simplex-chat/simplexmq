@@ -118,6 +118,7 @@ import Simplex.FileTransfer.Agent (addXFTPWorker, receiveFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId)
+import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock (withLock)
@@ -1597,13 +1598,21 @@ cleanupManager c = do
   threadDelay =<< asks (initialCleanupDelay . config)
   int <- asks (cleanupInterval . config)
   forever $ do
-    void . runExceptT $
+    void . runExceptT $ do
+      deleteConns
+      deleteTmpPaths
+      threadDelay int
+  where
+    deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
-    threadDelay int
-  where
     notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
+    deleteTmpPaths = do
+      tmpPaths <- withStore' c getTmpFilePaths
+      forM_ tmpPaths $ \(fId, p) -> do
+        removePath p
+        withStore' c (`updateRcvFileNoTmpPath` fId)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
