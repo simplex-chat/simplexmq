@@ -338,7 +338,7 @@ toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m 
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileEntityId
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
 xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Activate operations

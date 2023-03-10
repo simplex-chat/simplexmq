@@ -97,7 +97,7 @@ module Simplex.Messaging.Agent.Protocol
     ATransmissionOrError,
     ARawTransmission,
     ConnId,
-    RcvFileEntityId,
+    RcvFileId,
     ConfirmationId,
     InvitationId,
     MsgIntegrity (..),
@@ -880,7 +880,7 @@ connModeT = \case
 -- | SMP agent connection ID.
 type ConnId = ByteString
 
-type RcvFileEntityId = ByteString
+type RcvFileId = ByteString
 
 type ConfirmationId = ByteString
 

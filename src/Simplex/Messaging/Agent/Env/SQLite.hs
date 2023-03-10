@@ -41,7 +41,7 @@ import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
-import Simplex.FileTransfer.Types (SndFileId)
+import Simplex.FileTransfer.Types (DBSndFileId)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (UserId)
@@ -225,7 +225,7 @@ data XFTPAgent = XFTPAgent
     xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
     -- files currently in upload - to throttle upload of other files' chunks,
     -- this optimization can be dropped for the MVP
-    xftpSndFiles :: TVar (Set SndFileId)
+    xftpSndFiles :: TVar (Set DBSndFileId)
   }
 
 newXFTPAgent :: STM XFTPAgent

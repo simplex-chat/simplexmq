@@ -46,7 +46,7 @@ import UnliftIO
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileEntityId
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
 receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath = do
   g <- asks idsDrg
   encPath <- uniqueCombine xftpPath "xftp.encrypted"
@@ -130,13 +130,13 @@ runXFTPWorker c srv doWork = do
         allChunksReceived RcvFile {chunks} =
           all (\RcvFileChunk {replicas} -> any received replicas) chunks
 
-workerInternalError :: AgentMonad m => AgentClient -> RcvFileId -> RcvFileEntityId -> Maybe FilePath -> String -> m ()
+workerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
 workerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
   forM_ tmpPath removePath
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
   notifyInternalError c rcvFileEntityId internalErrStr
 
-notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileEntityId -> String -> m ()
+notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
 notifyInternalError AgentClient {subQ} rcvFileEntityId internalErrStr = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC SAERcvFile $ RFERR $ INTERNAL internalErrStr)
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
