@@ -7,22 +7,17 @@ FROM ubuntu:focal AS build
 RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev llvm-11 llvm-11-dev
 
 # Install ghcup
-RUN curl https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup -o /usr/bin/ghcup && \
-    chmod +x /usr/bin/ghcup
+RUN curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_GHC_VERSION=8.10.7 BOOTSTRAP_HASKELL_CABAL_VERSION=3.6.2.0 sh
 
-# Install ghc
-RUN ghcup install ghc 8.10.7
-# Install cabal
-RUN ghcup install cabal
+# Adjust PATH
+ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
+
 # Set both as default
 RUN ghcup set ghc 8.10.7 && \
     ghcup set cabal
 
 COPY . /project
 WORKDIR /project
-
-# Adjust PATH
-ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
 
 # Compile smp-server
 RUN cabal update
