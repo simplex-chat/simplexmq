@@ -241,17 +241,19 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
                 verbose = False
               }
       liftCLI $ cliSendFile sendOptions
-      (sndDescr, rcvDescrs) <- readDescrs outputDir
+      (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
       notify sndFileEntityId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
-    readDescrs :: FilePath -> m (String, [String])
-    readDescrs outDir = do
-      files <- listDirectory outDir
+    readDescrs :: FilePath -> FilePath -> m (String, [String])
+    readDescrs outDir fileName = do
+      let descrDir = outDir </> (fileName <> ".xftp")
+      files <- listDirectory descrDir
       let (sdFiles, rdFiles) = partition ("snd.xftp.private" `isSuffixOf`) files
-          sdFile = maybe "" L.head (nonEmpty sdFiles)
+          sdFile = maybe "" (\l -> descrDir </> L.head l) (nonEmpty sdFiles)
+          rdFiles' = map (descrDir </>) rdFiles
       -- TODO map files to contents
-      pure (sdFile, rdFiles)
+      pure (sdFile, rdFiles')
     notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
     notify sndFileEntityId cmd = atomically $ writeTBQueue subQ ("", sndFileEntityId, APC (sAEntity @e) cmd)
 
