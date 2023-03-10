@@ -10,7 +10,10 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Client.Main
-  ( xftpClientCLI,
+  ( SendOptions (..),
+    CLIError (..),
+    xftpClientCLI,
+    cliSendFile,
     prepareChunkSizes,
   )
 where

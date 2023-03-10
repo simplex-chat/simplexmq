@@ -5,7 +5,7 @@
 
 module XFTPAgent where
 
-import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_)
+import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_, sfGet)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Data.Bifunctor (first)
@@ -13,7 +13,7 @@ import qualified Data.ByteString as LB
 import SMPAgentClient (agentCfg, initAgentServers)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), checkParty)
-import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpReceiveFile)
+import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpReceiveFile, xftpSendFile)
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize)
@@ -28,6 +28,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should receive file" testXFTPAgentReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
+  xit "should send file using experimental api" testXFTPAgentSendExperimental -- TODO uses default servers (remote)
 
 testXFTPAgentReceive :: IO ()
 testXFTPAgentReceive = withXFTPServer $ do
@@ -143,3 +144,30 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
 
   -- tmp path should be removed after permanent error
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
+
+testXFTPAgentSendExperimental :: IO ()
+-- testXFTPAgentSendExperimental = withXFTPServer $ do
+testXFTPAgentSendExperimental = do
+  -- create random file using cli
+  let filePath = senderFiles </> "testfile"
+  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
+  file <- LB.readFile filePath
+  getFileSize filePath `shouldReturn` mb 17
+
+  -- send file using experimental agent API
+  sndr <- getSMPAgentClient agentCfg initAgentServers
+  runRight_ $ do
+    sfId <- xftpSendFile sndr 1 2 senderFiles filePath
+    ("", sfId', SFDONE _ _) <- sfGet sndr
+    liftIO $ sfId' `shouldBe` sfId
+  let fdRcv = senderFiles </> "testfile.descr/testfile.xftp/rcv1.xftp" -- TODO use from SFDONE
+
+  -- receive file using agent
+  rcp <- getSMPAgentClient agentCfg initAgentServers
+  runRight_ $ do
+    fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
+    rfId <- xftpReceiveFile rcp 1 fd recipientFiles
+    ("", rfId', RFDONE path) <- rfGet rcp
+    liftIO $ do
+      rfId' `shouldBe` rfId
+      LB.readFile path `shouldReturn` file

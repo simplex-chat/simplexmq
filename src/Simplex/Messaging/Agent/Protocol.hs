@@ -98,6 +98,7 @@ module Simplex.Messaging.Agent.Protocol
     ARawTransmission,
     ConnId,
     RcvFileId,
+    SndFileId,
     ConfirmationId,
     InvitationId,
     MsgIntegrity (..),
@@ -249,12 +250,13 @@ instance APartyI Agent where sAParty = SAgent
 
 instance APartyI Client where sAParty = SClient
 
-data AEntity = AEConn | AERcvFile | AENone
+data AEntity = AEConn | AERcvFile | AESndFile | AENone
   deriving (Eq, Show)
 
 data SAEntity :: AEntity -> Type where
   SAEConn :: SAEntity AEConn
   SAERcvFile :: SAEntity AERcvFile
+  SAESndFile :: SAEntity AESndFile
   SAENone :: SAEntity AENone
 
 deriving instance Show (SAEntity e)
@@ -264,6 +266,7 @@ deriving instance Eq (SAEntity e)
 instance TestEquality SAEntity where
   testEquality SAEConn SAEConn = Just Refl
   testEquality SAERcvFile SAERcvFile = Just Refl
+  testEquality SAESndFile SAESndFile = Just Refl
   testEquality SAENone SAENone = Just Refl
   testEquality _ _ = Nothing
 
@@ -272,6 +275,8 @@ class AEntityI (e :: AEntity) where sAEntity :: SAEntity e
 instance AEntityI AEConn where sAEntity = SAEConn
 
 instance AEntityI AERcvFile where sAEntity = SAERcvFile
+
+instance AEntityI AESndFile where sAEntity = SAESndFile
 
 instance AEntityI AENone where sAEntity = SAENone
 
@@ -330,6 +335,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RFPROG :: Int -> Int -> ACommand Agent AERcvFile
   RFDONE :: FilePath -> ACommand Agent AERcvFile
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
+  SFDONE :: String -> [String] -> ACommand Agent AESndFile
 
 deriving instance Eq (ACommand p e)
 
@@ -385,6 +391,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   RFDONE_ :: ACommandTag Agent AERcvFile
   RFPROG_ :: ACommandTag Agent AERcvFile
   RFERR_ :: ACommandTag Agent AERcvFile
+  SFDONE_ :: ACommandTag Agent AESndFile
 
 deriving instance Eq (ACommandTag p e)
 
@@ -432,6 +439,7 @@ aCommandTag = \case
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
+  SFDONE {} -> SFDONE_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -881,6 +889,8 @@ connModeT = \case
 type ConnId = ByteString
 
 type RcvFileId = ByteString
+
+type SndFileId = ByteString
 
 type ConfirmationId = ByteString
 
@@ -1369,6 +1379,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     RFPROG_ -> "RFPROG"
     RFDONE_ -> "RFDONE"
     RFERR_ -> "RFERR"
+    SFDONE_ -> "SFDONE"
   strP = (\(APCT _ t) -> checkEntity t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
@@ -1427,11 +1438,14 @@ commandP binaryP =
           RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal)
           RFDONE_ -> s (RFDONE <$> strP)
           RFERR_ -> s (RFERR <$> strP)
+          SFDONE_ -> s (SFDONE <$> strP <*> rcvDescrs)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
     connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
+    rcvDescrs :: Parser [String]
+    rcvDescrs = strP `A.sepBy'` A.char ',' -- TODO consider separator
     msgMetaP = do
       integrity <- strP
       recipient <- " R=" *> partyMeta A.decimal
@@ -1483,6 +1497,7 @@ serializeCommand = \case
   RFPROG rcvd total -> s (RFPROG_, rcvd, total)
   RFDONE fPath -> s (RFDONE_, fPath)
   RFERR e -> s (RFERR_, e)
+  SFDONE sd rds -> B.unwords [s SFDONE_, s sd, rcvDescrs rds]
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
@@ -1490,6 +1505,8 @@ serializeCommand = \case
     showTs = B.pack . formatISO8601Millis
     connections :: [ConnId] -> ByteString
     connections = B.intercalate "," . map strEncode
+    rcvDescrs :: [String] -> ByteString
+    rcvDescrs = B.intercalate "," . map strEncode -- TODO consider separator
     serializeMsgMeta :: MsgMeta -> ByteString
     serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
       B.unwords

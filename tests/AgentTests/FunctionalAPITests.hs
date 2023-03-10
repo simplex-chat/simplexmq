@@ -22,6 +22,7 @@ module AgentTests.FunctionalAPITests
     get,
     get',
     rfGet,
+    sfGet,
     (##>),
     (=##>),
     pattern Msg,
@@ -75,6 +76,9 @@ get = get' @'AEConn
 
 rfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AERcvFile)
 rfGet = get' @'AERcvFile
+
+sfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AESndFile)
+sfGet = get' @'AESndFile
 
 get' :: forall e m. (MonadIO m, AEntityI e) => AgentClient -> m (AEntityTransmission e)
 get' c = do
