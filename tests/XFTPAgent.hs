@@ -84,7 +84,7 @@ testXFTPAgentReceiveRestore = do
   runRight_ $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     void $ xftpReceiveFile rcp 1 fd recipientFiles
-    liftIO $ timeout 100000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
+    liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
   disconnectAgentClient rcp
 
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` True
@@ -124,7 +124,7 @@ testXFTPAgentReceiveCleanup = do
   fId <- runRight $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
-    liftIO $ timeout 100000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
+    liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure fId
   disconnectAgentClient rcp
 
@@ -133,8 +133,8 @@ testXFTPAgentReceiveCleanup = do
   -- receive file using agent - should fail with AUTH error
   rcp' <- getSMPAgentClient agentCfg initAgentServers
   withXFTPServerThreadOn $ \_ -> do
-    ("", "", RFERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- get rcp'
-    liftIO $ fId' `shouldBe` fId
+    ("", "", RFERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp'
+    fId' `shouldBe` fId
 
   -- tmp path should be removed after permanent error
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
