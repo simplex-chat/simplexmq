@@ -1931,7 +1931,6 @@ getPendingRcvFilesServers db = do
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash
 
--- TODO select snd files tmp paths as well
 getTmpFilePaths :: DB.Connection -> IO [(RcvFileId, FilePath)]
 getTmpFilePaths db =
   DB.query db "SELECT rcv_file_id, tmp_path FROM rcv_files WHERE status IN (?,?) AND tmp_path IS NOT NULL" (RFSComplete, RFSError)
