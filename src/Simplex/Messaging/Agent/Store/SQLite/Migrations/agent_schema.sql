@@ -293,7 +293,8 @@ CREATE TABLE xftp_servers(
   UNIQUE(xftp_host, xftp_port, xftp_key_hash)
 );
 CREATE TABLE rcv_files(
-  rcv_file_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rcv_file_id INTEGER PRIMARY KEY,
+  rcv_file_entity_id BLOB NOT NULL,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   size INTEGER NOT NULL,
   digest BLOB NOT NULL,
@@ -306,7 +307,8 @@ CREATE TABLE rcv_files(
   status TEXT NOT NULL,
   error TEXT,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  UNIQUE(rcv_file_entity_id)
 );
 CREATE INDEX idx_rcv_files_user_id ON rcv_files(user_id);
 CREATE TABLE rcv_file_chunks(

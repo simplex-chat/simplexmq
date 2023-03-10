@@ -117,7 +117,6 @@ import qualified Database.SQLite.Simple as DB
 import Simplex.FileTransfer.Agent (addXFTPWorker, receiveFile)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Types (RcvFileId)
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite

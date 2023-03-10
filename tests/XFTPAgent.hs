@@ -6,6 +6,7 @@
 module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_)
+import Control.Logger.Simple
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString as LB
@@ -49,7 +50,7 @@ testXFTPAgentReceive = withXFTPServer $ do
   runRight_ $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
-    ("", "", RFDONE fId' path) <- rfGet rcp
+    ("", fId', RFDONE path) <- rfGet rcp
     liftIO $ do
       fId' `shouldBe` fId
       LB.readFile path `shouldReturn` file
@@ -61,8 +62,11 @@ getFileDescription path = do
   case vfd of
     AVFD fd' -> either (throwError . INTERNAL) pure $ checkParty fd'
 
+logCfgNoLogs :: LogConfig
+logCfgNoLogs = LogConfig {lc_file = Nothing, lc_stderr = False}
+
 testXFTPAgentReceiveRestore :: IO ()
-testXFTPAgentReceiveRestore = do
+testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
   let filePath = senderFiles </> "testfile"
       fdRcv = filePath <> ".xftp" </> "rcv1.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
@@ -81,10 +85,11 @@ testXFTPAgentReceiveRestore = do
 
   -- receive file using agent - should not succeed due to server being down
   rcp <- getSMPAgentClient agentCfg initAgentServers
-  runRight_ $ do
+  fId <- runRight $ do
     fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
-    void $ xftpReceiveFile rcp 1 fd recipientFiles
+    fId <- xftpReceiveFile rcp 1 fd recipientFiles
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
+    pure fId
   disconnectAgentClient rcp
 
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` True
@@ -92,9 +97,9 @@ testXFTPAgentReceiveRestore = do
   rcp' <- getSMPAgentClient agentCfg initAgentServers
   withXFTPServerStoreLogOn $ \_ -> do
     -- receive file using agent - should succeed with server up
-    ("", "", RFDONE fId' path) <- rfGet rcp'
+    ("", fId', RFDONE path) <- rfGet rcp'
     liftIO $ do
-      fId' `shouldBe` 1
+      fId' `shouldBe` fId
       file <- LB.readFile filePath
       LB.readFile path `shouldReturn` file
 
@@ -102,7 +107,7 @@ testXFTPAgentReceiveRestore = do
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
 
 testXFTPAgentReceiveCleanup :: IO ()
-testXFTPAgentReceiveCleanup = do
+testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   let filePath = senderFiles </> "testfile"
       fdRcv = filePath <> ".xftp" </> "rcv1.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
@@ -133,7 +138,7 @@ testXFTPAgentReceiveCleanup = do
   -- receive file using agent - should fail with AUTH error
   rcp' <- getSMPAgentClient agentCfg initAgentServers
   withXFTPServerThreadOn $ \_ -> do
-    ("", "", RFERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp'
+    ("", fId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp'
     fId' `shouldBe` fId
 
   -- tmp path should be removed after permanent error

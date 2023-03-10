@@ -11,6 +11,7 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
+import Simplex.Messaging.Agent.Protocol (RcvFileId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -33,11 +34,12 @@ instance Encoding FileHeader where
     (fileName, fileExtra) <- smpP
     pure FileHeader {fileName, fileExtra}
 
-type RcvFileId = Int64
+type DBRcvFileId = Int64
 
 data RcvFile = RcvFile
-  { userId :: Int64,
-    rcvFileId :: RcvFileId,
+  { rcvFileId :: DBRcvFileId,
+    rcvFileEntityId :: RcvFileId,
+    userId :: Int64,
     size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.SbKey,
@@ -79,8 +81,9 @@ instance TextEncoding RcvFileStatus where
     RFSError -> "error"
 
 data RcvFileChunk = RcvFileChunk
-  { userId :: Int64,
-    rcvFileId :: RcvFileId,
+  { rcvFileId :: DBRcvFileId,
+    rcvFileEntityId :: RcvFileId,
+    userId :: Int64,
     rcvChunkId :: Int64,
     chunkNo :: Int,
     chunkSize :: FileSize Word32,
@@ -105,11 +108,11 @@ data RcvFileChunkReplica = RcvFileChunkReplica
 
 -- Sending files
 
-type SndFileId = Int64
+type DBSndFileId = Int64
 
 data SndFile = SndFile
   { userId :: Int64,
-    sndFileId :: SndFileId,
+    sndFileId :: DBSndFileId,
     size :: FileSize Int64,
     digest :: FileDigest,
     key :: C.SbKey,
@@ -151,7 +154,7 @@ instance TextEncoding SndFileStatus where
 
 data SndFileChunk = SndFileChunk
   { userId :: Int64,
-    sndFileId :: SndFileId,
+    sndFileId :: DBSndFileId,
     sndChunkId :: Int64,
     chunkNo :: Int,
     chunkSpec :: XFTPChunkSpec,

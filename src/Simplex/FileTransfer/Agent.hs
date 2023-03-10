@@ -46,11 +46,12 @@ import UnliftIO
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m Int64
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
 receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath = do
+  g <- asks idsDrg
   encPath <- uniqueCombine xftpPath "xftp.encrypted"
   createDirectory encPath
-  fId <- withStore' c $ \db -> createRcvFile db userId fd xftpPath encPath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd xftpPath encPath
   forM_ chunks downloadChunk
   pure fId
   where
@@ -85,13 +86,13 @@ runXFTPWorker c srv doWork = do
       nextChunk <- withStore' c (`getNextRcvChunkToDownload` srv)
       case nextChunk of
         Nothing -> noWorkToDo
-        Just RcvFileChunk {rcvFileId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId (Just fileTmpPath) "chunk has no replicas"
-        Just fc@RcvFileChunk {rcvFileId, rcvChunkId, fileTmpPath, delay, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId} : _} -> do
+        Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
+        Just fc@RcvFileChunk {rcvFileId, rcvFileEntityId, rcvChunkId, fileTmpPath, delay, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
             downloadFileChunk fc replica
-              `catchError` retryOnError delay' loop (workerInternalError c rcvFileId (Just fileTmpPath) . show)
+              `catchError` retryOnError delay' loop (workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) . show)
           where
             retryOnError :: Int -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
             retryOnError chunkDelay loop done e = do
@@ -129,14 +130,14 @@ runXFTPWorker c srv doWork = do
         allChunksReceived RcvFile {chunks} =
           all (\RcvFileChunk {replicas} -> any received replicas) chunks
 
-workerInternalError :: AgentMonad m => AgentClient -> RcvFileId -> Maybe FilePath -> String -> m ()
-workerInternalError c rcvFileId tmpPath internalErrStr = do
+workerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
+workerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
   forM_ tmpPath removePath
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
-  notifyInternalError c rcvFileId internalErrStr
+  notifyInternalError c rcvFileEntityId internalErrStr
 
 notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
-notifyInternalError AgentClient {subQ} rcvFileId internalErrStr = atomically $ writeTBQueue subQ ("", "", APC SAERcvFile $ RFERR rcvFileId $ INTERNAL internalErrStr)
+notifyInternalError AgentClient {subQ} rcvFileEntityId internalErrStr = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC SAERcvFile $ RFERR $ INTERNAL internalErrStr)
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c@AgentClient {subQ} doWork = do
@@ -149,11 +150,11 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       nextFile <- withStore' c getNextRcvFileToDecrypt
       case nextFile of
         Nothing -> noWorkToDo
-        Just f@RcvFile {rcvFileId, tmpPath} ->
-          decryptFile f `catchError` (workerInternalError c rcvFileId tmpPath . show)
+        Just f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
+          decryptFile f `catchError` (workerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, key, nonce, tmpPath, saveDir, savePath, chunks} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveDir, savePath, chunks} = do
       forM_ savePath $ \p -> do
         removePath p
         withStore' c (`updateRcvFileNoSavePath` rcvFileId)
@@ -163,10 +164,10 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       path <- decrypt encSize chunkPaths
       forM_ tmpPath removePath
       withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
-      notify $ RFDONE rcvFileId path
+      notify $ RFDONE path
       where
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
-        notify cmd = atomically $ writeTBQueue subQ ("", "", APC (sAEntity @e) cmd)
+        notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
         getChunkPaths (RcvFileChunk {chunkTmpPath = Just path} : cs) = do
