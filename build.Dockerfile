@@ -4,7 +4,7 @@ FROM ubuntu:focal AS build
 ### Build stage
 
 # Install curl and git and smp-related dependencies
-RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev
+RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev llvm-11 llvm-11-dev
 
 # Install ghcup
 RUN curl https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup -o /usr/bin/ghcup && \
