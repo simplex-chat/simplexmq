@@ -133,7 +133,7 @@ testXFTPAgentReceiveCleanup = do
   -- receive file using agent - should fail with AUTH error
   rcp' <- getSMPAgentClient agentCfg initAgentServers
   withXFTPServerThreadOn $ \_ -> do
-    ("", "", FRCVERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- get rcp'
+    ("", "", RFERR fId' (INTERNAL "XFTP {xftpErr = AUTH}")) <- get rcp'
     liftIO $ fId' `shouldBe` fId
 
   -- tmp path should be removed after permanent error
