@@ -36,10 +36,10 @@ testSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTF
 testCbNonce :: C.CbNonce
 testCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
 
-fileDesc :: FileDescription 'FPRecipient
+fileDesc :: FileDescription 'FRecipient
 fileDesc =
   FileDescription
-    { party = SRecipient,
+    { party = SFRecipient,
       size = FileSize $ mb 26,
       digest = FileDigest "abc",
       key = testSbKey,
@@ -93,7 +93,7 @@ fileDesc =
 yamlFileDesc :: YAMLFileDescription
 yamlFileDesc =
   YAMLFileDescription
-    { party = FPRecipient,
+    { party = FRecipient,
       size = "26mb",
       chunkSize = "8mb",
       digest = FileDigest "abc",

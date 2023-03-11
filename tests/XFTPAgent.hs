@@ -51,14 +51,14 @@ testXFTPAgentReceive = withXFTPServer $ do
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
   runRight_ $ do
-    fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
+    fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
     ("", fId', RFDONE path) <- rfGet rcp
     liftIO $ do
       fId' `shouldBe` fId
       LB.readFile path `shouldReturn` file
 
-getFileDescription :: FilePath -> ExceptT AgentErrorType IO (ValidFileDescription 'FPRecipient)
+getFileDescription :: FilePath -> ExceptT AgentErrorType IO (ValidFileDescription 'FRecipient)
 getFileDescription path = do
   fd :: AFileDescription <- ExceptT $ first (INTERNAL . ("Failed to parse file description: " <>)) . strDecode <$> LB.readFile path
   vfd <- liftEither . first INTERNAL $ validateFileDescription fd
@@ -89,7 +89,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
   -- receive file using agent - should not succeed due to server being down
   rcp <- getSMPAgentClient agentCfg initAgentServers
   fId <- runRight $ do
-    fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
+    fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure fId
@@ -130,7 +130,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   -- receive file using agent - should not succeed due to server being down
   rcp <- getSMPAgentClient agentCfg initAgentServers
   fId <- runRight $ do
-    fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
+    fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd recipientFiles
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure fId
@@ -171,7 +171,7 @@ testXFTPAgentSendExperimental = do
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
   runRight_ $ do
-    fd :: ValidFileDescription 'FPRecipient <- getFileDescription fdRcv
+    fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     rfId <- xftpReceiveFile rcp 1 fd recipientFiles
     ("", rfId', RFDONE path) <- rfGet rcp
     liftIO $ do

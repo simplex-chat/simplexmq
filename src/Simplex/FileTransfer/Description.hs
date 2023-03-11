@@ -39,8 +39,6 @@ import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -53,6 +51,8 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.Generics (Generic)
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -226,12 +226,15 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
 
 kb :: Integral a => a -> a
 kb n = 1024 * n
+{-# INLINE kb #-}
 
 mb :: Integral a => a -> a
 mb n = 1024 * kb n
+{-# INLINE mb #-}
 
 gb :: Integral a => a -> a
 gb n = 1024 * mb n
+{-# INLINE gb #-}
 
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack

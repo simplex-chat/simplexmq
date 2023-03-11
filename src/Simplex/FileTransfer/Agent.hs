@@ -57,7 +57,7 @@ import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FPRecipient -> FilePath -> m RcvFileId
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> FilePath -> m RcvFileId
 receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath = do
   g <- asks idsDrg
   encPath <- uniqueCombine xftpPath "xftp.encrypted"

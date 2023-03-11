@@ -268,7 +268,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
   where
-    encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FPRecipient, FileDescription 'FPSender, [XFTPChunkSpec], Int64)
+    encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
     encryptFile fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwError $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
@@ -284,8 +284,8 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
       encrypt fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fdRcv = FileDescription {party = SRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
-          fdSnd = FileDescription {party = SSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
       where
@@ -342,8 +342,8 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     -- M chunks, R replicas, N recipients
     -- rcvReplicas: M[SentFileChunk] -> M * R * N [SentRecipientReplica]
     -- rcvChunks: M * R * N [SentRecipientReplica] -> N[ M[FileChunk] ]
-    createRcvFileDescriptions :: FileDescription 'FPRecipient -> [SentFileChunk] -> [FileDescription 'FPRecipient]
-    createRcvFileDescriptions fd sentChunks = map (\chunks -> (fd :: (FileDescription 'FPRecipient)) {chunks}) rcvChunks
+    createRcvFileDescriptions :: FileDescription 'FRecipient -> [SentFileChunk] -> [FileDescription 'FRecipient]
+    createRcvFileDescriptions fd sentChunks = map (\chunks -> (fd :: (FileDescription 'FRecipient)) {chunks}) rcvChunks
       where
         rcvReplicas :: [SentRecipientReplica]
         rcvReplicas =
@@ -374,7 +374,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
               Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
               _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
             replica = FileChunkReplica {server, replicaId, replicaKey}
-    createSndFileDescription :: FileDescription 'FPSender -> [SentFileChunk] -> FileDescription 'FPSender
+    createSndFileDescription :: FileDescription 'FSender -> [SentFileChunk] -> FileDescription 'FSender
     createSndFileDescription fd sentChunks = fd {chunks = sndChunks}
       where
         sndChunks :: [FileChunk]
@@ -389,7 +389,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
         sndReplicas [] _ _ = []
         sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
-    writeFileDescriptions :: String -> [FileDescription 'FPRecipient] -> FileDescription 'FPSender -> IO ([FilePath], FilePath)
+    writeFileDescriptions :: String -> [FileDescription 'FRecipient] -> FileDescription 'FSender -> IO ([FilePath], FilePath)
     writeFileDescriptions fileName fdRcvs fdSnd = do
       outDir <- uniqueCombine (fromMaybe "." outputDir) (fileName <> ".xftp")
       createDirectoryIfMissing True outDir
@@ -405,7 +405,7 @@ cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
   getFileDescription' fileDescription >>= receiveFile
   where
-    receiveFile :: ValidFileDescription 'FPRecipient -> ExceptT CLIError IO ()
+    receiveFile :: ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
     receiveFile (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
@@ -486,7 +486,7 @@ cliDeleteFile :: DeleteOptions -> ExceptT CLIError IO ()
 cliDeleteFile DeleteOptions {fileDescription, retryCount, yes} = do
   getFileDescription' fileDescription >>= deleteFile
   where
-    deleteFile :: ValidFileDescription 'FPSender -> ExceptT CLIError IO ()
+    deleteFile :: ValidFileDescription 'FSender -> ExceptT CLIError IO ()
     deleteFile (ValidFileDescription FileDescription {chunks}) = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       forM_ chunks $ deleteFileChunk a
@@ -516,8 +516,8 @@ cliFileDescrInfo InfoOptions {fileDescription} = do
       where
         printParty :: IO ()
         printParty = case party of
-          SRecipient -> putStrLn "Recipient file description"
-          SSender -> putStrLn "Sender file description"
+          SFRecipient -> putStrLn "Recipient file description"
+          SFSender -> putStrLn "Sender file description"
 
 strEnc :: StrEncoding a => a -> String
 strEnc = B.unpack . strEncode

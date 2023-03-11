@@ -115,8 +115,8 @@ deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = do
 
 getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either XFTPErrorType (FileRec, C.APublicVerifyKey))
 getFile st party fId = case party of
-  SSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
-  SRecipient ->
+  SFSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
+  SFRecipient ->
     TM.lookup fId (recipients st) >>= \case
       Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
       _ -> pure $ Left AUTH
