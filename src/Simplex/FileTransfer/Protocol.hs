@@ -68,23 +68,23 @@ xftpBlockSize :: Int
 xftpBlockSize = 16384
 
 -- | File protocol clients
-data FileParty = FPRecipient | FPSender
+data FileParty = FRecipient | FSender
   deriving (Eq, Show, Generic)
 
 instance FromJSON FileParty where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "FP"
+  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "F"
 
 instance ToJSON FileParty where
-  toJSON = J.genericToJSON . enumJSON $ dropPrefix "FP"
-  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "FP"
+  toJSON = J.genericToJSON . enumJSON $ dropPrefix "F"
+  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "F"
 
 data SFileParty :: FileParty -> Type where
-  SRecipient :: SFileParty FPRecipient
-  SSender :: SFileParty FPSender
+  SFRecipient :: SFileParty FRecipient
+  SFSender :: SFileParty FSender
 
 instance TestEquality SFileParty where
-  testEquality SRecipient SRecipient = Just Refl
-  testEquality SSender SSender = Just Refl
+  testEquality SFRecipient SFRecipient = Just Refl
+  testEquality SFSender SFSender = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Eq (SFileParty p)
@@ -95,28 +95,28 @@ data AFileParty = forall p. FilePartyI p => AFP (SFileParty p)
 
 toFileParty :: SFileParty p -> FileParty
 toFileParty = \case
-  SRecipient -> FPRecipient
-  SSender -> FPSender
+  SFRecipient -> FRecipient
+  SFSender -> FSender
 
 aFileParty :: FileParty -> AFileParty
 aFileParty = \case
-  FPRecipient -> AFP SRecipient
-  FPSender -> AFP SSender
+  FRecipient -> AFP SFRecipient
+  FSender -> AFP SFSender
 
 class FilePartyI (p :: FileParty) where sFileParty :: SFileParty p
 
-instance FilePartyI FPRecipient where sFileParty = SRecipient
+instance FilePartyI FRecipient where sFileParty = SFRecipient
 
-instance FilePartyI FPSender where sFileParty = SSender
+instance FilePartyI FSender where sFileParty = SFSender
 
 data FileCommandTag (p :: FileParty) where
-  FNEW_ :: FileCommandTag FPSender
-  FADD_ :: FileCommandTag FPSender
-  FPUT_ :: FileCommandTag FPSender
-  FDEL_ :: FileCommandTag FPSender
-  FGET_ :: FileCommandTag FPRecipient
-  FACK_ :: FileCommandTag FPRecipient
-  PING_ :: FileCommandTag FPRecipient
+  FNEW_ :: FileCommandTag FSender
+  FADD_ :: FileCommandTag FSender
+  FPUT_ :: FileCommandTag FSender
+  FDEL_ :: FileCommandTag FSender
+  FGET_ :: FileCommandTag FRecipient
+  FACK_ :: FileCommandTag FRecipient
+  PING_ :: FileCommandTag FRecipient
 
 deriving instance Show (FileCommandTag p)
 
@@ -139,13 +139,13 @@ instance Encoding FileCmdTag where
 
 instance ProtocolMsgTag FileCmdTag where
   decodeTag = \case
-    "FNEW" -> Just $ FCT SSender FNEW_
-    "FADD" -> Just $ FCT SSender FADD_
-    "FPUT" -> Just $ FCT SSender FPUT_
-    "FDEL" -> Just $ FCT SSender FDEL_
-    "FGET" -> Just $ FCT SRecipient FGET_
-    "FACK" -> Just $ FCT SRecipient FACK_
-    "PING" -> Just $ FCT SRecipient PING_
+    "FNEW" -> Just $ FCT SFSender FNEW_
+    "FADD" -> Just $ FCT SFSender FADD_
+    "FPUT" -> Just $ FCT SFSender FPUT_
+    "FDEL" -> Just $ FCT SFSender FDEL_
+    "FGET" -> Just $ FCT SFRecipient FGET_
+    "FACK" -> Just $ FCT SFRecipient FACK_
+    "PING" -> Just $ FCT SFRecipient PING_
     _ -> Nothing
 
 instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
@@ -155,19 +155,19 @@ instance Protocol XFTPErrorType FileResponse where
   type ProtoCommand FileResponse = FileCmd
   type ProtoType FileResponse = 'PXFTP
   protocolClientHandshake = ntfClientHandshake
-  protocolPing = FileCmd SRecipient PING
+  protocolPing = FileCmd SFRecipient PING
   protocolError = \case
     FRErr e -> Just e
     _ -> Nothing
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> Maybe BasicAuth -> FileCommand FPSender
-  FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand FPSender
-  FPUT :: FileCommand FPSender
-  FDEL :: FileCommand FPSender
-  FGET :: RcvPublicDhKey -> FileCommand FPRecipient
-  FACK :: FileCommand FPRecipient
-  PING :: FileCommand FPRecipient
+  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> Maybe BasicAuth -> FileCommand FSender
+  FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand FSender
+  FPUT :: FileCommand FSender
+  FDEL :: FileCommand FSender
+  FGET :: RcvPublicDhKey -> FileCommand FRecipient
+  FACK :: FileCommand FRecipient
+  PING :: FileCommand FRecipient
 
 deriving instance Show (FileCommand p)
 
@@ -222,14 +222,14 @@ instance ProtocolEncoding XFTPErrorType FileCmd where
   encodeProtocol _v (FileCmd _ c) = encodeProtocol _v c
 
   protocolP _v = \case
-    FCT SSender tag ->
-      FileCmd SSender <$> case tag of
+    FCT SFSender tag ->
+      FileCmd SFSender <$> case tag of
         FNEW_ -> FNEW <$> _smpP <*> smpP <*> smpP
         FADD_ -> FADD <$> _smpP
         FPUT_ -> pure FPUT
         FDEL_ -> pure FDEL
-    FCT SRecipient tag ->
-      FileCmd SRecipient <$> case tag of
+    FCT SFRecipient tag ->
+      FileCmd SFRecipient <$> case tag of
         FGET_ -> FGET <$> _smpP
         FACK_ -> pure FACK
         PING_ -> pure PING

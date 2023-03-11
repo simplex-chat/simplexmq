@@ -1738,7 +1738,7 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
   firstRow fromOnly SEXFTPServerNotFound $
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FPRecipient -> FilePath -> FilePath -> IO (Either StoreError RcvFileId)
+createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> IO (Either StoreError RcvFileId)
 createRcvFile db gVar userId fd@FileDescription {chunks} saveDir tmpPath = runExceptT $ do
   (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile fd
   liftIO $
@@ -1747,7 +1747,7 @@ createRcvFile db gVar userId fd@FileDescription {chunks} saveDir tmpPath = runEx
       forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertReplica rno replica chunkId
   pure rcvFileEntityId
   where
-    insertRcvFile :: FileDescription 'FPRecipient -> IO (Either StoreError (RcvFileId, DBRcvFileId))
+    insertRcvFile :: FileDescription 'FRecipient -> IO (Either StoreError (RcvFileId, DBRcvFileId))
     insertRcvFile FileDescription {size, digest, key, nonce, chunkSize} = runExceptT $ do
       rcvFileEntityId <- ExceptT $
         createWithRandomId gVar $ \rcvFileEntityId ->

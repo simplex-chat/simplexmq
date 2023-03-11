@@ -201,8 +201,8 @@ data VerificationResult = VRVerified XFTPRequest | VRFailed
 verifyXFTPTransmission :: Maybe C.ASignature -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission sig_ signed fId cmd =
   case cmd of
-    FileCmd SSender (FNEW file rcps auth) -> pure $ XFTPReqNew file rcps auth `verifyWith` sndKey file
-    FileCmd SRecipient PING -> pure $ VRVerified XFTPReqPing
+    FileCmd SFSender (FNEW file rcps auth) -> pure $ XFTPReqNew file rcps auth `verifyWith` sndKey file
+    FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
     FileCmd party _ -> verifyCmd party
   where
     verifyCmd :: SFileParty p -> M VerificationResult
