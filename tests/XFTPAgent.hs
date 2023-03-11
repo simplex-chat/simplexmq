@@ -59,11 +59,8 @@ testXFTPAgentReceive = withXFTPServer $ do
       LB.readFile path `shouldReturn` file
 
 getFileDescription :: FilePath -> ExceptT AgentErrorType IO (ValidFileDescription 'FRecipient)
-getFileDescription path = do
-  fd :: AFileDescription <- ExceptT $ first (INTERNAL . ("Failed to parse file description: " <>)) . strDecode <$> LB.readFile path
-  vfd <- liftEither . first INTERNAL $ validateFileDescription fd
-  case vfd of
-    AVFD fd' -> either (throwError . INTERNAL) pure $ checkParty fd'
+getFileDescription path =
+  ExceptT $ first (INTERNAL . ("Failed to parse file description: " <>)) . strDecode <$> LB.readFile path
 
 logCfgNoLogs :: LogConfig
 logCfgNoLogs = LogConfig {lc_file = Nothing, lc_stderr = False}

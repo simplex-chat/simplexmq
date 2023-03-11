@@ -458,7 +458,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
             throwError $ CLIError "Error decrypting file: incorrect auth tag"
           pure path
     readChunks :: [FilePath] -> IO LB.ByteString
-    readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) LB.empty
+    readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
     {-# NOINLINE readChunks #-}
     getFilePath :: String -> ExceptT CLIError IO FilePath
     getFilePath name =
@@ -523,9 +523,8 @@ strEnc :: StrEncoding a => a -> String
 strEnc = B.unpack . strEncode
 
 getFileDescription :: FilePath -> ExceptT CLIError IO AValidFileDescription
-getFileDescription path = do
-  fd <- ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile path
-  liftEither . first CLIError $ validateFileDescription fd
+getFileDescription path =
+  ExceptT $ first (CLIError . ("Failed to parse file description: " <>)) . strDecode <$> B.readFile path
 
 getFileDescription' :: FilePartyI p => FilePath -> ExceptT CLIError IO (ValidFileDescription p)
 getFileDescription' path =

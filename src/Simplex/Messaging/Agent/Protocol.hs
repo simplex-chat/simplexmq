@@ -164,7 +164,8 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Simplex.FileTransfer.Protocol (XFTPErrorType)
+import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
@@ -338,7 +339,8 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RFPROG :: Int -> Int -> ACommand Agent AERcvFile
   RFDONE :: FilePath -> ACommand Agent AERcvFile
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
-  SFDONE :: String -> [String] -> ACommand Agent AESndFile
+  SFPROG :: Int -> Int -> ACommand Agent AESndFile
+  SFDONE :: FileDescription 'FSender -> [FileDescription 'FRecipient] -> ACommand Agent AESndFile
 
 deriving instance Eq (ACommand p e)
 
@@ -394,6 +396,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   RFDONE_ :: ACommandTag Agent AERcvFile
   RFPROG_ :: ACommandTag Agent AERcvFile
   RFERR_ :: ACommandTag Agent AERcvFile
+  SFPROG_ :: ACommandTag Agent AESndFile
   SFDONE_ :: ACommandTag Agent AESndFile
 
 deriving instance Eq (ACommandTag p e)
@@ -442,6 +445,7 @@ aCommandTag = \case
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
+  SFPROG {} -> SFPROG_
   SFDONE {} -> SFDONE_
 
 data QueueDirection = QDRcv | QDSnd
@@ -1333,6 +1337,7 @@ instance StrEncoding ACmdTag where
       "RFPROG" -> at SAERcvFile RFPROG_
       "RFDONE" -> at SAERcvFile RFDONE_
       "RFERR" -> at SAERcvFile RFERR_
+      "SFPROG" -> at SAESndFile SFPROG_
       "SFDONE" -> at SAESndFile SFDONE_
       _ -> fail "bad ACmdTag"
     where
@@ -1384,6 +1389,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     RFPROG_ -> "RFPROG"
     RFDONE_ -> "RFDONE"
     RFERR_ -> "RFERR"
+    SFPROG_ -> "SFPROG"
     SFDONE_ -> "SFDONE"
   strP = (\(APCT _ t) -> checkEntity t) <$?> strP
 
@@ -1443,14 +1449,19 @@ commandP binaryP =
           RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal)
           RFDONE_ -> s (RFDONE <$> strP)
           RFERR_ -> s (RFERR <$> strP)
-          SFDONE_ -> s (SFDONE <$> strP <*> rcvDescrs)
+          SFPROG_ -> s (SFPROG <$> A.decimal <* A.space <*> A.decimal)
+          SFDONE_ -> s (sfDone . safeDecodeUtf8 <$?> binaryP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
     connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
-    rcvDescrs :: Parser [String]
-    rcvDescrs = strP `A.sepBy'` A.char ',' -- TODO consider separator
+    sfDone :: Text -> Either String (ACommand 'Agent 'AESndFile)
+    sfDone t =
+      let ds = T.splitOn fdSeparator t
+       in case ds of
+            [] -> Left "no sender file description"
+            sd : rds -> SFDONE <$> strDecode (encodeUtf8 sd) <*> mapM (strDecode . encodeUtf8) rds
     msgMetaP = do
       integrity <- strP
       recipient <- " R=" *> partyMeta A.decimal
@@ -1502,7 +1513,8 @@ serializeCommand = \case
   RFPROG rcvd total -> s (RFPROG_, rcvd, total)
   RFDONE fPath -> s (RFDONE_, fPath)
   RFERR e -> s (RFERR_, e)
-  SFDONE sd rds -> B.unwords [s SFDONE_, s sd, rcvDescrs rds]
+  SFPROG sent total -> s (SFPROG_, sent, total)
+  SFDONE sd rds -> B.unwords [s SFDONE_, serializeBinary (sfDone sd rds)]
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
@@ -1510,8 +1522,7 @@ serializeCommand = \case
     showTs = B.pack . formatISO8601Millis
     connections :: [ConnId] -> ByteString
     connections = B.intercalate "," . map strEncode
-    rcvDescrs :: [String] -> ByteString
-    rcvDescrs = B.intercalate "," . map strEncode -- TODO consider separator
+    sfDone sd rds = B.intercalate fdSeparator $ strEncode sd : map strEncode rds
     serializeMsgMeta :: MsgMeta -> ByteString
     serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
       B.unwords

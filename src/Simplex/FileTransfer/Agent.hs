@@ -29,6 +29,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List (isSuffixOf, partition)
@@ -36,7 +37,7 @@ import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), FilePartyI)
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -47,9 +48,10 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (tshow)
+import Simplex.Messaging.Util (liftIOEither, tshow)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -185,9 +187,10 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
           pure $ path : ps
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
+        -- TODO refactor with decrypt in CLI, streaming decryption
         decrypt :: Int64 -> [FilePath] -> m FilePath
         decrypt encSize chunkPaths = do
-          lazyChunks <- readChunks chunkPaths
+          lazyChunks <- liftIO $ readChunks chunkPaths
           (authOk, f) <- liftEither . first cryptoError $ LC.sbDecryptTailTag key nonce (encSize - authTagSize) lazyChunks
           let (fileHdr, f') = LB.splitAt 1024 f
           -- withFile encPath ReadMode $ \r -> do
@@ -204,14 +207,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
                 removeFile path
                 throwError $ INTERNAL "Error decrypting file: incorrect auth tag"
               pure path
-        readChunks :: [FilePath] -> m LB.ByteString
-        readChunks =
-          foldM
-            ( \s path -> do
-                chunk <- liftIO $ LB.readFile path
-                pure $ s <> chunk
-            )
-            LB.empty
+        readChunks :: [FilePath] -> IO LB.ByteString
+        readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
 
 sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
 sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath = do
@@ -244,15 +241,16 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
       notify sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
-    readDescrs :: FilePath -> FilePath -> m (String, [String])
+    readDescrs :: FilePath -> FilePath -> m (FileDescription 'FSender, [FileDescription 'FRecipient])
     readDescrs outDir fileName = do
       let descrDir = outDir </> (fileName <> ".xftp")
       files <- listDirectory descrDir
       let (sdFiles, rdFiles) = partition ("snd.xftp.private" `isSuffixOf`) files
           sdFile = maybe "" (\l -> descrDir </> L.head l) (nonEmpty sdFiles)
           rdFiles' = map (descrDir </>) rdFiles
-      -- TODO map files to contents
-      pure (sdFile, rdFiles')
+      (,) <$> readDescr sdFile <*> mapM readDescr rdFiles'
+    readDescr :: FilePartyI p => FilePath -> m (FileDescription p)
+    readDescr f = liftIOEither $ first INTERNAL . strDecode <$> B.readFile f
     notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
     notify sndFileId cmd = atomically $ writeTBQueue subQ ("", sndFileId, APC (sAEntity @e) cmd)
 
