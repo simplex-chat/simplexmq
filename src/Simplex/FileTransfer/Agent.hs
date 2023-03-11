@@ -44,7 +44,6 @@ import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
@@ -217,14 +216,14 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
 sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
 sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath = do
   g <- asks idsDrg
-  sndFileEntityId <- liftIO $ randomId g 12
-  void $ forkIO $ sendCLI sndFileEntityId
-  pure sndFileEntityId
+  sndFileId <- liftIO $ randomId g 12
+  void $ forkIO $ sendCLI sndFileId
+  pure sndFileId
   where
     randomId :: TVar ChaChaDRG -> Int -> IO ByteString
     randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
     sendCLI :: SndFileId -> m ()
-    sendCLI sndFileEntityId = do
+    sendCLI sndFileId = do
       let fileName = takeFileName filePath
       outputDir <- uniqueCombine xftpPath (fileName <> ".descr")
       createDirectory outputDir
@@ -242,7 +241,7 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
               }
       liftCLI $ cliSendFile sendOptions
       (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
-      notify sndFileEntityId $ SFDONE sndDescr rcvDescrs
+      notify sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
     readDescrs :: FilePath -> FilePath -> m (String, [String])
@@ -255,7 +254,7 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
       -- TODO map files to contents
       pure (sdFile, rdFiles')
     notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
-    notify sndFileEntityId cmd = atomically $ writeTBQueue subQ ("", sndFileEntityId, APC (sAEntity @e) cmd)
+    notify sndFileId cmd = atomically $ writeTBQueue subQ ("", sndFileId, APC (sAEntity @e) cmd)
 
 -- _sendFile :: AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
 _sendFile :: AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId

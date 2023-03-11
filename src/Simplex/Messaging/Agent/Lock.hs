@@ -14,7 +14,7 @@ createLock :: STM Lock
 createLock = newEmptyTMVar
 {-# INLINE createLock #-}
 
-withLock :: MonadUnliftIO m => TMVar String -> String -> m a -> m a
+withLock :: MonadUnliftIO m => Lock -> String -> m a -> m a
 withLock lock name =
   E.bracket_
     (atomically $ putTMVar lock name)

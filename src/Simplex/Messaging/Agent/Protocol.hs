@@ -104,6 +104,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
+    UserId,
     ACorrId,
     AgentMsgId,
     NotificationsMode (..),
@@ -224,6 +225,8 @@ type ATransmission p = (ACorrId, EntityId, APartyCmd p)
 -- | SMP agent protocol transmission or transmission error.
 type ATransmissionOrError p = (ACorrId, EntityId, Either AgentErrorType (APartyCmd p))
 
+type UserId = Int64
+
 type ACorrId = ByteString
 
 -- | SMP agent protocol participants.
@@ -311,8 +314,8 @@ data ACommand (p :: AParty) (e :: AEntity) where
   END :: ACommand Agent AEConn
   CONNECT :: AProtocolType -> TransportHost -> ACommand Agent AENone
   DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent AENone
-  DOWN :: SMPServer -> [ConnId] -> ACommand Agent AEConn
-  UP :: SMPServer -> [ConnId] -> ACommand Agent AEConn
+  DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
+  UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
   SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> ACommand Agent AEConn
@@ -367,8 +370,8 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   END_ :: ACommandTag Agent AEConn
   CONNECT_ :: ACommandTag Agent AENone
   DISCONNECT_ :: ACommandTag Agent AENone
-  DOWN_ :: ACommandTag Agent AEConn
-  UP_ :: ACommandTag Agent AEConn
+  DOWN_ :: ACommandTag Agent AENone
+  UP_ :: ACommandTag Agent AENone
   SWITCH_ :: ACommandTag Agent AEConn
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
@@ -1305,10 +1308,10 @@ instance StrEncoding ACmdTag where
       "CON" -> ct CON_
       "SUB" -> t SUB_
       "END" -> ct END_
-      "CONNECT" -> at SAENone CONNECT_
-      "DISCONNECT" -> at SAENone DISCONNECT_
-      "DOWN" -> ct DOWN_
-      "UP" -> ct UP_
+      "CONNECT" -> nt CONNECT_
+      "DISCONNECT" -> nt DISCONNECT_
+      "DOWN" -> nt DOWN_
+      "UP" -> nt UP_
       "SWITCH" -> ct SWITCH_
       "SEND" -> t SEND_
       "MID" -> ct MID_
@@ -1321,20 +1324,22 @@ instance StrEncoding ACmdTag where
       "DEL" -> t DEL_
       "DEL_RCVQ" -> ct DEL_RCVQ_
       "DEL_CONN" -> ct DEL_CONN_
-      "DEL_USER" -> at SAENone DEL_USER_
+      "DEL_USER" -> nt DEL_USER_
       "CHK" -> t CHK_
       "STAT" -> ct STAT_
       "OK" -> ct OK_
       "ERR" -> ct ERR_
-      "SUSPENDED" -> at SAENone SUSPENDED_
+      "SUSPENDED" -> nt SUSPENDED_
       "RFPROG" -> at SAERcvFile RFPROG_
       "RFDONE" -> at SAERcvFile RFDONE_
       "RFERR" -> at SAERcvFile RFERR_
+      "SFDONE" -> at SAESndFile SFDONE_
       _ -> fail "bad ACmdTag"
     where
       t = pure . ACmdTag SClient SAEConn
       at e = pure . ACmdTag SAgent e
       ct = at SAEConn
+      nt = at SAENone
 
 instance APartyI p => StrEncoding (APartyCmdTag p) where
   strEncode (APCT _ cmd) = strEncode cmd

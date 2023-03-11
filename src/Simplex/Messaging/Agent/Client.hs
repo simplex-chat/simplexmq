@@ -441,8 +441,8 @@ reconnectSMPClient c tSess@(_, srv, _) =
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       mapM_ (throwError . snd) $ listToMaybe tempErrs
-    notifySub :: ConnId -> ACommand 'Agent 'AEConn -> IO ()
-    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC SAEConn cmd)
+    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
+    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfTransportSession -> m NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = do

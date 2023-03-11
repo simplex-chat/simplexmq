@@ -44,7 +44,6 @@ import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConf
 import Simplex.FileTransfer.Types (DBSndFileId)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
