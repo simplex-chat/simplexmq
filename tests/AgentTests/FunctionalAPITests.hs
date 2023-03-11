@@ -23,6 +23,7 @@ module AgentTests.FunctionalAPITests
     get',
     rfGet,
     sfGet,
+    nGet,
     (##>),
     (=##>),
     pattern Msg,

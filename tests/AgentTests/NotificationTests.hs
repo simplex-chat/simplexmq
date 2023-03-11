@@ -9,7 +9,7 @@
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
-import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, makeConnection, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
+import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad.Except
 import qualified Data.Aeson as J
@@ -466,12 +466,12 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
     pure (aliceId, bobId)
 
   runRight_ @AgentErrorType $ do
-    get alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
-    get bob =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
+    nGet alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+    nGet bob =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
 
   withSmpServerStoreLogOn t testPort $ \threadId -> runRight_ $ do
-    get alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
-    get bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
+    nGet alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
+    nGet bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
     liftIO $ threadDelay 1000000
     5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT 5)
