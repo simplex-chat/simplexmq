@@ -92,18 +92,30 @@ tGetAgent = tGetAgent'
 
 tGetAgent' :: forall c e. (Transport c, AEntityI e) => c -> IO (AEntityTransmissionOrError 'Agent e)
 tGetAgent' h = do
-  (corrId, connId, cmdOrErr) <- tGet SAgent h
+  (corrId, connId, cmdOrErr) <- pGetAgent h
   case cmdOrErr of
-    Right (APC _ CONNECT {}) -> tGetAgent' h
-    Right (APC _ DISCONNECT {}) -> tGetAgent' h
     Right (APC e cmd) -> case testEquality e (sAEntity @e) of
       Just Refl -> pure (corrId, connId, Right cmd)
       _ -> error $ "unexpected command " <> show cmd
     Left err -> pure (corrId, connId, Left err)
 
+pGetAgent :: forall c. Transport c => c -> IO (ATransmissionOrError 'Agent)
+pGetAgent h = do
+  (corrId, connId, cmdOrErr) <- tGet SAgent h
+  case cmdOrErr of
+    Right (APC _ CONNECT {}) -> pGetAgent h
+    Right (APC _ DISCONNECT {}) -> pGetAgent h
+    cmd -> pure (corrId, connId, cmd)
+
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
 (<#:) = tGetAgent
+
+(<#:?) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
+(<#:?) = pGetAgent
+
+(<#:.) :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AENone)
+(<#:.) = tGetAgent'
 
 -- | send transmission `t` to handle `h` and get response
 (#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
@@ -119,7 +131,7 @@ action #> (corrId, connId, cmd) = action `shouldReturn` (corrId, connId, Right c
 (=#>) :: IO (AEntityTransmissionOrError 'Agent 'AEConn) -> (AEntityTransmission 'Agent 'AEConn -> Bool) -> Expectation
 action =#> p = action >>= (`shouldSatisfy` p . correctTransmission)
 
-correctTransmission :: AEntityTransmissionOrError p e -> AEntityTransmission p e
+correctTransmission :: (ACorrId, ConnId, Either AgentErrorType cmd) -> (ACorrId, ConnId, cmd)
 correctTransmission (corrId, connId, cmdOrErr) = case cmdOrErr of
   Right cmd -> (corrId, connId, cmd)
   Left e -> error $ show e
@@ -128,9 +140,15 @@ correctTransmission (corrId, connId, cmdOrErr) = case cmdOrErr of
 (<#) :: Transport c => c -> AEntityTransmission 'Agent 'AEConn -> Expectation
 h <# (corrId, connId, cmd) = (h <#:) `shouldReturn` (corrId, connId, Right cmd)
 
+(<#.) :: Transport c => c -> AEntityTransmission 'Agent 'AENone -> Expectation
+h <#. (corrId, connId, cmd) = (h <#:.) `shouldReturn` (corrId, connId, Right cmd)
+
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Transport c => c -> (AEntityTransmission 'Agent 'AEConn -> Bool) -> Expectation
 h <#= p = (h <#:) >>= (`shouldSatisfy` p . correctTransmission)
+
+(<#=?) :: Transport c => c -> (ATransmission 'Agent -> Bool) -> Expectation
+h <#=? p = (h <#:?) >>= (`shouldSatisfy` p . correctTransmission)
 
 -- | test that nothing is delivered to handle `h` during 10ms
 (#:#) :: Transport c => c -> String -> Expectation
@@ -141,7 +159,7 @@ h #:# err = tryGet `shouldReturn` ()
         Just _ -> error err
         _ -> return ()
 
-pattern Msg :: MsgBody -> ACommand 'Agent 'AEConn
+pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
@@ -300,7 +318,7 @@ testSubscrNotification t (server, _) client = do
   client #: ("1", "conn1", "NEW T INV") =#> \case ("1", "conn1", INV {}) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
-  client <# ("", "", DOWN testSMPServer ["conn1"])
+  client <#. ("", "", DOWN testSMPServer ["conn1"])
   withSmpServer (ATransport t) $
     client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
@@ -314,15 +332,15 @@ testMsgDeliveryServerRestart t alice bob = do
     alice #: ("11", "bob", "ACK 4") #> ("11", "bob", OK)
     alice #:# "nothing else delivered before the server is killed"
 
-  let server = (SMPServer "localhost" testPort2 testKeyHash)
-  alice <# ("", "", DOWN server ["bob"])
+  let server = SMPServer "localhost" testPort2 testKeyHash
+  alice <#. ("", "", DOWN server ["bob"])
   bob #: ("2", "alice", "SEND F 11\nhello again") #> ("2", "alice", MID 5)
   bob #:# "nothing else delivered before the server is restarted"
   alice #:# "nothing else delivered before the server is restarted"
 
   withServer $ do
     bob <# ("", "alice", SENT 5)
-    alice <# ("", "", UP server ["bob"])
+    alice <#. ("", "", UP server ["bob"])
     alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
     alice #: ("12", "bob", "ACK 5") #> ("12", "bob", OK)
 
@@ -337,8 +355,8 @@ testServerConnectionAfterError t _ = do
       withServer $ do
         connect (bob, "bob") (alice, "alice")
 
-      bob <# ("", "", DOWN server ["alice"])
-      alice <# ("", "", DOWN server ["bob"])
+      bob <#. ("", "", DOWN server ["alice"])
+      alice <#. ("", "", DOWN server ["bob"])
       alice #: ("1", "bob", "SEND F 5\nhello") #> ("1", "bob", MID 4)
       alice #:# "nothing else delivered before the server is restarted"
       bob #:# "nothing else delivered before the server is restarted"
@@ -348,10 +366,10 @@ testServerConnectionAfterError t _ = do
       bob #: ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
       alice #: ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
       withServer $ do
-        alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
-        alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
-        bob <#= \case ("", "alice", Msg "hello") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
-        bob <#= \case ("", "alice", Msg "hello") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
+        alice <#=? \case ("", "bob", APC _ (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
+        alice <#=? \case ("", "bob", APC _ (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
+        bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
+        bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
         bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
         alice #: ("1", "bob", "SEND F 11\nhello again") #> ("1", "bob", MID 5)
         alice <# ("", "bob", SENT 5)
@@ -380,7 +398,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob #: ("11", "alice", "ACK 4") #> ("11", "alice", OK)
       bob #:# "nothing else delivered before the server is down"
 
-    bob <# ("", "", DOWN server ["alice"])
+    bob <#. ("", "", DOWN server ["alice"])
     alice #: ("2", "bob", "SEND F 11\nhello again") #> ("2", "bob", MID 5)
     alice #:# "nothing else delivered before the server is restarted"
     bob #:# "nothing else delivered before the server is restarted"
@@ -393,8 +411,8 @@ testMsgDeliveryAgentRestart t bob = do
           (corrId == "3" && cmd == OK)
             || (corrId == "" && cmd == SENT 5)
         _ -> False
-      bob <#= \case ("", "alice", Msg "hello again") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
-      bob <#= \case ("", "alice", Msg "hello again") -> True; ("", "", UP s ["alice"]) -> s == server; _ -> False
+      bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
+      bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
