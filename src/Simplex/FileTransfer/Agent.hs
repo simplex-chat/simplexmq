@@ -58,12 +58,13 @@ import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> FilePath -> m RcvFileId
-receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpPath = do
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
+receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath = do
   g <- asks idsDrg
-  encPath <- uniqueCombine xftpPath "xftp.encrypted"
+  workPath <- maybe getTemporaryDirectory pure xftpWorkPath
+  encPath <- uniqueCombine workPath "xftp.encrypted"
   createDirectory encPath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd xftpPath encPath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd workPath encPath
   forM_ chunks downloadChunk
   pure fId
   where
@@ -210,8 +211,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
         readChunks :: [FilePath] -> IO LB.ByteString
         readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
 
-sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
-sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath = do
+sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
+sendFileExperimental AgentClient {subQ} _userId filePath numRecipients xftpWorkPath = do
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
   void $ forkIO $ sendCLI sndFileId
@@ -222,10 +223,10 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
     sendCLI :: SndFileId -> m ()
     sendCLI sndFileId = do
       let fileName = takeFileName filePath
-      outputDir <- uniqueCombine xftpPath (fileName <> ".descr")
+      workPath <- maybe getTemporaryDirectory pure xftpWorkPath
+      outputDir <- uniqueCombine workPath $ fileName <> ".descr"
       createDirectory outputDir
-      let tempPath = xftpPath </> "snd"
-      createDirectoryIfMissing False tempPath
+      let tempPath = (</> "snd") <$> xftpWorkPath
       let sendOptions =
             SendOptions
               { filePath,
@@ -233,7 +234,7 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
                 numRecipients,
                 xftpServers = [],
                 retryCount = 3,
-                tempPath = Just tempPath,
+                tempPath,
                 verbose = False
               }
       liftCLI $ cliSendFile sendOptions
@@ -241,7 +242,7 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
       notify sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
-    readDescrs :: FilePath -> FilePath -> m (FileDescription 'FSender, [FileDescription 'FRecipient])
+    readDescrs :: FilePath -> FilePath -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
     readDescrs outDir fileName = do
       let descrDir = outDir </> (fileName <> ".xftp")
       files <- listDirectory descrDir
@@ -249,7 +250,7 @@ sendFileExperimental AgentClient {subQ} _userId numRecipients xftpPath filePath 
           sdFile = maybe "" (\l -> descrDir </> L.head l) (nonEmpty sdFiles)
           rdFiles' = map (descrDir </>) rdFiles
       (,) <$> readDescr sdFile <*> mapM readDescr rdFiles'
-    readDescr :: FilePartyI p => FilePath -> m (FileDescription p)
+    readDescr :: FilePartyI p => FilePath -> m (ValidFileDescription p)
     readDescr f = liftIOEither $ first INTERNAL . strDecode <$> B.readFile f
     notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
     notify sndFileId cmd = atomically $ writeTBQueue subQ ("", sndFileId, APC (sAEntity @e) cmd)

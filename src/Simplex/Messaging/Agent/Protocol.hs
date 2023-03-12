@@ -340,7 +340,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RFDONE :: FilePath -> ACommand Agent AERcvFile
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
   SFPROG :: Int -> Int -> ACommand Agent AESndFile
-  SFDONE :: FileDescription 'FSender -> [FileDescription 'FRecipient] -> ACommand Agent AESndFile
+  SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
 
 deriving instance Eq (ACommand p e)
 

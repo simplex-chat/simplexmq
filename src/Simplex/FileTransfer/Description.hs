@@ -76,6 +76,7 @@ data FileDescription (p :: FileParty) = FileDescription
 data AFileDescription = forall p. FilePartyI p => AFD (FileDescription p)
 
 newtype ValidFileDescription p = ValidFD (FileDescription p)
+  deriving (Eq, Show)
 
 pattern ValidFileDescription :: FileDescription p -> ValidFileDescription p
 pattern ValidFileDescription fd = ValidFD fd
