@@ -264,8 +264,6 @@ data PendingCommand = PendingCommand
 
 data AgentCmdType = ACClient | ACInternal
 
-type UserId = Int64
-
 instance StrEncoding AgentCmdType where
   strEncode = \case
     ACClient -> "CLIENT"

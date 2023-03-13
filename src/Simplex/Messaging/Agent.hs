@@ -339,12 +339,12 @@ toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m 
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> FilePath -> m RcvFileId
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
 xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Send XFTP file
-xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
-xftpSendFile c userId n xftpPath filePath = withAgentEnv c $ sendFileExperimental c userId n xftpPath filePath
+xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
+xftpSendFile c = withAgentEnv c .:: sendFileExperimental c
 
 -- | Activate operations
 activateAgent :: AgentErrorMonad m => AgentClient -> m ()

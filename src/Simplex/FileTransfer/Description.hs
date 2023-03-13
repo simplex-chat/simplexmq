@@ -27,6 +27,7 @@ module Simplex.FileTransfer.Description
     validateFileDescription,
     groupReplicasByServer,
     replicaServer,
+    fdSeparator,
     kb,
     mb,
     gb,
@@ -75,6 +76,7 @@ data FileDescription (p :: FileParty) = FileDescription
 data AFileDescription = forall p. FilePartyI p => AFD (FileDescription p)
 
 newtype ValidFileDescription p = ValidFD (FileDescription p)
+  deriving (Eq, Show)
 
 pattern ValidFileDescription :: FileDescription p -> ValidFileDescription p
 pattern ValidFileDescription fd = ValidFD fd
@@ -82,6 +84,9 @@ pattern ValidFileDescription fd = ValidFD fd
 {-# COMPLETE ValidFileDescription #-}
 
 data AValidFileDescription = forall p. FilePartyI p => AVFD (ValidFileDescription p)
+
+fdSeparator :: IsString s => s
+fdSeparator = "################################\n"
 
 newtype FileDigest = FileDigest {unFileDigest :: ByteString}
   deriving (Eq, Show)
@@ -169,6 +174,16 @@ data FileServerReplica = FileServerReplica
     chunkSize :: Maybe (FileSize Word32)
   }
   deriving (Show)
+
+instance FilePartyI p => StrEncoding (ValidFileDescription p) where
+  strEncode (ValidFD fd) = strEncode fd
+  strDecode s = strDecode s >>= (\(AVFD fd) -> checkParty fd)
+  strP = strDecode <$?> A.takeByteString
+
+instance StrEncoding AValidFileDescription where
+  strEncode (AVFD fd) = strEncode fd
+  strDecode = validateFileDescription <=< strDecode
+  strP = strDecode <$?> A.takeByteString
 
 instance FilePartyI p => StrEncoding (FileDescription p) where
   strEncode = Y.encode . encodeFileDescription
