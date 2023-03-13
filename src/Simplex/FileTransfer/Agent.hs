@@ -226,7 +226,8 @@ sendFileExperimental AgentClient {subQ} _userId filePath numRecipients xftpWorkP
       workPath <- maybe getTemporaryDirectory pure xftpWorkPath
       outputDir <- uniqueCombine workPath $ fileName <> ".descr"
       createDirectory outputDir
-      let tempPath = (</> "snd") <$> xftpWorkPath
+      let tempPath = workPath </> "snd"
+      createDirectoryIfMissing False tempPath
       let sendOptions =
             SendOptions
               { filePath,
@@ -234,7 +235,7 @@ sendFileExperimental AgentClient {subQ} _userId filePath numRecipients xftpWorkP
                 numRecipients,
                 xftpServers = [],
                 retryCount = 3,
-                tempPath,
+                tempPath = Just tempPath,
                 verbose = False
               }
       liftCLI $ cliSendFile sendOptions
