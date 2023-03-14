@@ -132,7 +132,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileStatus,
     updateRcvFileError,
     updateRcvFileComplete,
-    updateRcvFileNoSavePath,
     updateRcvFileNoTmpPath,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
@@ -1739,7 +1738,7 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
 createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> IO (Either StoreError RcvFileId)
-createRcvFile db gVar userId fd@FileDescription {chunks} saveDir tmpPath = runExceptT $ do
+createRcvFile db gVar userId fd@FileDescription {chunks} tmpPath savePath = runExceptT $ do
   (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile fd
   liftIO $
     forM_ chunks $ \fc@FileChunk {replicas} -> do
@@ -1753,8 +1752,8 @@ createRcvFile db gVar userId fd@FileDescription {chunks} saveDir tmpPath = runEx
         createWithRandomId gVar $ \rcvFileEntityId ->
           DB.execute
             db
-            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, tmp_path, save_dir, status) VALUES (?,?,?,?,?,?,?,?,?,?)"
-            (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, RFSReceiving)
+            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, tmp_path, save_path, status) VALUES (?,?,?,?,?,?,?,?,?,?)"
+            (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, savePath, RFSReceiving)
       rcvFileId <- liftIO $ insertedRowId db
       pure (rcvFileEntityId, rcvFileId)
     insertChunk :: FileChunk -> DBRcvFileId -> IO Int64
@@ -1784,15 +1783,15 @@ getRcvFile db rcvFileId = runExceptT $ do
         DB.query
           db
           [sql|
-            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, tmp_path, save_dir, save_path, status
+            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, tmp_path, save_path, status
             FROM rcv_files
             WHERE rcv_file_id = ?
           |]
           (Only rcvFileId)
       where
-        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, Maybe FilePath, FilePath, Maybe FilePath, RcvFileStatus) -> RcvFile
-        toFile (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status) =
-          RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, saveDir, savePath, status, chunks = []}
+        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, Maybe FilePath, FilePath, RcvFileStatus) -> RcvFile
+        toFile (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, savePath, status) =
+          RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, savePath, status, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
       chunks <-
@@ -1859,15 +1858,10 @@ updateRcvFileError db rcvFileId errStr = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET tmp_path = NULL, error = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (errStr, RFSError, updatedAt, rcvFileId)
 
-updateRcvFileComplete :: DB.Connection -> DBRcvFileId -> FilePath -> IO ()
-updateRcvFileComplete db rcvFileId savePath = do
+updateRcvFileComplete :: DB.Connection -> DBRcvFileId -> IO ()
+updateRcvFileComplete db rcvFileId = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, save_path = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (savePath, RFSComplete, updatedAt, rcvFileId)
-
-updateRcvFileNoSavePath :: DB.Connection -> DBRcvFileId -> IO ()
-updateRcvFileNoSavePath db rcvFileId = do
-  updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET save_path = NULL, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
+  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, status = ?, updated_at = ? WHERE rcv_file_id = ?" (RFSComplete, updatedAt, rcvFileId)
 
 updateRcvFileNoTmpPath :: DB.Connection -> DBRcvFileId -> IO ()
 updateRcvFileNoTmpPath db rcvFileId = do
