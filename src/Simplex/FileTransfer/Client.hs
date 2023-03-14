@@ -174,7 +174,7 @@ downloadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChu
 downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath, chunkSize} = do
   (rDhKey, rpDhKey) <- liftIO C.generateKeyPair'
   sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
-    (FRFile sDhKey cbNonce, HTTP2Body {bodyHead, bodySize, bodyPart}) -> case bodyPart of
+    (FRFile sDhKey cbNonce, HTTP2Body {bodyHead = _bg, bodySize = _bs, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
         let dhSecret = C.dh' sDhKey rpDhKey

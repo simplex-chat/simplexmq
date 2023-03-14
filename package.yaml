@@ -135,6 +135,7 @@ tests:
     main: Test.hs
     dependencies:
       - simplexmq
+      - deepseq == 1.4.*
       - hspec == 2.7.*
       - hspec-core == 2.7.*
       - HUnit == 1.6.*
