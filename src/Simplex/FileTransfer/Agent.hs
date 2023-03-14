@@ -168,13 +168,21 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
+      -- TODO test; recreate file if it's in status RFSDecrypting
+      -- when (status == RFSDecrypting) $
+      --   whenM (doesFileExist savePath) (removeFile savePath >> emptyFile)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       decrypt encSize chunkPaths
       forM_ tmpPath removePath
+      withStore' c (`updateRcvFileComplete` rcvFileId)
       notify RFDONE
       where
+        -- emptyFile :: m ()
+        -- emptyFile = do
+        --   h <- openFile savePath AppendMode
+        --   liftIO $ B.hPut h "" >> hFlush h
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
         notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
