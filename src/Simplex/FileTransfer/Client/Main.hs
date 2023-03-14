@@ -44,6 +44,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Client.Presets
+import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
@@ -87,6 +88,13 @@ fileSizeLen = 8
 
 newtype CLIError = CLIError String
   deriving (Eq, Show, Exception)
+
+cliCryptoError :: FTCryptoError -> CLIError
+cliCryptoError = \case
+  FTCEDecryptionError e -> CLIError $ "Error decrypting file: " <> show e
+  FTCEInvalidHeader e -> CLIError $ "Invalid file header: " <> e
+  FTCEInvalidAuthTag -> CLIError "Error decrypting file: incorrect auth tag"
+  FTCEFileIOError e -> CLIError $ "File IO error: " <> show e
 
 data CliCommand
   = SendFile SendOptions
@@ -420,7 +428,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
-      path <- decryptFile encSize chunkPaths key nonce
+      path <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce getFilePath
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do
@@ -441,31 +449,12 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
         when verbose $ putStrLn ""
       pure (chunkNo, chunkPath)
     downloadFileChunk _ _ _ _ _ = throwError $ CLIError "chunk has no replicas"
-    decryptFile :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> ExceptT CLIError IO FilePath
-    decryptFile encSize chunkPaths key nonce = do
-      (authOk, f) <- liftEither . first (CLIError . show) . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (readChunks chunkPaths)
-      let (fileHdr, f') = LB.splitAt 1024 f
-      -- withFile encPath ReadMode $ \r -> do
-      --   fileHdr <- liftIO $ B.hGet r 1024
-      case A.parse smpP $ LB.toStrict fileHdr of
-        A.Fail _ _ e -> throwError $ CLIError $ "Invalid file header: " <> e
-        A.Partial _ -> throwError $ CLIError "Invalid file header"
-        A.Done rest FileHeader {fileName} -> do
-          path <- getFilePath fileName
-          liftIO $ LB.writeFile path $ LB.fromStrict rest <> f'
-          unless authOk $ do
-            removeFile path
-            throwError $ CLIError "Error decrypting file: incorrect auth tag"
-          pure path
-    readChunks :: [FilePath] -> IO LB.ByteString
-    readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
-    {-# NOINLINE readChunks #-}
-    getFilePath :: String -> ExceptT CLIError IO FilePath
+    getFilePath :: String -> ExceptT String IO FilePath
     getFilePath name =
       case filePath of
         Just path ->
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
-            ifM (doesFileExist path) (throwError $ CLIError "File already exists") (pure path)
+            ifM (doesFileExist path) (throwError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
     acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
     acknowledgeFileChunk a FileChunk {replicas = replica : _} = do

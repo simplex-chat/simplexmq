@@ -25,17 +25,15 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Int (Int64)
 import Data.List (isSuffixOf, partition)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
+import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), FilePartyI)
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
@@ -46,12 +44,10 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
-import qualified Simplex.Messaging.Crypto.Lazy as LC
-import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Protocol (XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftIOEither, tshow)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -174,7 +170,7 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      decrypt encSize chunkPaths
+      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure savePath
       forM_ tmpPath removePath
       withStore' c (`updateRcvFileComplete` rcvFileId)
       notify RFDONE
@@ -192,38 +188,19 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
           pure $ path : ps
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
-        -- TODO refactor with decrypt in CLI, streaming decryption
-        decrypt :: Int64 -> [FilePath] -> m ()
-        decrypt encSize chunkPaths = do
-          lazyChunks <- liftIO $ readChunks chunkPaths
-          (authOk, f) <- liftEither . first cryptoError $ LC.sbDecryptTailTag key nonce (encSize - authTagSize) lazyChunks
-          let (fileHdr, f') = LB.splitAt 1024 f
-          -- withFile encPath ReadMode $ \r -> do
-          --   fileHdr <- liftIO $ B.hGet r 1024
-          case A.parse smpP $ LB.toStrict fileHdr of
-            -- TODO XFTP errors
-            A.Fail _ _ e -> throwError $ INTERNAL $ "Invalid file header: " <> e
-            A.Partial _ -> throwError $ INTERNAL "Invalid file header"
-            A.Done rest FileHeader {fileName = _fn} -> do
-              -- ? check file name match
-              liftIO $ LB.writeFile savePath $ LB.fromStrict rest <> f'
-              unless authOk $ do
-                removeFile savePath
-                throwError $ INTERNAL "Error decrypting file: incorrect auth tag"
-        readChunks :: [FilePath] -> IO LB.ByteString
-        readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
 
 sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
-sendFileExperimental AgentClient {subQ} _userId filePath numRecipients xftpWorkPath = do
+sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients xftpWorkPath = do
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
-  void $ forkIO $ sendCLI sndFileId
+  xftpSrvs <- atomically $ TM.lookup userId xftpServers
+  void $ forkIO $ sendCLI sndFileId $ maybe [] L.toList xftpSrvs
   pure sndFileId
   where
     randomId :: TVar ChaChaDRG -> Int -> IO ByteString
     randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
-    sendCLI :: SndFileId -> m ()
-    sendCLI sndFileId = do
+    sendCLI :: SndFileId -> [XFTPServerWithAuth] -> m ()
+    sendCLI sndFileId xftpSrvs = do
       let fileName = takeFileName filePath
       workPath <- maybe getTemporaryDirectory pure xftpWorkPath
       outputDir <- uniqueCombine workPath $ fileName <> ".descr"
@@ -235,7 +212,7 @@ sendFileExperimental AgentClient {subQ} _userId filePath numRecipients xftpWorkP
               { filePath,
                 outputDir = Just outputDir,
                 numRecipients,
-                xftpServers = [],
+                xftpServers = xftpSrvs,
                 retryCount = 3,
                 tempPath = Just tempPath,
                 verbose = False
