@@ -132,7 +132,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileStatus,
     updateRcvFileError,
     updateRcvFileComplete,
-    updateRcvFileNoSavePath,
     updateRcvFileNoTmpPath,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
@@ -1859,15 +1858,10 @@ updateRcvFileError db rcvFileId errStr = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET tmp_path = NULL, error = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (errStr, RFSError, updatedAt, rcvFileId)
 
-updateRcvFileComplete :: DB.Connection -> DBRcvFileId -> FilePath -> IO ()
-updateRcvFileComplete db rcvFileId savePath = do
+updateRcvFileComplete :: DB.Connection -> DBRcvFileId -> IO ()
+updateRcvFileComplete db rcvFileId = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, save_path = ?, status = ?, updated_at = ? WHERE rcv_file_id = ?" (savePath, RFSComplete, updatedAt, rcvFileId)
-
-updateRcvFileNoSavePath :: DB.Connection -> DBRcvFileId -> IO ()
-updateRcvFileNoSavePath db rcvFileId = do
-  updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET save_path = NULL, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
+  DB.execute db "UPDATE rcv_files SET tmp_path = NULL, status = ?, updated_at = ? WHERE rcv_file_id = ?" (RFSComplete, updatedAt, rcvFileId)
 
 updateRcvFileNoTmpPath :: DB.Connection -> DBRcvFileId -> IO ()
 updateRcvFileNoTmpPath db rcvFileId = do

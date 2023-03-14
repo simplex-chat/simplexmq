@@ -173,7 +173,6 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       decrypt encSize chunkPaths
       forM_ tmpPath removePath
-      withStore' c $ \db -> updateRcvFileComplete db rcvFileId savePath
       notify RFDONE
       where
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
