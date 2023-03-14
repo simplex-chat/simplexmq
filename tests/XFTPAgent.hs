@@ -18,6 +18,7 @@ import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize)
 import System.FilePath ((</>))
+import System.Process (readCreateProcess, shell)
 import System.Timeout (timeout)
 import Test.Hspec
 import XFTPCLI
@@ -49,6 +50,7 @@ testXFTPAgentReceive = withXFTPServer $ do
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
   let savePath = recipientFiles </> "testfile"
+  run $ "touch " <> savePath
   runRight_ $ do
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd (Just recipientFiles) savePath
@@ -56,6 +58,9 @@ testXFTPAgentReceive = withXFTPServer $ do
     liftIO $ do
       fId' `shouldBe` fId
       B.readFile savePath `shouldReturn` file
+
+run :: String -> IO ()
+run cmd = void $ readCreateProcess (shell cmd) ""
 
 getFileDescription :: FilePath -> ExceptT AgentErrorType IO (ValidFileDescription 'FRecipient)
 getFileDescription path =
@@ -84,6 +89,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
 
   -- receive file using agent - should not succeed due to server being down
   let savePath = recipientFiles </> "testfile"
+  run $ "touch " <> savePath
   rcp <- getSMPAgentClient agentCfg initAgentServers
   fId <- runRight $ do
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
@@ -127,6 +133,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   -- receive file using agent - should not succeed due to server being down
   rcp <- getSMPAgentClient agentCfg initAgentServers
   let savePath = recipientFiles </> "testfile"
+  run $ "touch " <> savePath
   fId <- runRight $ do
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd (Just recipientFiles) savePath
@@ -170,6 +177,7 @@ testXFTPAgentSendExperimental = do
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
   let savePath = recipientFiles </> "testfile"
+  run $ "touch " <> savePath
   runRight_ $ do
     rfId <- xftpReceiveFile rcp 1 rfd (Just recipientFiles) savePath
     ("", rfId', RFDONE) <- rfGet rcp
