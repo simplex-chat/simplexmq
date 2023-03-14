@@ -29,7 +29,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should receive file" testXFTPAgentReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
-  xit "should send file using experimental api" testXFTPAgentSendExperimental -- TODO uses default servers (remote)
+  it "should send file using experimental api" testXFTPAgentSendExperimental -- TODO uses default servers (remote)
 
 testXFTPAgentReceive :: IO ()
 testXFTPAgentReceive = withXFTPServer $ do
@@ -153,8 +153,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
 
 testXFTPAgentSendExperimental :: IO ()
--- testXFTPAgentSendExperimental = withXFTPServer $ do
-testXFTPAgentSendExperimental = do
+testXFTPAgentSendExperimental = withXFTPServer $ do
   -- create random file using cli
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]

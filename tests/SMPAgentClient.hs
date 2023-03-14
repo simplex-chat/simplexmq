@@ -31,12 +31,13 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth, XFTPServer)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
+import XFTPClient (testXFTPServer)
 
 agentTestHost :: NonEmpty TransportHost
 agentTestHost = "localhost"
@@ -172,9 +173,6 @@ testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:50
 
 testSMPServer2 :: SMPServer
 testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
-
-testXFTPServer :: XFTPServer
-testXFTPServer = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7001"
 
 initAgentServers :: InitialAgentServers
 initAgentServers =
