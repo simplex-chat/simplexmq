@@ -48,13 +48,14 @@ testXFTPAgentReceive = withXFTPServer $ do
                ]
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
+  let savePath = recipientFiles </> "testfile"
   runRight_ $ do
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
-    fId <- xftpReceiveFile rcp 1 fd $ Just recipientFiles
-    ("", fId', RFDONE path) <- rfGet rcp
+    fId <- xftpReceiveFile rcp 1 fd (Just recipientFiles) savePath
+    ("", fId', RFDONE) <- rfGet rcp
     liftIO $ do
       fId' `shouldBe` fId
-      B.readFile path `shouldReturn` file
+      B.readFile savePath `shouldReturn` file
 
 getFileDescription :: FilePath -> ExceptT AgentErrorType IO (ValidFileDescription 'FRecipient)
 getFileDescription path =
@@ -82,10 +83,11 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
                  ]
 
   -- receive file using agent - should not succeed due to server being down
+  let savePath = recipientFiles </> "testfile"
   rcp <- getSMPAgentClient agentCfg initAgentServers
   fId <- runRight $ do
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
-    fId <- xftpReceiveFile rcp 1 fd $ Just recipientFiles
+    fId <- xftpReceiveFile rcp 1 fd (Just recipientFiles) savePath
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure fId
   disconnectAgentClient rcp
@@ -95,11 +97,11 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
   rcp' <- getSMPAgentClient agentCfg initAgentServers
   withXFTPServerStoreLogOn $ \_ -> do
     -- receive file using agent - should succeed with server up
-    ("", fId', RFDONE path) <- rfGet rcp'
+    ("", fId', RFDONE) <- rfGet rcp'
     liftIO $ do
       fId' `shouldBe` fId
       file <- B.readFile filePath
-      B.readFile path `shouldReturn` file
+      B.readFile savePath `shouldReturn` file
 
   -- tmp path should be removed after receiving file
   doesDirectoryExist (recipientFiles </> "xftp.encrypted") `shouldReturn` False
@@ -124,9 +126,10 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
 
   -- receive file using agent - should not succeed due to server being down
   rcp <- getSMPAgentClient agentCfg initAgentServers
+  let savePath = recipientFiles </> "testfile"
   fId <- runRight $ do
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
-    fId <- xftpReceiveFile rcp 1 fd $ Just recipientFiles
+    fId <- xftpReceiveFile rcp 1 fd (Just recipientFiles) savePath
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure fId
   disconnectAgentClient rcp
@@ -166,9 +169,10 @@ testXFTPAgentSendExperimental = do
 
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers
+  let savePath = recipientFiles </> "testfile"
   runRight_ $ do
-    rfId <- xftpReceiveFile rcp 1 rfd $ Just recipientFiles
-    ("", rfId', RFDONE path) <- rfGet rcp
+    rfId <- xftpReceiveFile rcp 1 rfd (Just recipientFiles) savePath
+    ("", rfId', RFDONE) <- rfGet rcp
     liftIO $ do
       rfId' `shouldBe` rfId
-      B.readFile path `shouldReturn` file
+      B.readFile savePath `shouldReturn` file

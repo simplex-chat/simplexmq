@@ -58,13 +58,13 @@ import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
-receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath = do
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> FilePath -> m RcvFileId
+receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath savePath = do
   g <- asks idsDrg
   workPath <- maybe getTemporaryDirectory pure xftpWorkPath
   encPath <- uniqueCombine workPath "xftp.encrypted"
   createDirectory encPath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd workPath encPath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd encPath savePath
   forM_ chunks downloadChunk
   pure fId
   where
@@ -167,17 +167,14 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
           decryptFile f `catchError` (workerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveDir, savePath, chunks} = do
-      forM_ savePath $ \p -> do
-        removePath p
-        withStore' c (`updateRcvFileNoSavePath` rcvFileId)
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      path <- decrypt encSize chunkPaths
+      decrypt encSize chunkPaths
       forM_ tmpPath removePath
-      withStore' c $ \db -> updateRcvFileComplete db rcvFileId path
-      notify $ RFDONE path
+      withStore' c $ \db -> updateRcvFileComplete db rcvFileId savePath
+      notify RFDONE
       where
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
         notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
@@ -189,7 +186,7 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
         -- TODO refactor with decrypt in CLI, streaming decryption
-        decrypt :: Int64 -> [FilePath] -> m FilePath
+        decrypt :: Int64 -> [FilePath] -> m ()
         decrypt encSize chunkPaths = do
           lazyChunks <- liftIO $ readChunks chunkPaths
           (authOk, f) <- liftEither . first cryptoError $ LC.sbDecryptTailTag key nonce (encSize - authTagSize) lazyChunks
@@ -200,14 +197,12 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
             -- TODO XFTP errors
             A.Fail _ _ e -> throwError $ INTERNAL $ "Invalid file header: " <> e
             A.Partial _ -> throwError $ INTERNAL "Invalid file header"
-            A.Done rest FileHeader {fileName} -> do
-              -- TODO touch file in agent bracket
-              path <- uniqueCombine saveDir fileName
-              liftIO $ LB.writeFile path $ LB.fromStrict rest <> f'
+            A.Done rest FileHeader {fileName = _fn} -> do
+              -- ? check file name match
+              liftIO $ LB.writeFile savePath $ LB.fromStrict rest <> f'
               unless authOk $ do
-                removeFile path
+                removeFile savePath
                 throwError $ INTERNAL "Error decrypting file: incorrect auth tag"
-              pure path
         readChunks :: [FilePath] -> IO LB.ByteString
         readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
 

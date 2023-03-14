@@ -47,8 +47,7 @@ data RcvFile = RcvFile
     chunkSize :: FileSize Word32,
     chunks :: [RcvFileChunk],
     tmpPath :: Maybe FilePath,
-    saveDir :: FilePath,
-    savePath :: Maybe FilePath,
+    savePath :: FilePath,
     status :: RcvFileStatus
   }
   deriving (Eq, Show)
