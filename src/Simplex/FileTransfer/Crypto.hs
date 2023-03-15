@@ -95,14 +95,14 @@ decryptChunks encSize (chPath : chPaths) key nonce getFilePath = case reverse ch
             tag :: ByteString = BA.convert (LC.sbAuth sb')
         LB.hPut h ch3
         pure $ B.length tag'' == 16 && BA.constEq tag'' tag
-
-parseFileHeader :: LazyByteString -> ExceptT FTCryptoError IO (FileHeader, LazyByteString)
-parseFileHeader s = do
-  let (hdrStr, s') = LB.splitAt 1024 s
-  case A.parse smpP $ LB.toStrict hdrStr of
-    A.Fail _ _ e -> throwError $ FTCEInvalidHeader e
-    A.Partial _ -> throwError $ FTCEInvalidHeader "incomplete"
-    A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
+  where
+    parseFileHeader :: LazyByteString -> ExceptT FTCryptoError IO (FileHeader, LazyByteString)
+    parseFileHeader s = do
+      let (hdrStr, s') = LB.splitAt 1024 s
+      case A.parse smpP $ LB.toStrict hdrStr of
+        A.Fail _ _ e -> throwError $ FTCEInvalidHeader e
+        A.Partial _ -> throwError $ FTCEInvalidHeader "incomplete"
+        A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
 
 readChunks :: [FilePath] -> IO LB.ByteString
 readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
