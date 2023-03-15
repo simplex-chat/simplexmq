@@ -10,6 +10,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Simplex.FileTransfer.Types (FileHeader (..), authTagSize)
@@ -20,17 +21,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Util (liftEitherWith)
 import UnliftIO
 import UnliftIO.Directory (removeFile)
-
-decryptChunks' :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO String) -> ExceptT FTCryptoError IO FilePath
-decryptChunks' encSize chunkPaths key nonce getFilePath = do
-  (authOk, f) <- liftEither . first FTCECryptoError . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (readChunks chunkPaths)
-  (FileHeader {fileName}, f') <- parseFileHeader f
-  path <- withExceptT FTCEFileIOError $ getFilePath fileName
-  liftIO $ LB.writeFile path f'
-  unless authOk $ do
-    removeFile path
-    throwError FTCEInvalidAuthTag
-  pure path
 
 decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO String) -> ExceptT FTCryptoError IO FilePath
 decryptChunks _ [] _ _ _ = throwError $ FTCEInvalidHeader "empty"
@@ -43,29 +33,41 @@ decryptChunks encSize (chPath : chPaths) key nonce getFilePath = case reverse ch
     liftIO $ LB.writeFile path f'
     pure path
   lastPath : chPaths' -> do
-    sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
-    ch <- liftIO $ LB.readFile chPath
-    let (ch1, sb1) = LC.sbDecryptChunkLazy sb ch
-    (!expectedLen, ch2) <- liftEitherWith FTCECryptoError $ LC.splitLen ch1
-    let len1 = LB.length ch2
-    -- (authOk, f) <- liftEither . first FTCECryptoError . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (readChunks chunkPaths)
-    (FileHeader {fileName}, ch3) <- parseFileHeader ch2
+    (state, expectedLen, ch) <- decryptFirstChunk
+    (FileHeader {fileName}, ch') <- parseFileHeader ch
     path <- withExceptT FTCEFileIOError $ getFilePath fileName
     authOk <- liftIO . withFile path WriteMode $ \w -> do
-      liftIO $ LB.hPut w ch3
-      (sb2, len2) <- foldM (decryptChunk w) (sb1, len1) $ reverse chPaths'
-      lastCh <- LB.readFile lastPath
-      let (lastCh1, tag') = LB.splitAt (LB.length lastCh - authTagSize) lastCh
-          (lastCh2, sb3) = LC.sbDecryptChunkLazy sb2 lastCh1
-          len3 = len2 + LB.length lastCh2
-          lastCh3 = LB.take (LB.length lastCh2 - len3 + expectedLen) lastCh2
-          tag :: ByteString = BA.convert (LC.sbAuth sb3)
-      LB.hPut w lastCh3
-      pure $ LB.length tag' == 16 && BA.constEq (LB.toStrict tag') tag
+      liftIO $ LB.hPut w ch'
+      state' <- foldM (decryptChunk w) state $ reverse chPaths'
+      decryptLastChunk w state' expectedLen
     unless authOk $ do
       removeFile path
       throwError FTCEInvalidAuthTag
     pure path
+    where
+      decryptFirstChunk = do
+        sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
+        ch <- liftIO $ LB.readFile chPath
+        let (ch1, !sb') = LC.sbDecryptChunkLazy sb ch
+        (!expectedLen, ch2) <- liftEitherWith FTCECryptoError $ LC.splitLen ch1
+        let len1 = LB.length ch2
+        pure ((sb', len1), expectedLen, ch2)
+      decryptChunk w (sb, len) chPth = do
+        ch <- LB.readFile chPth
+        let !len' = len + LB.length ch
+            (ch', !sb') = LC.sbDecryptChunkLazy sb ch
+        LB.hPut w ch'
+        pure (sb', len')
+      decryptLastChunk w (sb, len) expectedLen = do
+        ch <- LB.readFile lastPath
+        let (ch1, tag') = LB.splitAt (LB.length ch - authTagSize) ch
+            tag'' = LB.toStrict tag'
+            (ch2, !sb') = LC.sbDecryptChunkLazy sb ch1
+            len' = len + LB.length ch2
+            ch3 = LB.take (LB.length ch2 - len' + expectedLen) ch2
+            tag :: ByteString = BA.convert (LC.sbAuth sb')
+        LB.hPut w ch3
+        pure $ B.length tag'' == 16 && BA.constEq tag'' tag
 
 parseFileHeader :: LazyByteString -> ExceptT FTCryptoError IO (FileHeader, LazyByteString)
 parseFileHeader s = do
@@ -74,14 +76,6 @@ parseFileHeader s = do
     A.Fail _ _ e -> throwError $ FTCEInvalidHeader e
     A.Partial _ -> throwError $ FTCEInvalidHeader "incomplete"
     A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
-
-decryptChunk :: Handle -> (LC.SbState, Int64) -> FilePath -> IO (LC.SbState, Int64)
-decryptChunk w (sb, len) chPath = do
-  ch <- LB.readFile chPath
-  let !len' = len + LB.length ch
-      (!ch', !sb') = LC.sbDecryptChunkLazy sb ch
-  LB.hPut w ch'
-  pure (sb', len')
 
 readChunks :: [FilePath] -> IO LB.ByteString
 readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""

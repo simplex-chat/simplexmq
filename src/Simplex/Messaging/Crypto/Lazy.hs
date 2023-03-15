@@ -145,7 +145,7 @@ secretBoxTailTag :: ByteArrayAccess key => (SbState -> ByteString -> (ByteString
 secretBoxTailTag sbProcess secret nonce msg = run <$> sbInit_ secret nonce
   where
     run state =
-      let (!cs, !state') = secretBoxLazy_ sbProcess state msg
+      let (cs, state') = secretBoxLazy_ sbProcess state msg
        in reverse $ BA.convert (sbAuth state') : cs
 
 -- passes lazy bytestring via initialized secret box returning the reversed list of chunks

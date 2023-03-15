@@ -33,7 +33,7 @@ main = do
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (removeDirectoryRecursive "tests/tmp")
       $ do
-        fdescribe "Core tests" $ do
+        describe "Core tests" $ do
           describe "Encoding tests" encodingTests
           describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
@@ -43,7 +43,7 @@ main = do
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
-        fdescribe "XFTP" $ do
+        describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
