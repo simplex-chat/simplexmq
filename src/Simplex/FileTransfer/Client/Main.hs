@@ -57,7 +57,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, SndPublicVerifyKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
-import Simplex.Messaging.Util (ifM, tshow, whenM)
+import Simplex.Messaging.Util (ifM, liftEitherWith, tshow, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
@@ -91,7 +91,7 @@ newtype CLIError = CLIError String
 
 cliCryptoError :: FTCryptoError -> CLIError
 cliCryptoError = \case
-  FTCEDecryptionError e -> CLIError $ "Error decrypting file: " <> show e
+  FTCECryptoError e -> CLIError $ "Error decrypting file: " <> show e
   FTCEInvalidHeader e -> CLIError $ "Invalid file header: " <> e
   FTCEInvalidAuthTag -> CLIError "Error decrypting file: incorrect auth tag"
   FTCEFileIOError e -> CLIError $ "File IO error: " <> show e
@@ -301,7 +301,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
         encrypt fileHdr key nonce fileSize' encSize encFile = do
           f <- liftIO $ LB.readFile filePath
           let f' = LB.fromStrict fileHdr <> f
-          c <- liftEither $ first (CLIError . show) $ LC.sbEncryptTailTag key nonce f' fileSize' $ encSize - authTagSize
+          c <- liftEitherWith (CLIError . show) $ LC.sbEncryptTailTag key nonce f' fileSize' $ encSize - authTagSize
           liftIO $ LB.writeFile encFile c
     uploadFile :: [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
     uploadFile chunks uploadedChunks encSize = do
