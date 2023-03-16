@@ -26,6 +26,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     runSMPServerTest,
+    mkTransportSession,
     newRcvQueue,
     subscribeQueues,
     getQueueMessage,
@@ -554,6 +555,7 @@ closeAgentClient c = liftIO $ do
   atomically $ writeTVar (active c) False
   closeProtocolServerClients c smpClients
   closeProtocolServerClients c ntfClients
+  closeProtocolServerClients c xftpClients
   cancelActions . actions $ reconnections c
   cancelActions . actions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c

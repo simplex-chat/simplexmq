@@ -31,6 +31,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.List (isSuffixOf, partition)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
+import Simplex.FileTransfer.Client (closeXFTPClient)
 import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
@@ -46,7 +47,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
+import Simplex.Messaging.Util (catchAll_, liftError, liftIOEither, tshow)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -83,7 +84,7 @@ addXFTPWorker c srv_ = do
       void . atomically $ tryPutTMVar doWork ()
 
 runXFTPWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
-runXFTPWorker c srv doWork = do
+runXFTPWorker c@AgentClient {xftpClients, useNetworkConfig} srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AORcvNetwork throwWhenInactive runXftpOperation
@@ -95,7 +96,7 @@ runXFTPWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
-        Just fc@RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, delay} : _} -> do
+        Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -110,11 +111,24 @@ runXFTPWorker c srv doWork = do
                 else done e
               where
                 retryLoop = do
+                  closeReplicaClient `catchError` \e' ->
+                    logError $ "XFTP worker closeReplicaClient error: " <> tshow e'
                   withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
                   atomically $ endAgentOperation c AORcvNetwork
                   atomically $ throwWhenInactive c
                   atomically $ beginAgentOperation c AORcvNetwork
                   loop
+            closeReplicaClient :: m ()
+            closeReplicaClient = do
+              let RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId} = replica
+              tSess <- mkTransportSession c userId server fId
+              atomically (TM.lookupDelete tSess xftpClients) >>= mapM_ closeClient
+              where
+                closeClient cVar = do
+                  NetworkConfig {tcpConnectTimeout} <- readTVarIO useNetworkConfig
+                  tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
+                    Just (Right client) -> liftIO $ closeXFTPClient client `catchAll_` pure ()
+                    _ -> pure ()
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
       chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
