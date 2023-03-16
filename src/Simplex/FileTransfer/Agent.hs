@@ -19,7 +19,6 @@ module Simplex.FileTransfer.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
@@ -96,7 +95,7 @@ runXFTPWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
-        Just fc@RcvFileChunk {rcvFileId, rcvFileEntityId, rcvChunkId, fileTmpPath, delay, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId} : _} -> do
+        Just fc@RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -104,16 +103,14 @@ runXFTPWorker c srv doWork = do
               `catchError` retryOnError delay' loop (workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) . show)
           where
             retryOnError :: Int -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
-            retryOnError chunkDelay loop done e = do
+            retryOnError replicaDelay loop done e = do
               logError $ "XFTP worker error: " <> tshow e
               if temporaryAgentError e
                 then retryLoop
                 else done e
               where
                 retryLoop = do
-                  withStore' c $ \db -> do
-                    updateRcvFileChunkDelay db rcvChunkId chunkDelay
-                    increaseRcvChunkReplicaRetries db rcvChunkReplicaId
+                  withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
                   atomically $ endAgentOperation c AORcvNetwork
                   atomically $ throwWhenInactive c
                   atomically $ beginAgentOperation c AORcvNetwork
