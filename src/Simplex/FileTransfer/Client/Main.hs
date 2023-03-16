@@ -25,7 +25,6 @@ import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
@@ -91,7 +90,7 @@ newtype CLIError = CLIError String
 
 cliCryptoError :: FTCryptoError -> CLIError
 cliCryptoError = \case
-  FTCEDecryptionError e -> CLIError $ "Error decrypting file: " <> show e
+  FTCECryptoError e -> CLIError $ "Error decrypting file: " <> show e
   FTCEInvalidHeader e -> CLIError $ "Invalid file header: " <> e
   FTCEInvalidAuthTag -> CLIError "Error decrypting file: incorrect auth tag"
   FTCEFileIOError e -> CLIError $ "File IO error: " <> show e
@@ -261,7 +260,7 @@ cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} = do
   let (_, fileName) = splitFileName filePath
   liftIO $ printNoNewLine "Encrypting file..."
-  (encPath, fdRcv, fdSnd, chunkSpecs, encSize) <- encryptFile fileName
+  (encPath, fdRcv, fdSnd, chunkSpecs, encSize) <- encryptFileForUpload fileName
   liftIO $ printNoNewLine "Uploading file..."
   uploadedChunks <- newTVarIO []
   sentChunks <- uploadFile chunkSpecs uploadedChunks encSize
@@ -276,8 +275,8 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
   where
-    encryptFile :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
-    encryptFile fileName = do
+    encryptFileForUpload :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
+    encryptFileForUpload fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwError $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
       encPath <- getEncPath tempPath "xftp"
@@ -289,20 +288,13 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
           defChunkSize = head chunkSizes
           chunkSizes' = map fromIntegral chunkSizes
           encSize = sum chunkSizes'
-      encrypt fileHdr key nonce fileSize' encSize encPath
+      withExceptT (CLIError . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
           fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
           fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
-      where
-        encrypt :: ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT CLIError IO ()
-        encrypt fileHdr key nonce fileSize' encSize encFile = do
-          f <- liftIO $ LB.readFile filePath
-          let f' = LB.fromStrict fileHdr <> f
-          c <- liftEither $ first (CLIError . show) $ LC.sbEncryptTailTag key nonce f' fileSize' $ encSize - authTagSize
-          liftIO $ LB.writeFile encFile c
     uploadFile :: [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
     uploadFile chunks uploadedChunks encSize = do
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig

@@ -11,6 +11,7 @@ module Simplex.Messaging.Crypto.Lazy
     sha512Hash,
     pad,
     unPad,
+    splitLen,
     sbEncrypt,
     sbDecrypt,
     sbEncryptTailTag,
@@ -21,7 +22,10 @@ module Simplex.Messaging.Crypto.Lazy
     sbInit,
     sbEncryptChunk,
     sbDecryptChunk,
+    sbEncryptChunkLazy,
+    sbDecryptChunkLazy,
     sbAuth,
+    LazyByteString,
   )
 where
 
@@ -30,6 +34,7 @@ import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, hashlazy)
 import Crypto.Hash.Algorithms (SHA256, SHA512)
 import qualified Crypto.MAC.Poly1305 as Poly1305
+import Data.Bifunctor (first)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as S
@@ -37,6 +42,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.ByteString.Lazy.Internal as LB
+import Data.Composition ((.:.))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Foreign (sizeOf)
@@ -77,11 +83,14 @@ fastReplicate n c
 -- this function does not validate the length of the message to avoid consuming all chunks,
 -- so it can return a shorter string than expected
 unPad :: LazyByteString -> Either CryptoError LazyByteString
-unPad padded
+unPad = fmap snd . splitLen
+
+splitLen :: LazyByteString -> Either CryptoError (Int64, LazyByteString)
+splitLen padded
   | LB.length lenStr == 8 = case smpDecode $ LB.toStrict lenStr of
     Right len
       | len < 0 -> Left CryptoInvalidMsgError
-      | otherwise -> Right $ LB.take len rest
+      | otherwise -> Right (len, LB.take len rest)
     Left _ -> Left CryptoInvalidMsgError
   | otherwise = Left CryptoInvalidMsgError
   where
@@ -111,9 +120,9 @@ sbDecrypt (SbKey key) (CbNonce nonce) packet
 secretBox :: ByteArrayAccess key => (SbState -> ByteString -> (ByteString, SbState)) -> key -> ByteString -> LazyByteString -> Either CryptoError (NonEmpty ByteString)
 secretBox sbProcess secret nonce msg = run <$> sbInit_ secret nonce
   where
-    process state = foldlChunks update ([], state) msg
-    update (cs, st) chunk = let (c, st') = sbProcess st chunk in (c : cs, st')
-    run state = let (cs, state') = process state in BA.convert (sbAuth state') :| reverse cs
+    run state =
+      let (!cs, !state') = secretBoxLazy_ sbProcess state msg
+       in BA.convert (sbAuth state') :| reverse cs
 
 -- | NaCl @secret_box@ lazy encrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
 sbEncryptTailTag :: SbKey -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
@@ -135,9 +144,15 @@ sbDecryptTailTag (SbKey key) (CbNonce nonce) paddedLen packet =
 secretBoxTailTag :: ByteArrayAccess key => (SbState -> ByteString -> (ByteString, SbState)) -> key -> ByteString -> LazyByteString -> Either CryptoError [ByteString]
 secretBoxTailTag sbProcess secret nonce msg = run <$> sbInit_ secret nonce
   where
-    process state = foldlChunks update ([], state) msg
-    update (cs, st) chunk = let (c, st') = sbProcess st chunk in (c : cs, st')
-    run state = let (cs, state') = process state in reverse $ BA.convert (sbAuth state') : cs
+    run state =
+      let (cs, state') = secretBoxLazy_ sbProcess state msg
+       in reverse $ BA.convert (sbAuth state') : cs
+
+-- passes lazy bytestring via initialized secret box returning the reversed list of chunks
+secretBoxLazy_ :: (SbState -> ByteString -> (ByteString, SbState)) -> SbState -> LazyByteString -> ([ByteString], SbState)
+secretBoxLazy_ sbProcess state = foldlChunks update ([], state)
+  where
+    update (cs, st) chunk = let (!c, !st') = sbProcess st chunk in (c : cs, st')
 
 type SbState = (XSalsa.State, Poly1305.State)
 
@@ -158,16 +173,26 @@ sbInit_ secret nonce = (state2,) <$> cryptoPassed (Poly1305.initialize rs)
     state1 = XSalsa.derive state0 iv1
     (rs :: ByteString, state2) = XSalsa.generate state1 32
 
+sbEncryptChunkLazy :: SbState -> LazyByteString -> (LazyByteString, SbState)
+sbEncryptChunkLazy = sbProcessChunkLazy_ sbEncryptChunk
+
+sbDecryptChunkLazy :: SbState -> LazyByteString -> (LazyByteString, SbState)
+sbDecryptChunkLazy = sbProcessChunkLazy_ sbDecryptChunk
+
+sbProcessChunkLazy_ :: (SbState -> ByteString -> (ByteString, SbState)) -> SbState -> LazyByteString -> (LazyByteString, SbState)
+sbProcessChunkLazy_ = first (LB.fromChunks . reverse) .:. secretBoxLazy_
+{-# INLINE sbProcessChunkLazy_ #-}
+
 sbEncryptChunk :: SbState -> ByteString -> (ByteString, SbState)
 sbEncryptChunk (st, authSt) chunk =
-  let (c, st') = XSalsa.combine st chunk
-      authSt' = Poly1305.update authSt c
+  let (!c, !st') = XSalsa.combine st chunk
+      !authSt' = Poly1305.update authSt c
    in (c, (st', authSt'))
 
 sbDecryptChunk :: SbState -> ByteString -> (ByteString, SbState)
 sbDecryptChunk (st, authSt) chunk =
-  let (s, st') = XSalsa.combine st chunk
-      authSt' = Poly1305.update authSt chunk
+  let (!s, !st') = XSalsa.combine st chunk
+      !authSt' = Poly1305.update authSt chunk
    in (s, (st', authSt'))
 
 sbAuth :: SbState -> Poly1305.Auth

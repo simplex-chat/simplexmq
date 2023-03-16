@@ -55,6 +55,10 @@ liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) 
 liftEitherError f a = liftIOEither (first f <$> a)
 {-# INLINE liftEitherError #-}
 
+liftEitherWith :: (MonadError e' m) => (e -> e') -> Either e a -> m a
+liftEitherWith f = liftEither . first f
+{-# INLINE liftEitherWith #-}
+
 tryError :: MonadError e m => m a -> m (Either e a)
 tryError action = (Right <$> action) `catchError` (pure . Left)
 {-# INLINE tryError #-}
