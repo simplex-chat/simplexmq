@@ -45,7 +45,6 @@ CREATE TABLE rcv_file_chunks (
   chunk_size INTEGER NOT NULL,
   digest BLOB NOT NULL,
   tmp_path TEXT,
-  delay INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -60,7 +59,7 @@ CREATE TABLE rcv_file_chunk_replicas (
   replica_id BLOB NOT NULL,
   replica_key BLOB NOT NULL,
   received INTEGER NOT NULL DEFAULT 0,
-  -- acknowledged INTEGER NOT NULL DEFAULT 0,
+  delay INTEGER,
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))

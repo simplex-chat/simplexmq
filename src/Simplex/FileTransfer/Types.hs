@@ -89,8 +89,7 @@ data RcvFileChunk = RcvFileChunk
     digest :: FileDigest,
     replicas :: [RcvFileChunkReplica],
     fileTmpPath :: FilePath,
-    chunkTmpPath :: Maybe FilePath,
-    delay :: Maybe Int
+    chunkTmpPath :: Maybe FilePath
   }
   deriving (Eq, Show)
 
@@ -100,7 +99,7 @@ data RcvFileChunkReplica = RcvFileChunkReplica
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateSignKey,
     received :: Bool,
-    -- acknowledged :: Bool,
+    delay :: Maybe Int,
     retries :: Int
   }
   deriving (Eq, Show)
