@@ -127,8 +127,9 @@ module Simplex.Messaging.Crypto
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
-    -- * hash
+    -- * digests
     sha256Hash,
+    sha512Hash,
 
     -- * Message padding / un-padding
     pad,
@@ -154,7 +155,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256, hash)
+import Crypto.Hash (Digest, SHA256, SHA512, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -808,6 +809,10 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
+
+-- | SHA512 digest.
+sha512Hash :: ByteString -> ByteString
+sha512Hash = BA.convert . (hash :: ByteString -> Digest SHA512)
 
 -- | AEAD-GCM encryption with associated data.
 --
