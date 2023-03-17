@@ -95,7 +95,7 @@ runXFTPWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
-        Just fc@RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, delay} : _} -> do
+        Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -110,6 +110,7 @@ runXFTPWorker c srv doWork = do
                 else done e
               where
                 retryLoop = do
+                  closeXFTPServerClient c userId replica
                   withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
                   atomically $ endAgentOperation c AORcvNetwork
                   atomically $ throwWhenInactive c

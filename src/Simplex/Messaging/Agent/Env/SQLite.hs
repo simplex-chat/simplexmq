@@ -12,6 +12,7 @@
 
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
+    AgentMonad',
     AgentConfig (..),
     AgentDatabase (..),
     databaseFile,
@@ -63,6 +64,8 @@ import UnliftIO.STM
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
+
+type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),
