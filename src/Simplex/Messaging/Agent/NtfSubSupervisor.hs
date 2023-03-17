@@ -48,7 +48,7 @@ import UnliftIO.Concurrent (forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-runNtfSupervisor :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+runNtfSupervisor :: forall m. AgentMonad' m => AgentClient -> m ()
 runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
@@ -154,7 +154,7 @@ processNtfSub c (connId, cmd) = do
         Just (doWork, _) ->
           void . atomically $ tryPutTMVar doWork ()
 
-withNtfServer :: AgentMonad m => AgentClient -> (NtfServer -> m ()) -> m ()
+withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
 withNtfServer c action = getNtfServer c >>= mapM_ action
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
@@ -288,7 +288,7 @@ runNtfSMPWorker c srv doWork = do
             mapM_ (disableQueueNotifications c) rq_
             withStore' c $ \db -> deleteNtfSubscription db connId
 
-rescheduleAction :: AgentMonad m => TMVar () -> UTCTime -> UTCTime -> m Bool
+rescheduleAction :: AgentMonad' m => TMVar () -> UTCTime -> UTCTime -> m Bool
 rescheduleAction doWork ts actionTs
   | actionTs <= ts = pure False
   | otherwise = do
@@ -304,7 +304,7 @@ fromPico (MkFixed i) = i
 diffInMicros :: UTCTime -> UTCTime -> Int
 diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
 
-retryOnError :: AgentMonad m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
+retryOnError :: AgentMonad' m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
 retryOnError c name loop done e = do
   logError $ name <> " error: " <> tshow e
   case e of
@@ -324,10 +324,10 @@ workerInternalError c connId internalErrStr = do
   notifyInternalError c connId internalErrStr
 
 -- TODO change error
-notifyInternalError :: (MonadUnliftIO m) => AgentClient -> ConnId -> String -> m ()
+notifyInternalError :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m ()
 notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writeTBQueue subQ ("", connId, APC SAEConn $ ERR $ INTERNAL internalErrStr)
 
-getNtfToken :: AgentMonad m => m (Maybe NtfToken)
+getNtfToken :: AgentMonad' m => m (Maybe NtfToken)
 getNtfToken = do
   tkn <- asks $ ntfTkn . ntfSupervisor
   readTVarIO tkn
@@ -358,7 +358,7 @@ cancelNtfWorkers_ wsVar = do
   ws <- atomically $ stateTVar wsVar (,M.empty)
   mapM_ (uninterruptibleCancel . snd) ws
 
-getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
+getNtfServer :: AgentMonad' m => AgentClient -> m (Maybe NtfServer)
 getNtfServer c = do
   ntfServers <- readTVarIO $ ntfServers c
   case ntfServers of
