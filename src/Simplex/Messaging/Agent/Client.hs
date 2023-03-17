@@ -25,6 +25,7 @@ module Simplex.Messaging.Agent.Client
     withConnLock,
     closeAgentClient,
     closeProtocolServerClients,
+    closeXFTPSessionClient,
     runSMPServerTest,
     mkTransportSession,
     newRcvQueue,
@@ -116,7 +117,7 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
-import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..))
+import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..), closeXFTPClient)
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..))
 import Simplex.FileTransfer.Protocol (FileResponse, XFTPErrorType)
@@ -595,6 +596,17 @@ closeProtocolServerClients c clientsSel =
       NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
       tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
         Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
+        _ -> pure ()
+
+closeXFTPSessionClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m ()
+closeXFTPSessionClient AgentClient {xftpClients, useNetworkConfig} tSess =
+  atomically (TM.lookupDelete tSess xftpClients) >>= mapM_ closeClient
+  where
+    closeClient :: XFTPClientVar -> m ()
+    closeClient cVar = do
+      NetworkConfig {tcpConnectTimeout} <- readTVarIO useNetworkConfig
+      liftIO (tcpConnectTimeout `timeout` atomically (readTMVar cVar)) >>= \case
+        Just (Right client) -> liftIO $ closeXFTPClient client `catchAll_` pure ()
         _ -> pure ()
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
