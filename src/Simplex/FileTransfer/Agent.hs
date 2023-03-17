@@ -43,6 +43,7 @@ import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Store (StoreError (..))
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (XFTPServer, XFTPServerWithAuth)
@@ -132,8 +133,8 @@ runXFTPWorker c srv doWork = do
       -- if file is not found, it was deleted in process of downloading;
       -- in this case, we clean up tmp path
       withStore' c (`getRcvFile` rcvFileId) >>= \case
-        Left _ -> removePath fileTmpPath
-        Right _ -> when fileReceived $ addXFTPWorker c Nothing
+        Left SEFileNotFound -> removePath fileTmpPath
+        _ -> when fileReceived $ addXFTPWorker c Nothing
       where
         allChunksReceived :: RcvFile -> Bool
         allChunksReceived RcvFile {chunks} =
@@ -176,8 +177,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       -- if file is not found, it was deleted in process of decryption;
       -- in this case, we clean up save path
       withStore' c (`getRcvFile` rcvFileId) >>= \case
-        Left _ -> removePath savePath
-        Right _ -> notify RFDONE
+        Left SEFileNotFound -> removePath savePath
+        _ -> notify RFDONE
       where
         -- emptyFile :: m ()
         -- emptyFile = do
