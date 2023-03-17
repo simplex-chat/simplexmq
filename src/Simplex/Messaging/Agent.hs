@@ -342,7 +342,7 @@ toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> FilePath -> m RcvFileId
 xftpReceiveFile c = withAgentEnv c .:: receiveFile c
 
--- | Delete XFTP rcv file
+-- | Delete XFTP rcv file (does not delete received and decrypted file from filesystem)
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> UserId -> RcvFileId -> m ()
 xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 
