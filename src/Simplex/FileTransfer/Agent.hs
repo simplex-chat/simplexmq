@@ -165,6 +165,7 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       --   whenM (doesFileExist savePath) (removeFile savePath >> emptyFile)
       -- TODO solve race between deleting file in client and decrypting it here:
       -- TODO - async delete command, on response delete file in client?
+      -- TODO   - queue to_delete files to local worker?
       -- TODO - fully manage save path in agent (touch, delete)?
       unlessM (doesFileExist savePath) $ throwError $ INTERNAL "savePath doesn't exist"
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
