@@ -167,6 +167,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       -- TODO - async delete command, on response delete file in client?
       -- TODO   - queue to_delete files to local worker?
       -- TODO - fully manage save path in agent (touch, delete)?
+      -- TODO - fail on decryption of first chunk if file doesn't already exist,
+      -- TODO   similar to check below, but right before writing to file? can race with uniqueCombine in chat?
       unlessM (doesFileExist savePath) $ throwError $ INTERNAL "savePath doesn't exist"
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
