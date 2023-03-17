@@ -134,9 +134,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileComplete,
     updateRcvFileNoTmpPath,
     updateRcvFileToDelete,
+    deleteRcvFile',
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
-    deleteRcvFile',
     getPendingRcvFilesServers,
     getCleanupRcvFilesData,
 
