@@ -25,9 +25,8 @@ module Simplex.Messaging.Agent.Client
     withConnLock,
     closeAgentClient,
     closeProtocolServerClients,
-    closeXFTPSessionClient,
+    closeXFTPServerClient,
     runSMPServerTest,
-    mkTransportSession,
     newRcvQueue,
     subscribeQueues,
     getQueueMessage,
@@ -117,7 +116,7 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
-import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..), closeXFTPClient)
+import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..))
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..))
 import Simplex.FileTransfer.Protocol (FileResponse, XFTPErrorType)
@@ -589,25 +588,22 @@ throwWhenNoDelivery c SndQueue {server, sndId} =
 
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
-  atomically (swapTVar cs M.empty) >>= mapM_ (forkIO . closeClient)
-  where
-    cs = clientsSel c
-    closeClient cVar = do
-      NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
-      tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
-        Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
-        _ -> pure ()
+  atomically (clientsSel c `swapTVar` M.empty) >>= mapM_ (forkIO . closeClient_ c)
 
-closeXFTPSessionClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m ()
-closeXFTPSessionClient AgentClient {xftpClients, useNetworkConfig} tSess =
-  atomically (TM.lookupDelete tSess xftpClients) >>= mapM_ closeClient
-  where
-    closeClient :: XFTPClientVar -> m ()
-    closeClient cVar = do
-      NetworkConfig {tcpConnectTimeout} <- readTVarIO useNetworkConfig
-      liftIO (tcpConnectTimeout `timeout` atomically (readTMVar cVar)) >>= \case
-        Just (Right client) -> liftIO $ closeXFTPClient client `catchAll_` pure ()
-        _ -> pure ()
+closeClient :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
+closeClient c clientSel tSess =
+  atomically (TM.lookupDelete tSess $ clientSel c) >>= mapM_ (closeClient_ c)
+
+closeClient_ :: ProtocolServerClient err msg => AgentClient -> ClientVar msg -> IO ()
+closeClient_ c cVar = do
+  NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
+  tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
+    Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
+    _ -> pure ()
+
+closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> RcvFileChunkReplica -> m ()
+closeXFTPServerClient c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId} =
+  mkTransportSession c userId server fId >>= liftIO . closeClient c xftpClients
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterruptibleCancel)
@@ -726,7 +722,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
     testErr :: SMPTestStep -> SMPClientError -> SMPTestFailure
     testErr step = SMPTestFailure step . protocolClientError SMP addr
 
-mkTransportSession :: AgentMonad m => AgentClient -> UserId -> ProtoServer msg -> EntityId -> m (TransportSession msg)
+mkTransportSession :: AgentMonad' m => AgentClient -> UserId -> ProtoServer msg -> EntityId -> m (TransportSession msg)
 mkTransportSession c userId srv entityId = mkTSession userId srv entityId <$> getSessionMode c
 
 mkTSession :: UserId -> ProtoServer msg -> EntityId -> TransportSessionMode -> TransportSession msg
@@ -738,7 +734,7 @@ mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
 mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
 mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 
-getSessionMode :: AgentMonad m => AgentClient -> m TransportSessionMode
+getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
 newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> m (RcvQueue, SMPQueueUri)

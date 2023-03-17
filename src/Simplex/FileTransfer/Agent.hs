@@ -110,18 +110,12 @@ runXFTPWorker c srv doWork = do
                 else done e
               where
                 retryLoop = do
-                  closeReplicaClient `catchError` \e' ->
-                    logError $ "XFTP worker closeReplicaClient error: " <> tshow e'
+                  closeXFTPServerClient c userId replica
                   withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
                   atomically $ endAgentOperation c AORcvNetwork
                   atomically $ throwWhenInactive c
                   atomically $ beginAgentOperation c AORcvNetwork
                   loop
-            closeReplicaClient :: m ()
-            closeReplicaClient = do
-              let RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId} = replica
-              tSess <- mkTransportSession c userId server fId
-              closeXFTPSessionClient c tSess
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
       chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
