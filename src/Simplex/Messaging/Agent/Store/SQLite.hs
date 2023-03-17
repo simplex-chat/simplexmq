@@ -126,6 +126,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- File transfer
     createRcvFile,
     getRcvFile,
+    getRcvFileByEntityId,
     updateRcvChunkReplicaDelay,
     updateRcvFileChunkReceived,
     updateRcvFileStatus,
@@ -134,6 +135,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileNoTmpPath,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
+    deleteRcvFile',
     getPendingRcvFilesServers,
     getTmpFilePaths,
 
@@ -1769,6 +1771,16 @@ createRcvFile db gVar userId fd@FileDescription {chunks} tmpPath savePath = runE
         "INSERT INTO rcv_file_chunk_replicas (replica_number, rcv_file_chunk_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?,?)"
         (replicaNo, chunkId, srvId, replicaId, replicaKey)
 
+getRcvFileByEntityId :: DB.Connection -> UserId -> RcvFileId -> IO (Either StoreError RcvFile)
+getRcvFileByEntityId db userId rcvFileEntityId = runExceptT $ do
+  rcvFileId <- ExceptT $ getRcvFileIdByEntityId_ db userId rcvFileEntityId
+  ExceptT $ getRcvFile db rcvFileId
+
+getRcvFileIdByEntityId_ :: DB.Connection -> UserId -> RcvFileId -> IO (Either StoreError DBRcvFileId)
+getRcvFileIdByEntityId_ db userId rcvFileEntityId =
+  firstRow fromOnly SEFileNotFound $
+    DB.query db "SELECT rcv_file_id FROM rcv_files WHERE user_id = ? AND rcv_file_entity_id = ?" (userId, rcvFileEntityId)
+
 getRcvFile :: DB.Connection -> DBRcvFileId -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
   fd@RcvFile {rcvFileEntityId, userId, tmpPath} <- ExceptT getFile
@@ -1904,6 +1916,10 @@ getNextRcvFileToDecrypt db = do
   case fileId_ of
     Nothing -> pure Nothing
     Just fileId -> eitherToMaybe <$> getRcvFile db fileId
+
+deleteRcvFile' :: DB.Connection -> UserId -> DBRcvFileId -> IO ()
+deleteRcvFile' db userId rcvFileId =
+  DB.execute db "DELETE FROM rcv_files WHERE user_id = ? AND rcv_file_id = ?" (userId, rcvFileId)
 
 getPendingRcvFilesServers :: DB.Connection -> IO [XFTPServer]
 getPendingRcvFilesServers db = do

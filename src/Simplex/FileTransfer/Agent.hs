@@ -13,6 +13,7 @@ module Simplex.FileTransfer.Agent
   ( -- Receiving files
     receiveFile,
     addXFTPWorker,
+    deleteRcvFile,
     -- Sending files
     sendFileExperimental,
     _sendFile,
@@ -128,10 +129,11 @@ runXFTPWorker c srv doWork = do
         when fileReceived $
           liftIO $ updateRcvFileStatus db rcvFileId RFSReceived
         pure fileReceived
-      -- check if chunk is downloaded and not acknowledged via flag acknowledged?
-      -- or just catch and ignore error on acknowledgement? (and remove flag)
-      -- agentXFTPAckChunk c replicaKey (unChunkReplicaId replicaId) `catchError` \_ -> pure ()
-      when fileReceived $ addXFTPWorker c Nothing
+      -- if file is not found, it was deleted in process of downloading;
+      -- in this case, we clean up tmp path
+      withStore' c (`getRcvFile` rcvFileId) >>= \case
+        Left _ -> removePath fileTmpPath
+        Right _ -> when fileReceived $ addXFTPWorker c Nothing
       where
         allChunksReceived :: RcvFile -> Bool
         allChunksReceived RcvFile {chunks} =
@@ -171,7 +173,11 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure savePath
       forM_ tmpPath removePath
       withStore' c (`updateRcvFileComplete` rcvFileId)
-      notify RFDONE
+      -- if file is not found, it was deleted in process of decryption;
+      -- in this case, we clean up save path
+      withStore' c (`getRcvFile` rcvFileId) >>= \case
+        Left _ -> removePath savePath
+        Right _ -> notify RFDONE
       where
         -- emptyFile :: m ()
         -- emptyFile = do
@@ -186,6 +192,12 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
           pure $ path : ps
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
+
+deleteRcvFile :: AgentMonad m => AgentClient -> UserId -> RcvFileId -> m ()
+deleteRcvFile c userId rcvFileEntityId = do
+  RcvFile {rcvFileId, tmpPath} <- withStore c $ \db -> getRcvFileByEntityId db userId rcvFileEntityId
+  forM_ tmpPath removePath
+  withStore' c $ \db -> deleteRcvFile' db userId rcvFileId
 
 sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
 sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients xftpWorkPath = do

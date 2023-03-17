@@ -81,6 +81,7 @@ module Simplex.Messaging.Agent
     getNtfTokenData,
     toggleConnectionNtfs,
     xftpReceiveFile,
+    xftpDeleteRcvFile,
     xftpSendFile,
     activateAgent,
     suspendAgent,
@@ -114,7 +115,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (addXFTPWorker, receiveFile, sendFileExperimental)
+import Simplex.FileTransfer.Agent (addXFTPWorker, deleteRcvFile, receiveFile, sendFileExperimental)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -340,6 +341,10 @@ toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 -- | Receive XFTP file
 xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> FilePath -> m RcvFileId
 xftpReceiveFile c = withAgentEnv c .:: receiveFile c
+
+-- | Delete XFTP rcv file
+xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> UserId -> RcvFileId -> m ()
+xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId

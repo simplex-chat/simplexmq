@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8 as B
 import SMPAgentClient (agentCfg, initAgentServers)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpReceiveFile, xftpSendFile)
+import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpDeleteRcvFile, xftpReceiveFile, xftpSendFile)
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize)
@@ -58,6 +58,9 @@ testXFTPAgentReceive = withXFTPServer $ do
     liftIO $ do
       fId' `shouldBe` fId
       B.readFile savePath `shouldReturn` file
+
+    -- delete file
+    xftpDeleteRcvFile rcp 1 fId
 
 run :: String -> IO ()
 run cmd = void $ readCreateProcess (shell cmd) ""
