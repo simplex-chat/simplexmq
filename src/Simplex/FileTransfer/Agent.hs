@@ -47,7 +47,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, unlessM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -163,6 +163,10 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       -- TODO test; recreate file if it's in status RFSDecrypting
       -- when (status == RFSDecrypting) $
       --   whenM (doesFileExist savePath) (removeFile savePath >> emptyFile)
+      -- TODO solve race between deleting file in client and decrypting it here:
+      -- TODO - async delete command, on response delete file in client?
+      -- TODO - fully manage save path in agent (touch, delete)?
+      unlessM (doesFileExist savePath) $ throwError $ INTERNAL "savePath doesn't exist"
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
