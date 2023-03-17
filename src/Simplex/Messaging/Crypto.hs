@@ -126,7 +126,7 @@ module Simplex.Messaging.Crypto
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
-    -- * SHA256 hash
+    -- * digests
     sha256Hash,
     sha512Hash,
 
