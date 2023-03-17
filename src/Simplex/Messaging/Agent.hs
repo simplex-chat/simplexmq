@@ -291,18 +291,18 @@ getConnectionRatchetAdHash :: AgentErrorMonad m => AgentClient -> ConnId -> m By
 getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 
 -- | Change servers to be used for creating new queues
-setSMPServers :: AgentErrorMonad m => AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> m ()
+setSMPServers :: MonadUnliftIO m => AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> m ()
 setSMPServers c = withAgentEnv c .: setSMPServers' c
 
 -- | Test SMP server
 testSMPServerConnection :: AgentErrorMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe SMPTestFailure)
 testSMPServerConnection c = withAgentEnv c .: runSMPServerTest c
 
-setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers :: MonadUnliftIO m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeout
-setNetworkConfig :: AgentErrorMonad m => AgentClient -> NetworkConfig -> m ()
+setNetworkConfig :: MonadUnliftIO m => AgentClient -> NetworkConfig -> m ()
 setNetworkConfig c cfg' = do
   cfg <- atomically $ do
     swapTVar (useNetworkConfig c) cfg'
@@ -346,30 +346,30 @@ xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int ->
 xftpSendFile c = withAgentEnv c .:: sendFileExperimental c
 
 -- | Activate operations
-activateAgent :: AgentErrorMonad m => AgentClient -> m ()
+activateAgent :: MonadUnliftIO m => AgentClient -> m ()
 activateAgent c = withAgentEnv c $ activateAgent' c
 
 -- | Suspend operations with max delay to deliver pending messages
-suspendAgent :: AgentErrorMonad m => AgentClient -> Int -> m ()
+suspendAgent :: MonadUnliftIO m => AgentClient -> Int -> m ()
 suspendAgent c = withAgentEnv c . suspendAgent' c
 
 execAgentStoreSQL :: AgentErrorMonad m => AgentClient -> Text -> m [Text]
 execAgentStoreSQL c = withAgentEnv c . execAgentStoreSQL' c
 
-debugAgentLocks :: AgentErrorMonad m => AgentClient -> m AgentLocks
+debugAgentLocks :: MonadUnliftIO m => AgentClient -> m AgentLocks
 debugAgentLocks c = withAgentEnv c $ debugAgentLocks' c
 
-getAgentStats :: AgentErrorMonad m => AgentClient -> m [(AgentStatsKey, Int)]
+getAgentStats :: MonadIO m => AgentClient -> m [(AgentStatsKey, Int)]
 getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> readTVarIO cnt) . M.assocs
 
-resetAgentStats :: AgentErrorMonad m => AgentClient -> m ()
+resetAgentStats :: MonadIO m => AgentClient -> m ()
 resetAgentStats = atomically . TM.clear . agentStats
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => InitialAgentServers -> m AgentClient
+getAgentClient :: AgentMonad' m => InitialAgentServers -> m AgentClient
 getAgentClient initServers = ask >>= atomically . newAgentClient initServers
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
@@ -378,10 +378,10 @@ logConnection c connected =
    in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
 
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
-runAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+runAgentClient :: AgentMonad' m => AgentClient -> m ()
 runAgentClient c = race_ (subscriber c) (client c)
 
-client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+client :: forall m. AgentMonad' m => AgentClient -> m ()
 client c@AgentClient {rcvQ, subQ} = forever $ do
   (corrId, entId, cmd) <- atomically $ readTBQueue rcvQ
   runExceptT (processCommand c (entId, cmd))
@@ -802,10 +802,10 @@ resumeConnCmds c connId =
       queuePendingCommands c srv cmdIds
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
 
-cmdProcessExists :: AgentMonad m => AgentClient -> Maybe SMPServer -> m Bool
+cmdProcessExists :: AgentMonad' m => AgentClient -> Maybe SMPServer -> m Bool
 cmdProcessExists c srv = atomically $ TM.member srv (asyncCmdProcesses c)
 
-queuePendingCommands :: AgentMonad m => AgentClient -> Maybe SMPServer -> [AsyncCmdId] -> m ()
+queuePendingCommands :: AgentMonad' m => AgentClient -> Maybe SMPServer -> [AsyncCmdId] -> m ()
 queuePendingCommands c server cmdIds = atomically $ do
   q <- getPendingCommandQ c server
   mapM_ (writeTQueue q) cmdIds
@@ -985,7 +985,7 @@ resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
     queueDelivering qKey = atomically $ TM.member qKey (smpQueueMsgDeliveries c)
     msgsQueued = atomically $ isJust <$> TM.lookupInsert (server, sndId) True (pendingMsgsQueued c)
 
-queuePendingMsgs :: AgentMonad m => AgentClient -> SndQueue -> [InternalId] -> m ()
+queuePendingMsgs :: AgentMonad' m => AgentClient -> SndQueue -> [InternalId] -> m ()
 queuePendingMsgs c sq msgIds = atomically $ do
   modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
   -- s <- readTVar (msgDeliveryOp c)
@@ -1325,7 +1325,7 @@ connectionStats = \case
   NewConnection _ -> ConnectionStats {rcvServers = [], sndServers = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setSMPServers' :: AgentMonad m => AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> m ()
+setSMPServers' :: AgentMonad' m => AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> m ()
 setSMPServers' c userId srvs = atomically $ TM.insert userId srvs $ smpServers c
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
@@ -1522,17 +1522,17 @@ sendNtfConnCommands c cmd = do
       _ ->
         atomically $ writeTBQueue (subQ c) ("", connId, APC SAEConn $ ERR $ INTERNAL "no connection data")
 
-setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers' :: AgentMonad' m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c = atomically . writeTVar (ntfServers c)
 
-activateAgent' :: AgentMonad m => AgentClient -> m ()
+activateAgent' :: AgentMonad' m => AgentClient -> m ()
 activateAgent' c = do
   atomically $ writeTVar (agentState c) ASActive
   mapM_ activate $ reverse agentOperations
   where
     activate opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
 
-suspendAgent' :: AgentMonad m => AgentClient -> Int -> m ()
+suspendAgent' :: AgentMonad' m => AgentClient -> Int -> m ()
 suspendAgent' c 0 = do
   atomically $ writeTVar (agentState c) ASSuspended
   mapM_ suspend agentOperations
@@ -1557,7 +1557,7 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
 execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
 execAgentStoreSQL' c sql = withStore' c (`execSQL` sql)
 
-debugAgentLocks' :: AgentMonad m => AgentClient -> m AgentLocks
+debugAgentLocks' :: AgentMonad' m => AgentClient -> m AgentLocks
 debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = d} = do
   connLocks <- getLocks cs
   srvLocks <- getLocks rs
@@ -1569,7 +1569,7 @@ debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = 
 getSMPServer :: AgentMonad m => AgentClient -> UserId -> m SMPServerWithAuth
 getSMPServer c userId = withUserServers c userId pickServer
 
-pickServer :: AgentMonad m => NonEmpty SMPServerWithAuth -> m SMPServerWithAuth
+pickServer :: AgentMonad' m => NonEmpty SMPServerWithAuth -> m SMPServerWithAuth
 pickServer = \case
   srv :| [] -> pure srv
   servers -> do
@@ -1588,7 +1588,7 @@ withUserServers c userId action =
     Just srvs -> action srvs
     _ -> throwError $ INTERNAL "unknown userId - no SMP servers"
 
-subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+subscriber :: AgentMonad' m => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
@@ -1596,7 +1596,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Left e -> liftIO $ print e
       Right _ -> return ()
 
-cleanupManager :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+cleanupManager :: AgentMonad' m => AgentClient -> m ()
 cleanupManager c = do
   threadDelay =<< asks (initialCleanupDelay . config)
   int <- asks (cleanupInterval . config)

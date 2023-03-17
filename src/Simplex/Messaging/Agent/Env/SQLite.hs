@@ -62,10 +62,9 @@ import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
 
--- | Agent monad with MonadReader Env and MonadError AgentErrorType
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
-
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
+
+type AgentMonad m = (AgentMonad' m, MonadError AgentErrorType m)
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),

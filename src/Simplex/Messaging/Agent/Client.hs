@@ -544,7 +544,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
 
-getClientConfig :: AgentMonad m => AgentClient -> (AgentConfig -> ProtocolClientConfig) -> m ProtocolClientConfig
+getClientConfig :: AgentMonad' m => AgentClient -> (AgentConfig -> ProtocolClientConfig) -> m ProtocolClientConfig
 getClientConfig AgentClient {useNetworkConfig} cfgSel = do
   cfg <- asks $ cfgSel . config
   networkConfig <- readTVarIO useNetworkConfig
@@ -728,7 +728,7 @@ mkTransportSession c userId srv entityId = mkTSession userId srv entityId <$> ge
 mkTSession :: UserId -> ProtoServer msg -> EntityId -> TransportSessionMode -> TransportSession msg
 mkTSession userId srv entityId mode = (userId, srv, if mode == TSMEntity then Just entityId else Nothing)
 
-mkSMPTransportSession :: (AgentMonad m, SMPQueueRec q) => AgentClient -> q -> m SMPTransportSession
+mkSMPTransportSession :: (AgentMonad' m, SMPQueueRec q) => AgentClient -> q -> m SMPTransportSession
 mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
 
 mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
