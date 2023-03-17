@@ -48,7 +48,8 @@ data RcvFile = RcvFile
     chunks :: [RcvFileChunk],
     tmpPath :: Maybe FilePath,
     savePath :: FilePath,
-    status :: RcvFileStatus
+    status :: RcvFileStatus,
+    toDelete :: Bool
   }
   deriving (Eq, Show)
 

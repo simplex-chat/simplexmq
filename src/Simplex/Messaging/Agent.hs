@@ -1608,7 +1608,7 @@ cleanupManager c = do
   forever $ do
     void . runExceptT $ do
       deleteConns
-      deleteTmpPaths
+      deleteFiles
       threadDelay int
   where
     deleteConns =
@@ -1616,11 +1616,13 @@ cleanupManager c = do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
     notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
-    deleteTmpPaths = do
-      tmpPaths <- withStore' c getTmpFilePaths
-      forM_ tmpPaths $ \(fId, p) -> do
-        removePath p
-        withStore' c (`updateRcvFileNoTmpPath` fId)
+    deleteFiles = do
+      fs <- withStore' c getCleanupRcvFilesData
+      forM_ fs $ \(fId, tmpPath, toDelete) -> do
+        forM_ tmpPath removePath
+        if toDelete
+          then withStore' c (`deleteRcvFile'` fId)
+          else withStore' c (`updateRcvFileNoTmpPath` fId)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
