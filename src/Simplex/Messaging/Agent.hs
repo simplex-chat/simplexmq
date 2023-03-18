@@ -92,6 +92,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)

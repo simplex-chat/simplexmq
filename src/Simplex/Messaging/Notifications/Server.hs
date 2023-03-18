@@ -12,6 +12,7 @@
 
 module Simplex.Messaging.Notifications.Server where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.Reader

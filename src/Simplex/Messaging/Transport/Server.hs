@@ -12,6 +12,7 @@ module Simplex.Messaging.Transport.Server
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX

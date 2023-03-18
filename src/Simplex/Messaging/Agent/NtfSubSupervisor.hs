@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
 where
 
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.Except
