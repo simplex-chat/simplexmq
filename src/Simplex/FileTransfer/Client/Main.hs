@@ -18,6 +18,7 @@ module Simplex.FileTransfer.Client.Main
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
