@@ -19,6 +19,7 @@ module Simplex.FileTransfer.Agent
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
