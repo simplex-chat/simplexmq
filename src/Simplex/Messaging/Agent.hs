@@ -339,8 +339,8 @@ toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m 
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> FilePath -> m RcvFileId
-xftpReceiveFile c = withAgentEnv c .:: receiveFile c
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
+xftpReceiveFile c = withAgentEnv c .:. receiveFile c
 
 -- | Delete XFTP rcv file (does not delete received and decrypted file from file system)
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> UserId -> RcvFileId -> m ()
@@ -1617,12 +1617,16 @@ cleanupManager c = do
         withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
     notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
     deleteFiles = do
-      fs <- withStore' c getCleanupRcvFilesData
-      forM_ fs $ \(fId, tmpPath, toDelete) -> do
-        forM_ tmpPath removePath
-        if toDelete
-          then withStore' c (`deleteRcvFile'` fId)
-          else withStore' c (`updateRcvFileNoTmpPath` fId)
+      -- cleanup rcv files marked for deletion
+      rcvToDelete <- withStore' c getCleanupRcvFilesToDelete
+      forM_ rcvToDelete $ \(fId, p) -> do
+        removePath p
+        withStore' c (`deleteRcvFile'` fId)
+      -- cleanup rcv tmp paths
+      rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
+      forM_ rcvTmpPaths $ \(fId, p) -> do
+        removePath p
+        withStore' c (`updateRcvFileNoTmpPath` fId)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do

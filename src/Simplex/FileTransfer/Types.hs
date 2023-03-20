@@ -46,6 +46,7 @@ data RcvFile = RcvFile
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
     chunks :: [RcvFileChunk],
+    prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
     savePath :: FilePath,
     status :: RcvFileStatus,

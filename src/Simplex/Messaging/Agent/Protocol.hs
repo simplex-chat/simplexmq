@@ -337,7 +337,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SUSPENDED :: ACommand Agent AENone
   -- XFTP commands and responses
   RFPROG :: Int -> Int -> ACommand Agent AERcvFile
-  RFDONE :: ACommand Agent AERcvFile
+  RFDONE :: FilePath -> ACommand Agent AERcvFile
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
   SFPROG :: Int -> Int -> ACommand Agent AESndFile
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
@@ -443,7 +443,7 @@ aCommandTag = \case
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_
-  RFDONE -> RFDONE_
+  RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
   SFPROG {} -> SFPROG_
   SFDONE {} -> SFDONE_
@@ -1447,7 +1447,7 @@ commandP binaryP =
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
           RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal)
-          RFDONE_ -> pure RFDONE
+          RFDONE_ -> s (RFDONE <$> strP)
           RFERR_ -> s (RFERR <$> strP)
           SFPROG_ -> s (SFPROG <$> A.decimal <* A.space <*> A.decimal)
           SFDONE_ -> s (sfDone . safeDecodeUtf8 <$?> binaryP)
@@ -1511,7 +1511,7 @@ serializeCommand = \case
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_
   RFPROG rcvd total -> s (RFPROG_, rcvd, total)
-  RFDONE -> s RFDONE_
+  RFDONE fPath -> s (RFDONE_, fPath)
   RFERR e -> s (RFERR_, e)
   SFPROG sent total -> s (SFPROG_, sent, total)
   SFDONE sd rds -> B.unwords [s SFDONE_, serializeBinary (sfDone sd rds)]

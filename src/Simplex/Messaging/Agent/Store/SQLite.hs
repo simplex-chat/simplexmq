@@ -138,7 +138,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
     getPendingRcvFilesServers,
-    getCleanupRcvFilesData,
+    getCleanupRcvFilesTmpPaths,
+    getCleanupRcvFilesToDelete,
 
     -- * utilities
     withConnection,
@@ -1738,8 +1739,8 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
   firstRow fromOnly SEXFTPServerNotFound $
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> IO (Either StoreError RcvFileId)
-createRcvFile db gVar userId fd@FileDescription {chunks} tmpPath savePath = runExceptT $ do
+createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> FilePath -> IO (Either StoreError RcvFileId)
+createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath savePath = runExceptT $ do
   (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile fd
   liftIO $
     forM_ chunks $ \fc@FileChunk {replicas} -> do
@@ -1753,8 +1754,8 @@ createRcvFile db gVar userId fd@FileDescription {chunks} tmpPath savePath = runE
         createWithRandomId gVar $ \rcvFileEntityId ->
           DB.execute
             db
-            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, tmp_path, save_path, status) VALUES (?,?,?,?,?,?,?,?,?,?)"
-            (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, savePath, RFSReceiving)
+            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+            ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize) :. (prefixPath, tmpPath, savePath, RFSReceiving))
       rcvFileId <- liftIO $ insertedRowId db
       pure (rcvFileEntityId, rcvFileId)
     insertChunk :: FileChunk -> DBRcvFileId -> IO Int64
@@ -1794,15 +1795,15 @@ getRcvFile db rcvFileId = runExceptT $ do
         DB.query
           db
           [sql|
-            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, tmp_path, save_path, status, to_delete
+            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, status, to_delete
             FROM rcv_files
             WHERE rcv_file_id = ?
           |]
           (Only rcvFileId)
       where
-        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, Maybe FilePath, FilePath, RcvFileStatus, Bool) -> RcvFile
-        toFile (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, savePath, status, toDelete) =
-          RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, tmpPath, savePath, status, toDelete, chunks = []}
+        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath, FilePath, RcvFileStatus, Bool) -> RcvFile
+        toFile (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, savePath, status, toDelete) =
+          RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, savePath, status, toDelete, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
       chunks <-
@@ -1956,14 +1957,23 @@ getPendingRcvFilesServers db = do
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash
 
-getCleanupRcvFilesData :: DB.Connection -> IO [(DBRcvFileId, Maybe FilePath, Bool)]
-getCleanupRcvFilesData db =
+getCleanupRcvFilesTmpPaths :: DB.Connection -> IO [(DBRcvFileId, FilePath)]
+getCleanupRcvFilesTmpPaths db =
   DB.query
     db
     [sql|
-      SELECT rcv_file_id, tmp_path, to_delete
+      SELECT rcv_file_id, tmp_path
       FROM rcv_files
-      WHERE (status IN (?,?) AND tmp_path IS NOT NULL)
-         OR to_delete = 1
+      WHERE status IN (?,?) AND tmp_path IS NOT NULL
     |]
     (RFSComplete, RFSError)
+
+getCleanupRcvFilesToDelete :: DB.Connection -> IO [(DBRcvFileId, FilePath)]
+getCleanupRcvFilesToDelete db =
+  DB.query_
+    db
+    [sql|
+      SELECT rcv_file_id, prefix_path
+      FROM rcv_files
+      WHERE to_delete = 1
+    |]

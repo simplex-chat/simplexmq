@@ -32,6 +32,8 @@ import qualified Data.ByteString.Char8 as B
 import Data.List (isSuffixOf, partition)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
@@ -47,20 +49,26 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow, unlessM)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> FilePath -> m RcvFileId
-receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath savePath = do
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
+receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath = do
   g <- asks idsDrg
   workPath <- maybe getTemporaryDirectory pure xftpWorkPath
-  encPath <- uniqueCombine workPath "xftp.encrypted"
+  ts <- liftIO getCurrentTime
+  let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%3q" ts
+  prefixPath <- uniqueCombine workPath (isoTime <> "_rcv.xftp")
+  createDirectory prefixPath
+  let encPath = prefixPath </> "xftp.encrypted"
   createDirectory encPath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd encPath savePath
+  let savePath = prefixPath </> "xftp.decrypted"
+  createEmptyFile savePath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd prefixPath encPath savePath
   forM_ chunks downloadChunk
   pure fId
   where
@@ -68,6 +76,11 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWork
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
       addXFTPWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
+
+createEmptyFile :: AgentMonad m => FilePath -> m ()
+createEmptyFile fPath = do
+  h <- openFile fPath AppendMode
+  liftIO $ B.hPut h "" >> hFlush h
 
 addXFTPWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
 addXFTPWorker c srv_ = do
@@ -162,26 +175,15 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
       -- TODO test; recreate file if it's in status RFSDecrypting
       -- when (status == RFSDecrypting) $
-      --   whenM (doesFileExist savePath) (removeFile savePath >> emptyFile)
-      -- TODO solve race between deleting file in client and decrypting it here:
-      -- TODO - async delete command, on response delete file in client?
-      -- TODO   - queue to_delete files to local worker?
-      -- TODO - fully manage save path in agent (touch, delete)?
-      -- TODO - fail on decryption of first chunk if file doesn't already exist,
-      -- TODO   similar to check below, but right before writing to file? can race with uniqueCombine in chat?
-      unlessM (doesFileExist savePath) $ throwError $ INTERNAL "savePath doesn't exist"
+      --   whenM (doesFileExist savePath) (removeFile savePath >> createEmptyFile savePath)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure savePath
       forM_ tmpPath removePath
       withStore' c (`updateRcvFileComplete` rcvFileId)
-      notify RFDONE
+      notify $ RFDONE savePath
       where
-        -- emptyFile :: m ()
-        -- emptyFile = do
-        --   h <- openFile savePath AppendMode
-        --   liftIO $ B.hPut h "" >> hFlush h
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
         notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
@@ -194,10 +196,10 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
 
 deleteRcvFile :: AgentMonad m => AgentClient -> UserId -> RcvFileId -> m ()
 deleteRcvFile c userId rcvFileEntityId = do
-  RcvFile {rcvFileId, tmpPath, status} <- withStore c $ \db -> getRcvFileByEntityId db userId rcvFileEntityId
+  RcvFile {rcvFileId, prefixPath, status} <- withStore c $ \db -> getRcvFileByEntityId db userId rcvFileEntityId
   if status == RFSComplete || status == RFSError
     then do
-      forM_ tmpPath removePath
+      removePath prefixPath
       withStore' c (`deleteRcvFile'` rcvFileId)
     else withStore' c (`updateRcvFileToDelete` rcvFileId)
 
