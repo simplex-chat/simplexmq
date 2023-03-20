@@ -93,8 +93,8 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
     pure fId
   disconnectAgentClient rcp
 
-  [prefixPath] <- listDirectory recipientFiles
-  let tmpPath = recipientFiles </> prefixPath </> "xftp.encrypted"
+  [prefixDir] <- listDirectory recipientFiles
+  let tmpPath = recipientFiles </> prefixDir </> "xftp.encrypted"
   doesDirectoryExist tmpPath `shouldReturn` True
 
   rcp' <- getSMPAgentClient agentCfg initAgentServers
@@ -136,8 +136,8 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     pure fId
   disconnectAgentClient rcp
 
-  [prefixPath] <- listDirectory recipientFiles
-  let tmpPath = recipientFiles </> prefixPath </> "xftp.encrypted"
+  [prefixDir] <- listDirectory recipientFiles
+  let tmpPath = recipientFiles </> prefixDir </> "xftp.encrypted"
   doesDirectoryExist tmpPath `shouldReturn` True
 
   -- receive file using agent - should fail with AUTH error
