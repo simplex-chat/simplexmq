@@ -201,7 +201,7 @@ deleteRcvFile c userId rcvFileEntityId = do
     then do
       removePath prefixPath
       withStore' c (`deleteRcvFile'` rcvFileId)
-    else withStore' c (`updateRcvFileToDelete` rcvFileId)
+    else withStore' c (`updateRcvFileDeleted` rcvFileId)
 
 sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
 sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients xftpWorkPath = do

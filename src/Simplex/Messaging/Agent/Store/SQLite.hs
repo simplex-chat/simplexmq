@@ -133,13 +133,13 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileError,
     updateRcvFileComplete,
     updateRcvFileNoTmpPath,
-    updateRcvFileToDelete,
+    updateRcvFileDeleted,
     deleteRcvFile',
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
     getPendingRcvFilesServers,
     getCleanupRcvFilesTmpPaths,
-    getCleanupRcvFilesToDelete,
+    getCleanupRcvFilesDeleted,
 
     -- * utilities
     withConnection,
@@ -1795,15 +1795,15 @@ getRcvFile db rcvFileId = runExceptT $ do
         DB.query
           db
           [sql|
-            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, status, to_delete
+            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, status, deleted
             FROM rcv_files
             WHERE rcv_file_id = ?
           |]
           (Only rcvFileId)
       where
         toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath, FilePath, RcvFileStatus, Bool) -> RcvFile
-        toFile (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, savePath, status, toDelete) =
-          RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, savePath, status, toDelete, chunks = []}
+        toFile (rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, savePath, status, deleted) =
+          RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, savePath, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
       chunks <-
@@ -1875,10 +1875,10 @@ updateRcvFileNoTmpPath db rcvFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET tmp_path = NULL, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
 
-updateRcvFileToDelete :: DB.Connection -> DBRcvFileId -> IO ()
-updateRcvFileToDelete db rcvFileId = do
+updateRcvFileDeleted :: DB.Connection -> DBRcvFileId -> IO ()
+updateRcvFileDeleted db rcvFileId = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_files SET to_delete = 1, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
+  DB.execute db "UPDATE rcv_files SET deleted = 1, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
 
 deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
@@ -1899,7 +1899,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
         JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
         WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
           AND r.received = 0 AND r.replica_number = 1
-          AND f.status = ? AND f.to_delete = 0
+          AND f.status = ? AND f.deleted = 0
         ORDER BY r.created_at ASC
         LIMIT 1
       |]
@@ -1929,7 +1929,7 @@ getNextRcvFileToDecrypt db = do
         [sql|
           SELECT rcv_file_id
           FROM rcv_files
-          WHERE status IN (?,?) AND to_delete = 0
+          WHERE status IN (?,?) AND deleted = 0
           ORDER BY created_at ASC LIMIT 1
         |]
         (RFSReceived, RFSDecrypting)
@@ -1950,7 +1950,7 @@ getPendingRcvFilesServers db = do
         JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
         JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
         WHERE r.received = 0 AND r.replica_number = 1
-          AND f.status = ? AND f.to_delete = 0
+          AND f.status = ? AND f.deleted = 0
       |]
       (Only RFSReceiving)
   where
@@ -1968,12 +1968,12 @@ getCleanupRcvFilesTmpPaths db =
     |]
     (RFSComplete, RFSError)
 
-getCleanupRcvFilesToDelete :: DB.Connection -> IO [(DBRcvFileId, FilePath)]
-getCleanupRcvFilesToDelete db =
+getCleanupRcvFilesDeleted :: DB.Connection -> IO [(DBRcvFileId, FilePath)]
+getCleanupRcvFilesDeleted db =
   DB.query_
     db
     [sql|
       SELECT rcv_file_id, prefix_path
       FROM rcv_files
-      WHERE to_delete = 1
+      WHERE deleted = 1
     |]

@@ -1618,8 +1618,8 @@ cleanupManager c = do
     notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
     deleteFiles = do
       -- cleanup rcv files marked for deletion
-      rcvToDelete <- withStore' c getCleanupRcvFilesToDelete
-      forM_ rcvToDelete $ \(fId, p) -> do
+      rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
+      forM_ rcvDeleted $ \(fId, p) -> do
         removePath p
         withStore' c (`deleteRcvFile'` fId)
       -- cleanup rcv tmp paths

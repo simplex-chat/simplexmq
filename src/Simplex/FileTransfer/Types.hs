@@ -50,7 +50,7 @@ data RcvFile = RcvFile
     tmpPath :: Maybe FilePath,
     savePath :: FilePath,
     status :: RcvFileStatus,
-    toDelete :: Bool
+    deleted :: Bool
   }
   deriving (Eq, Show)
 
