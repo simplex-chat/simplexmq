@@ -16,6 +16,7 @@ import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
@@ -24,7 +25,7 @@ import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (whenM)
+import Simplex.Messaging.Util (eitherToMaybe, whenM)
 import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -169,6 +170,9 @@ iniOnOff section name ini = case lookupValue section name ini of
   Right "off" -> Just False
   Right s -> error . T.unpack $ "invalid INI setting " <> name <> ": " <> s
   _ -> Nothing
+
+strDecodeIni :: StrEncoding a => Text -> Text -> Ini -> Maybe (Either String a)
+strDecodeIni section name ini = strDecode . encodeUtf8 <$> eitherToMaybe (lookupValue section name ini)
 
 withPrompt :: String -> IO a -> IO a
 withPrompt s a = putStr s >> hFlush stdout >> a

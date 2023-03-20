@@ -8,6 +8,7 @@ import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
 import CoreTests.RetryIntervalTests
 import CoreTests.VersionRangeTests
+import FileDescriptionTests (fileDescriptionTests)
 import NtfServerTests (ntfServerTests)
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -15,6 +16,9 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
+import XFTPAgent
+import XFTPCLI
+import XFTPServerTests (xftpServerTests)
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
@@ -39,4 +43,9 @@ main = do
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
+        describe "XFTP" $ do
+          describe "XFTP server" xftpServerTests
+          describe "XFTP file description" fileDescriptionTests
+          describe "XFTP CLI" xftpCLITests
+          describe "XFTP agent" xftpAgentTests
         describe "Server CLIs" cliTests

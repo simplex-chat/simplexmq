@@ -235,7 +235,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       PCEResponseError e -> updateErr "ResponseError " e
       PCEUnexpectedResponse r -> updateErr "UnexpectedResponse " r
       PCETransportError e -> updateErr "TransportError " e
-      PCESignatureError e -> updateErr "SignatureError " e
+      PCECryptoError e -> updateErr "CryptoError " e
       PCEIncompatibleHost -> updateSubStatus smpQueue $ NSErr "IncompatibleHost"
       PCEResponseTimeout -> pure ()
       PCENetworkError -> pure ()

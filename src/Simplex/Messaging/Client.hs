@@ -31,7 +31,7 @@ module Simplex.Messaging.Client
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
-    clientServer,
+    protocolClientServer,
     transportHost',
     transportSession',
 
@@ -64,6 +64,7 @@ module Simplex.Messaging.Client
     transportClientConfig,
     chooseTransportHost,
     proxyUsername,
+    temporaryClientError,
     ServerTransmission,
     ClientCommand,
   )
@@ -253,8 +254,8 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     onionHost = find isOnionHost hosts
     publicHost = find (not . isOnionHost) hosts
 
-clientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient err msg -> String
-clientServer = B.unpack . strEncode . snd3 . transportSession . client_
+protocolClientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient err msg -> String
+protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
 
@@ -413,13 +414,20 @@ data ProtocolClientError err
   | -- | TCP transport handshake or some other transport error.
     -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`.
     PCETransportError TransportError
-  | -- | Error when cryptographically "signing" the command.
-    PCESignatureError C.CryptoError
+  | -- | Error when cryptographically "signing" the command or when initializing crypto_box.
+    PCECryptoError C.CryptoError
   | -- | IO Error
     PCEIOError IOException
   deriving (Eq, Show, Exception)
 
 type SMPClientError = ProtocolClientError ErrorType
+
+temporaryClientError :: ProtocolClientError err -> Bool
+temporaryClientError = \case
+  PCENetworkError -> True
+  PCEResponseTimeout -> True
+  PCEIOError _ -> True
+  _ -> False
 
 -- | Create a new SMP queue.
 --

@@ -300,7 +300,7 @@ disconnectTransport THandle {connection} c activeAt expCfg = do
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 
 verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
-verifyTransmission sig_ signed queueId cmd = do
+verifyTransmission sig_ signed queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
@@ -311,7 +311,7 @@ verifyTransmission sig_ signed queueId cmd = do
     verifyCmd :: SParty p -> (QueueRec -> Bool) -> M VerificationResult
     verifyCmd party f = do
       st <- asks queueStore
-      q_ <- atomically (getQueue st party queueId)
+      q_ <- atomically $ getQueue st party queueId
       pure $ case q_ of
         Right q -> Just q `verified` f q
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed

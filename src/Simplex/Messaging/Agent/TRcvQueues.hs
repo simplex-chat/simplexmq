@@ -16,8 +16,8 @@ import Control.Concurrent.STM
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
 import qualified Data.Set as S
-import Simplex.Messaging.Agent.Protocol (ConnId)
-import Simplex.Messaging.Agent.Store (RcvQueue (..), UserId)
+import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
+import Simplex.Messaging.Agent.Store (RcvQueue (..))
 import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM

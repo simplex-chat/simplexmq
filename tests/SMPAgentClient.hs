@@ -29,14 +29,15 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
+import XFTPClient (testXFTPServer)
 
 agentTestHost :: NonEmpty TransportHost
 agentTestHost = "localhost"
@@ -65,8 +66,8 @@ smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
     get h = do
       t@(_, _, cmdStr) <- tGetRaw h
       case parseAll networkCommandP cmdStr of
-        Right (ACmd SAgent CONNECT {}) -> get h
-        Right (ACmd SAgent DISCONNECT {}) -> get h
+        Right (ACmd SAgent _ CONNECT {}) -> get h
+        Right (ACmd SAgent _ DISCONNECT {}) -> get h
         _ -> pure t
 
 runSmpAgentTest :: forall c a. Transport c => (c -> IO a) -> IO a
@@ -178,6 +179,7 @@ initAgentServers =
   InitialAgentServers
     { smp = userServers [noAuthSrv testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
+      xftp = userServers [noAuthSrv testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
 
@@ -208,7 +210,7 @@ withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
         (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
-userServers :: NonEmpty SMPServerWithAuth -> Map UserId (NonEmpty SMPServerWithAuth)
+userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoServerWithAuth p))
 userServers srvs = M.fromList [(1, srvs)]
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> (ThreadId -> m a) -> m a

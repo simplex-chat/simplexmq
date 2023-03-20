@@ -343,7 +343,8 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req
+  -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect
+  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead
   logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'

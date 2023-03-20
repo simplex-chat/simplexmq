@@ -264,8 +264,6 @@ data PendingCommand = PendingCommand
 
 data AgentCmdType = ACClient | ACInternal
 
-type UserId = Int64
-
 instance StrEncoding AgentCmdType where
   strEncode = \case
     ACClient -> "CLIENT"
@@ -277,20 +275,20 @@ instance StrEncoding AgentCmdType where
       _ -> fail "bad AgentCmdType"
 
 data AgentCommand
-  = AClientCommand (ACommand 'Client)
+  = AClientCommand (APartyCmd 'Client)
   | AInternalCommand InternalCommand
 
 instance StrEncoding AgentCommand where
   strEncode = \case
-    AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand cmd)
+    AClientCommand (APC _ cmd) -> strEncode (ACClient, Str $ serializeCommand cmd)
     AInternalCommand cmd -> strEncode (ACInternal, cmd)
   strP =
     strP_ >>= \case
-      ACClient -> AClientCommand <$> ((\(ACmd _ cmd) -> checkParty cmd) <$?> dbCommandP)
+      ACClient -> AClientCommand <$> ((\(ACmd _ e cmd) -> checkParty $ APC e cmd) <$?> dbCommandP)
       ACInternal -> AInternalCommand <$> strP
 
 data AgentCommandTag
-  = AClientCommandTag (ACommandTag 'Client)
+  = AClientCommandTag (APartyCmdTag 'Client)
   | AInternalCommandTag InternalCommandTag
   deriving (Show)
 
@@ -363,7 +361,7 @@ instance StrEncoding InternalCommandTag where
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
 agentCommandTag = \case
-  AClientCommand cmd -> AClientCommandTag $ aCommandTag cmd
+  AClientCommand cmd -> AClientCommandTag $ aPartyCmdTag cmd
   AInternalCommand cmd -> AInternalCommandTag $ internalCmdTag cmd
 
 internalCmdTag :: InternalCommand -> InternalCommandTag
@@ -535,4 +533,8 @@ data StoreError
     SEX3dhKeysNotFound
   | -- | Used to wrap agent errors inside store operations to avoid race conditions
     SEAgentError AgentErrorType
+  | -- | XFTP Server not found.
+    SEXFTPServerNotFound
+  | -- | XFTP File not found.
+    SEFileNotFound
   deriving (Eq, Show, Exception)

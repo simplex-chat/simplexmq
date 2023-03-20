@@ -22,7 +22,7 @@ import qualified System.TimeManager as TI
 defaultHTTP2BufferSize :: BufferSize
 defaultHTTP2BufferSize = 32768
 
-withHTTP2 :: BufferSize -> (Config -> SessionId -> IO ()) -> TLS -> IO ()
+withHTTP2 :: BufferSize -> (Config -> SessionId -> IO a) -> TLS -> IO a
 withHTTP2 sz run c = E.bracket (allocHTTP2Config c sz) freeSimpleConfig (`run` tlsUniq c)
 
 allocHTTP2Config :: TLS -> BufferSize -> IO Config
@@ -56,25 +56,26 @@ data HTTP2Body = HTTP2Body
 
 class HTTP2BodyChunk a where
   getBodyChunk :: a -> IO ByteString
-  getBodeSize :: a -> Maybe Int
+  getBodySize :: a -> Maybe Int
 
 instance HTTP2BodyChunk HC.Response where
   getBodyChunk = HC.getResponseBodyChunk
   {-# INLINE getBodyChunk #-}
-  getBodeSize = HC.responseBodySize
-  {-# INLINE getBodeSize #-}
+  getBodySize = HC.responseBodySize
+  {-# INLINE getBodySize #-}
 
 instance HTTP2BodyChunk HS.Request where
   getBodyChunk = HS.getRequestBodyChunk
   {-# INLINE getBodyChunk #-}
-  getBodeSize = HS.requestBodySize
-  {-# INLINE getBodeSize #-}
+  getBodySize = HS.requestBodySize
+  {-# INLINE getBodySize #-}
 
 getHTTP2Body :: HTTP2BodyChunk a => a -> Int -> IO HTTP2Body
 getHTTP2Body r n = do
   bodyBuffer <- atomically newTBuffer
   let getPart n' = getBuffered bodyBuffer n' $ getBodyChunk r
   bodyHead <- getPart n
-  let bodySize = fromMaybe 0 $ getBodeSize r
-      bodyPart = if bodySize > n && B.length bodyHead == n then Just getPart else Nothing
+  let bodySize = fromMaybe 0 $ getBodySize r
+      -- TODO check bodySize once it is set
+      bodyPart = if B.length bodyHead == n then Just getPart else Nothing
   pure HTTP2Body {bodyHead, bodySize, bodyPart, bodyBuffer}

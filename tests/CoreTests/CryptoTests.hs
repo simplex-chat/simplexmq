@@ -78,6 +78,8 @@ cryptoTests = do
   describe "lazy secretbox" $ do
     testLazySecretBox
     testLazySecretBoxFile
+    testLazySecretBoxTailTag
+    testLazySecretBoxFileTailTag
   describe "AES GCM" $ do
     testAESGCM
   describe "X509 key encoding" $ do
@@ -151,6 +153,33 @@ testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random s
   LB.writeFile (f <> ".encrypted") s'
   Right s'' <- LC.sbDecrypt k nonce <$> LB.readFile (f <> ".encrypted")
   s'' `shouldBe` s
+
+testLazySecretBoxTailTag :: Spec
+testLazySecretBoxTailTag = it "should lazily encrypt / decrypt string with a random symmetric key (tail tag)" . ioProperty $ do
+  k <- C.randomSbKey
+  nonce <- C.randomCbNonce
+  pure $ \(s, pad) ->
+    let b = LE.encodeUtf8 $ LT.pack s
+        len = LB.length b
+        pad' = min (abs pad) 100000
+        paddedLen = len + pad' + 8
+        cipher = LC.sbEncryptTailTag k nonce b len paddedLen
+        plain = LC.sbDecryptTailTag k nonce paddedLen =<< cipher
+     in isRight cipher && cipher /= (snd <$> plain) && Right (True, b) == plain
+
+testLazySecretBoxFileTailTag :: Spec
+testLazySecretBoxFileTailTag = it "should lazily encrypt / decrypt file with a random symmetric key (tail tag)" $ do
+  k <- C.randomSbKey
+  nonce <- C.randomCbNonce
+  let f = "tests/tmp/testsecretbox"
+      paddedLen = 4 * 1024 * 1024
+      len = 4 * 1000 * 1000 :: Int64
+      s = LC.fastReplicate len 'a'
+  Right s' <- pure $ LC.sbEncryptTailTag k nonce s len paddedLen
+  LB.writeFile (f <> ".encrypted") s'
+  Right (auth, s'') <- LC.sbDecryptTailTag k nonce paddedLen <$> LB.readFile (f <> ".encrypted")
+  s'' `shouldBe` s
+  auth `shouldBe` True
 
 testAESGCM :: Spec
 testAESGCM = it "should encrypt / decrypt string with a random symmetric key" $ do

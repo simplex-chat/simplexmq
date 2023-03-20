@@ -132,16 +132,15 @@ File description format (yml):
 ```
 name: file.ext
 size: 33200000
-chunk: 8Mb
+chunk: 8mb
 hash: abc=
 key: abc=
 iv: abc=
-part_hashes: [def=, def=, def=, def=]
 parts:
   - server: xftp://abc=@example1.com
     chunks: [1:abc=:def=:ghi=, 3:abc=:def=:ghi=]
   - server: xftp://abc=@example2.com
-    chunks: [2:abc=:def=:ghi=, 4:abc=:def=:ghi=]
+    chunks: [2:abc=:def=:ghi=, 4:abc=:def=:ghi=:2mb]
   - server: xftp://abc=@example3.com
     chunks: [1:abc=:def=, 4:abc=:def=]
   - server: xftp://abc=@example4.com
