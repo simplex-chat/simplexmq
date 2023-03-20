@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module CoreTests.RetryIntervalTests where
@@ -38,21 +39,21 @@ testRetryIntervalSameMode =
     intervals <- newTVarIO []
     reportedIntervals <- newTVarIO []
     ts <- newTVarIO =<< getCurrentTime
-    withRetryLock2 testRI lock $ \ri loop -> do
+    withRetryLock2 testRI lock $ \(RI2State slow fast) loop -> do
       ints <- addInterval intervals ts
-      atomically $ modifyTVar' reportedIntervals (ri :)
+      atomically $ modifyTVar' reportedIntervals ((slow, fast) :)
       when (length ints < 9) $ loop RIFast
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ (RIFast, 0),
-                       (RIFast, 10000),
-                       (RIFast, 15000),
-                       (RIFast, 22500),
-                       (RIFast, 33750),
-                       (RIFast, 40000),
-                       (RIFast, 40000),
-                       (RIFast, 40000),
-                       (RIFast, 40000)
+      `shouldReturn` [ (20000, 10000),
+                       (20000, 10000),
+                       (20000, 15000),
+                       (20000, 22500),
+                       (20000, 33750),
+                       (20000, 40000),
+                       (20000, 40000),
+                       (20000, 40000),
+                       (20000, 40000)
                      ]
 
 testRetryIntervalSwitchMode :: Spec
@@ -62,23 +63,23 @@ testRetryIntervalSwitchMode =
     intervals <- newTVarIO []
     reportedIntervals <- newTVarIO []
     ts <- newTVarIO =<< getCurrentTime
-    withRetryLock2 testRI lock $ \ri loop -> do
+    withRetryLock2 testRI lock $ \(RI2State slow fast) loop -> do
       ints <- addInterval intervals ts
-      atomically $ modifyTVar' reportedIntervals (ri :)
+      atomically $ modifyTVar' reportedIntervals ((slow, fast) :)
       when (length ints < 11) $ loop $ if length ints <= 5 then RIFast else RISlow
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 2, 2, 3, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ (RIFast, 0),
-                       (RIFast, 10000),
-                       (RIFast, 15000),
-                       (RIFast, 22500),
-                       (RIFast, 33750),
-                       (RIFast, 40000),
-                       (RISlow, 20000),
-                       (RISlow, 30000),
-                       (RISlow, 40000),
-                       (RISlow, 40000),
-                       (RISlow, 40000)
+      `shouldReturn` [ (20000, 10000),
+                       (20000, 10000),
+                       (20000, 15000),
+                       (20000, 22500),
+                       (20000, 33750),
+                       (20000, 40000),
+                       (20000, 40000),
+                       (30000, 40000),
+                       (40000, 40000),
+                       (40000, 40000),
+                       (40000, 40000)
                      ]
 
 addInterval :: TVar [Int] -> TVar UTCTime -> IO [Int]

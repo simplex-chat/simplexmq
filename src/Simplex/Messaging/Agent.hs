@@ -992,8 +992,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
     E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, internalTs}) ->
-        withRetryLock2 ri qLock $ \_ loop -> do
+      Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, msgRetryState, internalTs}) -> do
+        let ri' = maybe id updateRetryInterval2 msgRetryState ri
+        withRetryLock2 ri' qLock $ \riState loop -> do
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             _ -> sendAgentMessage c sq msgFlags msgBody
@@ -1004,7 +1005,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndOp c $ loop RISlow
+                  _ -> retrySndMsg RISlow
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1013,7 +1014,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
                     | otherwise ->
-                      ifM (msgExpired helloTimeout) connErr (retrySndOp c $ loop RIFast)
+                      ifM (msgExpired helloTimeout) connErr (retrySndMsg RIFast)
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -1032,13 +1033,16 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndOp c $ loop RIFast)
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg RIFast)
                   | otherwise -> notifyDel msgId err
               where
                 msgExpired timeoutSel = do
                   msgTimeout <- asks $ timeoutSel . config
                   currentTime <- liftIO getCurrentTime
                   pure $ diffUTCTime currentTime internalTs > msgTimeout
+                retrySndMsg riMode = do
+                  withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
+                  retrySndOp c $ loop riMode
             Right () -> do
               case msgType of
                 AM_CONN_INFO -> do
