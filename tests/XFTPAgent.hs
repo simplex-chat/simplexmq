@@ -28,7 +28,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should receive file" testXFTPAgentReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
-  it "should send file using experimental api" testXFTPAgentSendExperimental -- TODO uses default servers (remote)
+  it "should send file using experimental api" testXFTPAgentSendExperimental
 
 testXFTPAgentReceive :: IO ()
 testXFTPAgentReceive = withXFTPServer $ do
