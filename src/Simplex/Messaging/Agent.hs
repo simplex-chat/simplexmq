@@ -81,6 +81,7 @@ module Simplex.Messaging.Agent
     getNtfTokenData,
     toggleConnectionNtfs,
     xftpReceiveFile,
+    xftpDeleteRcvFile,
     xftpSendFile,
     activateAgent,
     suspendAgent,
@@ -115,7 +116,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (addXFTPWorker, receiveFile, sendFileExperimental)
+import Simplex.FileTransfer.Agent (addXFTPWorker, deleteRcvFile, receiveFile, sendFileExperimental)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -339,8 +340,12 @@ toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m 
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> FilePath -> m RcvFileId
-xftpReceiveFile c = withAgentEnv c .:: receiveFile c
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
+xftpReceiveFile c = withAgentEnv c .:. receiveFile c
+
+-- | Delete XFTP rcv file (deletes work files from file system and db records)
+xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> UserId -> RcvFileId -> m ()
+xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
@@ -1604,7 +1609,7 @@ cleanupManager c = do
   forever $ do
     void . runExceptT $ do
       deleteConns
-      deleteTmpPaths
+      deleteFiles
       threadDelay int
   where
     deleteConns =
@@ -1612,9 +1617,15 @@ cleanupManager c = do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
     notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
-    deleteTmpPaths = do
-      tmpPaths <- withStore' c getTmpFilePaths
-      forM_ tmpPaths $ \(fId, p) -> do
+    deleteFiles = do
+      -- cleanup rcv files marked for deletion
+      rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
+      forM_ rcvDeleted $ \(fId, p) -> do
+        removePath p
+        withStore' c (`deleteRcvFile'` fId)
+      -- cleanup rcv tmp paths
+      rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
+      forM_ rcvTmpPaths $ \(fId, p) -> do
         removePath p
         withStore' c (`updateRcvFileNoTmpPath` fId)
 
