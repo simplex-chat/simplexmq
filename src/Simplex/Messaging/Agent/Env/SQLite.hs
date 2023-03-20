@@ -12,6 +12,7 @@
 
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
+    AgentMonad',
     AgentConfig (..),
     AgentDatabase (..),
     databaseFile,
@@ -24,6 +25,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
+    XFTPAgent (..),
   )
 where
 
@@ -33,13 +35,16 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
+import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
+import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
+import Simplex.FileTransfer.Types (DBSndFileId)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
@@ -47,7 +52,7 @@ import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -57,12 +62,14 @@ import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
 
--- | Agent monad with MonadReader Env and MonadError AgentErrorType
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
+type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
+
+type AgentMonad m = (AgentMonad' m, MonadError AgentErrorType m)
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),
     ntf :: [NtfServer],
+    xftp :: Map UserId (NonEmpty XFTPServerWithAuth),
     netCfg :: NetworkConfig
   }
 
@@ -84,6 +91,7 @@ data AgentConfig = AgentConfig
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
+    xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
@@ -144,6 +152,7 @@ defaultAgentConfig =
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
+      xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
@@ -173,7 +182,8 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
-    ntfSupervisor :: NtfSupervisor
+    ntfSupervisor :: NtfSupervisor,
+    xftpAgent :: XFTPAgent
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -185,7 +195,8 @@ newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} =
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+  xftpAgent <- atomically newXFTPAgent
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
 createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
@@ -207,3 +218,20 @@ newNtfSubSupervisor qSize = do
   ntfWorkers <- TM.empty
   ntfSMPWorkers <- TM.empty
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+
+data XFTPAgent = XFTPAgent
+  { xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    -- separate send workers for unhindered concurrency between download and upload,
+    -- clients can also be separate by passing direction to withXFTPClient, and differentiating by it
+    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    -- files currently in upload - to throttle upload of other files' chunks,
+    -- this optimization can be dropped for the MVP
+    xftpSndFiles :: TVar (Set DBSndFileId)
+  }
+
+newXFTPAgent :: STM XFTPAgent
+newXFTPAgent = do
+  xftpWorkers <- TM.empty
+  xftpSndWorkers <- TM.empty
+  xftpSndFiles <- newTVar S.empty
+  pure XFTPAgent {xftpWorkers, xftpSndWorkers, xftpSndFiles}

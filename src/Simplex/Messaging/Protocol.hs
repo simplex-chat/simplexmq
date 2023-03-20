@@ -65,6 +65,7 @@ module Simplex.Messaging.Protocol
     PrivHeader (..),
     Protocol (..),
     ProtocolType (..),
+    SProtocolType (..),
     AProtocolType (..),
     ProtocolTypeI (..),
     ProtocolServer (..),
@@ -74,7 +75,11 @@ module Simplex.Messaging.Protocol
     SMPServerWithAuth,
     NtfServer,
     pattern NtfServer,
+    XFTPServer,
+    pattern XFTPServer,
+    XFTPServerWithAuth,
     ProtoServerWithAuth (..),
+    AProtoServerWithAuth (..),
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
@@ -165,7 +170,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -623,6 +628,15 @@ pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
 
+type XFTPServer = ProtocolServer 'PXFTP
+
+pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
+pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash
+
+{-# COMPLETE XFTPServer #-}
+
+type XFTPServerWithAuth = ProtoServerWithAuth 'PXFTP
+
 sameSrvAddr' :: ProtoServerWithAuth p -> ProtoServerWithAuth p -> Bool
 sameSrvAddr' (ProtoServerWithAuth srv _) (ProtoServerWithAuth srv' _) = sameSrvAddr srv srv'
 {-# INLINE sameSrvAddr' #-}
@@ -631,22 +645,25 @@ sameSrvAddr :: ProtocolServer p -> ProtocolServer p -> Bool
 sameSrvAddr ProtocolServer {host, port} ProtocolServer {host = h', port = p'} = host == h' && port == p'
 {-# INLINE sameSrvAddr #-}
 
-data ProtocolType = PSMP | PNTF
+data ProtocolType = PSMP | PNTF | PXFTP
   deriving (Eq, Ord, Show)
 
 instance StrEncoding ProtocolType where
   strEncode = \case
     PSMP -> "smp"
     PNTF -> "ntf"
+    PXFTP -> "xftp"
   strP =
     A.takeTill (\c -> c == ':' || c == ' ') >>= \case
       "smp" -> pure PSMP
       "ntf" -> pure PNTF
+      "xftp" -> pure PXFTP
       _ -> fail "bad ProtocolType"
 
 data SProtocolType (p :: ProtocolType) where
   SPSMP :: SProtocolType 'PSMP
   SPNTF :: SProtocolType 'PNTF
+  SPXFTP :: SProtocolType 'PXFTP
 
 deriving instance Eq (SProtocolType p)
 
@@ -664,17 +681,20 @@ instance Eq AProtocolType where
 instance TestEquality SProtocolType where
   testEquality SPSMP SPSMP = Just Refl
   testEquality SPNTF SPNTF = Just Refl
+  testEquality SPXFTP SPXFTP = Just Refl
   testEquality _ _ = Nothing
 
 protocolType :: SProtocolType p -> ProtocolType
 protocolType = \case
   SPSMP -> PSMP
   SPNTF -> PNTF
+  SPXFTP -> PXFTP
 
 aProtocolType :: ProtocolType -> AProtocolType
 aProtocolType = \case
   PSMP -> AProtocolType SPSMP
   PNTF -> AProtocolType SPNTF
+  PXFTP -> AProtocolType SPXFTP
 
 instance ProtocolTypeI p => StrEncoding (SProtocolType p) where
   strEncode = strEncode . protocolType
@@ -700,6 +720,8 @@ instance ProtocolTypeI 'PSMP where protocolTypeI = SPSMP
 
 instance ProtocolTypeI 'PNTF where protocolTypeI = SPNTF
 
+instance ProtocolTypeI 'PXFTP where protocolTypeI = SPXFTP
+
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer
   { scheme :: SProtocolType p,
@@ -708,6 +730,8 @@ data ProtocolServer p = ProtocolServer
     keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
+
+data AProtocolServer = forall p. ProtocolTypeI p => AProtocolServer (SProtocolType p) (ProtocolServer p)
 
 instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
@@ -724,15 +748,18 @@ instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
     strEncodeServer scheme (strEncode host) port keyHash Nothing
   strP =
     serverStrP >>= \case
-      (srv, Nothing) -> pure srv
+      (AProtocolServer _ srv, Nothing) -> either fail pure $ checkProtocolType srv
       _ -> fail "ProtocolServer with basic auth not allowed"
 
 instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
+  parseJSON = strParseJSON "ProtocolServer"
+
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 instance IsString BasicAuth where fromString = BasicAuth . B.pack
 
@@ -752,15 +779,25 @@ basicAuth s
     valid c = isPrint c && not (isSpace c) && c /= '@' && c /= ':' && c /= '/'
 
 data ProtoServerWithAuth p = ProtoServerWithAuth {protoServer :: ProtocolServer p, serverBasicAuth :: Maybe BasicAuth}
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance ProtocolTypeI p => IsString (ProtoServerWithAuth p) where
   fromString = parseString strDecode
 
+data AProtoServerWithAuth = forall p. ProtocolTypeI p => AProtoServerWithAuth (SProtocolType p) (ProtoServerWithAuth p)
+
+deriving instance Show AProtoServerWithAuth
+
 instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
   strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
     strEncodeServer scheme (strEncode host) port keyHash auth_
-  strP = uncurry ProtoServerWithAuth <$> serverStrP
+  strP = (\(AProtoServerWithAuth _ srv) -> checkProtocolType srv) <$?> strP
+
+instance StrEncoding AProtoServerWithAuth where
+  strEncode (AProtoServerWithAuth _ srv) = strEncode srv
+  strP =
+    serverStrP >>= \(AProtocolServer p srv, auth) ->
+      pure $ AProtoServerWithAuth p (ProtoServerWithAuth srv auth)
 
 instance ProtocolTypeI p => ToJSON (ProtoServerWithAuth p) where
   toJSON = strToJSON
@@ -768,6 +805,13 @@ instance ProtocolTypeI p => ToJSON (ProtoServerWithAuth p) where
 
 instance ProtocolTypeI p => FromJSON (ProtoServerWithAuth p) where
   parseJSON = strParseJSON "ProtoServerWithAuth"
+
+instance ToJSON AProtoServerWithAuth where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON AProtoServerWithAuth where
+  parseJSON = strParseJSON "AProtoServerWithAuth"
 
 noAuthSrv :: ProtocolServer p -> ProtoServerWithAuth p
 noAuthSrv srv = ProtoServerWithAuth srv Nothing
@@ -791,14 +835,15 @@ strEncodeServer scheme host port keyHash auth_ =
   where
     portStr = B.pack $ if null port then "" else ':' : port
 
-serverStrP :: ProtocolTypeI p => Parser (ProtocolServer p, Maybe BasicAuth)
+serverStrP :: Parser (AProtocolServer, Maybe BasicAuth)
 serverStrP = do
   scheme <- strP <* "://"
   keyHash <- strP
   auth_ <- optional $ A.char ':' *> strP
   TransportHosts host <- A.char '@' *> strP
   port <- portP <|> pure ""
-  pure (ProtocolServer {scheme, host, port, keyHash}, auth_)
+  pure $ case scheme of
+    AProtocolType s -> (AProtocolServer s $ ProtocolServer {scheme = s, host, port, keyHash}, auth_)
   where
     portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
@@ -1133,9 +1178,7 @@ checkParty c = case testEquality (sParty @p) (sParty @p') of
   Nothing -> Left "bad command party"
 
 checkParty' :: forall t p p'. (PartyI p, PartyI p') => t p' -> Maybe (t p)
-checkParty' c = case testEquality (sParty @p) (sParty @p') of
-  Just Refl -> Just c
-  _ -> Nothing
+checkParty' = eitherToMaybe . checkParty
 
 instance Encoding ErrorType where
   smpEncode = \case
@@ -1214,7 +1257,7 @@ tPut th trs
                 Just ts' -> encodeBatch n' s' ts'
                 _ -> (n', s', Nothing)
 
-tEncode :: C.CryptoSignature s => (s, ByteString) -> ByteString
+tEncode :: (Maybe C.ASignature, ByteString) -> ByteString
 tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
 
 tEncodeBatch :: Int -> ByteString -> ByteString

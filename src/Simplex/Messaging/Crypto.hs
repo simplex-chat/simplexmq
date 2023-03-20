@@ -121,6 +121,7 @@ module Simplex.Messaging.Crypto
     sbEncrypt,
     sbDecrypt,
     sbKey,
+    unsafeSbKey,
     randomSbKey,
 
     -- * pseudo-random bytes
@@ -758,10 +759,18 @@ instance FromJSON Key where
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
+  deriving (Eq, Show)
 
 instance Encoding IV where
   smpEncode = unIV
   smpP = IV <$> A.take (ivSize @AES256)
+
+instance ToJSON IV where
+  toJSON = strToJSON . unIV
+  toEncoding = strToJEncoding . unIV
+
+instance FromJSON IV where
+  parseJSON = fmap IV . strParseJSON "IV"
 
 -- | GCMIV bytes newtype.
 newtype GCMIV = GCMIV {unGCMIV :: ByteString}
@@ -1025,6 +1034,13 @@ instance ToJSON CbNonce where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance FromJSON CbNonce where
+  parseJSON = strParseJSON "CbNonce"
+
+instance FromField CbNonce where fromField f = CryptoBoxNonce <$> fromField f
+
+instance ToField CbNonce where toField (CryptoBoxNonce s) = toField s
+
 cbNonce :: ByteString -> CbNonce
 cbNonce s
   | len == 24 = CryptoBoxNonce s
@@ -1056,19 +1072,26 @@ pattern SbKey s <- SecretBoxKey s
 
 instance StrEncoding SbKey where
   strEncode (SbKey s) = strEncode s
-  strP = sbKey <$> strP
+  strP = sbKey <$?> strP
 
 instance ToJSON SbKey where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
-sbKey :: ByteString -> SbKey
+instance FromJSON SbKey where
+  parseJSON = strParseJSON "SbKey"
+
+instance FromField SbKey where fromField f = SecretBoxKey <$> fromField f
+
+instance ToField SbKey where toField (SecretBoxKey s) = toField s
+
+sbKey :: ByteString -> Either String SbKey
 sbKey s
-  | len == 32 = SecretBoxKey s
-  | len > 32 = SecretBoxKey . fst $ B.splitAt 32 s
-  | otherwise = SecretBoxKey $ s <> B.replicate (32 - len) (toEnum 0)
-  where
-    len = B.length s
+  | B.length s == 32 = Right $ SecretBoxKey s
+  | otherwise = Left "SbKey: invalid length"
+
+unsafeSbKey :: ByteString -> SbKey
+unsafeSbKey s = either error id $ sbKey s
 
 randomSbKey :: IO SbKey
 randomSbKey = SecretBoxKey <$> getRandomBytes 32

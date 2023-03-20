@@ -8,6 +8,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
@@ -19,6 +20,10 @@ module AgentTests.FunctionalAPITests
     runRight,
     runRight_,
     get,
+    get',
+    rfGet,
+    sfGet,
+    nGet,
     (##>),
     (=##>),
     pattern Msg,
@@ -38,13 +43,13 @@ import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import Data.Type.Equality
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (SMPTestFailure (..), SMPTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Agent.Store (UserId)
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -58,21 +63,42 @@ import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO
 
-(##>) :: (HasCallStack, MonadIO m) => m (ATransmission 'Agent) -> ATransmission 'Agent -> m ()
+type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
+
+(##>) :: (HasCallStack, MonadIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
 a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
 
-(=##>) :: (HasCallStack, MonadIO m) => m (ATransmission 'Agent) -> (ATransmission 'Agent -> Bool) -> m ()
+(=##>) :: (Show a, HasCallStack, MonadIO m) => m a -> (a -> Bool) -> m ()
 a =##> p = a >>= \t -> liftIO (t `shouldSatisfy` p)
 
-get :: MonadIO m => AgentClient -> m (ATransmission 'Agent)
-get c = do
-  t@(_, _, cmd) <- atomically (readTBQueue $ subQ c)
+get :: MonadIO m => AgentClient -> m (AEntityTransmission 'AEConn)
+get = get' @'AEConn
+
+rfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AERcvFile)
+rfGet = get' @'AERcvFile
+
+sfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AESndFile)
+sfGet = get' @'AESndFile
+
+nGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AENone)
+nGet = get' @'AENone
+
+get' :: forall e m. (MonadIO m, AEntityI e) => AgentClient -> m (AEntityTransmission e)
+get' c = do
+  (corrId, connId, APC e cmd) <- pGet c
+  case testEquality e (sAEntity @e) of
+    Just Refl -> pure (corrId, connId, cmd)
+    _ -> error $ "unexpected command " <> show cmd
+
+pGet :: forall m. MonadIO m => AgentClient -> m (ATransmission 'Agent)
+pGet c = do
+  t@(_, _, APC _ cmd) <- atomically (readTBQueue $ subQ c)
   case cmd of
-    CONNECT {} -> get c
-    DISCONNECT {} -> get c
+    CONNECT {} -> pGet c
+    DISCONNECT {} -> pGet c
     _ -> pure t
 
-pattern Msg :: MsgBody -> ACommand 'Agent
+pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 smpCfgV1 :: ProtocolClientConfig
@@ -87,7 +113,7 @@ agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = vr11}
 vr11 :: VersionRange
 vr11 = mkVersionRange 1 1
 
-runRight_ :: HasCallStack => ExceptT AgentErrorType IO () -> Expectation
+runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
 
 runRight :: HasCallStack => ExceptT AgentErrorType IO a -> IO a
@@ -387,12 +413,12 @@ testAsyncServerOffline t = do
     runRight $ createConnection alice 1 True SCMInvitation Nothing
   -- connection fails
   Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True cReq "bob's connInfo"
-  ("", "", DOWN srv conns) <- get alice
+  ("", "", DOWN srv conns) <- nGet alice
   srv `shouldBe` testSMPServer
   conns `shouldBe` [bobId]
   -- connection succeeds after server start
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
-    ("", "", UP srv1 conns1) <- get alice
+    ("", "", UP srv1 conns1) <- nGet alice
     liftIO $ do
       srv1 `shouldBe` testSMPServer
       conns1 `shouldBe` [bobId]
@@ -439,8 +465,8 @@ testDuplicateMessage t = do
 
     pure (aliceId, bobId, bob1)
 
-  get alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
-  get bob1 =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
+  nGet alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+  nGet bob1 =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
   -- commenting two lines below and uncommenting further two lines would also runRight_,
   -- it is the scenario tested above, when the message was not acknowledged by the user
   threadDelay 200000
@@ -484,7 +510,7 @@ testInactiveClientDisconnected t = do
     alice <- getSMPAgentClient agentCfg initAgentServers
     runRight_ $ do
       (connId, _cReq) <- createConnection alice 1 True SCMInvitation Nothing
-      get alice ##> ("", "", DOWN testSMPServer [connId])
+      nGet alice ##> ("", "", DOWN testSMPServer [connId])
 
 testActiveClientNotDisconnected :: ATransport -> IO ()
 testActiveClientNotDisconnected t = do
@@ -510,7 +536,7 @@ testActiveClientNotDisconnected t = do
           Nothing <- 800000 `timeout` get alice
           liftIO $ threadDelay 1200000
           -- and after 2 sec of inactivity DOWN is sent
-          get alice ##> ("", "", DOWN testSMPServer [connId])
+          nGet alice ##> ("", "", DOWN testSMPServer [connId])
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
 
 testSuspendingAgent :: IO ()
@@ -524,7 +550,7 @@ testSuspendingAgent = do
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4
     suspendAgent b 1000000
-    get b ##> ("", "", SUSPENDED)
+    get' b ##> ("", "", SUSPENDED)
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
@@ -544,21 +570,21 @@ testSuspendingAgentCompleteSending t = do
     pure (aId, bId)
 
   runRight_ $ do
-    ("", "", DOWN {}) <- get a
-    ("", "", DOWN {}) <- get b
+    ("", "", DOWN {}) <- nGet a
+    ("", "", DOWN {}) <- nGet b
     5 <- sendMessage b aId SMP.noMsgFlags "hello too"
     6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     liftIO $ threadDelay 100000
     suspendAgent b 5000000
 
-  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
-    get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
-    get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
-    get b =##> \case ("", c, SENT 6) -> c == aId; ("", "", UP {}) -> True; _ -> False
-    ("", "", SUSPENDED) <- get b
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
+    pGet b =##> \case ("", c, APC _ (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, APC _ (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, APC _ (SENT 6)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    ("", "", SUSPENDED) <- nGet b
 
-    get a =##> \case ("", c, Msg "hello too") -> c == bId; ("", "", UP {}) -> True; _ -> False
-    get a =##> \case ("", c, Msg "hello too") -> c == bId; ("", "", UP {}) -> True; _ -> False
+    pGet a =##> \case ("", c, APC _ (Msg "hello too")) -> c == bId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet a =##> \case ("", c, APC _ (Msg "hello too")) -> c == bId; ("", "", APC _ UP {}) -> True; _ -> False
     ackMessage a bId 5
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
     ackMessage a bId 6
@@ -576,12 +602,12 @@ testSuspendingAgentTimeout t = do
     pure (aId, bId)
 
   runRight_ $ do
-    ("", "", DOWN {}) <- get a
-    ("", "", DOWN {}) <- get b
+    ("", "", DOWN {}) <- nGet a
+    ("", "", DOWN {}) <- nGet b
     5 <- sendMessage b aId SMP.noMsgFlags "hello too"
     6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     suspendAgent b 100000
-    ("", "", SUSPENDED) <- get b
+    ("", "", SUSPENDED) <- nGet b
     pure ()
 
 testBatchedSubscriptions :: ATransport -> IO ()
@@ -596,15 +622,15 @@ testBatchedSubscriptions t = do
     delete b aIds'
     liftIO $ threadDelay 1000000
     pure conns
-  ("", "", DOWN {}) <- get a
-  ("", "", DOWN {}) <- get a
-  ("", "", DOWN {}) <- get b
-  ("", "", DOWN {}) <- get b
+  ("", "", DOWN {}) <- nGet a
+  ("", "", DOWN {}) <- nGet a
+  ("", "", DOWN {}) <- nGet b
+  ("", "", DOWN {}) <- nGet b
   runServers $ do
-    ("", "", UP {}) <- get a
-    ("", "", UP {}) <- get a
-    ("", "", UP {}) <- get b
-    ("", "", UP {}) <- get b
+    ("", "", UP {}) <- nGet a
+    ("", "", UP {}) <- nGet a
+    ("", "", UP {}) <- nGet b
+    ("", "", UP {}) <- nGet b
     liftIO $ threadDelay 1000000
     let (aIds, bIds) = unzip conns
         conns' = drop 10 conns
@@ -777,7 +803,7 @@ testUsers = do
     deleteUser a auId True
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId'; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
-    get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    nGet a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     exchangeGreetingsMsgId 6 a bId b aId
     liftIO $ noMessages a "nothing else should be delivered to alice"
 
@@ -806,18 +832,18 @@ testUsersNoServer t = do
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     pure (aId, bId, auId, aId', bId')
-  get a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
-  get a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
-  get b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
+  nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
+  nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId || c == bId'; _ -> False
+  nGet b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
   runRight_ $ do
     deleteUser a auId True
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
-    get a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
+    nGet a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
-    get a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
-    get b =##> \case ("", "", UP _ cs) -> length cs == 2; _ -> False
+    nGet a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
+    nGet b =##> \case ("", "", UP _ cs) -> length cs == 2; _ -> False
     exchangeGreetingsMsgId 6 a bId b aId
 
 testSwitchConnection :: InitialAgentServers -> IO ()
@@ -961,8 +987,8 @@ testTwoUsers = do
     b `hasClients` 1
     setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- get a
-    ("", "", UP _ _) <- get a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     a `hasClients` 2
 
     exchangeGreetingsMsgId 6 a bId1 b aId1
@@ -970,10 +996,10 @@ testTwoUsers = do
     liftIO $ threadDelay 250000
     setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- get a
-    ("", "", DOWN _ _) <- get a
-    ("", "", UP _ _) <- get a
-    ("", "", UP _ _) <- get a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     a `hasClients` 1
 
     aUserId2 <- createUser a [noAuthSrv testSMPServer]
@@ -985,10 +1011,10 @@ testTwoUsers = do
     b `hasClients` 1
     setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- get a
-    ("", "", DOWN _ _) <- get a
-    ("", "", UP _ _) <- get a
-    ("", "", UP _ _) <- get a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     a `hasClients` 4
     exchangeGreetingsMsgId 8 a bId1 b aId1
     exchangeGreetingsMsgId 8 a bId1' b aId1'
@@ -997,14 +1023,14 @@ testTwoUsers = do
     liftIO $ threadDelay 250000
     setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- get a
-    ("", "", DOWN _ _) <- get a
-    ("", "", DOWN _ _) <- get a
-    ("", "", DOWN _ _) <- get a
-    ("", "", UP _ _) <- get a
-    ("", "", UP _ _) <- get a
-    ("", "", UP _ _) <- get a
-    ("", "", UP _ _) <- get a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", DOWN _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     a `hasClients` 2
     exchangeGreetingsMsgId 10 a bId1 b aId1
     exchangeGreetingsMsgId 10 a bId1' b aId1'
