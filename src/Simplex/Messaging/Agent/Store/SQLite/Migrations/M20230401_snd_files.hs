@@ -1,13 +1,13 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230307_snd_files where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
 -- this migration is a draft - it is not included in the list of migrations
-m20230307_snd_files :: Query
-m20230307_snd_files =
+m20230401_snd_files :: Query
+m20230401_snd_files =
   [sql|
 CREATE TABLE snd_files (
   snd_file_id INTEGER PRIMARY KEY AUTOINCREMENT,

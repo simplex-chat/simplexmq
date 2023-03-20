@@ -78,7 +78,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230307_snd_files
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
