@@ -61,7 +61,7 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWork
   g <- asks idsDrg
   workPath <- maybe getTemporaryDirectory pure xftpWorkPath
   ts <- liftIO getCurrentTime
-  let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%3q" ts
+  let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
   prefixPath <- uniqueCombine workPath (isoTime <> "_rcv.xftp")
   createDirectory prefixPath
   let tmpPath = prefixPath </> "xftp.encrypted"
