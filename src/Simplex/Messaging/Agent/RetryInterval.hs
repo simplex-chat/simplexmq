@@ -40,8 +40,8 @@ data RI2State = RI2State
 updateRetryInterval2 :: RI2State -> RetryInterval2 -> RetryInterval2
 updateRetryInterval2 RI2State {slowInterval, fastInterval} RetryInterval2 {riSlow, riFast} =
   RetryInterval2
-    { riSlow = riSlow {initialInterval = slowInterval},
-      riFast = riFast {initialInterval = fastInterval}
+    { riSlow = riSlow {initialInterval = slowInterval, increaseAfter = 0},
+      riFast = riFast {initialInterval = fastInterval, increaseAfter = 0}
     }
 
 data RetryIntervalMode = RISlow | RIFast

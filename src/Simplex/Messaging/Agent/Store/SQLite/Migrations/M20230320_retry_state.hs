@@ -8,6 +8,6 @@ import Database.SQLite.Simple.QQ (sql)
 m20230320_retry_state :: Query
 m20230320_retry_state =
   [sql|
-ALTER TABLE snd_messages ADD COLUMN retry_int_slow INTEGER NULL;
-ALTER TABLE snd_messages ADD COLUMN retry_int_fast INTEGER NULL;
+ALTER TABLE snd_messages ADD COLUMN retry_int_slow INTEGER;
+ALTER TABLE snd_messages ADD COLUMN retry_int_fast INTEGER;
 |]
