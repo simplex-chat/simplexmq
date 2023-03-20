@@ -64,11 +64,11 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWork
   let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%3q" ts
   prefixPath <- uniqueCombine workPath (isoTime <> "_rcv.xftp")
   createDirectory prefixPath
-  let encPath = prefixPath </> "xftp.encrypted"
-  createDirectory encPath
+  let tmpPath = prefixPath </> "xftp.encrypted"
+  createDirectory tmpPath
   let savePath = prefixPath </> "xftp.decrypted"
   createEmptyFile savePath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd prefixPath encPath savePath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd prefixPath tmpPath savePath
   forM_ chunks downloadChunk
   pure fId
   where
