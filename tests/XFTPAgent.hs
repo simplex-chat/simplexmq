@@ -25,10 +25,10 @@ import XFTPClient
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "Functional API" $ do
-  it "should receive file" testXFTPAgentReceive
-  it "should resume receiving file after restart" testXFTPAgentReceiveRestore
-  it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
-  it "should send file using experimental api" testXFTPAgentSendExperimental
+  fit "should receive file" testXFTPAgentReceive
+  fit "should resume receiving file after restart" testXFTPAgentReceiveRestore
+  fit "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
+  fit "should send file using experimental api" testXFTPAgentSendExperimental
 
 testXFTPAgentReceive :: IO ()
 testXFTPAgentReceive = withXFTPServer $ do

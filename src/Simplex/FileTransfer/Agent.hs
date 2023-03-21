@@ -10,7 +10,9 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Agent
-  ( -- Receiving files
+  ( startWorkers,
+    toFSFilePath,
+    -- Receiving files
     receiveFile,
     addXFTPWorker,
     deleteRcvFile,
@@ -57,19 +59,34 @@ import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
-receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath = do
+startWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
+startWorkers c workDir = do
+  wd <- asks $ xftpWorkDir . xftpAgent
+  atomically $ writeTVar wd workDir
+  startFiles
+  where
+    startFiles = do
+      pendingRcvServers <- withStore' c getPendingRcvFilesServers
+      forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
+      -- start local worker for files pending decryption,
+      -- no need to make an extra query for the check
+      -- as the worker will check the store anyway
+      addXFTPWorker c Nothing
+
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
+receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
   g <- asks idsDrg
-  workPath <- maybe getTemporaryDirectory pure xftpWorkPath
+  workPath <- getWorkPath
   ts <- liftIO getCurrentTime
   let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
   prefixPath <- uniqueCombine workPath (isoTime <> "_rcv.xftp")
   createDirectory prefixPath
-  let tmpPath = prefixPath </> "xftp.encrypted"
-  createDirectory tmpPath
-  let savePath = prefixPath </> "xftp.decrypted"
-  createEmptyFile savePath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd prefixPath tmpPath savePath
+  let relPrefixPath = takeFileName prefixPath
+      relTmpPath = relPrefixPath </> "xftp.encrypted"
+      relSavePath = relPrefixPath </> "xftp.decrypted"
+  createDirectory =<< toFSFilePath relTmpPath
+  createEmptyFile =<< toFSFilePath relSavePath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath relSavePath
   forM_ chunks downloadChunk
   pure fId
   where
@@ -77,6 +94,16 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWork
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
       addXFTPWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
+
+getWorkPath :: AgentMonad m => m FilePath
+getWorkPath = do
+  xftpWorkDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
+  maybe getTemporaryDirectory pure xftpWorkDir
+
+toFSFilePath :: AgentMonad m => FilePath -> m FilePath
+toFSFilePath f = do
+  wp <- getWorkPath
+  pure $ wp </> f
 
 createEmptyFile :: AgentMonad m => FilePath -> m ()
 createEmptyFile fPath = do
@@ -101,7 +128,7 @@ runXFTPWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar ()
 runXFTPWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AORcvNetwork throwWhenInactive runXftpOperation
+    agentOperationBracket c AORcvNetwork waitUntilActive runXftpOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXftpOperation :: m ()
@@ -133,12 +160,14 @@ runXFTPWorker c srv doWork = do
                   loop
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
-      chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
+      fsFileTmpPath <- toFSFilePath fileTmpPath
+      chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
+          relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId replica chunkSpec
       fileReceived <- withStore c $ \db -> runExceptT $ do
         -- both actions can be done in a single store method
-        f <- ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId chunkPath
+        f <- ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId relChunkPath
         let fileReceived = allChunksReceived f
         when fileReceived $
           liftIO $ updateRcvFileStatus db rcvFileId RFSReceived
@@ -162,6 +191,7 @@ runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c@AgentClient {subQ} doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
+    -- TODO agentOperationBracket?
     runXftpOperation
   where
     runXftpOperation :: m ()
@@ -174,16 +204,17 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
+      fsSavePath <- toFSFilePath savePath
       -- TODO test; recreate file if it's in status RFSDecrypting
       -- when (status == RFSDecrypting) $
-      --   whenM (doesFileExist savePath) (removeFile savePath >> createEmptyFile savePath)
+      --   whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure savePath
-      forM_ tmpPath removePath
+      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure fsSavePath
+      forM_ tmpPath (removePath <=< toFSFilePath)
       withStore' c (`updateRcvFileComplete` rcvFileId)
-      notify $ RFDONE savePath
+      notify $ RFDONE fsSavePath
       where
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
         notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
@@ -191,7 +222,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
         getChunkPaths [] = pure []
         getChunkPaths (RcvFileChunk {chunkTmpPath = Just path} : cs) = do
           ps <- getChunkPaths cs
-          pure $ path : ps
+          fsPath <- toFSFilePath path
+          pure $ fsPath : ps
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
 
