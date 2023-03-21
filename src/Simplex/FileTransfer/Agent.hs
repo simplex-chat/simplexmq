@@ -101,9 +101,7 @@ getWorkPath = do
   maybe getTemporaryDirectory pure xftpWorkDir
 
 toFSFilePath :: AgentMonad m => FilePath -> m FilePath
-toFSFilePath f = do
-  wp <- getWorkPath
-  pure $ wp </> f
+toFSFilePath f = (</> f) <$> getWorkPath
 
 createEmptyFile :: AgentMonad m => FilePath -> m ()
 createEmptyFile fPath = do
