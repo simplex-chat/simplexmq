@@ -117,7 +117,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (deleteRcvFile, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -161,9 +161,10 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
-disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns}} = do
+disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
   closeAgentClient c
-  liftIO $ closeNtfSupervisor ns
+  closeNtfSupervisor ns
+  closeXFTPAgent xa
   logConnection c False
 
 resumeAgentClient :: MonadIO m => AgentClient -> m ()

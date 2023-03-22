@@ -7,10 +7,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Agent
   ( startWorkers,
+    closeXFTPAgent,
     toFSFilePath,
     -- Receiving files
     receiveFile,
@@ -34,6 +36,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.List (isSuffixOf, partition)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
@@ -71,6 +74,11 @@ startWorkers c workDir = do
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
       addXFTPWorker c Nothing
+
+closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
+closeXFTPAgent XFTPAgent {xftpWorkers} = do
+  ws <- atomically $ stateTVar xftpWorkers (,M.empty)
+  mapM_ (uninterruptibleCancel . snd) ws
 
 receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
 receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
