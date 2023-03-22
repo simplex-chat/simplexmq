@@ -104,8 +104,8 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
 
 getWorkPath :: AgentMonad m => m FilePath
 getWorkPath = do
-  xftpWorkDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
-  maybe getTemporaryDirectory pure xftpWorkDir
+  workDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
+  maybe getTemporaryDirectory pure workDir
 
 toFSFilePath :: AgentMonad m => FilePath -> m FilePath
 toFSFilePath f = (</> f) <$> getWorkPath
