@@ -28,7 +28,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should receive file" testXFTPAgentReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
-  fit "should send file using experimental api" testXFTPAgentSendExperimental
+  it "should send file using experimental api" testXFTPAgentSendExperimental
 
 testXFTPAgentReceive :: IO ()
 testXFTPAgentReceive = withXFTPServer $ do
@@ -167,14 +167,9 @@ testXFTPAgentSendExperimental = withXFTPServer $ do
   rfd <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
     sfId <- xftpSendFile sndr 1 filePath 2
-    ("", sfId', SFDONE sndDescr rcvDescrs) <- sfGet sndr
-    liftIO $ do
-      sfId' `shouldBe` sfId
-      strDecode <$> B.readFile (senderFiles </> "testfile.descr/testfile.xftp/snd.xftp.private") `shouldReturn` Right sndDescr
-      Right rfd1 <- strDecode <$> B.readFile (senderFiles </> "testfile.descr/testfile.xftp/rcv1.xftp")
-      Right rfd2 <- strDecode <$> B.readFile (senderFiles </> "testfile.descr/testfile.xftp/rcv2.xftp")
-      rcvDescrs `shouldMatchList` [rfd1, rfd2]
-      pure rfd1
+    ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr
+    liftIO $ sfId' `shouldBe` sfId
+    pure rfd1
 
   -- receive file using agent
   rcp <- getSMPAgentClient agentCfg initAgentServers

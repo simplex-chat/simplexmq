@@ -263,6 +263,7 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
               }
       liftCLI $ cliSendFile sendOptions
       (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
+      removePath tempPath
       removePath outputDir
       notify sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
