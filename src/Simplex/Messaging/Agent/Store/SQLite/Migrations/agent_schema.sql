@@ -112,6 +112,8 @@ CREATE TABLE snd_messages(
   internal_id INTEGER NOT NULL,
   internal_hash BLOB NOT NULL,
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
+  retry_int_slow INTEGER,
+  retry_int_fast INTEGER,
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE

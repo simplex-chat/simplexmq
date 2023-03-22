@@ -137,7 +137,7 @@ defaultMessageRetryInterval =
         RetryInterval
           { initialInterval = 60_000000,
             increaseAfter = 60_000000,
-            maxInterval = 1200_000000 -- 20min
+            maxInterval = 3600_000000 -- 1 hour
           }
     }
 

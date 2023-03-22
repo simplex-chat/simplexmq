@@ -84,6 +84,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSndMsg,
     createSndMsgDelivery,
     getPendingMsgData,
+    updatePendingMsgRIState,
     getPendingMsgs,
     deletePendingMsgs,
     setMsgUserAck,
@@ -184,6 +185,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
@@ -762,16 +764,21 @@ getPendingMsgData db connId msgId = do
       DB.query
         db
         [sql|
-          SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts
+          SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
           FROM messages m
           JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
           WHERE m.conn_id = ? AND m.internal_id = ?
         |]
         (connId, msgId)
-    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs) -> PendingMsgData
-    pendingMsgData (msgType, msgFlags_, msgBody, internalTs) =
+    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int, Maybe Int) -> PendingMsgData
+    pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
       let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
-       in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
+          msgRetryState = RI2State <$> riSlow_ <*> riFast_
+       in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
+
+updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
+updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
+  DB.execute db "UPDATE snd_messages SET retry_int_slow = ?, retry_int_fast = ? WHERE conn_id = ? AND internal_id = ?" (slowInterval, fastInterval, connId, msgId)
 
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
 getPendingMsgs db connId SndQueue {dbQueueId} =

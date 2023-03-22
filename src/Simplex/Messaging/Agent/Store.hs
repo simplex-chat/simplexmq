@@ -24,6 +24,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
 import Simplex.Messaging.Encoding.String
@@ -453,6 +454,7 @@ data PendingMsgData = PendingMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
+    msgRetryState :: Maybe RI2State,
     internalTs :: InternalTs
   }
   deriving (Show)
