@@ -14,7 +14,6 @@ module Simplex.FileTransfer.Agent
     toFSFilePath,
     -- Receiving files
     receiveFile,
-    addXFTPWorker,
     deleteRcvFile,
     -- Sending files
     sendFileExperimental,
@@ -178,7 +177,7 @@ runXFTPWorker c srv doWork = do
 
 workerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
 workerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
-  forM_ tmpPath removePath
+  forM_ tmpPath (removePath <=< toFSFilePath)
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
   notifyInternalError c rcvFileEntityId internalErrStr
 
@@ -234,8 +233,8 @@ deleteRcvFile c userId rcvFileEntityId = do
       withStore' c (`deleteRcvFile'` rcvFileId)
     else withStore' c (`updateRcvFileDeleted` rcvFileId)
 
-sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
-sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients xftpWorkPath = do
+sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients = do
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
   xftpSrvs <- atomically $ TM.lookup userId xftpServers
@@ -247,7 +246,7 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
     sendCLI :: SndFileId -> [XFTPServerWithAuth] -> m ()
     sendCLI sndFileId xftpSrvs = do
       let fileName = takeFileName filePath
-      workPath <- maybe getTemporaryDirectory pure xftpWorkPath
+      workPath <- getWorkPath
       outputDir <- uniqueCombine workPath $ fileName <> ".descr"
       createDirectory outputDir
       let tempPath = workPath </> "snd"
@@ -264,6 +263,7 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
               }
       liftCLI $ cliSendFile sendOptions
       (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
+      removePath outputDir
       notify sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
@@ -280,9 +280,9 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
     notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
     notify sndFileId cmd = atomically $ writeTBQueue subQ ("", sndFileId, APC (sAEntity @e) cmd)
 
--- _sendFile :: AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
-_sendFile :: AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
-_sendFile _c _userId _numRecipients _xftpPath _filePath = do
+-- _sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+_sendFile :: AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+_sendFile _c _userId _filePath _numRecipients = do
   -- db: create file in status New without chunks
   -- add local snd worker for encryption
   -- return file id to client
