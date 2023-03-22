@@ -7,12 +7,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Agent
-  ( -- Receiving files
+  ( startWorkers,
+    closeXFTPAgent,
+    toFSFilePath,
+    -- Receiving files
     receiveFile,
-    addXFTPWorker,
     deleteRcvFile,
     -- Sending files
     sendFileExperimental,
@@ -33,6 +36,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.List (isSuffixOf, partition)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
@@ -57,19 +61,39 @@ import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
-receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWorkPath = do
+startWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
+startWorkers c workDir = do
+  wd <- asks $ xftpWorkDir . xftpAgent
+  atomically $ writeTVar wd workDir
+  startFiles
+  where
+    startFiles = do
+      pendingRcvServers <- withStore' c getPendingRcvFilesServers
+      forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
+      -- start local worker for files pending decryption,
+      -- no need to make an extra query for the check
+      -- as the worker will check the store anyway
+      addXFTPWorker c Nothing
+
+closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
+closeXFTPAgent XFTPAgent {xftpWorkers} = do
+  ws <- atomically $ stateTVar xftpWorkers (,M.empty)
+  mapM_ (uninterruptibleCancel . snd) ws
+
+receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
+receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
   g <- asks idsDrg
-  workPath <- maybe getTemporaryDirectory pure xftpWorkPath
+  workPath <- getWorkPath
   ts <- liftIO getCurrentTime
   let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
   prefixPath <- uniqueCombine workPath (isoTime <> "_rcv.xftp")
   createDirectory prefixPath
-  let tmpPath = prefixPath </> "xftp.encrypted"
-  createDirectory tmpPath
-  let savePath = prefixPath </> "xftp.decrypted"
-  createEmptyFile savePath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd prefixPath tmpPath savePath
+  let relPrefixPath = takeFileName prefixPath
+      relTmpPath = relPrefixPath </> "xftp.encrypted"
+      relSavePath = relPrefixPath </> "xftp.decrypted"
+  createDirectory =<< toFSFilePath relTmpPath
+  createEmptyFile =<< toFSFilePath relSavePath
+  fId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath relSavePath
   forM_ chunks downloadChunk
   pure fId
   where
@@ -77,6 +101,14 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) xftpWork
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
       addXFTPWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
+
+getWorkPath :: AgentMonad m => m FilePath
+getWorkPath = do
+  workDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
+  maybe getTemporaryDirectory pure workDir
+
+toFSFilePath :: AgentMonad m => FilePath -> m FilePath
+toFSFilePath f = (</> f) <$> getWorkPath
 
 createEmptyFile :: AgentMonad m => FilePath -> m ()
 createEmptyFile fPath = do
@@ -101,7 +133,7 @@ runXFTPWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar ()
 runXFTPWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    agentOperationBracket c AORcvNetwork throwWhenInactive runXftpOperation
+    agentOperationBracket c AORcvNetwork waitUntilActive runXftpOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXftpOperation :: m ()
@@ -133,12 +165,14 @@ runXFTPWorker c srv doWork = do
                   loop
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
-      chunkPath <- uniqueCombine fileTmpPath $ show chunkNo
+      fsFileTmpPath <- toFSFilePath fileTmpPath
+      chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
+          relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId replica chunkSpec
       fileReceived <- withStore c $ \db -> runExceptT $ do
         -- both actions can be done in a single store method
-        f <- ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId chunkPath
+        f <- ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId relChunkPath
         let fileReceived = allChunksReceived f
         when fileReceived $
           liftIO $ updateRcvFileStatus db rcvFileId RFSReceived
@@ -151,7 +185,7 @@ runXFTPWorker c srv doWork = do
 
 workerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
 workerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
-  forM_ tmpPath removePath
+  forM_ tmpPath (removePath <=< toFSFilePath)
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
   notifyInternalError c rcvFileEntityId internalErrStr
 
@@ -162,6 +196,7 @@ runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPLocalWorker c@AgentClient {subQ} doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
+    -- TODO agentOperationBracket?
     runXftpOperation
   where
     runXftpOperation :: m ()
@@ -174,16 +209,17 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
+      fsSavePath <- toFSFilePath savePath
       -- TODO test; recreate file if it's in status RFSDecrypting
       -- when (status == RFSDecrypting) $
-      --   whenM (doesFileExist savePath) (removeFile savePath >> createEmptyFile savePath)
+      --   whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure savePath
-      forM_ tmpPath removePath
+      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure fsSavePath
+      forM_ tmpPath (removePath <=< toFSFilePath)
       withStore' c (`updateRcvFileComplete` rcvFileId)
-      notify $ RFDONE savePath
+      notify $ RFDONE fsSavePath
       where
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
         notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
@@ -191,7 +227,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
         getChunkPaths [] = pure []
         getChunkPaths (RcvFileChunk {chunkTmpPath = Just path} : cs) = do
           ps <- getChunkPaths cs
-          pure $ path : ps
+          fsPath <- toFSFilePath path
+          pure $ fsPath : ps
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
 
@@ -204,8 +241,8 @@ deleteRcvFile c userId rcvFileEntityId = do
       withStore' c (`deleteRcvFile'` rcvFileId)
     else withStore' c (`updateRcvFileDeleted` rcvFileId)
 
-sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
-sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients xftpWorkPath = do
+sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients = do
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
   xftpSrvs <- atomically $ TM.lookup userId xftpServers
@@ -217,7 +254,7 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
     sendCLI :: SndFileId -> [XFTPServerWithAuth] -> m ()
     sendCLI sndFileId xftpSrvs = do
       let fileName = takeFileName filePath
-      workPath <- maybe getTemporaryDirectory pure xftpWorkPath
+      workPath <- getWorkPath
       outputDir <- uniqueCombine workPath $ fileName <> ".descr"
       createDirectory outputDir
       let tempPath = workPath </> "snd"
@@ -234,6 +271,8 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
               }
       liftCLI $ cliSendFile sendOptions
       (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
+      removePath tempPath
+      removePath outputDir
       notify sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
@@ -250,9 +289,9 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
     notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
     notify sndFileId cmd = atomically $ writeTBQueue subQ ("", sndFileId, APC (sAEntity @e) cmd)
 
--- _sendFile :: AgentMonad m => AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
-_sendFile :: AgentClient -> UserId -> Int -> FilePath -> FilePath -> m SndFileId
-_sendFile _c _userId _numRecipients _xftpPath _filePath = do
+-- _sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+_sendFile :: AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+_sendFile _c _userId _filePath _numRecipients = do
   -- db: create file in status New without chunks
   -- add local snd worker for encryption
   -- return file id to client

@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent
     getNtfToken,
     getNtfTokenData,
     toggleConnectionNtfs,
+    xftpStartWorkers,
     xftpReceiveFile,
     xftpDeleteRcvFile,
     xftpSendFile,
@@ -116,7 +117,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (addXFTPWorker, deleteRcvFile, receiveFile, sendFileExperimental)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -157,22 +158,13 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
     runAgent = do
       c <- getAgentClient initServers
       void $ raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c] `forkFinally` const (disconnectAgentClient c)
-      runExceptT (startFiles c) >>= \case
-        Left e -> liftIO $ print e
-        Right _ -> pure ()
       pure c
-    startFiles c = do
-      pendingRcvServers <- withStore' c getPendingRcvFilesServers
-      forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
-      -- start local worker for files pending decryption,
-      -- no need to make an extra query for the check
-      -- as the worker will check the store anyway
-      addXFTPWorker c Nothing
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
-disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns}} = do
+disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
   closeAgentClient c
-  liftIO $ closeNtfSupervisor ns
+  closeNtfSupervisor ns
+  closeXFTPAgent xa
   logConnection c False
 
 resumeAgentClient :: MonadIO m => AgentClient -> m ()
@@ -339,17 +331,20 @@ getNtfTokenData c = withAgentEnv c $ getNtfTokenData' c
 toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ()
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
+xftpStartWorkers :: AgentErrorMonad m => AgentClient -> Maybe FilePath -> m ()
+xftpStartWorkers c = withAgentEnv c . startWorkers c
+
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe FilePath -> m RcvFileId
-xftpReceiveFile c = withAgentEnv c .:. receiveFile c
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
+xftpReceiveFile c = withAgentEnv c .: receiveFile c
 
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> UserId -> RcvFileId -> m ()
 xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 
 -- | Send XFTP file
-xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> Maybe FilePath -> m SndFileId
-xftpSendFile c = withAgentEnv c .:: sendFileExperimental c
+xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+xftpSendFile c = withAgentEnv c .:. sendFileExperimental c
 
 -- | Activate operations
 activateAgent :: MonadUnliftIO m => AgentClient -> m ()
@@ -1625,12 +1620,12 @@ cleanupManager c = do
       -- cleanup rcv files marked for deletion
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
       forM_ rcvDeleted $ \(fId, p) -> do
-        removePath p
+        removePath =<< toFSFilePath p
         withStore' c (`deleteRcvFile'` fId)
       -- cleanup rcv tmp paths
       rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
       forM_ rcvTmpPaths $ \(fId, p) -> do
-        removePath p
+        removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` fId)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()

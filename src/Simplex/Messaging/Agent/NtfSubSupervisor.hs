@@ -17,12 +17,10 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
   )
 where
 
-import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.Except
-import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.Fixed (Fixed (MkFixed), Pico)
@@ -44,10 +42,9 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (tshow, unlessM)
 import System.Random (randomR)
-import UnliftIO (async)
+import UnliftIO
 import UnliftIO.Concurrent (forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM
 
 runNtfSupervisor :: forall m. AgentMonad' m => AgentClient -> m ()
 runNtfSupervisor c = do
@@ -349,12 +346,12 @@ instantNotifications = \case
   Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> True
   _ -> False
 
-closeNtfSupervisor :: NtfSupervisor -> IO ()
+closeNtfSupervisor :: MonadUnliftIO m => NtfSupervisor -> m ()
 closeNtfSupervisor ns = do
   cancelNtfWorkers_ $ ntfWorkers ns
   cancelNtfWorkers_ $ ntfSMPWorkers ns
 
-cancelNtfWorkers_ :: TMap (ProtocolServer s) (TMVar (), Async ()) -> IO ()
+cancelNtfWorkers_ :: MonadUnliftIO m => TMap (ProtocolServer s) (TMVar (), Async ()) -> m ()
 cancelNtfWorkers_ wsVar = do
   ws <- atomically $ stateTVar wsVar (,M.empty)
   mapM_ (uninterruptibleCancel . snd) ws
