@@ -21,7 +21,7 @@ schemaDumpTest =
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
-  void $ createSQLiteStore testDB "" Migrations.app False
+  void $ createSQLiteStore testDB "" Migrations.app MCConsole
   void $ readCreateProcess (shell $ "touch " <> schema) ""
   savedSchema <- readFile schema
   savedSchema `deepseq` pure ()

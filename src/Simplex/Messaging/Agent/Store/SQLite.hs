@@ -21,6 +21,8 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
+    MigrationConfirmation (..),
+    MigrationError (..),
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
@@ -163,7 +165,7 @@ import Data.Function (on)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
-import Data.List (foldl', groupBy, sortBy)
+import Data.List (foldl', groupBy, intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -187,7 +189,7 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
+import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), Migration (..), MigrationsToRun (..))
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -218,27 +220,52 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> String -> [Migration] -> Bool -> IO SQLiteStore
-createSQLiteStore dbFilePath dbKey migrations yesToMigrations = do
+data MigrationError = MEUpgrade String | MEDowngrade String | MigrationError String
+  deriving (Eq, Show)
+
+data MigrationConfirmation = MCYesUp | MCYesBoth | MCConsole | MCError
+  deriving (Eq, Show)
+
+createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
+createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath dbKey
-  migrateSchema st migrations yesToMigrations `onException` closeSQLiteStore st
-  pure st
+  r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
+  pure $ either Left (const $ Right st) r
 
-migrateSchema :: SQLiteStore -> [Migration] -> Bool -> IO ()
-migrateSchema st migrations yesToMigrations = withConnection st $ \db -> do
+migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
+migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
-    Left e -> confirmOrExit $ "Database error: " <> e
-    Right [] -> pure ()
-    Right ms -> do
-      unless (dbNew st) $ do
-        unless yesToMigrations $
-          confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
-        let f = dbFilePath st
-        copyFile f (f <> ".bak")
+    Left e -> do
+      when (confirmMigrations == MCConsole) $ confirmOrExit ("Database error: " <> e)
+      closeSQLiteStore st
+      pure . Left $ MigrationError e
+    Right MTRNone -> pure $ Right ()
+    Right ms@(MTRUp ums)
+      | dbNew st -> Migrations.run db ms $> Right ()
+      | otherwise -> case confirmMigrations of
+        MCYesUp -> run db ms
+        MCYesBoth -> run db ms
+        MCConsole -> confirmOrExit err >> run db ms
+        MCError -> closeSQLiteStore st $> Left (MEUpgrade err)
+      where
+        err = "The app has a newer version than the database, confirm to back up and downgrade these migrations: " <> intercalate ", " (map name ums)
+    Right ms@(MTRDown dms) -> case confirmMigrations of
+      MCYesBoth -> run db ms
+      MCConsole -> confirmOrExit err >> run db ms
+      MCYesUp -> confirmDown
+      MCError -> confirmDown
+      where
+        confirmDown = closeSQLiteStore st $> Left (MEDowngrade err)
+        err = "Database version is newer than the app, confirm to back up and downgrade these migrations: " <> intercalate ", " (map downName dms)
+  where
+    run db ms = do
+      let f = dbFilePath st
+      copyFile f (f <> ".bak")
       Migrations.run db ms
+      pure $ Right ()
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do

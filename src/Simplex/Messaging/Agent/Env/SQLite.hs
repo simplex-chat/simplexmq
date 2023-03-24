@@ -85,7 +85,7 @@ data AgentConfig = AgentConfig
     connIdBytes :: Int,
     tbqSize :: Natural,
     database :: AgentDatabase,
-    yesToMigrations :: Bool,
+    confirmMigrations :: MigrationConfirmation,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
     xftpCfg :: XFTPClientConfig,
@@ -146,7 +146,7 @@ defaultAgentConfig =
       connIdBytes = 12,
       tbqSize = 64,
       database = AgentDBFile {dbFile = "smp-agent.db", dbKey = ""},
-      yesToMigrations = False,
+      confirmMigrations = MCConsole,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
@@ -183,19 +183,19 @@ data Env = Env
     xftpAgent :: XFTPAgent
   }
 
-newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} = do
-  idsDrg <- newTVarIO =<< drgNew
+newSMPAgentEnv :: AgentConfig -> IO (Either MigrationError Env)
+newSMPAgentEnv config@AgentConfig {database, confirmMigrations, initialClientId} = runExceptT $ do
+  idsDrg <- newTVarIO =<< liftIO drgNew
   store <- case database of
     AgentDB st -> pure st
-    AgentDBFile {dbFile, dbKey} -> liftIO $ createAgentStore dbFile dbKey yesToMigrations
+    AgentDBFile {dbFile, dbKey} -> ExceptT $ createAgentStore dbFile dbKey confirmMigrations
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
+  pure Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
-createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
+createAgentStore :: FilePath -> String -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor

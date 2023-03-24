@@ -207,7 +207,7 @@ withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
   let cfg' = agentCfg {tcpPort = port', database = db'}
       initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
-        (\started -> runSMPAgentBlocking t started cfg' initServers')
+        (\started -> either (error . show) id <$> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
 userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoServerWithAuth p))

@@ -13,6 +13,7 @@ module AgentTests (agentTests) where
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
+import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
 import AgentTests.SchemaDump (schemaDumpTest)
@@ -43,6 +44,7 @@ agentTests (ATransport t) = do
   describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
   describe "SQLite schema dump" schemaDumpTest
+  describe "Migration tests" migrationTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
