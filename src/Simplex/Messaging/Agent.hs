@@ -152,9 +152,9 @@ import UnliftIO.STM
 -- import GHC.Conc (unsafeIOToSTM)
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m (Either MigrationError AgentClient)
-getSMPAgentClient cfg initServers =
-  liftIO (newSMPAgentEnv cfg) $>>= (fmap Right . runReaderT runAgent)
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> m AgentClient
+getSMPAgentClient cfg initServers store =
+  liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers

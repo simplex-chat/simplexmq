@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -157,6 +158,9 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Data.Aeson (ToJSON)
+import qualified Data.Aeson as J
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
@@ -182,6 +186,7 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
+import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -197,7 +202,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
+import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -220,11 +225,32 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-data MigrationError = MEUpgrade String | MEDowngrade String | MigrationError String
+data MigrationError
+  = MEUpgrade {description :: String}
+  | MEDowngrade {description :: String}
+  | MigrationError {description :: String}
+  deriving (Eq, Show, Generic)
+
+instance ToJSON MigrationError where
+  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "ME"
+  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
+
+data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
   deriving (Eq, Show)
 
-data MigrationConfirmation = MCYesUp | MCYesBoth | MCConsole | MCError
-  deriving (Eq, Show)
+instance StrEncoding MigrationConfirmation where
+  strEncode = \case
+    MCYesUp -> "yesUp"
+    MCYesUpDown -> "yesUpDown"
+    MCConsole -> "console"
+    MCError -> "error"
+  strP =
+    A.takeByteString >>= \case
+      "yesUp" -> pure MCYesUp
+      "yesUpDown" -> pure MCYesUpDown
+      "console" -> pure MCConsole
+      "error" -> pure MCError
+      _ -> fail "invalid MigrationConfirmation"
 
 createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
@@ -247,13 +273,13 @@ migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
       | dbNew st -> Migrations.run db ms $> Right ()
       | otherwise -> case confirmMigrations of
         MCYesUp -> run db ms
-        MCYesBoth -> run db ms
+        MCYesUpDown -> run db ms
         MCConsole -> confirmOrExit err >> run db ms
         MCError -> closeSQLiteStore st $> Left (MEUpgrade err)
       where
         err = "The app has a newer version than the database, confirm to back up and downgrade these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
-      MCYesBoth -> run db ms
+      MCYesUpDown -> run db ms
       MCConsole -> confirmOrExit err >> run db ms
       MCYesUp -> confirmDown
       MCError -> confirmDown

@@ -3,7 +3,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
@@ -14,8 +13,6 @@ module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
     AgentMonad',
     AgentConfig (..),
-    AgentDatabase (..),
-    databaseFile,
     InitialAgentServers (..),
     NetworkConfig (..),
     defaultAgentConfig,
@@ -70,22 +67,11 @@ data InitialAgentServers = InitialAgentServers
     netCfg :: NetworkConfig
   }
 
-data AgentDatabase
-  = AgentDB SQLiteStore
-  | AgentDBFile {dbFile :: FilePath, dbKey :: String}
-
-databaseFile :: AgentDatabase -> FilePath
-databaseFile = \case
-  AgentDB SQLiteStore {dbFilePath} -> dbFilePath
-  AgentDBFile {dbFile} -> dbFile
-
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    database :: AgentDatabase,
-    confirmMigrations :: MigrationConfirmation,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
     xftpCfg :: XFTPClientConfig,
@@ -145,8 +131,6 @@ defaultAgentConfig =
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
-      database = AgentDBFile {dbFile = "smp-agent.db", dbKey = ""},
-      confirmMigrations = MCConsole,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
@@ -183,12 +167,9 @@ data Env = Env
     xftpAgent :: XFTPAgent
   }
 
-newSMPAgentEnv :: AgentConfig -> IO (Either MigrationError Env)
-newSMPAgentEnv config@AgentConfig {database, confirmMigrations, initialClientId} = runExceptT $ do
+newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
+newSMPAgentEnv config@AgentConfig {initialClientId} store = do
   idsDrg <- newTVarIO =<< liftIO drgNew
-  store <- case database of
-    AgentDB st -> pure st
-    AgentDBFile {dbFile, dbKey} -> ExceptT $ createAgentStore dbFile dbKey confirmMigrations
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config

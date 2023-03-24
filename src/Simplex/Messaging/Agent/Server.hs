@@ -21,10 +21,10 @@ import Data.Text.Encoding (decodeUtf8)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Agent.Store.SQLite (MigrationError)
+import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), simplexMQVersion)
 import Simplex.Messaging.Transport.Server (loadTLSServerParams, runTransportServer)
-import Simplex.Messaging.Util (bshow, ($>>=))
+import Simplex.Messaging.Util (bshow)
 import UnliftIO.Async (race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -32,18 +32,17 @@ import UnliftIO.STM
 -- | Runs an SMP agent as a TCP service using passed configuration.
 --
 -- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
-runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> m (Either MigrationError ())
-runSMPAgent t cfg initServers = do
-  started <- newEmptyTMVarIO
-  runSMPAgentBlocking t started cfg initServers
+runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> m ()
+runSMPAgent t cfg initServers store =
+  runSMPAgentBlocking t cfg initServers store =<< newEmptyTMVarIO
 
 -- | Runs an SMP agent as a TCP service using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> InitialAgentServers -> m (Either MigrationError ())
-runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers = do
-  liftIO (newSMPAgentEnv cfg) $>>= (fmap Right <$> runReaderT (smpAgent t))
+runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> TMVar Bool -> m ()
+runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers store started = do
+  liftIO (newSMPAgentEnv cfg store) >>= runReaderT (smpAgent t)
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = do

@@ -8,7 +8,7 @@ import Test.Hspec
 
 migrationTests :: Spec
 migrationTests = do
-  fdescribe "up migrations" $ do
+  describe "up migrations" $ do
     it "should determine migrations to run" testMigrationsToRun
 
 m1 :: Migration
