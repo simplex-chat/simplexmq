@@ -24,11 +24,13 @@ module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
     MigrationConfirmation (..),
     MigrationError (..),
+    UpMigration (..),
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
     sqlString,
     execSQL,
+    upMigration, -- used in tests
 
     -- * Users
     createUserRecord,
@@ -173,7 +175,7 @@ import Data.List (foldl', groupBy, intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -194,7 +196,7 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), Migration (..), MigrationsToRun (..))
+import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRError, Migration (..), MigrationsToRun (..), mtrErrorDescription)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -226,14 +228,32 @@ data SQLiteStore = SQLiteStore
   }
 
 data MigrationError
-  = MEUpgrade {description :: String}
-  | MEDowngrade {description :: String}
-  | MigrationError {description :: String}
+  = MEUpgrade {upMigrations :: [UpMigration]}
+  | MEDowngrade {downMigrations :: [String]}
+  | MigrationError {mtrError :: MTRError}
   deriving (Eq, Show, Generic)
+
+migrationErrorDescription :: MigrationError -> String
+migrationErrorDescription = \case
+  MEUpgrade ums ->
+    "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map upName ums)
+  MEDowngrade dms ->
+    "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " dms
+  MigrationError err -> mtrErrorDescription err
 
 instance ToJSON MigrationError where
   toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "ME"
   toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
+
+data UpMigration = UpMigration {upName :: String, hasDownMigration :: Bool}
+  deriving (Eq, Show, Generic)
+
+upMigration :: Migration -> UpMigration
+upMigration Migration {name, down} = UpMigration name $ isJust down
+
+instance ToJSON UpMigration where
+  toJSON = J.genericToJSON J.defaultOptions
+  toEncoding = J.genericToEncoding J.defaultOptions
 
 data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
   deriving (Eq, Show)
@@ -258,15 +278,16 @@ createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath dbKey
   r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
-  pure $ either Left (const $ Right st) r
+  case r of
+    Right () -> pure $ Right st
+    Left e -> closeSQLiteStore st $> Left e
 
 migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
 migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
     Left e -> do
-      when (confirmMigrations == MCConsole) $ confirmOrExit ("Database error: " <> e)
-      closeSQLiteStore st
+      when (confirmMigrations == MCConsole) $ confirmOrExit ("Database state error: " <> mtrErrorDescription e)
       pure . Left $ MigrationError e
     Right MTRNone -> pure $ Right ()
     Right ms@(MTRUp ums)
@@ -274,19 +295,19 @@ migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
       | otherwise -> case confirmMigrations of
         MCYesUp -> run db ms
         MCYesUpDown -> run db ms
-        MCConsole -> confirmOrExit err >> run db ms
-        MCError -> closeSQLiteStore st $> Left (MEUpgrade err)
+        MCConsole -> confirm err >> run db ms
+        MCError -> pure $ Left err
       where
-        err = "The app has a newer version than the database, confirm to back up and downgrade these migrations: " <> intercalate ", " (map name ums)
+        err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
       MCYesUpDown -> run db ms
-      MCConsole -> confirmOrExit err >> run db ms
-      MCYesUp -> confirmDown
-      MCError -> confirmDown
+      MCConsole -> confirm err >> run db ms
+      MCYesUp -> pure $ Left err
+      MCError -> pure $ Left err
       where
-        confirmDown = closeSQLiteStore st $> Left (MEDowngrade err)
-        err = "Database version is newer than the app, confirm to back up and downgrade these migrations: " <> intercalate ", " (map downName dms)
+        err = MEDowngrade $ map downName dms --  "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " (map downName dms)
   where
+    confirm err = confirmOrExit $ migrationErrorDescription err
     run db ms = do
       let f = dbFilePath st
       copyFile f (f <> ".bak")

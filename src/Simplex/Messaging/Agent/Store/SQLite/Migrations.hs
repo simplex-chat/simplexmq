@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -11,11 +12,13 @@
 module Simplex.Messaging.Agent.Store.SQLite.Migrations
   ( Migration (..),
     MigrationsToRun (..),
+    MTRError (..),
     DownMigration (..),
     app,
     initialize,
     get,
     run,
+    mtrErrorDescription,
     -- for unit tests
     migrationsToRun,
     toDownMigration,
@@ -23,6 +26,8 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
 where
 
 import Control.Monad (forM_, when)
+import Data.Aeson (ToJSON)
+import qualified Data.Aeson as J
 import Data.List (intercalate, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
@@ -34,6 +39,7 @@ import Database.SQLite.Simple (Connection, Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
+import GHC.Generics (Generic)
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -51,6 +57,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
 
 data Migration = Migration {name :: String, up :: Text, down :: Maybe Text}
@@ -71,8 +78,8 @@ schemaMigrations =
     ("m20230117_fkey_indexes", m20230117_fkey_indexes, Nothing),
     ("m20230120_delete_errors", m20230120_delete_errors, Nothing),
     ("m20230217_server_key_hash", m20230217_server_key_hash, Nothing),
-    ("m20230223_files", m20230223_files, Nothing),
-    ("m20230320_retry_state", m20230320_retry_state, Nothing)
+    ("m20230223_files", m20230223_files, Just down_m20230223_files),
+    ("m20230320_retry_state", m20230320_retry_state, Just down_m20230320_retry_state)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -81,7 +88,7 @@ app = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
-get :: Connection -> [Migration] -> IO (Either String MigrationsToRun)
+get :: Connection -> [Migration] -> IO (Either MTRError MigrationsToRun)
 get db migrations =
   migrationsToRun migrations . map toMigration
     <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
@@ -137,15 +144,29 @@ toDownMigration Migration {name, down} = DownMigration name <$> down
 data MigrationsToRun = MTRUp [Migration] | MTRDown [DownMigration] | MTRNone
   deriving (Eq, Show)
 
-migrationsToRun :: [Migration] -> [Migration] -> Either String MigrationsToRun
+data MTRError
+  = MTRENoDown {dbMigrations :: [String]}
+  | MTREDifferent {appMigration :: String, dbMigration :: String}
+  deriving (Eq, Show, Generic)
+
+instance ToJSON MTRError where
+  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "MTRE"
+  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "MTRE"
+
+mtrErrorDescription :: MTRError -> String
+mtrErrorDescription = \case
+  MTRENoDown ms -> "database version is newer than the app, but no down migration for: " <> intercalate ", " ms
+  MTREDifferent a d -> "different migration in the app/database: " <> a <> " / " <> d
+
+migrationsToRun :: [Migration] -> [Migration] -> Either MTRError MigrationsToRun
 migrationsToRun [] [] = Right MTRNone
 migrationsToRun appMs [] = Right $ MTRUp appMs
 migrationsToRun [] dbMs
   | length dms == length dbMs = Right $ MTRDown dms
-  | otherwise = Left $ "database version is newer than the app, but no down migration for: " <> intercalate ", " (mapMaybe nameNoDown dbMs)
+  | otherwise = Left $ MTRENoDown $ mapMaybe nameNoDown dbMs
   where
     dms = mapMaybe toDownMigration dbMs
     nameNoDown m = if isNothing (down m) then Just $ name m else Nothing
 migrationsToRun (a : as) (d : ds)
   | name a == name d = migrationsToRun as ds
-  | otherwise = Left $ "different migration in the app/database: " <> name a <> " / " <> name d
+  | otherwise = Left $ MTREDifferent (name a) (name d)
