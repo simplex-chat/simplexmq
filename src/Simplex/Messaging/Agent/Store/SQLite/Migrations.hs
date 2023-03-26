@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
     initialize,
     get,
     run,
+    getCurrent,
     mtrErrorDescription,
     -- for unit tests
     migrationsToRun,
@@ -89,9 +90,10 @@ app = sortOn name $ map migration schemaMigrations
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
 get :: Connection -> [Migration] -> IO (Either MTRError MigrationsToRun)
-get db migrations =
-  migrationsToRun migrations . map toMigration
-    <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
+get db migrations = migrationsToRun migrations <$> getCurrent db
+
+getCurrent :: Connection -> IO [Migration]
+getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = "", down}
 

@@ -245,7 +245,7 @@ instance ToJSON MigrationError where
   toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "ME"
   toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
 
-data UpMigration = UpMigration {upName :: String, hasDownMigration :: Bool}
+data UpMigration = UpMigration {upName :: String, withDown :: Bool}
   deriving (Eq, Show, Generic)
 
 upMigration :: Migration -> UpMigration
