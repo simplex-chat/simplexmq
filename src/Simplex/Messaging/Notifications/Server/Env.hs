@@ -73,7 +73,6 @@ data NtfEnv = NtfEnv
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
     idsDrg :: TVar ChaChaDRG,
-    serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
     serverIdentity :: C.KeyHash,
     serverStats :: NtfServerStats
