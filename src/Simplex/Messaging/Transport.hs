@@ -28,6 +28,7 @@ module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     supportedSMPServerVRange,
     simplexMQVersion,
+    smpBlockSize,
 
     -- * Transport connection class
     Transport (..),
@@ -55,9 +56,6 @@ module Simplex.Messaging.Transport
     transportErrorP,
     sendHandshake,
     getHandshake,
-
-    -- * Trim trailing CR
-    trimCR,
   )
 where
 
@@ -74,15 +72,18 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Version (showVersion)
 import GHC.Generics (Generic)
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
+import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -96,10 +97,10 @@ smpBlockSize :: Int
 smpBlockSize = 16384
 
 supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange 1 4
+supportedSMPServerVRange = mkVersionRange 1 5
 
 simplexMQVersion :: String
-simplexMQVersion = "3.1.2"
+simplexMQVersion = showVersion SMQ.version
 
 -- * Transport connection class
 
@@ -149,24 +150,24 @@ data TLS = TLS
   { tlsContext :: T.Context,
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
-    buffer :: TVar ByteString,
-    getLock :: TMVar ()
+    tlsBuffer :: TBuffer
   }
 
-connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
-connectTLS params sock =
-  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
-    T.handshake ctx
-      `catchAll` \e -> putStrLn ("exception: " <> show e) >> E.throwIO e
-    pure ctx
+connectTLS :: T.TLSParams p => Maybe HostName -> Bool -> p -> Socket -> IO T.Context
+connectTLS host_ logErrors params sock =
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx ->
+    logHandshakeErrors (T.handshake ctx) $> ctx
+  where
+    logHandshakeErrors = if logErrors then (`catchAll` logThrow) else id
+    logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
+    host = maybe "" (\h -> " (" <> h <> ")") host_
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
 getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
-      buffer <- newTVarIO ""
-      getLock <- newTMVarIO ()
-      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
+      tlsBuffer <- atomically newTBuffer
+      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -203,52 +204,21 @@ instance Transport TLS where
   tlsUnique = tlsUniq
   closeConnection tls = closeTLS $ tlsContext tls
 
+  -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
+  -- this function may return less than requested number of bytes
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, buffer, getLock} n =
-    E.bracket_
-      (atomically $ takeTMVar getLock)
-      (atomically $ putTMVar getLock ())
-      $ do
-        b <- readChunks =<< readTVarIO buffer
-        let (s, b') = B.splitAt n b
-        atomically $ writeTVar buffer b'
-        pure s
-    where
-      readChunks :: ByteString -> IO ByteString
-      readChunks b
-        | B.length b >= n = pure b
-        | otherwise =
-          T.recvData tlsContext >>= \case
-            -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
-            "" -> ioe_EOF
-            s -> readChunks $ b <> s
+  cGet TLS {tlsContext, tlsBuffer} n = getBuffered tlsBuffer n (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
   cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
 
   getLn :: TLS -> IO ByteString
-  getLn TLS {tlsContext, buffer, getLock} = do
-    E.bracket_
-      (atomically $ takeTMVar getLock)
-      (atomically $ putTMVar getLock ())
-      $ do
-        b <- readChunks =<< readTVarIO buffer
-        let (s, b') = B.break (== '\n') b
-        atomically $ writeTVar buffer (B.drop 1 b') -- drop '\n' we made a break at
-        pure $ trimCR s
+  getLn TLS {tlsContext, tlsBuffer} = do
+    getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catch` handleEOF
     where
-      readChunks :: ByteString -> IO ByteString
-      readChunks b
-        | B.elem '\n' b = pure b
-        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
       handleEOF = \case
         T.Error_EOF -> E.throwIO TEBadBlock
         e -> E.throwIO e
-
--- | Trim trailing CR from ByteString.
-trimCR :: ByteString -> ByteString
-trimCR "" = ""
-trimCR s = if B.last s == '\r' then B.init s else s
 
 -- * SMP transport
 
@@ -332,7 +302,7 @@ transportErrorP =
   "BLOCK" $> TEBadBlock
     <|> "LARGE_MSG" $> TELargeMsg
     <|> "SESSION" $> TEBadSession
-    <|> TEHandshake <$> parseRead1
+    <|> "HANDSHAKE " *> (TEHandshake <$> parseRead1)
 
 -- | Serialize SMP encrypted transport error.
 serializeTransportError :: TransportError -> ByteString
@@ -340,7 +310,7 @@ serializeTransportError = \case
   TEBadBlock -> "BLOCK"
   TELargeMsg -> "LARGE_MSG"
   TEBadSession -> "SESSION"
-  TEHandshake e -> bshow e
+  TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
@@ -350,10 +320,11 @@ tPutBlock THandle {connection = c, blockSize} block =
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
-tGetBlock THandle {connection = c, blockSize} =
-  cGet c blockSize >>= \case
-    "" -> ioe_EOF
-    msg -> pure . first (const TELargeMsg) $ C.unPad msg
+tGetBlock THandle {connection = c, blockSize} = do
+  msg <- cGet c blockSize
+  if B.length msg == blockSize
+    then pure . first (const TELargeMsg) $ C.unPad msg
+    else ioe_EOF
 
 -- | Server SMP transport handshake.
 --

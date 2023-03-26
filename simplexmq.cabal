@@ -1,11 +1,11 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.34.4.
+-- This file has been generated from package.yaml by hpack version 0.35.1.
 --
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        3.1.0
+version:        5.0.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -34,9 +34,28 @@ flag swift
 
 library
   exposed-modules:
+      Simplex.FileTransfer
+      Simplex.FileTransfer.Agent
+      Simplex.FileTransfer.Client
+      Simplex.FileTransfer.Client.Agent
+      Simplex.FileTransfer.Client.Main
+      Simplex.FileTransfer.Client.Presets
+      Simplex.FileTransfer.Crypto
+      Simplex.FileTransfer.Description
+      Simplex.FileTransfer.Protocol
+      Simplex.FileTransfer.Server
+      Simplex.FileTransfer.Server.Env
+      Simplex.FileTransfer.Server.Main
+      Simplex.FileTransfer.Server.Stats
+      Simplex.FileTransfer.Server.Store
+      Simplex.FileTransfer.Server.StoreLog
+      Simplex.FileTransfer.Transport
+      Simplex.FileTransfer.Types
+      Simplex.FileTransfer.Util
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
+      Simplex.Messaging.Agent.Lock
       Simplex.Messaging.Agent.NtfSubSupervisor
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.QueryString
@@ -50,9 +69,23 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
+      Simplex.Messaging.Agent.TAsyncs
+      Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
@@ -60,7 +93,9 @@ library
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env
+      Simplex.Messaging.Notifications.Server.Main
       Simplex.Messaging.Notifications.Server.Push.APNS
+      Simplex.Messaging.Notifications.Server.Stats
       Simplex.Messaging.Notifications.Server.Store
       Simplex.Messaging.Notifications.Server.StoreLog
       Simplex.Messaging.Notifications.Transport
@@ -71,6 +106,7 @@ library
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Env.STM
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.Main
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM
       Simplex.Messaging.Server.QueueStore
@@ -79,6 +115,7 @@ library
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.TMap
       Simplex.Messaging.Transport
+      Simplex.Messaging.Transport.Buffer
       Simplex.Messaging.Transport.Client
       Simplex.Messaging.Transport.HTTP2
       Simplex.Messaging.Transport.HTTP2.Client
@@ -111,26 +148,27 @@ library
     , cryptonite >=0.27 && <0.30
     , cryptostore ==0.2.*
     , data-default ==0.7.*
-    , direct-sqlite ==2.3.*
+    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
-    , ini ==0.4.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
-    , network-transport ==0.5.*
+    , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , socks ==0.6.*
-    , sqlite-simple ==0.4.*
+    , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
+    , temporary ==1.3.*
     , text ==1.2.*
     , time ==1.9.*
     , time-compat ==1.9.*
@@ -143,9 +181,10 @@ library
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 executable ntf-server
   main-is: Main.hs
@@ -172,27 +211,28 @@ executable ntf-server
     , cryptonite >=0.27 && <0.30
     , cryptostore ==0.2.*
     , data-default ==0.7.*
-    , direct-sqlite ==2.3.*
+    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
-    , ini ==0.4.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
-    , network-transport ==0.5.*
+    , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
     , socks ==0.6.*
-    , sqlite-simple ==0.4.*
+    , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
+    , temporary ==1.3.*
     , text ==1.2.*
     , time ==1.9.*
     , time-compat ==1.9.*
@@ -205,9 +245,10 @@ executable ntf-server
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 executable smp-agent
   main-is: Main.hs
@@ -234,27 +275,28 @@ executable smp-agent
     , cryptonite >=0.27 && <0.30
     , cryptostore ==0.2.*
     , data-default ==0.7.*
-    , direct-sqlite ==2.3.*
+    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
-    , ini ==0.4.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
-    , network-transport ==0.5.*
+    , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
     , socks ==0.6.*
-    , sqlite-simple ==0.4.*
+    , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
+    , temporary ==1.3.*
     , text ==1.2.*
     , time ==1.9.*
     , time-compat ==1.9.*
@@ -267,9 +309,10 @@ executable smp-agent
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
 executable smp-server
   main-is: Main.hs
@@ -296,27 +339,28 @@ executable smp-server
     , cryptonite >=0.27 && <0.30
     , cryptostore ==0.2.*
     , data-default ==0.7.*
-    , direct-sqlite ==2.3.*
+    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
-    , http2 ==3.0.*
-    , ini ==0.4.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
-    , network-transport ==0.5.*
+    , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
     , socks ==0.6.*
-    , sqlite-simple ==0.4.*
+    , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
+    , temporary ==1.3.*
     , text ==1.2.*
     , time ==1.9.*
     , time-compat ==1.9.*
@@ -329,11 +373,140 @@ executable smp-server
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010
 
-test-suite smp-server-test
+executable xftp
+  main-is: Main.hs
+  other-modules:
+      Paths_simplexmq
+  hs-source-dirs:
+      apps/xftp
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  build-depends:
+      QuickCheck ==2.14.*
+    , aeson ==2.0.*
+    , ansi-terminal >=0.10 && <0.12
+    , asn1-encoding ==0.9.*
+    , asn1-types ==0.3.*
+    , async ==2.2.*
+    , attoparsec ==0.14.*
+    , base >=4.14 && <5
+    , base64-bytestring >=1.0 && <1.3
+    , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
+    , composition ==1.0.*
+    , constraints >=0.12 && <0.14
+    , containers ==0.6.*
+    , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
+    , data-default ==0.7.*
+    , direct-sqlcipher ==2.3.*
+    , directory ==1.3.*
+    , filepath ==1.4.*
+    , generic-random >=1.3 && <1.5
+    , http-types ==0.12.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
+    , iso8601-time ==0.1.*
+    , memory ==0.15.*
+    , mtl ==2.2.*
+    , network >=3.1.2.7 && <3.2
+    , network-transport ==0.5.4
+    , optparse-applicative >=0.15 && <0.17
+    , process ==1.6.*
+    , random >=1.1 && <1.3
+    , simple-logger ==0.1.*
+    , simplexmq
+    , socks ==0.6.*
+    , sqlcipher-simple ==0.4.*
+    , stm ==2.5.*
+    , template-haskell ==2.16.*
+    , temporary ==1.3.*
+    , text ==1.2.*
+    , time ==1.9.*
+    , time-compat ==1.9.*
+    , time-manager ==0.0.*
+    , tls >=1.6.0 && <1.7
+    , transformers ==0.5.*
+    , unliftio ==0.2.*
+    , unliftio-core ==0.2.*
+    , websockets ==0.12.*
+    , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
+  if flag(swift)
+    cpp-options: -DswiftJSON
+
+executable xftp-server
+  main-is: Main.hs
+  other-modules:
+      Paths_simplexmq
+  hs-source-dirs:
+      apps/xftp-server
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  build-depends:
+      QuickCheck ==2.14.*
+    , aeson ==2.0.*
+    , ansi-terminal >=0.10 && <0.12
+    , asn1-encoding ==0.9.*
+    , asn1-types ==0.3.*
+    , async ==2.2.*
+    , attoparsec ==0.14.*
+    , base >=4.14 && <5
+    , base64-bytestring >=1.0 && <1.3
+    , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
+    , composition ==1.0.*
+    , constraints >=0.12 && <0.14
+    , containers ==0.6.*
+    , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
+    , data-default ==0.7.*
+    , direct-sqlcipher ==2.3.*
+    , directory ==1.3.*
+    , filepath ==1.4.*
+    , generic-random >=1.3 && <1.5
+    , http-types ==0.12.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
+    , iso8601-time ==0.1.*
+    , memory ==0.15.*
+    , mtl ==2.2.*
+    , network >=3.1.2.7 && <3.2
+    , network-transport ==0.5.4
+    , optparse-applicative >=0.15 && <0.17
+    , process ==1.6.*
+    , random >=1.1 && <1.3
+    , simple-logger ==0.1.*
+    , simplexmq
+    , socks ==0.6.*
+    , sqlcipher-simple ==0.4.*
+    , stm ==2.5.*
+    , template-haskell ==2.16.*
+    , temporary ==1.3.*
+    , text ==1.2.*
+    , time ==1.9.*
+    , time-compat ==1.9.*
+    , time-manager ==0.0.*
+    , tls >=1.6.0 && <1.7
+    , transformers ==0.5.*
+    , unliftio ==0.2.*
+    , unliftio-core ==0.2.*
+    , websockets ==0.12.*
+    , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
+  if flag(swift)
+    cpp-options: -DswiftJSON
+
+test-suite simplexmq-test
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
@@ -344,14 +517,22 @@ test-suite smp-server-test
       AgentTests.NotificationTests
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
+      CLITests
+      CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
+      CoreTests.RetryIntervalTests
       CoreTests.VersionRangeTests
+      FileDescriptionTests
       NtfClient
       NtfServerTests
       ServerTests
       SMPAgentClient
       SMPClient
+      XFTPAgent
+      XFTPCLI
+      XFTPClient
+      XFTPServerTests
       Paths_simplexmq
   hs-source-dirs:
       tests
@@ -375,29 +556,33 @@ test-suite smp-server-test
     , cryptonite >=0.27 && <0.30
     , cryptostore ==0.2.*
     , data-default ==0.7.*
-    , direct-sqlite ==2.3.*
+    , deepseq ==1.4.*
+    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , hspec >=2.7 && <2.11
     , hspec-core >=2.7 && <2.11
     , http-types ==0.12.*
-    , http2 ==3.0.*
-    , ini ==0.4.*
+    , http2 ==4.1.*
+    , ini ==0.4.1
     , iso8601-time ==0.1.*
+    , main-tester ==0.2.*
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
-    , network-transport ==0.5.*
+    , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
+    , silently ==1.2.*
     , simple-logger ==0.1.*
     , simplexmq
     , socks ==0.6.*
-    , sqlite-simple ==0.4.*
+    , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
+    , temporary ==1.3.*
     , text ==1.2.*
     , time ==1.9.*
     , time-compat ==1.9.*
@@ -411,6 +596,7 @@ test-suite smp-server-test
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+    , yaml ==0.11.*
+  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  default-language: Haskell2010

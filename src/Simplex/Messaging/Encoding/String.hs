@@ -6,6 +6,7 @@ module Simplex.Messaging.Encoding.String
     StrEncoding (..),
     Str (..),
     strP_,
+    _strP,
     strToJSON,
     strToJEncoding,
     strParseJSON,
@@ -35,7 +36,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
-import Data.Word (Word16)
+import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
@@ -74,6 +75,10 @@ instance StrEncoding Str where
   strEncode = unStr
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
 
+instance StrEncoding String where
+  strEncode = strEncode . B.pack
+  strP = B.unpack <$> strP
+
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s
   toEncoding (Str s) = strToJEncoding s
@@ -93,10 +98,16 @@ instance StrEncoding Word16 where
   strP = A.decimal
   {-# INLINE strP #-}
 
+instance StrEncoding Word32 where
+  strEncode = B.pack . show
+  {-# INLINE strEncode #-}
+  strP = A.decimal
+  {-# INLINE strP #-}
+
 instance StrEncoding Char where
   strEncode = smpEncode
   {-# INLINE strEncode #-}
-  strP = strP
+  strP = smpP
   {-# INLINE strP #-}
 
 instance StrEncoding Bool where
@@ -170,6 +181,9 @@ instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncodin
 
 strP_ :: StrEncoding a => Parser a
 strP_ = strP <* A.space
+
+_strP :: StrEncoding a => Parser a
+_strP = A.space *> strP
 
 strToJSON :: StrEncoding a => a -> J.Value
 strToJSON = J.String . decodeLatin1 . strEncode

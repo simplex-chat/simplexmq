@@ -3,6 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
@@ -11,14 +12,20 @@
 
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
+    AgentMonad',
     AgentConfig (..),
+    AgentDatabase (..),
+    databaseFile,
     InitialAgentServers (..),
+    NetworkConfig (..),
     defaultAgentConfig,
     defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
+    createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
+    XFTPAgent (..),
   )
 where
 
@@ -27,11 +34,12 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
-import Network.Socks5 (SocksConf)
 import Numeric.Natural
+import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
@@ -39,8 +47,9 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer)
+import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -50,27 +59,43 @@ import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
 
--- | Agent monad with MonadReader Env and MonadError AgentErrorType
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
+type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
+
+type AgentMonad m = (AgentMonad' m, MonadError AgentErrorType m)
 
 data InitialAgentServers = InitialAgentServers
-  { smp :: NonEmpty SMPServer,
+  { smp :: Map UserId (NonEmpty SMPServerWithAuth),
     ntf :: [NtfServer],
-    socksProxy :: Maybe SocksConf,
-    tcpTimeout :: Int
+    xftp :: Map UserId (NonEmpty XFTPServerWithAuth),
+    netCfg :: NetworkConfig
   }
+
+data AgentDatabase
+  = AgentDB SQLiteStore
+  | AgentDBFile {dbFile :: FilePath, dbKey :: String}
+
+databaseFile :: AgentDatabase -> FilePath
+databaseFile = \case
+  AgentDB SQLiteStore {dbFilePath} -> dbFilePath
+  AgentDBFile {dbFile} -> dbFile
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    dbFile :: FilePath,
+    database :: AgentDatabase,
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
+    xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
+    messageRetryInterval :: RetryInterval2,
+    messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
+    initialCleanupDelay :: Int,
+    cleanupInterval :: Int,
+    deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
     ntfSMPWorkerDelay :: Int,
@@ -79,19 +104,39 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    smpAgentVersion :: Version,
-    smpAgentVRange :: VersionRange
+    e2eEncryptVRange :: VersionRange,
+    smpAgentVRange :: VersionRange,
+    smpClientVRange :: VersionRange,
+    initialClientId :: Int
   }
 
 defaultReconnectInterval :: RetryInterval
 defaultReconnectInterval =
   RetryInterval
-    { initialInterval = second,
-      increaseAfter = 10 * second,
-      maxInterval = 10 * second
+    { initialInterval = 2_000000,
+      increaseAfter = 10_000000,
+      maxInterval = 180_000000
     }
-  where
-    second = 1_000_000
+
+defaultMessageRetryInterval :: RetryInterval2
+defaultMessageRetryInterval =
+  RetryInterval2
+    { riFast =
+        RetryInterval
+          { initialInterval = 1_000000,
+            increaseAfter = 10_000000,
+            maxInterval = 60_000000
+          },
+      riSlow =
+        -- TODO: these timeouts can be increased in v5.0 once most clients are updated
+        -- to resume sending on QCONT messages.
+        -- After that local message expiration period should be also increased.
+        RetryInterval
+          { initialInterval = 60_000000,
+            increaseAfter = 60_000000,
+            maxInterval = 3600_000000 -- 1 hour
+          }
+    }
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
@@ -100,12 +145,18 @@ defaultAgentConfig =
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
-      dbFile = "smp-agent.db",
+      database = AgentDBFile {dbFile = "smp-agent.db", dbKey = ""},
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
+      xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
+      messageRetryInterval = defaultMessageRetryInterval,
+      messageTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
+      initialCleanupDelay = 30 * 1000000, -- 30 seconds
+      cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
+      deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds
       ntfSMPWorkerDelay = 500000, -- microseconds
@@ -116,8 +167,10 @@ defaultAgentConfig =
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
-      smpAgentVersion = currentSMPAgentVersion,
-      smpAgentVRange = supportedSMPAgentVRange
+      e2eEncryptVRange = supportedE2EEncryptVRange,
+      smpAgentVRange = supportedSMPAgentVRange,
+      smpClientVRange = supportedSMPClientVRange,
+      initialClientId = 0
     }
 
 data Env = Env
@@ -126,17 +179,24 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
-    ntfSupervisor :: NtfSupervisor
+    ntfSupervisor :: NtfSupervisor,
+    xftpAgent :: XFTPAgent
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
+newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore dbFile Migrations.app yesToMigrations
-  clientCounter <- newTVarIO 0
+  store <- case database of
+    AgentDB st -> pure st
+    AgentDBFile {dbFile, dbKey} -> liftIO $ createAgentStore dbFile dbKey yesToMigrations
+  clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+  xftpAgent <- atomically newXFTPAgent
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
+
+createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
+createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
@@ -155,3 +215,21 @@ newNtfSubSupervisor qSize = do
   ntfWorkers <- TM.empty
   ntfSMPWorkers <- TM.empty
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+
+data XFTPAgent = XFTPAgent
+  { -- if set, XFTP file paths will be considered as relative to this directory
+    xftpWorkDir :: TVar (Maybe FilePath),
+    xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
+    -- separate send workers for unhindered concurrency between download and upload,
+    -- clients can also be separate by passing direction to withXFTPClient, and differentiating by it
+    -- xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    -- files currently in upload - to throttle upload of other files' chunks,
+    -- this optimization can be dropped for the MVP
+    -- xftpSndFiles :: TVar (Set DBSndFileId)
+  }
+
+newXFTPAgent :: STM XFTPAgent
+newXFTPAgent = do
+  xftpWorkDir <- newTVar Nothing
+  xftpWorkers <- TM.empty
+  pure XFTPAgent {xftpWorkDir, xftpWorkers}

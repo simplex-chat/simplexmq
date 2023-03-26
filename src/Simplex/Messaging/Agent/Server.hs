@@ -48,7 +48,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertifica
     smpAgent _ = do
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
       tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-      runTransportServer started tcpPort tlsServerParams $ \(h :: c) -> do
+      runTransportServer started tcpPort tlsServerParams True $ \(h :: c) -> do
         liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
         c <- getAgentClient initServers
         logConnection c True
@@ -60,10 +60,10 @@ connectClient h c = race_ (send h c) (receive h c)
 
 receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
 receive h c@AgentClient {rcvQ, subQ} = forever $ do
-  (corrId, connId, cmdOrErr) <- tGet SClient h
+  (corrId, entId, cmdOrErr) <- tGet SClient h
   case cmdOrErr of
-    Right cmd -> write rcvQ (corrId, connId, cmd)
-    Left e -> write subQ (corrId, connId, ERR e)
+    Right cmd -> write rcvQ (corrId, entId, cmd)
+    Left e -> write subQ (corrId, entId, APC SAEConn $ ERR e)
   where
     write :: TBQueue (ATransmission p) -> ATransmission p -> m ()
     write q t = do
@@ -77,5 +77,5 @@ send h c@AgentClient {subQ} = forever $ do
   logClient c "<--" t
 
 logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
-logClient AgentClient {clientId} dir (corrId, connId, cmd) = do
+logClient AgentClient {clientId} dir (corrId, connId, APC _ cmd) = do
   logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, B.takeWhile (/= ' ') $ serializeCommand cmd]

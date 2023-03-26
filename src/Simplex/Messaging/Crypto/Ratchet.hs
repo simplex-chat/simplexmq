@@ -41,11 +41,11 @@ import Simplex.Messaging.Parsers (blobFieldDecoder, parseE, parseE')
 import Simplex.Messaging.Util (tryE)
 import Simplex.Messaging.Version
 
-e2eEncryptVersion :: Version
-e2eEncryptVersion = 1
+currentE2EEncryptVersion :: Version
+currentE2EEncryptVersion = 2
 
-e2eEncryptVRange :: VersionRange
-e2eEncryptVRange = mkVersionRange 1 e2eEncryptVersion
+supportedE2EEncryptVRange :: VersionRange
+supportedE2EEncryptVRange = mkVersionRange 1 currentE2EEncryptVersion
 
 data E2ERatchetParams (a :: Algorithm)
   = E2ERatchetParams Version (PublicKey a) (PublicKey a)
@@ -96,20 +96,27 @@ data RatchetInitParams = RatchetInitParams
   deriving (Eq, Show)
 
 x3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhSnd spk1 spk2 (E2ERatchetParams _ rk1 rk2) =
-  x3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
+x3dhSnd spk1 spk2 (E2ERatchetParams v rk1 rk2) =
+  x3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
 
 x3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhRcv rpk1 rpk2 (E2ERatchetParams _ sk1 sk2) =
-  x3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
+x3dhRcv rpk1 rpk2 (E2ERatchetParams v sk1 sk2) =
+  x3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
 
-x3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
-x3dh (sk1, rk1) dh1 dh2 dh3 =
+x3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
+x3dh v (sk1, rk1) dh1 dh2 dh3 =
   RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
-    (hk, rest) = B.splitAt 32 $ dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
-    (nhk, sk) = B.splitAt 32 rest
+    dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
+    (hk, nhk, sk)
+      -- for backwards compatibility with clients using agent version before 3.4.0
+      | v == 1 =
+        let (hk', rest) = B.splitAt 32 dhs
+         in uncurry (hk',,) $ B.splitAt 32 rest
+      | otherwise =
+        let salt = B.replicate 64 '\0'
+         in hkdf3 salt dhs "SimpleXX3DH"
 
 type RatchetX448 = Ratchet 'X448
 
@@ -210,12 +217,12 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initSndRatchet rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initSndRatchet rcVersion rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs
    in Ratchet
-        { rcVersion = e2eEncryptVRange,
+        { rcVersion,
           rcAD = assocData,
           rcDHRs,
           rcRK,
@@ -233,10 +240,10 @@ initSndRatchet rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rc
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PrivateKey a -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initRcvRatchet rcVersion rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
   Ratchet
-    { rcVersion = e2eEncryptVRange,
+    { rcVersion,
       rcAD = assocData,
       rcDHRs,
       rcRK = ratchetKey,
@@ -465,7 +472,6 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
     decryptMessage :: MessageKey -> EncRatchetMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
-      -- TODO add associated data
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)

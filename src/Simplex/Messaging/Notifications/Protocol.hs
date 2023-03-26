@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -23,6 +24,7 @@ import Data.Type.Equality
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -145,7 +147,7 @@ instance Encoding ANewNtfEntity where
       'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
-instance Protocol NtfResponse where
+instance Protocol ErrorType NtfResponse where
   type ProtoCommand NtfResponse = NtfCmd
   type ProtoType NtfResponse = 'PNTF
   protocolClientHandshake = ntfClientHandshake
@@ -182,7 +184,7 @@ data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
 
 deriving instance Show NtfCmd
 
-instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
+instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
   encodeProtocol _v = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
@@ -201,6 +203,9 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
+  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  {-# INLINE fromProtocolError #-}
+
   checkCredentials (sig, _, entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
@@ -218,7 +223,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
-instance ProtocolEncoding NtfCmd where
+instance ProtocolEncoding ErrorType NtfCmd where
   type Tag NtfCmd = NtfCmdTag
   encodeProtocol _v (NtfCmd _ c) = encodeProtocol _v c
 
@@ -237,6 +242,9 @@ instance ProtocolEncoding NtfCmd where
         SCHK_ -> pure SCHK
         SDEL_ -> pure SDEL
         PING_ -> pure PING
+
+  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  {-# INLINE fromProtocolError #-}
 
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
@@ -282,7 +290,7 @@ data NtfResponse
   | NRPong
   deriving (Show)
 
-instance ProtocolEncoding NtfResponse where
+instance ProtocolEncoding ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol _v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
@@ -304,6 +312,13 @@ instance ProtocolEncoding NtfResponse where
     NRTkn_ -> NRTkn <$> _smpP
     NRSub_ -> NRSub <$> _smpP
     NRPong_ -> pure NRPong
+
+  fromProtocolError = \case
+    PECmdSyntax -> CMD SYNTAX
+    PECmdUnknown -> CMD UNKNOWN
+    PESession -> SESSION
+    PEBlock -> BLOCK
+  {-# INLINE fromProtocolError #-}
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
     -- IDTKN response must not have queue ID
@@ -332,12 +347,16 @@ data SMPQueueNtf = SMPQueueNtf
 instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
-    (smpServer, notifierId) <- smpP
-    pure $ SMPQueueNtf {smpServer, notifierId}
+    smpServer <- updateSMPServerHosts <$> smpP
+    notifierId <- smpP
+    pure SMPQueueNtf {smpServer, notifierId}
 
 instance StrEncoding SMPQueueNtf where
   strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId
-  strP = SMPQueueNtf <$> strP <* A.char '/' <*> strP
+  strP = do
+    smpServer <- updateSMPServerHosts <$> strP
+    notifierId <- A.char '/' *> strP
+    pure SMPQueueNtf {smpServer, notifierId}
 
 data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
   deriving (Eq, Ord, Show)
@@ -382,7 +401,7 @@ instance StrEncoding DeviceToken where
   strP = DeviceToken <$> strP <* A.space <*> hexStringP
     where
       hexStringP =
-        A.takeWhile (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) >>= \s ->
+        A.takeWhile (\c -> A.isDigit c || (c >= 'a' && c <= 'f')) >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where

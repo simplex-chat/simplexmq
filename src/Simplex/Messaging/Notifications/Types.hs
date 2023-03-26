@@ -3,7 +3,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Notifications.Types where
 
@@ -88,6 +87,7 @@ isDeleteNtfSubAction = \case
     NSACreate -> False
     NSACheck -> False
     NSADelete -> True
+    NSARotate -> True
   NtfSubSMPAction a -> case a of
     NSASmpKey -> False
     NSASmpDelete -> True
@@ -98,6 +98,7 @@ data NtfSubNTFAction
   = NSACreate
   | NSACheck
   | NSADelete
+  | NSARotate
   deriving (Show)
 
 instance Encoding NtfSubNTFAction where
@@ -105,11 +106,13 @@ instance Encoding NtfSubNTFAction where
     NSACreate -> "N"
     NSACheck -> "C"
     NSADelete -> "D"
+    NSARotate -> "R"
   smpP =
     A.anyChar >>= \case
       'N' -> pure NSACreate
       'C' -> pure NSACheck
       'D' -> pure NSADelete
+      'R' -> pure NSARotate
       _ -> fail "bad NtfSubNTFAction"
 
 instance FromField NtfSubNTFAction where fromField = blobFieldDecoder smpDecode

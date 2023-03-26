@@ -1,5 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -9,8 +11,10 @@ module SMPAgentClient where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
-import qualified Data.List.NonEmpty as L
-import Network.Socket (HostName, ServiceName)
+import Data.List.NonEmpty (NonEmpty)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
   ( serverBracket,
@@ -25,15 +29,17 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
-import Simplex.Messaging.Transport.KeepAlive
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
+import XFTPClient (testXFTPServer)
 
-agentTestHost :: HostName
+agentTestHost :: NonEmpty TransportHost
 agentTestHost = "localhost"
 
 agentTestPort :: ServiceName
@@ -45,24 +51,31 @@ agentTestPort2 = "5011"
 agentTestPort3 :: ServiceName
 agentTestPort3 = "5012"
 
-testDB :: String
-testDB = "tests/tmp/smp-agent.test.protocol.db"
+testDB :: AgentDatabase
+testDB = AgentDBFile {dbFile = "tests/tmp/smp-agent.test.protocol.db", dbKey = ""}
 
-testDB2 :: String
-testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
+testDB2 :: AgentDatabase
+testDB2 = AgentDBFile {dbFile = "tests/tmp/smp-agent2.test.protocol.db", dbKey = ""}
 
-testDB3 :: String
-testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
+testDB3 :: AgentDatabase
+testDB3 = AgentDBFile {dbFile = "tests/tmp/smp-agent3.test.protocol.db", dbKey = ""}
 
 smpAgentTest :: forall c. Transport c => TProxy c -> ARawTransmission -> IO ARawTransmission
-smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> tGetRaw h
+smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
+  where
+    get h = do
+      t@(_, _, cmdStr) <- tGetRaw h
+      case parseAll networkCommandP cmdStr of
+        Right (ACmd SAgent _ CONNECT {}) -> get h
+        Right (ACmd SAgent _ DISCONNECT {}) -> get h
+        _ -> pure t
 
-runSmpAgentTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => (c -> m a) -> m a
+runSmpAgentTest :: forall c a. Transport c => (c -> IO a) -> IO a
 runSmpAgentTest test = withSmpServer t . withSmpAgent t $ testSMPAgentClient test
   where
     t = transport @c
 
-runSmpAgentServerTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => ((ThreadId, ThreadId) -> c -> m a) -> m a
+runSmpAgentServerTest :: forall c a. Transport c => ((ThreadId, ThreadId) -> c -> IO a) -> IO a
 runSmpAgentServerTest test =
   withSmpServerThreadOn t testPort $
     \server -> withSmpAgentThreadOn t (agentTestPort, testPort, testDB) $
@@ -73,23 +86,23 @@ runSmpAgentServerTest test =
 smpAgentServerTest :: Transport c => ((ThreadId, ThreadId) -> c -> IO ()) -> Expectation
 smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
-runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => [(ServiceName, ServiceName, String)] -> ([c] -> m a) -> m a
+runSmpAgentTestN :: forall c a. Transport c => [(ServiceName, ServiceName, AgentDatabase)] -> ([c] -> IO a) -> IO a
 runSmpAgentTestN agents test = withSmpServer t $ run agents []
   where
-    run :: [(ServiceName, ServiceName, String)] -> [c] -> m a
+    run :: [(ServiceName, ServiceName, AgentDatabase)] -> [c] -> IO a
     run [] hs = test hs
     run (a@(p, _, _) : as) hs = withSmpAgentOn t a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
     t = transport @c
 
-runSmpAgentTestN_1 :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => Int -> ([c] -> m a) -> m a
+runSmpAgentTestN_1 :: forall c a. Transport c => Int -> ([c] -> IO a) -> IO a
 runSmpAgentTestN_1 nClients test = withSmpServer t . withSmpAgent t $ run nClients []
   where
-    run :: Int -> [c] -> m a
+    run :: Int -> [c] -> IO a
     run 0 hs = test hs
     run n hs = testSMPAgentClient $ \h -> run (n - 1) (h : hs)
     t = transport @c
 
-smpAgentTestN :: Transport c => [(ServiceName, ServiceName, String)] -> ([c] -> IO ()) -> Expectation
+smpAgentTestN :: Transport c => [(ServiceName, ServiceName, AgentDatabase)] -> ([c] -> IO ()) -> Expectation
 smpAgentTestN agents test' = runSmpAgentTestN agents test' `shouldReturn` ()
 
 smpAgentTestN_1 :: Transport c => Int -> ([c] -> IO ()) -> Expectation
@@ -164,32 +177,23 @@ testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
-    { smp = L.fromList [testSMPServer],
+    { smp = userServers [noAuthSrv testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
-      socksProxy = Nothing,
-      tcpTimeout = 5000000
+      xftp = userServers [noAuthSrv testXFTPServer],
+      netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
-initAgentServers2 = initAgentServers {smp = L.fromList [testSMPServer, testSMPServer2]}
+initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
 
 agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      tbqSize = 1,
-      dbFile = testDB,
-      smpCfg =
-        defaultClientConfig
-          { qSize = 1,
-            defaultTransport = (testPort, transport @TLS),
-            tcpTimeout = 500_000
-          },
-      ntfCfg =
-        defaultClientConfig
-          { qSize = 1,
-            defaultTransport = (ntfTestPort, transport @TLS)
-          },
+      tbqSize = 4,
+      database = testDB,
+      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS)},
+      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       ntfWorkerDelay = 1000,
       ntfSMPWorkerDelay = 1000,
@@ -198,31 +202,35 @@ agentCfg =
       certificateFile = "tests/fixtures/server.crt"
     }
 
-withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = agentCfg {tcpPort = port', dbFile = db'}
-      initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = agentCfg {tcpPort = port', database = db'}
+      initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
-withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
+userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoServerWithAuth p))
+userServers srvs = M.fromList [(1, srvs)]
 
-withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m a -> m a
+withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile (dbFile db')
+
+withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, AgentDatabase) -> m a -> m a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const
 
 withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
-testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
+testSMPAgentClientOn :: (Transport c, MonadUnliftIO m, MonadFail m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient Nothing agentTestHost port' (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h -> do
+  Right useHost <- pure $ chooseTransportHost defaultNetworkConfig agentTestHost
+  runTransportClient defaultTransportClientConfig Nothing useHost port' (Just testKeyHash) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
       else do
         error $ "wrong welcome message: " <> B.unpack line
 
-testSMPAgentClient :: (Transport c, MonadUnliftIO m) => (c -> m a) -> m a
+testSMPAgentClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (c -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

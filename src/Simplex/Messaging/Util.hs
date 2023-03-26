@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -13,6 +12,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8With)
 import UnliftIO.Async
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -55,6 +55,10 @@ liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) 
 liftEitherError f a = liftIOEither (first f <$> a)
 {-# INLINE liftEitherError #-}
 
+liftEitherWith :: (MonadError e' m) => (e -> e') -> Either e a -> m a
+liftEitherWith f = liftEither . first f
+{-# INLINE liftEitherWith #-}
+
 tryError :: MonadError e m => m a -> m (Either e a)
 tryError action = (Right <$> action) `catchError` (pure . Left)
 {-# INLINE tryError #-}
@@ -93,3 +97,8 @@ catchAll_ a = catchAll a . const
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
 {-# INLINE eitherToMaybe #-}
+
+safeDecodeUtf8 :: ByteString -> Text
+safeDecodeUtf8 = decodeUtf8With onError
+  where
+    onError _ _ = Just '?'

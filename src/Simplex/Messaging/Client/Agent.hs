@@ -26,6 +26,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -37,14 +38,14 @@ import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type SMPClientVar = TMVar (Either ProtocolClientError SMPClient)
+type SMPClientVar = TMVar (Either SMPClientError SMPClient)
 
 data SMPClientAgentEvent
   = CAConnected SMPServer
   | CADisconnected SMPServer (Set SMPSub)
   | CAReconnected SMPServer
   | CAResubscribed SMPServer SMPSub
-  | CASubError SMPServer SMPSub ProtocolClientError
+  | CASubError SMPServer SMPSub SMPClientError
 
 data SMPSubParty = SPRecipient | SPNotifier
   deriving (Eq, Ord, Show)
@@ -110,7 +111,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} = do
   asyncClients <- newTVar []
   pure SMPClientAgent {agentCfg, msgQ, agentQ, smpClients, srvSubs, pendingSrvSubs, reconnections, asyncClients}
 
-getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT ProtocolClientError IO SMPClient
+getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO SMPClient
 getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
   atomically getClientVar >>= either newSMPClient waitForSMPClient
   where
@@ -123,19 +124,19 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
       TM.insert srv smpVar smpClients
       pure smpVar
 
-    waitForSMPClient :: SMPClientVar -> ExceptT ProtocolClientError IO SMPClient
+    waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
     waitForSMPClient smpVar = do
-      let ProtocolClientConfig {tcpTimeout} = smpCfg agentCfg
-      smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar)
+      let ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
+      smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar smpVar)
       liftEither $ case smpClient_ of
         Just (Right smpClient) -> Right smpClient
         Just (Left e) -> Left e
         Nothing -> Left PCEResponseTimeout
 
-    newSMPClient :: SMPClientVar -> ExceptT ProtocolClientError IO SMPClient
+    newSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
     newSMPClient smpVar = tryConnectClient pure tryConnectAsync
       where
-        tryConnectClient :: (SMPClient -> ExceptT ProtocolClientError IO a) -> ExceptT ProtocolClientError IO () -> ExceptT ProtocolClientError IO a
+        tryConnectClient :: (SMPClient -> ExceptT SMPClientError IO a) -> ExceptT SMPClientError IO () -> ExceptT SMPClientError IO a
         tryConnectClient successAction retryAction =
           tryE connectClient >>= \r -> case r of
             Right smp -> do
@@ -149,20 +150,20 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
                   putTMVar smpVar (Left e)
                   TM.delete srv smpClients
               throwE e
-        tryConnectAsync :: ExceptT ProtocolClientError IO ()
+        tryConnectAsync :: ExceptT SMPClientError IO ()
         tryConnectAsync = do
           a <- async connectAsync
           atomically $ modifyTVar' (asyncClients ca) (a :)
-        connectAsync :: ExceptT ProtocolClientError IO ()
+        connectAsync :: ExceptT SMPClientError IO ()
         connectAsync =
-          withRetryInterval (reconnectInterval agentCfg) $ \loop ->
+          withRetryInterval (reconnectInterval agentCfg) $ \_ loop ->
             void $ tryConnectClient (const reconnectClient) loop
 
-    connectClient :: ExceptT ProtocolClientError IO SMPClient
-    connectClient = ExceptT $ getProtocolClient srv (smpCfg agentCfg) (Just msgQ) clientDisconnected
+    connectClient :: ExceptT SMPClientError IO SMPClient
+    connectClient = ExceptT $ getProtocolClient (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) clientDisconnected
 
-    clientDisconnected :: IO ()
-    clientDisconnected = do
+    clientDisconnected :: SMPClient -> IO ()
+    clientDisconnected _ = do
       removeClientAndSubs >>= (`forM_` serverDown)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
@@ -187,17 +188,17 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
       notify . CADisconnected srv $ M.keysSet ss
       reconnectServer
 
-    reconnectServer :: ExceptT ProtocolClientError IO ()
+    reconnectServer :: ExceptT SMPClientError IO ()
     reconnectServer = do
       a <- async tryReconnectClient
       atomically $ modifyTVar' (reconnections ca) (a :)
 
-    tryReconnectClient :: ExceptT ProtocolClientError IO ()
+    tryReconnectClient :: ExceptT SMPClientError IO ()
     tryReconnectClient = do
-      withRetryInterval (reconnectInterval agentCfg) $ \loop ->
+      withRetryInterval (reconnectInterval agentCfg) $ \_ loop ->
         reconnectClient `catchE` const loop
 
-    reconnectClient :: ExceptT ProtocolClientError IO ()
+    reconnectClient :: ExceptT SMPClientError IO ()
     reconnectClient = do
       withSMP ca srv $ \smp -> do
         notify $ CAReconnected srv
@@ -206,13 +207,13 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
           unlessM (atomically $ hasSub (srvSubs ca) srv s) $
             subscribe_ smp sub `catchE` handleError s
       where
-        subscribe_ :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT ProtocolClientError IO ()
+        subscribe_ :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
         subscribe_ smp sub@(s, _) = do
           smpSubscribe smp sub
           atomically $ addSubscription ca srv sub
           notify $ CAResubscribed srv s
 
-        handleError :: SMPSub -> ProtocolClientError -> ExceptT ProtocolClientError IO ()
+        handleError :: SMPSub -> SMPClientError -> ExceptT SMPClientError IO ()
         handleError s = \case
           e@PCEResponseTimeout -> throwE e
           e@PCENetworkError -> throwE e
@@ -220,7 +221,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
             notify $ CASubError srv s e
             atomically $ removePendingSubscription ca srv s
 
-    notify :: SMPClientAgentEvent -> ExceptT ProtocolClientError IO ()
+    notify :: SMPClientAgentEvent -> ExceptT SMPClientError IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
 
 closeSMPClientAgent :: MonadUnliftIO m => SMPClientAgent -> m ()
@@ -240,15 +241,15 @@ closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeCli
 cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel
 
-withSMP :: SMPClientAgent -> SMPServer -> (SMPClient -> ExceptT ProtocolClientError IO a) -> ExceptT ProtocolClientError IO a
+withSMP :: SMPClientAgent -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> ExceptT SMPClientError IO a
 withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPError
   where
-    logSMPError :: ProtocolClientError -> ExceptT ProtocolClientError IO a
+    logSMPError :: SMPClientError -> ExceptT SMPClientError IO a
     logSMPError e = do
       liftIO $ putStrLn $ "SMP error (" <> show srv <> "): " <> show e
       throwE e
 
-subscribeQueue :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateSignKey) -> ExceptT ProtocolClientError IO ()
+subscribeQueue :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
 subscribeQueue ca srv sub = do
   atomically $ addPendingSubscription ca srv sub
   withSMP ca srv $ \smp -> subscribe_ smp `catchE` handleError
@@ -264,9 +265,9 @@ subscribeQueue ca srv sub = do
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =
-  B.pack $ host <> if null port then "" else ':' : port
+  strEncode host <> B.pack (if null port then "" else ':' : port)
 
-smpSubscribe :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT ProtocolClientError IO ()
+smpSubscribe :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
 smpSubscribe smp ((party, queueId), privKey) = subscribe_ smp privKey queueId
   where
     subscribe_ = case party of

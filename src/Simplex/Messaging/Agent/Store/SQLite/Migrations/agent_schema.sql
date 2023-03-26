@@ -20,7 +20,11 @@ CREATE TABLE connections(
   last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
   smp_agent_version INTEGER NOT NULL DEFAULT 1
   ,
-  duplex_handshake INTEGER NULL DEFAULT 0
+  duplex_handshake INTEGER NULL DEFAULT 0,
+  enable_ntfs INTEGER,
+  deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
+  user_id INTEGER CHECK(user_id NOT NULL)
+  REFERENCES users ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -40,6 +44,11 @@ CREATE TABLE rcv_queues(
   ntf_private_key BLOB,
   ntf_id BLOB,
   rcv_ntf_dh_secret BLOB,
+  rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
+  rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
+  replace_rcv_queue_id INTEGER NULL,
+  delete_errors INTEGER DEFAULT 0 CHECK(delete_errors NOT NULL),
+  server_key_hash BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -57,6 +66,10 @@ CREATE TABLE snd_queues(
   smp_client_version INTEGER NOT NULL DEFAULT 1,
   snd_public_key BLOB,
   e2e_pub_key BLOB,
+  snd_queue_id INTEGER CHECK(snd_queue_id NOT NULL),
+  snd_primary INTEGER CHECK(snd_primary NOT NULL),
+  replace_snd_queue_id INTEGER NULL,
+  server_key_hash BLOB,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -88,6 +101,7 @@ CREATE TABLE rcv_messages(
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
   user_ack INTEGER NULL DEFAULT 0,
+  rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -98,6 +112,8 @@ CREATE TABLE snd_messages(
   internal_id INTEGER NOT NULL,
   internal_hash BLOB NOT NULL,
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
+  retry_int_slow INTEGER,
+  retry_int_fast INTEGER,
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -105,15 +121,16 @@ CREATE TABLE snd_messages(
 CREATE TABLE conn_confirmations(
   confirmation_id BLOB NOT NULL PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  e2e_snd_pub_key BLOB NOT NULL, -- TODO per-queue key. Split?
-  sender_key BLOB NOT NULL, -- TODO per-queue key. Split?
+  e2e_snd_pub_key BLOB NOT NULL,
+  sender_key BLOB NOT NULL,
   ratchet_state BLOB NOT NULL,
   sender_conn_info BLOB NOT NULL,
   accepted INTEGER NOT NULL,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
   ,
-  smp_reply_queues BLOB NULL
+  smp_reply_queues BLOB NULL,
+  smp_client_version INTEGER
 ) WITHOUT ROWID;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,
@@ -186,9 +203,144 @@ CREATE TABLE ntf_subscriptions(
   updated_by_supervisor INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite supervisor command(state still should be updated)
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  smp_server_key_hash BLOB,
   PRIMARY KEY(conn_id),
   FOREIGN KEY(smp_host, smp_port) REFERENCES servers(host, port)
   ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
+CREATE TABLE commands(
+  command_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  host TEXT,
+  port TEXT,
+  corr_id BLOB NOT NULL,
+  command_tag BLOB NOT NULL,
+  command BLOB NOT NULL,
+  agent_version INTEGER NOT NULL DEFAULT 1,
+  server_key_hash BLOB,
+  FOREIGN KEY(host, port) REFERENCES servers
+  ON DELETE RESTRICT ON UPDATE CASCADE
+);
+CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
+CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
+CREATE TABLE snd_message_deliveries(
+  snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  snd_queue_id INTEGER NOT NULL,
+  internal_id INTEGER NOT NULL,
+  FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE sqlite_sequence(name,seq);
+CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
+  conn_id,
+  snd_queue_id
+);
+CREATE TABLE users(
+  user_id INTEGER PRIMARY KEY AUTOINCREMENT
+  ,
+  deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL)
+);
+CREATE INDEX idx_connections_user ON connections(user_id);
+CREATE INDEX idx_commands_conn_id ON commands(conn_id);
+CREATE INDEX idx_commands_host_port ON commands(host, port);
+CREATE INDEX idx_conn_confirmations_conn_id ON conn_confirmations(conn_id);
+CREATE INDEX idx_conn_invitations_contact_conn_id ON conn_invitations(
+  contact_conn_id
+);
+CREATE INDEX idx_messages_conn_id_internal_snd_id ON messages(
+  conn_id,
+  internal_snd_id
+);
+CREATE INDEX idx_messages_conn_id_internal_rcv_id ON messages(
+  conn_id,
+  internal_rcv_id
+);
+CREATE INDEX idx_messages_conn_id ON messages(conn_id);
+CREATE INDEX idx_ntf_subscriptions_ntf_host_ntf_port ON ntf_subscriptions(
+  ntf_host,
+  ntf_port
+);
+CREATE INDEX idx_ntf_subscriptions_smp_host_smp_port ON ntf_subscriptions(
+  smp_host,
+  smp_port
+);
+CREATE INDEX idx_ntf_tokens_ntf_host_ntf_port ON ntf_tokens(
+  ntf_host,
+  ntf_port
+);
+CREATE INDEX idx_ratchets_conn_id ON ratchets(conn_id);
+CREATE INDEX idx_rcv_messages_conn_id_internal_id ON rcv_messages(
+  conn_id,
+  internal_id
+);
+CREATE INDEX idx_skipped_messages_conn_id ON skipped_messages(conn_id);
+CREATE INDEX idx_snd_message_deliveries_conn_id_internal_id ON snd_message_deliveries(
+  conn_id,
+  internal_id
+);
+CREATE INDEX idx_snd_messages_conn_id_internal_id ON snd_messages(
+  conn_id,
+  internal_id
+);
+CREATE INDEX idx_snd_queues_host_port ON snd_queues(host, port);
+CREATE TABLE xftp_servers(
+  xftp_server_id INTEGER PRIMARY KEY,
+  xftp_host TEXT NOT NULL,
+  xftp_port TEXT NOT NULL,
+  xftp_key_hash BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  UNIQUE(xftp_host, xftp_port, xftp_key_hash)
+);
+CREATE TABLE rcv_files(
+  rcv_file_id INTEGER PRIMARY KEY,
+  rcv_file_entity_id BLOB NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+  size INTEGER NOT NULL,
+  digest BLOB NOT NULL,
+  key BLOB NOT NULL,
+  nonce BLOB NOT NULL,
+  chunk_size INTEGER NOT NULL,
+  prefix_path TEXT NOT NULL,
+  tmp_path TEXT,
+  save_path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  UNIQUE(rcv_file_entity_id)
+);
+CREATE INDEX idx_rcv_files_user_id ON rcv_files(user_id);
+CREATE TABLE rcv_file_chunks(
+  rcv_file_chunk_id INTEGER PRIMARY KEY,
+  rcv_file_id INTEGER NOT NULL REFERENCES rcv_files ON DELETE CASCADE,
+  chunk_no INTEGER NOT NULL,
+  chunk_size INTEGER NOT NULL,
+  digest BLOB NOT NULL,
+  tmp_path TEXT,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX idx_rcv_file_chunks_rcv_file_id ON rcv_file_chunks(rcv_file_id);
+CREATE TABLE rcv_file_chunk_replicas(
+  rcv_file_chunk_replica_id INTEGER PRIMARY KEY,
+  rcv_file_chunk_id INTEGER NOT NULL REFERENCES rcv_file_chunks ON DELETE CASCADE,
+  replica_number INTEGER NOT NULL,
+  xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
+  replica_id BLOB NOT NULL,
+  replica_key BLOB NOT NULL,
+  received INTEGER NOT NULL DEFAULT 0,
+  delay INTEGER,
+  retries INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX idx_rcv_file_chunk_replicas_rcv_file_chunk_id ON rcv_file_chunk_replicas(
+  rcv_file_chunk_id
+);
+CREATE INDEX idx_rcv_file_chunk_replicas_xftp_server_id ON rcv_file_chunk_replicas(
+  xftp_server_id
+);

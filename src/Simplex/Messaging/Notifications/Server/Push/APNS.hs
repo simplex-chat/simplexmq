@@ -32,11 +32,12 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8With)
 import Data.Time.Clock.System
 import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
 import GHC.Generics (Generic)
 import Network.HTTP.Types (HeaderName, Status)
 import qualified Network.HTTP.Types as N
@@ -48,7 +49,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
 import Simplex.Messaging.Protocol (EncNMsgMeta)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
+import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.Environment (getEnv)
 import UnliftIO.STM
 
@@ -90,15 +93,15 @@ signedJWTToken pk (JWTToken hdr claims) = do
 
 readECPrivateKey :: FilePath -> IO EC.PrivateKey
 readECPrivateKey f = do
-  -- TODO this is specific to APNS key
+  -- this pattern match is specific to APNS key type, it may need to be extended for other push providers
   [PK.Unprotected (X.PrivKeyEC X.PrivKeyEC_Named {privkeyEC_name, privkeyEC_priv})] <- PK.readKeyFile f
   pure EC.PrivateKey {private_curve = ECT.getCurveByName privkeyEC_name, private_d = privkeyEC_priv}
 
 data PushNotification
   = PNVerification NtfRegCode
   | PNMessage PNMessageData
-  | PNAlert Text
-  | PNCheckMessages
+  | -- | PNAlert Text
+    PNCheckMessages
   deriving (Show)
 
 data PNMessageData = PNMessageData
@@ -194,9 +197,9 @@ data APNSPushClientConfig = APNSPushClientConfig
     appName :: ByteString,
     appTeamId :: Text,
     apnsPort :: ServiceName,
-    http2cfg :: HTTP2ClientConfig
+    http2cfg :: HTTP2ClientConfig,
+    caStoreFile :: FilePath
   }
-  deriving (Show)
 
 apnsProviderHost :: PushProvider -> HostName
 apnsProviderHost = \case
@@ -215,7 +218,8 @@ defaultAPNSPushClientConfig =
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
       apnsPort = "443",
-      http2cfg = defaultHTTP2ClientConfig
+      http2cfg = defaultHTTP2ClientConfig {bufferSize = 16384},
+      caStoreFile = "/etc/ssl/cert.pem"
     }
 
 data APNSPushClient = APNSPushClient
@@ -259,8 +263,10 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
   pure (jwt, signedJWT)
 
 connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
-connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg} https2Client = do
-  r <- getHTTP2Client apnsHost apnsPort http2cfg disconnected
+connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg, caStoreFile} https2Client = do
+  caStore_ <- XS.readCertificateStore caStoreFile
+  when (isNothing caStore_) $ putStrLn $ "Error loading CertificateStore from " <> caStoreFile
+  r <- getHTTP2Client apnsHost apnsPort caStore_ http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
     Left e -> putStrLn $ "Error connecting to APNS: " <> show e
@@ -287,15 +293,15 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNMessage pnMessageData ->
     encrypt (strEncode pnMessageData) $ \ntfData ->
       apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
-  PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
+  -- PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
     encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
-    apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
-    safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
+
+-- apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
 
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
 apnsRequest c tkn ntf@APNSNotification {aps} = do
@@ -337,9 +343,10 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
+  -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect
+  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
   let status = H.responseStatus response
-      reason' = maybe "" reason $ J.decodeStrict' respBody
+      reason' = maybe "" reason $ J.decodeStrict' bodyHead
   logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
   result status reason'
   where
@@ -358,7 +365,7 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
         _ -> err status reason'
       | status == Just N.gone410 = throwError PPTokenInvalid
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
-      -- Just tooManyRequests429 -> TODO TooManyRequests - too many requests for the same token
+      -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token
       | otherwise = err status reason'
     err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     err s r = throwError $ PPResponseError s r

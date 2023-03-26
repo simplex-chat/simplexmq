@@ -39,13 +39,15 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
     serverTbqSize :: Natural,
-    msgQueueQuota :: Natural,
+    msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
     storeMsgsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
+    -- | simple password that the clients need to pass in handshake to be able to create new queues
+    newQueueBasicAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -65,7 +67,8 @@ data ServerConfig = ServerConfig
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
     -- | SMP client-server protocol version range
-    smpServerVRange :: VersionRange
+    smpServerVRange :: VersionRange,
+    logTLSErrors :: Bool
   }
 
 defaultMessageExpiration :: ExpirationConfig
@@ -161,8 +164,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
       (qs, s') <- liftIO $ readWriteStoreLog s
       atomically $ do
         writeTVar queues =<< mapM newTVar qs
-        writeTVar senders $ M.foldr' addSender M.empty qs
-        writeTVar notifiers $ M.foldr' addNotifier M.empty qs
+        writeTVar senders $! M.foldr' addSender M.empty qs
+        writeTVar notifiers $! M.foldr' addNotifier M.empty qs
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)

@@ -106,6 +106,7 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
       forM_ tIds $ \(regKey, tId') -> do
         TM.delete regKey tknRegs
         TM.delete tId' $ tokens st
+        void $ deleteTokenSubs st tId'
       pure $ map snd tIds
 
 removeTokenRegistration :: NtfStore -> NtfTknData -> STM ()
@@ -119,35 +120,27 @@ removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
 
 deleteNtfToken :: NtfStore -> NtfTokenId -> STM [SMPQueueNtf]
 deleteNtfToken st tknId = do
-  TM.lookupDelete tknId (tokens st)
-    >>= mapM_
-      ( \NtfTknData {token, tknVerifyKey} ->
-          TM.lookup token regs
-            >>= mapM_
-              ( \tIds -> do
-                  TM.delete (regKey tknVerifyKey) tIds
-                  whenM (TM.null tIds) $ TM.delete token regs
-              )
-      )
-
-  qs <-
-    TM.lookupDelete tknId (tokenSubscriptions st)
-      >>= mapM
-        ( readTVar
-            >=> mapM
-              ( \subId -> do
-                  TM.lookupDelete subId (subscriptions st)
-                    >>= mapM
-                      ( \NtfSubData {smpQueue} ->
-                          TM.delete smpQueue (subscriptionLookup st) $> smpQueue
-                      )
-              )
-              . S.toList
-        )
-  pure $ maybe [] catMaybes qs
+  void $
+    TM.lookupDelete tknId (tokens st) $>>= \NtfTknData {token, tknVerifyKey} ->
+      TM.lookup token regs $>>= \tIds ->
+        TM.delete (regKey tknVerifyKey) tIds
+          >> whenM (TM.null tIds) (TM.delete token regs) $> Just ()
+  deleteTokenSubs st tknId
   where
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes
+
+deleteTokenSubs :: NtfStore -> NtfTokenId -> STM [SMPQueueNtf]
+deleteTokenSubs st tknId = do
+  qs <-
+    TM.lookupDelete tknId (tokenSubscriptions st)
+      >>= mapM (readTVar >=> mapM deleteSub . S.toList)
+  pure $ maybe [] catMaybes qs
+  where
+    deleteSub subId = do
+      TM.lookupDelete subId (subscriptions st)
+        $>>= \NtfSubData {smpQueue} ->
+          TM.delete smpQueue (subscriptionLookup st) $> Just smpQueue
 
 getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe NtfSubData)
 getNtfSubscription st subId =

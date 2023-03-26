@@ -3,21 +3,31 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
 
 import Control.Exception (Exception)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List (find)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -25,19 +35,23 @@ import Simplex.Messaging.Protocol
     NotifierId,
     NtfPrivateSignKey,
     NtfPublicVerifyKey,
+    QueueId,
     RcvDhSecret,
     RcvNtfDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Util ((<$?>))
 import Simplex.Messaging.Version
 
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data RcvQueue = RcvQueue
-  { server :: SMPServer,
+  { userId :: UserId,
+    connId :: ConnId,
+    server :: SMPServer,
     -- | recipient queue ID
     rcvId :: SMP.RecipientId,
     -- | key used by the recipient to sign transmissions
@@ -49,11 +63,20 @@ data RcvQueue = RcvQueue
     -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
     e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
-    sndId :: Maybe SMP.SenderId,
+    sndId :: SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
+    -- | database queue ID (within connection), can be Nothing for old queues
+    dbQueueId :: Int64,
+    -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
+    primary :: Bool,
+    -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
+    dbReplaceQueueId :: Maybe Int64,
+    -- | SMP client version
+    smpClientVersion :: Version,
     -- | credentials used in context of notifications
-    clientNtfCreds :: Maybe ClientNtfCreds
+    clientNtfCreds :: Maybe ClientNtfCreds,
+    deleteErrors :: Int
   }
   deriving (Eq, Show)
 
@@ -70,7 +93,9 @@ data ClientNtfCreds = ClientNtfCreds
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
-  { server :: SMPServer,
+  { userId :: UserId,
+    connId :: ConnId,
+    server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
     -- | key pair used by the sender to sign transmissions
@@ -81,14 +106,80 @@ data SndQueue = SndQueue
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
-    status :: QueueStatus
+    status :: QueueStatus,
+    -- | database queue ID (within connection), can be Nothing for old queues
+    dbQueueId :: Int64,
+    -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
+    primary :: Bool,
+    -- | ID of the queue this one is replacing
+    dbReplaceQueueId :: Maybe Int64,
+    -- | SMP client version
+    smpClientVersion :: Version
   }
   deriving (Eq, Show)
+
+instance SMPQueue RcvQueue where
+  qServer RcvQueue {server} = server
+  {-# INLINE qServer #-}
+  qAddress RcvQueue {server, rcvId} = (server, rcvId)
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
+
+instance SMPQueue SndQueue where
+  qServer SndQueue {server} = server
+  {-# INLINE qServer #-}
+  qAddress SndQueue {server, sndId} = (server, sndId)
+  {-# INLINE qAddress #-}
+  sameQueue addr q = sameQAddress addr (qAddress q)
+  {-# INLINE sameQueue #-}
+
+findQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe q
+findQ = find . sameQueue
+{-# INLINE findQ #-}
+
+removeQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe (q, [q])
+removeQ = removeQP . sameQueue
+{-# INLINE removeQ #-}
+
+removeQP :: (q -> Bool) -> NonEmpty q -> Maybe (q, [q])
+removeQP p qs = case L.break p qs of
+  (_, []) -> Nothing
+  (qs1, q : qs2) -> Just (q, qs1 <> qs2)
+
+sndAddress :: RcvQueue -> (SMPServer, SMP.SenderId)
+sndAddress RcvQueue {server, sndId} = (server, sndId)
+{-# INLINE sndAddress #-}
+
+findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
+findRQ sAddr = find $ sameQAddress sAddr . sndAddress
+{-# INLINE findRQ #-}
+
+class SMPQueue q => SMPQueueRec q where
+  qUserId :: q -> UserId
+  qConnId :: q -> ConnId
+  queueId :: q -> QueueId
+
+instance SMPQueueRec RcvQueue where
+  qUserId = userId
+  {-# INLINE qUserId #-}
+  qConnId = connId
+  {-# INLINE qConnId #-}
+  queueId = rcvId
+  {-# INLINE queueId #-}
+
+instance SMPQueueRec SndQueue where
+  qUserId = userId
+  {-# INLINE qUserId #-}
+  qConnId = connId
+  {-# INLINE qConnId #-}
+  queueId = sndId
+  {-# INLINE queueId #-}
 
 -- * Connection types
 
 -- | Type of a connection.
-data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
+data ConnType = CNew | CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 
 -- | Connection of a specific type.
 --
@@ -101,22 +192,33 @@ data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
 data Connection (d :: ConnType) where
+  NewConnection :: ConnData -> Connection CNew
   RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
   SndConnection :: ConnData -> SndQueue -> Connection CSnd
-  DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Connection CDuplex
+  DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
   ContactConnection :: ConnData -> RcvQueue -> Connection CContact
 
 deriving instance Eq (Connection d)
 
 deriving instance Show (Connection d)
 
+connData :: Connection d -> ConnData
+connData = \case
+  NewConnection cData -> cData
+  RcvConnection cData _ -> cData
+  SndConnection cData _ -> cData
+  DuplexConnection cData _ _ -> cData
+  ContactConnection cData _ -> cData
+
 data SConnType :: ConnType -> Type where
+  SCNew :: SConnType CNew
   SCRcv :: SConnType CRcv
   SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
   SCContact :: SConnType CContact
 
 connType :: SConnType c -> ConnType
+connType SCNew = CNew
 connType SCRcv = CRcv
 connType SCSnd = CSnd
 connType SCDuplex = CDuplex
@@ -146,10 +248,132 @@ deriving instance Show SomeConn
 
 data ConnData = ConnData
   { connId :: ConnId,
+    userId :: UserId,
     connAgentVersion :: Version,
-    duplexHandshake :: Maybe Bool -- added in agent protocol v2
+    enableNtfs :: Bool,
+    duplexHandshake :: Maybe Bool, -- added in agent protocol v2
+    deleted :: Bool
   }
   deriving (Eq, Show)
+
+data PendingCommand = PendingCommand
+  { corrId :: ACorrId,
+    userId :: UserId,
+    connId :: ConnId,
+    command :: AgentCommand
+  }
+
+data AgentCmdType = ACClient | ACInternal
+
+instance StrEncoding AgentCmdType where
+  strEncode = \case
+    ACClient -> "CLIENT"
+    ACInternal -> "INTERNAL"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "CLIENT" -> pure ACClient
+      "INTERNAL" -> pure ACInternal
+      _ -> fail "bad AgentCmdType"
+
+data AgentCommand
+  = AClientCommand (APartyCmd 'Client)
+  | AInternalCommand InternalCommand
+
+instance StrEncoding AgentCommand where
+  strEncode = \case
+    AClientCommand (APC _ cmd) -> strEncode (ACClient, Str $ serializeCommand cmd)
+    AInternalCommand cmd -> strEncode (ACInternal, cmd)
+  strP =
+    strP_ >>= \case
+      ACClient -> AClientCommand <$> ((\(ACmd _ e cmd) -> checkParty $ APC e cmd) <$?> dbCommandP)
+      ACInternal -> AInternalCommand <$> strP
+
+data AgentCommandTag
+  = AClientCommandTag (APartyCmdTag 'Client)
+  | AInternalCommandTag InternalCommandTag
+  deriving (Show)
+
+instance StrEncoding AgentCommandTag where
+  strEncode = \case
+    AClientCommandTag t -> strEncode (ACClient, t)
+    AInternalCommandTag t -> strEncode (ACInternal, t)
+  strP =
+    strP_ >>= \case
+      ACClient -> AClientCommandTag <$> strP
+      ACInternal -> AInternalCommandTag <$> strP
+
+data InternalCommand
+  = ICAck SMP.RecipientId MsgId
+  | ICAckDel SMP.RecipientId MsgId InternalId
+  | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICDeleteConn
+  | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICQDelete SMP.RecipientId
+
+data InternalCommandTag
+  = ICAck_
+  | ICAckDel_
+  | ICAllowSecure_
+  | ICDuplexSecure_
+  | ICDeleteConn_
+  | ICQSecure_
+  | ICQDelete_
+  deriving (Show)
+
+instance StrEncoding InternalCommand where
+  strEncode = \case
+    ICAck rId srvMsgId -> strEncode (ICAck_, rId, srvMsgId)
+    ICAckDel rId srvMsgId mId -> strEncode (ICAckDel_, rId, srvMsgId, mId)
+    ICAllowSecure rId sndKey -> strEncode (ICAllowSecure_, rId, sndKey)
+    ICDuplexSecure rId sndKey -> strEncode (ICDuplexSecure_, rId, sndKey)
+    ICDeleteConn -> strEncode ICDeleteConn_
+    ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
+    ICQDelete rId -> strEncode (ICQDelete_, rId)
+  strP =
+    strP >>= \case
+      ICAck_ -> ICAck <$> _strP <*> _strP
+      ICAckDel_ -> ICAckDel <$> _strP <*> _strP <*> _strP
+      ICAllowSecure_ -> ICAllowSecure <$> _strP <*> _strP
+      ICDuplexSecure_ -> ICDuplexSecure <$> _strP <*> _strP
+      ICDeleteConn_ -> pure ICDeleteConn
+      ICQSecure_ -> ICQSecure <$> _strP <*> _strP
+      ICQDelete_ -> ICQDelete <$> _strP
+
+instance StrEncoding InternalCommandTag where
+  strEncode = \case
+    ICAck_ -> "ACK"
+    ICAckDel_ -> "ACK_DEL"
+    ICAllowSecure_ -> "ALLOW_SECURE"
+    ICDuplexSecure_ -> "DUPLEX_SECURE"
+    ICDeleteConn_ -> "DELETE_CONN"
+    ICQSecure_ -> "QSECURE"
+    ICQDelete_ -> "QDELETE"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "ACK" -> pure ICAck_
+      "ACK_DEL" -> pure ICAckDel_
+      "ALLOW_SECURE" -> pure ICAllowSecure_
+      "DUPLEX_SECURE" -> pure ICDuplexSecure_
+      "DELETE_CONN" -> pure ICDeleteConn_
+      "QSECURE" -> pure ICQSecure_
+      "QDELETE" -> pure ICQDelete_
+      _ -> fail "bad InternalCommandTag"
+
+agentCommandTag :: AgentCommand -> AgentCommandTag
+agentCommandTag = \case
+  AClientCommand cmd -> AClientCommandTag $ aPartyCmdTag cmd
+  AInternalCommand cmd -> AInternalCommandTag $ internalCmdTag cmd
+
+internalCmdTag :: InternalCommand -> InternalCommandTag
+internalCmdTag = \case
+  ICAck {} -> ICAck_
+  ICAckDel {} -> ICAckDel_
+  ICAllowSecure {} -> ICAllowSecure_
+  ICDuplexSecure {} -> ICDuplexSecure_
+  ICDeleteConn -> ICDeleteConn_
+  ICQSecure {} -> ICQSecure_
+  ICQDelete _ -> ICQDelete_
 
 -- * Confirmation types
 
@@ -230,6 +454,7 @@ data PendingMsgData = PendingMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
+    msgRetryState :: Maybe RI2State,
     internalTs :: InternalTs
   }
   deriving (Show)
@@ -265,7 +490,13 @@ data MsgBase = MsgBase
 
 newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 
+instance StrEncoding InternalId where
+  strEncode = strEncode . unId
+  strP = InternalId <$> strP
+
 type InternalTs = UTCTime
+
+type AsyncCmdId = Int64
 
 -- * Store errors
 
@@ -275,8 +506,12 @@ data StoreError
     SEInternal ByteString
   | -- | Failed to generate unique random ID
     SEUniqueID
+  | -- | User ID not found
+    SEUserNotFound
   | -- | Connection not found (or both queues absent).
     SEConnNotFound
+  | -- | Server not found.
+    SEServerNotFound
   | -- | Connection already used.
     SEConnDuplicate
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
@@ -288,6 +523,8 @@ data StoreError
     SEInvitationNotFound
   | -- | Message not found
     SEMsgNotFound
+  | -- | Command not found
+    SECmdNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.
@@ -296,8 +533,10 @@ data StoreError
     SERatchetNotFound
   | -- | connection does not have associated x3dh keys
     SEX3dhKeysNotFound
-  | -- | Used in `getMsg` that is not implemented/used. TODO remove.
-    SENotImplemented
   | -- | Used to wrap agent errors inside store operations to avoid race conditions
     SEAgentError AgentErrorType
+  | -- | XFTP Server not found.
+    SEXFTPServerNotFound
+  | -- | XFTP File not found.
+    SEFileNotFound
   deriving (Eq, Show, Exception)

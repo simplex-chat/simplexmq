@@ -2,6 +2,7 @@
 
 module AgentTests.SchemaDump where
 
+import Control.DeepSeq
 import Control.Monad (void)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
@@ -20,10 +21,10 @@ schemaDumpTest =
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
-  void $ createSQLiteStore testDB Migrations.app False
+  void $ createSQLiteStore testDB "" Migrations.app False
   void $ readCreateProcess (shell $ "touch " <> schema) ""
   savedSchema <- readFile schema
-  savedSchema `seq` pure ()
+  savedSchema `deepseq` pure ()
   void $ readCreateProcess (shell $ "sqlite3 " <> testDB <> " '.schema --indent' > " <> schema) ""
   currentSchema <- readFile schema
   savedSchema `shouldBe` currentSchema

@@ -94,29 +94,105 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 You can run your SMP server as a Linux process, optionally using a service manager for booting and restarts.
 
-- For Ubuntu you can download a binary from [the latest release](https://github.com/simplex-chat/simplexmq/releases).
+Notice that `smp-server` requires `openssl` as run-time dependency (it is used to generate server certificates during initialization). Install it with your packet manager:
 
-  If you're using other Linux distribution and the binary is incompatible with it, you can build from source using [Haskell stack](https://docs.haskellstack.org/en/stable/README/):
+```sh
+# For Ubuntu
+apt update && apt install openssl
+```
 
-  ```shell
-  curl -sSL https://get.haskellstack.org/ | sh
-  ...
-  stack install
-  ```
+### Install binaries
+
+#### Using Docker
+
+On Linux, you can deploy smp server using Docker. This will download image from [Docker Hub](https://hub.docker.com/r/simplexchat/simplexmq).
+
+1. Create `config` and `logs` directories:
+
+   ```sh
+   mkdir -p ~/simplex/{config,logs}
+   ```
+
+2. Run your Docker container. You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+   ```sh
+   docker run -d \
+       -e "addr=your_ip_or_domain" \
+       -e "pass=password" \
+       -p 5223:5223 \
+       -v $HOME/simplex/config:/etc/opt/simplex:z \
+       -v $HOME/simplex/logs:/var/opt/simplex:z \
+       simplexchat/simplexmq:latest
+   ```
+
+#### Ubuntu
+
+For Ubuntu you can download a binary from [the latest release](https://github.com/simplex-chat/simplexmq/releases).
+
+### Build from source
+
+#### Using Docker
+
+> **Please note:** to build the app use source code from [stable branch](https://github.com/simplex-chat/simplexmq/tree/stable).
+
+On Linux, you can build smp server using Docker.
+
+1. Build your `smp-server` image:
+
+   ```sh
+   git clone https://github.com/simplex-chat/simplexmq
+   cd simplexmq
+   git checkout stable
+   DOCKER_BUILDKIT=1 docker build -t smp-server -f ./build.Dockerfile .
+   ```
+
+2. Create `config` and `logs` directories:
+
+   ```sh
+   mkdir -p ~/simplex/{config,logs}
+   ```
+
+3. Run your Docker container. You must change **your_ip_or_domain**. `-e pass="password"` is optional variable to password-protect your `smp` server::
+   ```sh
+   docker run -d \
+       -e "addr=your_ip_or_domain" \
+       -e "pass=password" \
+       -p 5223:5223 \
+       -v $HOME/simplex/config:/etc/opt/simplex:z \
+       -v $HOME/simplex/logs:/var/opt/simplex:z \
+       smp-server
+   ```
+
+#### Using your distribution
+
+1. Install [Haskell GHCup](https://www.haskell.org/ghcup/), GHC 8.10.7 and cabal:
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
+   ghcup install ghc 8.10.7
+   ghcup install cabal
+   ghcup set ghc 8.10.7
+   ghcup set cabal
+   ```
+
+2. Build the project:
+
+   ```sh
+   git clone https://github.com/simplex-chat/simplexmq
+   cd simplexmq
+   git checkout stable
+   # On Ubuntu. Depending on your distribution, use your package manager to determine package names.
+   apt-get update && apt-get install -y build-essential libgmp3-dev zlib1g-dev
+   cabal update
+   cabal install
+   ```
 
 - Initialize SMP server with `smp-server init [-l] -n <fqdn>` or `smp-server init [-l] --ip <ip>` - depending on how you initialize it, either FQDN or IP will be used for server's address.
 
 - Run `smp-server start` to start SMP server, or you can configure a service manager to run it as a service.
 
+- Optionally, `smp-server` can be setup for having an onion address in `tor` network. See: [`scripts/tor`](./scripts/tor/). In this case, the server address can have both public and onion hostname pointing to the same server, to allow two people connect when only one of them is using Tor. The server address would be: `smp://<fingerprint>@<public_hostname>,<onion_hostname>`
+
 See [this section](#smp-server) for more information. Run `smp-server -h` and `smp-server init -h` for explanation of commands and options.
-
-<img alt="Docker" src="./img/docker.svg" align="right" width="200">
-
-## Deploy SMP server with Docker
-
-SMP server could also be deployed using `Docker`.
-
-See: [`scripts/docker`](./scripts/docker/)
 
 [<img alt="Linode" src="./img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
 

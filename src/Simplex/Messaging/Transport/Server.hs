@@ -35,12 +35,12 @@ import UnliftIO.STM
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
-runTransportServer started port serverParams server = do
+runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> Bool -> (c -> m ()) -> m ()
+runTransportServer started port serverParams logTLSErrors server = do
   u <- askUnliftIO
   liftIO . runTCPServer started port $ \conn ->
     E.bracket
-      (connectTLS serverParams conn >>= getServerConnection)
+      (connectTLS Nothing logTLSErrors serverParams conn >>= getServerConnection)
       closeConnection
       (unliftIO u . server)
 

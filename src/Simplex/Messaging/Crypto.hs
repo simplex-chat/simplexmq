@@ -67,7 +67,9 @@ module Simplex.Messaging.Crypto
 
     -- * key encoding/decoding
     encodePubKey,
+    decodePubKey,
     encodePrivKey,
+    decodePrivKey,
     pubKeyBytes,
 
     -- * sign/verify
@@ -89,18 +91,23 @@ module Simplex.Messaging.Crypto
     -- * AES256 AEAD-GCM scheme
     Key (..),
     IV (..),
+    GCMIV (unGCMIV), -- constructor is not exported
     AuthTag (..),
-    encryptAES,
-    decryptAES,
     encryptAEAD,
     decryptAEAD,
+    encryptAESNoPad,
+    decryptAESNoPad,
     authTagSize,
     randomAesKey,
     randomIV,
+    randomGCMIV,
     ivSize,
+    gcmIVSize,
+    gcmIV,
 
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
+    pattern CbNonce,
     cbEncrypt,
     cbEncryptMaxLenBS,
     cbDecrypt,
@@ -108,11 +115,21 @@ module Simplex.Messaging.Crypto
     randomCbNonce,
     pseudoRandomCbNonce,
 
+    -- * NaCl crypto_secretbox
+    SbKey (unSbKey),
+    pattern SbKey,
+    sbEncrypt,
+    sbDecrypt,
+    sbKey,
+    unsafeSbKey,
+    randomSbKey,
+
     -- * pseudo-random bytes
     pseudoRandomBytes,
 
-    -- * SHA256 hash
+    -- * digests
     sha256Hash,
+    sha512Hash,
 
     -- * Message padding / un-padding
     pad,
@@ -138,7 +155,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), hash)
+import Crypto.Hash (Digest, SHA256, SHA512, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -151,12 +168,12 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
@@ -688,9 +705,13 @@ data CryptoError
     AESDecryptError
   | -- CryptoBox decryption error
     CBDecryptError
+  | -- Poly1305 initialization error
+    CryptoPoly1305Error CE.CryptoError
   | -- | message is larger that allowed padded length minus 2 (to prepend message length)
     -- (or required un-padded length is larger than the message length)
     CryptoLargeMsgError
+  | -- | padded message is shorter than 2 bytes
+    CryptoInvalidMsgError
   | -- | failure parsing message header
     CryptoHeaderError String
   | -- | no sending chain key in ratchet state
@@ -738,16 +759,32 @@ instance FromJSON Key where
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
+  deriving (Eq, Show)
 
 instance Encoding IV where
   smpEncode = unIV
   smpP = IV <$> A.take (ivSize @AES256)
 
+instance ToJSON IV where
+  toJSON = strToJSON . unIV
+  toEncoding = strToJEncoding . unIV
+
+instance FromJSON IV where
+  parseJSON = fmap IV . strParseJSON "IV"
+
+-- | GCMIV bytes newtype.
+newtype GCMIV = GCMIV {unGCMIV :: ByteString}
+
+gcmIV :: ByteString -> Either CryptoError GCMIV
+gcmIV s
+  | B.length s == gcmIVSize = Right $ GCMIV s
+  | otherwise = Left CryptoIVError
+
 newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
 
 instance Encoding AuthTag where
-  smpEncode = B.pack . map w2c . BA.unpack . AES.unAuthTag . unAuthTag
-  smpP = AuthTag . AES.AuthTag . BA.pack . map c2w . B.unpack <$> A.take authTagSize
+  smpEncode = BA.convert . unAuthTag
+  smpP = AuthTag . AES.AuthTag . BA.convert <$> A.take authTagSize
 
 -- | Certificate fingerpint newtype.
 --
@@ -773,38 +810,58 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
--- | AEAD-GCM encryption with empty associated data.
---
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
-encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
-encryptAES key iv paddedLen = encryptAEAD key iv paddedLen ""
+-- | SHA512 digest.
+sha512Hash :: ByteString -> ByteString
+sha512Hash = BA.convert . (hash :: ByteString -> Digest SHA512)
 
--- | AEAD-GCM encryption.
+-- | AEAD-GCM encryption with associated data.
 --
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
+-- Used as part of double ratchet encryption.
+-- This function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
 encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEAD aesKey ivBytes paddedLen ad msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- liftEither $ pad msg paddedLen
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
 
--- | AEAD-GCM decryption with empty associated data.
---
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
-decryptAES :: Key -> IV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
-decryptAES key iv = decryptAEAD key iv ""
+-- Used to encrypt WebRTC frames.
+-- This function requires 12 bytes IV, it does not transform IV.
+encryptAESNoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAESNoPad key iv = encryptAEADNoPad key iv ""
 
--- | AEAD-GCM decryption.
+encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAEADNoPad aesKey ivBytes ad msg = do
+  aead <- initAEADGCM aesKey ivBytes
+  pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
+
+-- | AEAD-GCM decryption with associated data.
 --
--- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
+-- Used as part of double ratchet encryption.
+-- This function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
+-- To make it compatible with WebCrypto we will need to start using initAEADGCM.
 decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
   aead <- initAEAD @AES256 aesKey ivBytes
   liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
 
+-- Used to decrypt WebRTC frames.
+-- This function requires 12 bytes IV, it does not transform IV.
+decryptAESNoPad :: Key -> GCMIV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+decryptAESNoPad key iv = decryptAEADNoPad key iv ""
+
+decryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
+  aead <- initAEADGCM aesKey iv
+  maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg tag)
+
+maxMsgLen :: Int
+maxMsgLen = 2 ^ (16 :: Int) - 3
+
 pad :: ByteString -> Int -> Either CryptoError ByteString
 pad msg paddedLen
-  | padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+  | len <= maxMsgLen && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
   | otherwise = Left CryptoLargeMsgError
   where
     len = B.length msg
@@ -812,8 +869,8 @@ pad msg paddedLen
 
 unPad :: ByteString -> Either CryptoError ByteString
 unPad padded
-  | B.length rest >= len = Right $ B.take len rest
-  | otherwise = Left CryptoLargeMsgError
+  | B.length lenWrd == 2 && B.length rest >= len = Right $ B.take len rest
+  | otherwise = Left CryptoInvalidMsgError
   where
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
@@ -853,12 +910,21 @@ appendMaxLenBS (MLBS s1) (MLBS s2) = MLBS $ s1 <> s2
 maxLength :: forall i. KnownNat i => Int
 maxLength = fromIntegral (natVal $ Proxy @i)
 
+-- this function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
+-- This is used for double ratchet encryption, so to make it compatible with WebCrypto we will need to deprecate it and start using initAEADGCM
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
   iv <- makeIV @c ivBytes
   cryptoFailable $ do
     cipher <- AES.cipherInit aesKey
     AES.aeadInit AES.AEAD_GCM cipher iv
+
+-- this function requires 12 bytes IV, it does not transforms IV.
+initAEADGCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES256)
+initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
+  cipher <- AES.cipherInit aesKey
+  AES.aeadInit AES.AEAD_GCM cipher ivBytes
 
 -- | Random AES256 key.
 randomAesKey :: IO Key
@@ -868,8 +934,14 @@ randomAesKey = Key <$> getRandomBytes aesKeySize
 randomIV :: IO IV
 randomIV = IV <$> getRandomBytes (ivSize @AES256)
 
+randomGCMIV :: IO GCMIV
+randomGCMIV = GCMIV <$> getRandomBytes gcmIVSize
+
 ivSize :: forall c. AES.BlockCipher c => Int
 ivSize = AES.blockSize (undefined :: c)
+
+gcmIVSize :: Int
+gcmIVSize = 12
 
 makeIV :: AES.BlockCipher c => ByteString -> ExceptT CryptoError IO (AES.IV c)
 makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
@@ -883,12 +955,12 @@ cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
 -- | Message signing.
 --
 -- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
-sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> ExceptT CryptoError IO (Signature a)
-sign' (PrivateKeyEd25519 pk k) msg = pure . SignatureEd25519 $ Ed25519.sign pk k msg
-sign' (PrivateKeyEd448 pk k) msg = pure . SignatureEd448 $ Ed448.sign pk k msg
+sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> Signature a
+sign' (PrivateKeyEd25519 pk k) msg = SignatureEd25519 $ Ed25519.sign pk k msg
+sign' (PrivateKeyEd448 pk k) msg = SignatureEd448 $ Ed448.sign pk k msg
 
-sign :: APrivateSignKey -> ByteString -> ExceptT CryptoError IO ASignature
-sign (APrivateSignKey a k) = fmap (ASignature a) . sign' k
+sign :: APrivateSignKey -> ByteString -> ASignature
+sign (APrivateSignKey a k) = ASignature a . sign' k
 
 -- | Signature verification.
 --
@@ -908,13 +980,20 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
-cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
+cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
+
+-- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
+sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+sbEncrypt (SbKey key) = sbEncrypt_ key
+
+sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
-cbEncryptMaxLenBS secret (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
 
-cryptoBox :: DhSecret 'X25519 -> ByteString -> ByteString -> ByteString
+cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
   where
     (rs, c) = xSalsa20 secret nonce s
@@ -922,7 +1001,15 @@ cryptoBox secret nonce s = BA.convert tag <> c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
-cbDecrypt secret (CbNonce nonce) packet
+cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
+
+-- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
+sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecrypt (SbKey key) = sbDecrypt_ key
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
+sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecrypt_ secret (CbNonce nonce) packet
   | B.length packet < 16 = Left CBDecryptError
   | BA.constEq tag' tag = unPad msg
   | otherwise = Left CBDecryptError
@@ -931,8 +1018,13 @@ cbDecrypt secret (CbNonce nonce) packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
-newtype CbNonce = CbNonce {unCbNonce :: ByteString}
+newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)
+
+pattern CbNonce :: ByteString -> CbNonce
+pattern CbNonce s <- CryptoBoxNonce s
+
+{-# COMPLETE CbNonce #-}
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s
@@ -942,37 +1034,74 @@ instance ToJSON CbNonce where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance FromJSON CbNonce where
+  parseJSON = strParseJSON "CbNonce"
+
+instance FromField CbNonce where fromField f = CryptoBoxNonce <$> fromField f
+
+instance ToField CbNonce where toField (CryptoBoxNonce s) = toField s
+
 cbNonce :: ByteString -> CbNonce
 cbNonce s
-  | len == 24 = CbNonce s
-  | len > 24 = CbNonce . fst $ B.splitAt 24 s
-  | otherwise = CbNonce $ s <> B.replicate (24 - len) (toEnum 0)
+  | len == 24 = CryptoBoxNonce s
+  | len > 24 = CryptoBoxNonce . fst $ B.splitAt 24 s
+  | otherwise = CryptoBoxNonce $ s <> B.replicate (24 - len) (toEnum 0)
   where
     len = B.length s
 
 randomCbNonce :: IO CbNonce
-randomCbNonce = CbNonce <$> getRandomBytes 24
+randomCbNonce = CryptoBoxNonce <$> getRandomBytes 24
 
 pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
-pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
+pseudoRandomCbNonce gVar = CryptoBoxNonce <$> pseudoRandomBytes 24 gVar
 
 pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-pseudoRandomBytes n gVar = do
-  g <- readTVar gVar
-  let (bytes, g') = randomBytesGenerate n g
-  writeTVar gVar g'
-  return bytes
+pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce
-  smpP = CbNonce <$> A.take 24
+  smpP = CryptoBoxNonce <$> A.take 24
 
-xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
-xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
+newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
+  deriving (Eq, Show)
+
+pattern SbKey :: ByteString -> SbKey
+pattern SbKey s <- SecretBoxKey s
+
+{-# COMPLETE SbKey #-}
+
+instance StrEncoding SbKey where
+  strEncode (SbKey s) = strEncode s
+  strP = sbKey <$?> strP
+
+instance ToJSON SbKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON SbKey where
+  parseJSON = strParseJSON "SbKey"
+
+instance FromField SbKey where fromField f = SecretBoxKey <$> fromField f
+
+instance ToField SbKey where toField (SecretBoxKey s) = toField s
+
+sbKey :: ByteString -> Either String SbKey
+sbKey s
+  | B.length s == 32 = Right $ SecretBoxKey s
+  | otherwise = Left "SbKey: invalid length"
+
+unsafeSbKey :: ByteString -> SbKey
+unsafeSbKey s = either error id $ sbKey s
+
+randomSbKey :: IO SbKey
+randomSbKey = SecretBoxKey <$> getRandomBytes 32
+
+xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
+xSalsa20 secret nonce msg = (rs, msg')
   where
     zero = B.replicate 16 $ toEnum 0
     (iv0, iv1) = B.splitAt 8 nonce
-    state0 = XSalsa.initialize 20 shared (zero `B.append` iv0)
+    state0 = XSalsa.initialize 20 secret (zero `B.append` iv0)
     state1 = XSalsa.derive state0 iv1
     (rs, state2) = XSalsa.generate state1 32
     (msg', _) = XSalsa.combine state2 msg

@@ -1,0 +1,23 @@
+chunkSize: 8mb
+digest: YWJj
+key: 00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTFFFOY=
+nonce: dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu
+party: recipient
+replicas:
+- chunks:
+  - 1:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp
+  - 3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp
+  server: xftp://abc=@example1.com
+- chunks:
+  - 2:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp
+  - 4:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp:2mb
+  server: xftp://abc=@example2.com
+- chunks:
+  - 1:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe
+  - 4:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe
+  server: xftp://abc=@example3.com
+- chunks:
+  - 2:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe
+  - 3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe
+  server: xftp://abc=@example4.com
+size: 26mb

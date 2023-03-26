@@ -11,6 +11,7 @@ import Control.Concurrent.Async (Async)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
 import Data.X509.Validation (Fingerprint (..))
@@ -21,6 +22,7 @@ import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
@@ -48,7 +50,13 @@ data NtfServerConfig = NtfServerConfig
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
-    certificateFile :: FilePath
+    certificateFile :: FilePath,
+    -- stats config - see SMP server config
+    logStatsInterval :: Maybe Int,
+    logStatsStartTime :: Int,
+    serverStatsLogFile :: FilePath,
+    serverStatsBackupFile :: Maybe FilePath,
+    logTLSErrors :: Bool
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig
@@ -65,9 +73,9 @@ data NtfEnv = NtfEnv
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
     idsDrg :: TVar ChaChaDRG,
-    serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
-    serverIdentity :: C.KeyHash
+    serverIdentity :: C.KeyHash,
+    serverStats :: NtfServerStats
   }
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
@@ -79,7 +87,8 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
+  serverStats <- atomically . newNtfServerStats =<< liftIO getCurrentTime
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
@@ -138,6 +147,7 @@ getPushClient s@NtfPushServer {pushClients} pp =
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity
   | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec e) (Transmission (NtfCommand e))
+  | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue NtfRequest,

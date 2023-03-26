@@ -24,7 +24,16 @@ instance StrEncoding QueryStringParams where
   strP = QSP QEscape . Q.parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
 
 queryParam :: StrEncoding a => ByteString -> QueryStringParams -> Parser a
-queryParam name (QSP _ q) =
-  case find ((== name) . fst) q of
-    Just (_, p) -> either fail pure $ parseAll strP p
+queryParam name q =
+  case queryParamStr name q of
+    Just p -> either fail pure $ parseAll strP p
     _ -> fail $ "no qs param " <> B.unpack name
+
+queryParam_ :: StrEncoding a => ByteString -> QueryStringParams -> Parser (Maybe a)
+queryParam_ name q =
+  case queryParamStr name q of
+    Just p -> either fail pure $ parseAll strP p
+    _ -> pure Nothing
+
+queryParamStr :: ByteString -> QueryStringParams -> Maybe ByteString
+queryParamStr name (QSP _ q) = snd <$> find ((== name) . fst) q

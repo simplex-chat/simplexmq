@@ -15,6 +15,7 @@ module Simplex.Messaging.Version
     pattern Compatible,
     mkVersionRange,
     safeVersionRange,
+    versionToRange,
     isCompatible,
     proveCompatible,
     compatibleVersion,
@@ -52,6 +53,9 @@ safeVersionRange :: Version -> Version -> Maybe VersionRange
 safeVersionRange v1 v2
   | v1 <= v2 = Just $ VRange v1 v2
   | otherwise = Nothing
+
+versionToRange :: Version -> VersionRange
+versionToRange v = VRange v v
 
 instance Encoding VersionRange where
   smpEncode (VRange v1 v2) = smpEncode (v1, v2)
