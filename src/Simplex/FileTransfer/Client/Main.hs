@@ -14,6 +14,7 @@ module Simplex.FileTransfer.Client.Main
     CLIError (..),
     xftpClientCLI,
     cliSendFile,
+    cliSendFileOpts,
     prepareChunkSizes,
   )
 where
@@ -257,11 +258,14 @@ runE a =
     _ -> pure ()
 
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
-cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} = do
+cliSendFile opts = cliSendFileOpts opts True $ printProgress "Uploaded"
+
+cliSendFileOpts :: SendOptions -> Bool -> (Int64 -> Int64 -> IO ()) -> ExceptT CLIError IO ()
+cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} printInfo notifyProgress = do
   let (_, fileName) = splitFileName filePath
-  liftIO $ printNoNewLine "Encrypting file..."
+  liftIO $ when printInfo $ printNoNewLine "Encrypting file..."
   (encPath, fdRcv, fdSnd, chunkSpecs, encSize) <- encryptFileForUpload fileName
-  liftIO $ printNoNewLine "Uploading file..."
+  liftIO $ when printInfo $ printNoNewLine "Uploading file..."
   uploadedChunks <- newTVarIO []
   sentChunks <- uploadFile chunkSpecs uploadedChunks encSize
   whenM (doesFileExist encPath) $ removeFile encPath
@@ -270,9 +274,10 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
     let fdRcvs = createRcvFileDescriptions fdRcv sentChunks
         fdSnd' = createSndFileDescription fdSnd sentChunks
     (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
-    printNoNewLine "File uploaded!"
-    putStrLn $ "\nSender file description: " <> fdSndPath
-    putStrLn "Pass file descriptions to the recipient(s):"
+    when printInfo $ do
+      printNoNewLine "File uploaded!"
+      putStrLn $ "\nSender file description: " <> fdSndPath
+      putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
   where
     encryptFileForUpload :: String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
@@ -322,7 +327,7 @@ cliSendFile SendOptions {filePath, outputDir, numRecipients, xftpServers, retryC
           uploaded <- atomically . stateTVar uploadedChunks $ \cs ->
             let cs' = fromIntegral chunkSize : cs in (sum cs', cs')
           liftIO $ do
-            printProgress "Uploaded" uploaded encSize
+            notifyProgress uploaded encSize
             when verbose $ putStrLn ""
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]

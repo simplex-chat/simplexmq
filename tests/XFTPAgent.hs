@@ -10,10 +10,11 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
+import Data.Int (Int64)
 import SMPAgentClient (agentCfg, initAgentServers)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.Messaging.Agent (disconnectAgentClient, getSMPAgentClient, xftpDeleteRcvFile, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, getSMPAgentClient, xftpDeleteRcvFile, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
@@ -29,6 +30,29 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should send file using experimental api" testXFTPAgentSendExperimental
+
+rfProgress :: (MonadIO m, MonadFail m) => AgentClient -> Int64 -> m ()
+rfProgress c expected = loop 0
+  where
+    loop prev = do
+      (_, _, RFPROG rcvd total) <- rfGet c
+      checkProgress (prev, expected) (rcvd, total) loop
+
+sfProgress :: (MonadIO m, MonadFail m) => AgentClient -> Int64 -> m ()
+sfProgress c expected = loop 0
+  where
+    loop prev = do
+      (_, _, SFPROG sent total) <- sfGet c
+      checkProgress (prev, expected) (sent, total) loop
+
+-- checks that progress increases till it reaches total
+checkProgress :: MonadIO m => (Int64, Int64) -> (Int64, Int64) -> (Int64 -> m ()) -> m ()
+checkProgress (prev, expected) (progress, total) loop
+  | total /= expected = error "total /= expected"
+  | progress <= prev = error "progress <= prev"
+  | progress > total = error "progress > total"
+  | progress < total = loop progress
+  | otherwise = pure ()
 
 testXFTPAgentReceive :: IO ()
 testXFTPAgentReceive = withXFTPServer $ do
@@ -52,6 +76,7 @@ testXFTPAgentReceive = withXFTPServer $ do
     xftpStartWorkers rcp (Just recipientFiles)
     fd :: ValidFileDescription 'FRecipient <- getFileDescription fdRcv
     fId <- xftpReceiveFile rcp 1 fd
+    rfProgress rcp $ mb 18
     ("", fId', RFDONE path) <- rfGet rcp
     liftIO $ do
       fId' `shouldBe` fId
@@ -103,6 +128,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
     -- receive file using agent - should succeed with server up
     rcp' <- getSMPAgentClient agentCfg initAgentServers
     runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
+    rfProgress rcp' $ mb 18
     ("", fId', RFDONE path) <- rfGet rcp'
     liftIO $ do
       fId' `shouldBe` fId
@@ -167,6 +193,7 @@ testXFTPAgentSendExperimental = withXFTPServer $ do
   rfd <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
     sfId <- xftpSendFile sndr 1 filePath 2
+    sfProgress sndr $ mb 18
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr
     liftIO $ sfId' `shouldBe` sfId
     pure rfd1
@@ -176,6 +203,7 @@ testXFTPAgentSendExperimental = withXFTPServer $ do
   runRight_ $ do
     xftpStartWorkers rcp (Just recipientFiles)
     rfId <- xftpReceiveFile rcp 1 rfd
+    rfProgress rcp $ mb 18
     ("", rfId', RFDONE path) <- rfGet rcp
     liftIO $ do
       rfId' `shouldBe` rfId

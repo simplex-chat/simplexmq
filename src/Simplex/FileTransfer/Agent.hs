@@ -33,13 +33,15 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
-import Data.List (isSuffixOf, partition)
+import Data.Composition ((.:))
+import Data.Int (Int64)
+import Data.List (foldl', isSuffixOf, partition)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFile)
+import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFileOpts)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), FilePartyI)
@@ -52,7 +54,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
 import System.FilePath (takeFileName, (</>))
@@ -164,24 +166,28 @@ runXFTPWorker c srv doWork = do
                   atomically $ beginAgentOperation c AORcvNetwork
                   loop
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
-    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
+    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
       fsFileTmpPath <- toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId replica chunkSpec
-      fileReceived <- withStore c $ \db -> runExceptT $ do
-        -- both actions can be done in a single store method
-        f <- ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId relChunkPath
-        let fileReceived = allChunksReceived f
-        when fileReceived $
-          liftIO $ updateRcvFileStatus db rcvFileId RFSReceived
-        pure fileReceived
-      when fileReceived $ addXFTPWorker c Nothing
+      (complete, progress) <- withStore c $ \db -> runExceptT $ do
+        RcvFile {size = FileSize total, chunks} <-
+          ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId relChunkPath
+        let rcvd = receivedSize chunks
+            complete = all chunkReceived chunks
+        liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
+        pure (complete, RFPROG rcvd total)
+      liftIO $ notify c rcvFileEntityId progress
+      when complete $ addXFTPWorker c Nothing
       where
-        allChunksReceived :: RcvFile -> Bool
-        allChunksReceived RcvFile {chunks} =
-          all (\RcvFileChunk {replicas} -> any received replicas) chunks
+        receivedSize :: [RcvFileChunk] -> Int64
+        receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
+        receivedChunkSize ch@RcvFileChunk {chunkSize = s}
+          | chunkReceived ch = fromIntegral (unFileSize s)
+          | otherwise = 0
+        chunkReceived RcvFileChunk {replicas} = any received replicas
 
 workerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
 workerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
@@ -193,7 +199,7 @@ notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -
 notifyInternalError AgentClient {subQ} rcvFileEntityId internalErrStr = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC SAERcvFile $ RFERR $ INTERNAL internalErrStr)
 
 runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
-runXFTPLocalWorker c@AgentClient {subQ} doWork = do
+runXFTPLocalWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     -- TODO agentOperationBracket?
@@ -219,10 +225,8 @@ runXFTPLocalWorker c@AgentClient {subQ} doWork = do
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure fsSavePath
       forM_ tmpPath (removePath <=< toFSFilePath)
       withStore' c (`updateRcvFileComplete` rcvFileId)
-      notify $ RFDONE fsSavePath
+      liftIO $ notify c rcvFileEntityId $ RFDONE fsSavePath
       where
-        notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
-        notify cmd = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC (sAEntity @e) cmd)
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
         getChunkPaths (RcvFileChunk {chunkTmpPath = Just path} : cs) = do
@@ -242,7 +246,7 @@ deleteRcvFile c userId rcvFileEntityId = do
     else withStore' c (`updateRcvFileDeleted` rcvFileId)
 
 sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipients = do
+sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients = do
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
   xftpSrvs <- atomically $ TM.lookup userId xftpServers
@@ -269,11 +273,11 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
                 tempPath = Just tempPath,
                 verbose = False
               }
-      liftCLI $ cliSendFile sendOptions
+      liftCLI $ cliSendFileOpts sendOptions False $ notify c sndFileId .: SFPROG
       (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
       removePath tempPath
       removePath outputDir
-      notify sndFileId $ SFDONE sndDescr rcvDescrs
+      liftIO $ notify c sndFileId $ SFDONE sndDescr rcvDescrs
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
     readDescrs :: FilePath -> FilePath -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
@@ -286,8 +290,9 @@ sendFileExperimental AgentClient {subQ, xftpServers} userId filePath numRecipien
       (,) <$> readDescr sdFile <*> mapM readDescr rdFiles'
     readDescr :: FilePartyI p => FilePath -> m (ValidFileDescription p)
     readDescr f = liftIOEither $ first INTERNAL . strDecode <$> B.readFile f
-    notify :: forall e. AEntityI e => SndFileId -> ACommand 'Agent e -> m ()
-    notify sndFileId cmd = atomically $ writeTBQueue subQ ("", sndFileId, APC (sAEntity @e) cmd)
+
+notify :: forall e. AEntityI e => AgentClient -> EntityId -> ACommand 'Agent e -> IO ()
+notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
 
 -- _sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
 _sendFile :: AgentClient -> UserId -> FilePath -> Int -> m SndFileId
