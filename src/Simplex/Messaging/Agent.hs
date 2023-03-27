@@ -87,6 +87,7 @@ module Simplex.Messaging.Agent
     activateAgent,
     suspendAgent,
     execAgentStoreSQL,
+    getAgentMigrations,
     debugAgentLocks,
     getAgentStats,
     resetAgentStats,
@@ -129,6 +130,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -152,8 +154,9 @@ import UnliftIO.STM
 -- import GHC.Conc (unsafeIOToSTM)
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
-getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> m AgentClient
+getSMPAgentClient cfg initServers store =
+  liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
@@ -356,6 +359,9 @@ suspendAgent c = withAgentEnv c . suspendAgent' c
 
 execAgentStoreSQL :: AgentErrorMonad m => AgentClient -> Text -> m [Text]
 execAgentStoreSQL c = withAgentEnv c . execAgentStoreSQL' c
+
+getAgentMigrations :: AgentErrorMonad m => AgentClient -> m [UpMigration]
+getAgentMigrations c = withAgentEnv c $ getAgentMigrations' c
 
 debugAgentLocks :: MonadUnliftIO m => AgentClient -> m AgentLocks
 debugAgentLocks c = withAgentEnv c $ debugAgentLocks' c
@@ -1561,6 +1567,9 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
 
 execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
 execAgentStoreSQL' c sql = withStore' c (`execSQL` sql)
+
+getAgentMigrations' :: AgentMonad m => AgentClient -> m [UpMigration]
+getAgentMigrations' c = map upMigration <$> withStore' c Migrations.getCurrent
 
 debugAgentLocks' :: AgentMonad' m => AgentClient -> m AgentLocks
 debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = d} = do

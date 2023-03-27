@@ -1,5 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -21,11 +22,15 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
+    MigrationConfirmation (..),
+    MigrationError (..),
+    UpMigration (..),
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
     sqlString,
     execSQL,
+    upMigration, -- used in tests
 
     -- * Users
     createUserRecord,
@@ -155,6 +160,9 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Data.Aeson (ToJSON)
+import qualified Data.Aeson as J
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
@@ -163,11 +171,11 @@ import Data.Function (on)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
-import Data.List (foldl', groupBy, sortBy)
+import Data.List (foldl', groupBy, intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -180,6 +188,7 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
+import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -187,7 +196,7 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
+import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRError, Migration (..), MigrationsToRun (..), mtrErrorDescription)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -195,7 +204,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
+import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -218,27 +227,92 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> String -> [Migration] -> Bool -> IO SQLiteStore
-createSQLiteStore dbFilePath dbKey migrations yesToMigrations = do
+data MigrationError
+  = MEUpgrade {upMigrations :: [UpMigration]}
+  | MEDowngrade {downMigrations :: [String]}
+  | MigrationError {mtrError :: MTRError}
+  deriving (Eq, Show, Generic)
+
+migrationErrorDescription :: MigrationError -> String
+migrationErrorDescription = \case
+  MEUpgrade ums ->
+    "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map upName ums)
+  MEDowngrade dms ->
+    "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " dms
+  MigrationError err -> mtrErrorDescription err
+
+instance ToJSON MigrationError where
+  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "ME"
+  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
+
+data UpMigration = UpMigration {upName :: String, withDown :: Bool}
+  deriving (Eq, Show, Generic)
+
+upMigration :: Migration -> UpMigration
+upMigration Migration {name, down} = UpMigration name $ isJust down
+
+instance ToJSON UpMigration where
+  toJSON = J.genericToJSON J.defaultOptions
+  toEncoding = J.genericToEncoding J.defaultOptions
+
+data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
+  deriving (Eq, Show)
+
+instance StrEncoding MigrationConfirmation where
+  strEncode = \case
+    MCYesUp -> "yesUp"
+    MCYesUpDown -> "yesUpDown"
+    MCConsole -> "console"
+    MCError -> "error"
+  strP =
+    A.takeByteString >>= \case
+      "yesUp" -> pure MCYesUp
+      "yesUpDown" -> pure MCYesUpDown
+      "console" -> pure MCConsole
+      "error" -> pure MCError
+      _ -> fail "invalid MigrationConfirmation"
+
+createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
+createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath dbKey
-  migrateSchema st migrations yesToMigrations `onException` closeSQLiteStore st
-  pure st
+  r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
+  case r of
+    Right () -> pure $ Right st
+    Left e -> closeSQLiteStore st $> Left e
 
-migrateSchema :: SQLiteStore -> [Migration] -> Bool -> IO ()
-migrateSchema st migrations yesToMigrations = withConnection st $ \db -> do
+migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
+migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
-    Left e -> confirmOrExit $ "Database error: " <> e
-    Right [] -> pure ()
-    Right ms -> do
-      unless (dbNew st) $ do
-        unless yesToMigrations $
-          confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
-        let f = dbFilePath st
-        copyFile f (f <> ".bak")
+    Left e -> do
+      when (confirmMigrations == MCConsole) $ confirmOrExit ("Database state error: " <> mtrErrorDescription e)
+      pure . Left $ MigrationError e
+    Right MTRNone -> pure $ Right ()
+    Right ms@(MTRUp ums)
+      | dbNew st -> Migrations.run db ms $> Right ()
+      | otherwise -> case confirmMigrations of
+        MCYesUp -> run db ms
+        MCYesUpDown -> run db ms
+        MCConsole -> confirm err >> run db ms
+        MCError -> pure $ Left err
+      where
+        err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
+    Right ms@(MTRDown dms) -> case confirmMigrations of
+      MCYesUpDown -> run db ms
+      MCConsole -> confirm err >> run db ms
+      MCYesUp -> pure $ Left err
+      MCError -> pure $ Left err
+      where
+        err = MEDowngrade $ map downName dms
+  where
+    confirm err = confirmOrExit $ migrationErrorDescription err
+    run db ms = do
+      let f = dbFilePath st
+      copyFile f (f <> ".bak")
       Migrations.run db ms
+      pure $ Right ()
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do

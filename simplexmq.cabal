@@ -514,6 +514,7 @@ test-suite simplexmq-test
       AgentTests.ConnectionRequestTests
       AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
+      AgentTests.MigrationTests
       AgentTests.NotificationTests
       AgentTests.SchemaDump
       AgentTests.SQLiteTests

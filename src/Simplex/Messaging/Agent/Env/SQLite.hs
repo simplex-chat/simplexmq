@@ -3,7 +3,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
@@ -14,8 +13,6 @@ module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
     AgentMonad',
     AgentConfig (..),
-    AgentDatabase (..),
-    databaseFile,
     InitialAgentServers (..),
     NetworkConfig (..),
     defaultAgentConfig,
@@ -70,22 +67,11 @@ data InitialAgentServers = InitialAgentServers
     netCfg :: NetworkConfig
   }
 
-data AgentDatabase
-  = AgentDB SQLiteStore
-  | AgentDBFile {dbFile :: FilePath, dbKey :: String}
-
-databaseFile :: AgentDatabase -> FilePath
-databaseFile = \case
-  AgentDB SQLiteStore {dbFilePath} -> dbFilePath
-  AgentDBFile {dbFile} -> dbFile
-
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    database :: AgentDatabase,
-    yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
     xftpCfg :: XFTPClientConfig,
@@ -145,8 +131,6 @@ defaultAgentConfig =
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
-      database = AgentDBFile {dbFile = "smp-agent.db", dbKey = ""},
-      yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
@@ -183,19 +167,16 @@ data Env = Env
     xftpAgent :: XFTPAgent
   }
 
-newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {database, yesToMigrations, initialClientId} = do
-  idsDrg <- newTVarIO =<< drgNew
-  store <- case database of
-    AgentDB st -> pure st
-    AgentDBFile {dbFile, dbKey} -> liftIO $ createAgentStore dbFile dbKey yesToMigrations
+newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
+newSMPAgentEnv config@AgentConfig {initialClientId} store = do
+  idsDrg <- newTVarIO =<< liftIO drgNew
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
+  pure Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
-createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
+createAgentStore :: FilePath -> String -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor

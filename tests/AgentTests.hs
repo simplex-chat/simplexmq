@@ -13,6 +13,7 @@ module AgentTests (agentTests) where
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
+import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
 import AgentTests.SchemaDump (schemaDumpTest)
@@ -24,7 +25,6 @@ import Data.Type.Equality
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Env.SQLite (AgentDatabase, databaseFile)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
@@ -43,6 +43,7 @@ agentTests (ATransport t) = do
   describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
   describe "SQLite schema dump" schemaDumpTest
+  describe "Migration tests" migrationTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
@@ -376,14 +377,14 @@ testServerConnectionAfterError t _ = do
         bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
 
   removeFile testStoreLogFile
-  removeFile $ databaseFile testDB
-  removeFile $ databaseFile testDB2
+  removeFile testDB
+  removeFile testDB2
   where
     server = SMPServer "localhost" testPort2 testKeyHash
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent1 = withAgent agentTestPort testDB
     withAgent2 = withAgent agentTestPort2 testDB2
-    withAgent :: String -> AgentDatabase -> (c -> IO a) -> IO a
+    withAgent :: String -> FilePath -> (c -> IO a) -> IO a
     withAgent agentPort agentDB = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) (pure ()) . const . testSMPAgentClientOn agentPort
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
@@ -416,7 +417,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
-  removeFile $ databaseFile testDB
+  removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort

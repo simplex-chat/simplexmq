@@ -1,5 +1,4 @@
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -10,18 +9,25 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Server (runSMPAgent)
+import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
 import Simplex.Messaging.Client (defaultNetworkConfig)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig
 cfg = defaultAgentConfig
 
+agentDbFile :: String
+agentDbFile = "smp-agent.db"
+
+agentDbKey :: String
+agentDbKey = ""
+
 servers :: InitialAgentServers
 servers =
   InitialAgentServers
     { smp = M.fromList [(1, L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"])],
       ntf = [],
-      xftp = M.fromList [],
+      xftp = M.empty,
       netCfg = defaultNetworkConfig
     }
 
@@ -32,4 +38,5 @@ main :: IO ()
 main = do
   putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
   setLogLevel LogInfo -- LogError
-  withGlobalLogging logCfg $ runSMPAgent (transport @TLS) cfg servers
+  Right st <- createAgentStore agentDbFile agentDbKey MCConsole
+  withGlobalLogging logCfg $ runSMPAgent (transport @TLS) cfg servers st

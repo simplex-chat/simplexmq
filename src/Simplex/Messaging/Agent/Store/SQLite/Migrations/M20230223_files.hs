@@ -70,3 +70,20 @@ CREATE TABLE rcv_file_chunk_replicas (
 CREATE INDEX idx_rcv_file_chunk_replicas_rcv_file_chunk_id ON rcv_file_chunk_replicas(rcv_file_chunk_id);
 CREATE INDEX idx_rcv_file_chunk_replicas_xftp_server_id ON rcv_file_chunk_replicas(xftp_server_id);
 |]
+
+-- this is for tests, older versions do not support down migrations
+down_m20230223_files :: Query
+down_m20230223_files =
+  [sql|
+DROP INDEX idx_rcv_file_chunk_replicas_xftp_server_id;
+DROP INDEX idx_rcv_file_chunk_replicas_rcv_file_chunk_id;
+DROP TABLE rcv_file_chunk_replicas;
+
+DROP INDEX idx_rcv_file_chunks_rcv_file_id;
+DROP TABLE rcv_file_chunks;
+
+DROP INDEX idx_rcv_files_user_id;
+DROP TABLE rcv_files;
+
+DROP TABLE xftp_servers;
+|]

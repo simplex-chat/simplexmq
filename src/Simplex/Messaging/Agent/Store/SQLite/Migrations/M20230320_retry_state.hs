@@ -11,3 +11,11 @@ m20230320_retry_state =
 ALTER TABLE snd_messages ADD COLUMN retry_int_slow INTEGER;
 ALTER TABLE snd_messages ADD COLUMN retry_int_fast INTEGER;
 |]
+
+-- this is for tests, older versions do not support down migrations
+down_m20230320_retry_state :: Query
+down_m20230320_retry_state =
+  [sql|
+ALTER TABLE snd_messages DROP COLUMN retry_int_fast;
+ALTER TABLE snd_messages DROP COLUMN retry_int_slow;
+|]
