@@ -1616,27 +1616,27 @@ cleanupManager c@AgentClient {subQ} = do
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
-      deleteConns `catchError` (notify . ERR)
-      deleteRcvFiles `catchError` (notify . RFERR)
-      deleteRcvFilesTmpPaths `catchError` (notify . RFERR)
+      deleteConns `catchError` (notify "" . ERR)
+      deleteRcvFiles `catchError` (notify "" . RFERR)
+      deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
     threadDelay int
   where
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
-        withStore' c deleteUsersWithoutConns >>= mapM_ (notify . DEL_USER)
+        withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
     deleteRcvFiles = do
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
-      forM_ rcvDeleted $ \(fId, p) -> flip catchError (notify . RFERR) $ do
+      forM_ rcvDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
-        withStore' c (`deleteRcvFile'` fId)
+        withStore' c (`deleteRcvFile'` dbId)
     deleteRcvFilesTmpPaths = do
       rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
-      forM_ rcvTmpPaths $ \(fId, p) -> flip catchError (notify . RFERR) $ do
+      forM_ rcvTmpPaths $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
-        withStore' c (`updateRcvFileNoTmpPath` fId)
-    notify :: forall e. AEntityI e => ACommand 'Agent e -> ExceptT AgentErrorType m ()
-    notify cmd = atomically $ writeTBQueue subQ ("", "", APC (sAEntity @e) cmd)
+        withStore' c (`updateRcvFileNoTmpPath` dbId)
+    notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
+    notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do

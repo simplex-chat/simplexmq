@@ -2039,23 +2039,23 @@ getPendingRcvFilesServers db = do
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash
 
-getCleanupRcvFilesTmpPaths :: DB.Connection -> IO [(DBRcvFileId, FilePath)]
+getCleanupRcvFilesTmpPaths :: DB.Connection -> IO [(DBRcvFileId, RcvFileId, FilePath)]
 getCleanupRcvFilesTmpPaths db =
   DB.query
     db
     [sql|
-      SELECT rcv_file_id, tmp_path
+      SELECT rcv_file_id, rcv_file_entity_id, tmp_path
       FROM rcv_files
       WHERE status IN (?,?) AND tmp_path IS NOT NULL
     |]
     (RFSComplete, RFSError)
 
-getCleanupRcvFilesDeleted :: DB.Connection -> IO [(DBRcvFileId, FilePath)]
+getCleanupRcvFilesDeleted :: DB.Connection -> IO [(DBRcvFileId, RcvFileId, FilePath)]
 getCleanupRcvFilesDeleted db =
   DB.query_
     db
     [sql|
-      SELECT rcv_file_id, prefix_path
+      SELECT rcv_file_id, rcv_file_entity_id, prefix_path
       FROM rcv_files
       WHERE deleted = 1
     |]
