@@ -1611,31 +1611,32 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Right _ -> return ()
 
 cleanupManager :: AgentMonad' m => AgentClient -> m ()
-cleanupManager c = do
+cleanupManager c@AgentClient {subQ} = do
   threadDelay =<< asks (initialCleanupDelay . config)
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
-      deleteConns
-      deleteFiles
-      threadDelay int
+      deleteConns `catchError` notifyInternalError
+      deleteRcvFiles `catchError` notifyInternalError
+      deleteRcvFilesTmpPaths `catchError` notifyInternalError
+    threadDelay int
   where
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
-    notifyUserDeleted userId = atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
-    deleteFiles = do
-      -- cleanup rcv files marked for deletion
+    deleteRcvFiles = do
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
-      forM_ rcvDeleted $ \(fId, p) -> do
+      forM_ rcvDeleted $ \(fId, p) -> flip catchError notifyInternalError $ do
         removePath =<< toFSFilePath p
         withStore' c (`deleteRcvFile'` fId)
-      -- cleanup rcv tmp paths
+    deleteRcvFilesTmpPaths = do
       rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
-      forM_ rcvTmpPaths $ \(fId, p) -> do
+      forM_ rcvTmpPaths $ \(fId, p) -> flip catchError notifyInternalError $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` fId)
+    notifyUserDeleted userId = atomically $ writeTBQueue subQ ("", "", APC SAENone $ DEL_USER userId)
+    notifyInternalError e = atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ INTERNAL $ show e)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
