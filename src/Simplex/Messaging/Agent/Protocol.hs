@@ -336,10 +336,10 @@ data ACommand (p :: AParty) (e :: AEntity) where
   ERR :: AgentErrorType -> ACommand Agent AEConn
   SUSPENDED :: ACommand Agent AENone
   -- XFTP commands and responses
-  RFPROG :: Int -> Int -> ACommand Agent AERcvFile
+  RFPROG :: Int64 -> Int64 -> ACommand Agent AERcvFile
   RFDONE :: FilePath -> ACommand Agent AERcvFile
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
-  SFPROG :: Int -> Int -> ACommand Agent AESndFile
+  SFPROG :: Int64 -> Int64 -> ACommand Agent AESndFile
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
 
 deriving instance Eq (ACommand p e)
