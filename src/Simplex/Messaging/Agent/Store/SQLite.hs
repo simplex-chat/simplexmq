@@ -305,7 +305,7 @@ migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
       MCYesUp -> pure $ Left err
       MCError -> pure $ Left err
       where
-        err = MEDowngrade $ map downName dms --  "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " (map downName dms)
+        err = MEDowngrade $ map downName dms
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
     run db ms = do
