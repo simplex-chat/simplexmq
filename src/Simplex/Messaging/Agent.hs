@@ -1610,33 +1610,33 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Left e -> liftIO $ print e
       Right _ -> return ()
 
-cleanupManager :: AgentMonad' m => AgentClient -> m ()
+cleanupManager :: forall m. AgentMonad' m => AgentClient -> m ()
 cleanupManager c@AgentClient {subQ} = do
   threadDelay =<< asks (initialCleanupDelay . config)
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
-      deleteConns `catchError` notifyInternalError
-      deleteRcvFiles `catchError` notifyInternalError
-      deleteRcvFilesTmpPaths `catchError` notifyInternalError
+      deleteConns `catchError` (notify . ERR)
+      deleteRcvFiles `catchError` (notify . RFERR)
+      deleteRcvFilesTmpPaths `catchError` (notify . RFERR)
     threadDelay int
   where
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
-        withStore' c deleteUsersWithoutConns >>= mapM_ notifyUserDeleted
+        withStore' c deleteUsersWithoutConns >>= mapM_ (notify . DEL_USER)
     deleteRcvFiles = do
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
-      forM_ rcvDeleted $ \(fId, p) -> flip catchError notifyInternalError $ do
+      forM_ rcvDeleted $ \(fId, p) -> flip catchError (notify . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`deleteRcvFile'` fId)
     deleteRcvFilesTmpPaths = do
       rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
-      forM_ rcvTmpPaths $ \(fId, p) -> flip catchError notifyInternalError $ do
+      forM_ rcvTmpPaths $ \(fId, p) -> flip catchError (notify . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` fId)
-    notifyUserDeleted userId = atomically $ writeTBQueue subQ ("", "", APC SAENone $ DEL_USER userId)
-    notifyInternalError e = atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ INTERNAL $ show e)
+    notify :: forall e. AEntityI e => ACommand 'Agent e -> ExceptT AgentErrorType m ()
+    notify cmd = atomically $ writeTBQueue subQ ("", "", APC (sAEntity @e) cmd)
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
