@@ -14,7 +14,7 @@ import Data.Int (Int64)
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, getSMPAgentClient, xftpDeleteRcvFile, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, xftpDeleteRcvFile, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
