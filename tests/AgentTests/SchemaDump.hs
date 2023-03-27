@@ -10,7 +10,8 @@ import Data.Maybe (fromJust, isJust)
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration (..), MigrationsToRun (..), toDownMigration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import System.Directory (removeFile)
+import Simplex.Messaging.Util (ifM)
+import System.Directory (doesFileExist, removeFile)
 import System.Process (readCreateProcess, shell)
 import Test.Hspec
 
@@ -30,7 +31,7 @@ schemaDumpTest = do
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
-  savedSchema <- readFile appSchema
+  savedSchema <- ifM (doesFileExist appSchema) (readFile appSchema) (pure "")
   savedSchema `deepseq` pure ()
   void $ createSQLiteStore testDB "" Migrations.app MCConsole
   getSchema testDB appSchema `shouldReturn` savedSchema
@@ -50,14 +51,15 @@ testSchemaMigrations = do
       let downMigr = fromJust $ toDownMigration m
       schema <- getSchema testDB testSchema
       withConnection st (`Migrations.run` MTRUp [m])
-      withConnection st (`Migrations.run` MTRDown [downMigr])
       schema' <- getSchema testDB testSchema
-      schema `shouldBe` schema'
+      schema' `shouldNotBe` schema
+      withConnection st (`Migrations.run` MTRDown [downMigr])
+      schema'' <- getSchema testDB testSchema
+      schema'' `shouldBe` schema
       withConnection st (`Migrations.run` MTRUp [m])
 
 getSchema :: FilePath -> FilePath -> IO String
 getSchema dpPath schemaPath = do
-  void $ readCreateProcess (shell $ "touch " <> schemaPath) ""
   void $ readCreateProcess (shell $ "sqlite3 " <> dpPath <> " '.schema --indent' > " <> schemaPath) ""
   sch <- readFile schemaPath
   sch `deepseq` pure sch
