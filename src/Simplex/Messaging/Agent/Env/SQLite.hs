@@ -81,6 +81,7 @@ data AgentConfig = AgentConfig
     helloTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int,
     cleanupInterval :: Int,
+    rcvFilesTTL :: NominalDiffTime,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
@@ -140,6 +141,7 @@ defaultAgentConfig =
       helloTimeout = 2 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
+      rcvFilesTTL = 2 * 86400, -- 2 days
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds

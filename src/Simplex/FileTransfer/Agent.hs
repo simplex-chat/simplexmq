@@ -70,7 +70,8 @@ startWorkers c workDir = do
   startFiles
   where
     startFiles = do
-      pendingRcvServers <- withStore' c getPendingRcvFilesServers
+      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
       forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
       -- start local worker for files pending decryption,
       -- no need to make an extra query for the check
@@ -140,7 +141,8 @@ runXFTPWorker c srv doWork = do
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXftpOperation :: m ()
     runXftpOperation = do
-      nextChunk <- withStore' c (`getNextRcvChunkToDownload` srv)
+      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      nextChunk <- withStore' c $ \db -> getNextRcvChunkToDownload db srv rcvFilesTTL
       case nextChunk of
         Nothing -> noWorkToDo
         Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
@@ -207,7 +209,8 @@ runXFTPLocalWorker c doWork = do
   where
     runXftpOperation :: m ()
     runXftpOperation = do
-      nextFile <- withStore' c getNextRcvFileToDecrypt
+      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      nextFile <- withStore' c (`getNextRcvFileToDecrypt` rcvFilesTTL)
       case nextFile of
         Nothing -> noWorkToDo
         Just f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
