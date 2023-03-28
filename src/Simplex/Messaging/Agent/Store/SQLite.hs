@@ -146,6 +146,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getPendingRcvFilesServers,
     getCleanupRcvFilesTmpPaths,
     getCleanupRcvFilesDeleted,
+    getRcvFilesExpired,
 
     -- * utilities
     withConnection,
@@ -180,7 +181,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
@@ -2059,3 +2060,15 @@ getCleanupRcvFilesDeleted db =
       FROM rcv_files
       WHERE deleted = 1
     |]
+
+getRcvFilesExpired :: DB.Connection -> IO [(DBRcvFileId, RcvFileId, FilePath)]
+getRcvFilesExpired db = do
+  cutoffTs <- addUTCTime (- 2 * 86400) <$> getCurrentTime
+  DB.query
+    db
+    [sql|
+      SELECT rcv_file_id, rcv_file_entity_id, prefix_path
+      FROM rcv_files
+      WHERE created_at < ?
+    |]
+    (Only cutoffTs)

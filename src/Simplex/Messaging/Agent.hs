@@ -118,7 +118,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteRcvFilesExpired, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -1617,7 +1617,8 @@ cleanupManager c@AgentClient {subQ} = do
   forever $ do
     void . runExceptT $ do
       deleteConns `catchError` (notify "" . ERR)
-      deleteRcvFiles `catchError` (notify "" . RFERR)
+      deleteRcvFilesExpired c `catchError` (notify "" . RFERR)
+      deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
     threadDelay int
   where
@@ -1625,7 +1626,7 @@ cleanupManager c@AgentClient {subQ} = do
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
-    deleteRcvFiles = do
+    deleteRcvFilesDeleted = do
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
       forM_ rcvDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
