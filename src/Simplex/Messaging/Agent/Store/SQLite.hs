@@ -146,6 +146,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getPendingRcvFilesServers,
     getCleanupRcvFilesTmpPaths,
     getCleanupRcvFilesDeleted,
+    getRcvFilesExpired,
 
     -- * utilities
     withConnection,
@@ -180,7 +181,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
@@ -1966,8 +1967,9 @@ deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
-getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> IO (Maybe RcvFileChunk)
-getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
+getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe RcvFileChunk)
+getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   maybeFirstRow toChunk $
     DB.query
       db
@@ -1981,11 +1983,11 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
         JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
         WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
           AND r.received = 0 AND r.replica_number = 1
-          AND f.status = ? AND f.deleted = 0
+          AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
         ORDER BY r.created_at ASC
         LIMIT 1
       |]
-      (host, port, keyHash, RFSReceiving)
+      (host, port, keyHash, RFSReceiving, cutoffTs)
   where
     toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Maybe Int, Int)) -> RcvFileChunk
     toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries)) =
@@ -2002,8 +2004,9 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} = do
           replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}]
         }
 
-getNextRcvFileToDecrypt :: DB.Connection -> IO (Maybe RcvFile)
-getNextRcvFileToDecrypt db = do
+getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Maybe RcvFile)
+getNextRcvFileToDecrypt db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   fileId_ :: Maybe DBRcvFileId <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2011,16 +2014,17 @@ getNextRcvFileToDecrypt db = do
         [sql|
           SELECT rcv_file_id
           FROM rcv_files
-          WHERE status IN (?,?) AND deleted = 0
+          WHERE status IN (?,?) AND deleted = 0 AND created_at >= ?
           ORDER BY created_at ASC LIMIT 1
         |]
-        (RFSReceived, RFSDecrypting)
+        (RFSReceived, RFSDecrypting, cutoffTs)
   case fileId_ of
     Nothing -> pure Nothing
     Just fileId -> eitherToMaybe <$> getRcvFile db fileId
 
-getPendingRcvFilesServers :: DB.Connection -> IO [XFTPServer]
-getPendingRcvFilesServers db = do
+getPendingRcvFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
+getPendingRcvFilesServers db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   map toServer
     <$> DB.query
       db
@@ -2032,9 +2036,9 @@ getPendingRcvFilesServers db = do
         JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
         JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
         WHERE r.received = 0 AND r.replica_number = 1
-          AND f.status = ? AND f.deleted = 0
+          AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
       |]
-      (Only RFSReceiving)
+      (RFSReceiving, cutoffTs)
   where
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash
@@ -2059,3 +2063,15 @@ getCleanupRcvFilesDeleted db =
       FROM rcv_files
       WHERE deleted = 1
     |]
+
+getRcvFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBRcvFileId, RcvFileId, FilePath)]
+getRcvFilesExpired db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  DB.query
+    db
+    [sql|
+      SELECT rcv_file_id, rcv_file_entity_id, prefix_path
+      FROM rcv_files
+      WHERE created_at < ?
+    |]
+    (Only cutoffTs)

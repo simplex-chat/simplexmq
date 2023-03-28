@@ -1617,7 +1617,8 @@ cleanupManager c@AgentClient {subQ} = do
   forever $ do
     void . runExceptT $ do
       deleteConns `catchError` (notify "" . ERR)
-      deleteRcvFiles `catchError` (notify "" . RFERR)
+      deleteRcvFilesExpired `catchError` (notify "" . RFERR)
+      deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
     threadDelay int
   where
@@ -1625,7 +1626,13 @@ cleanupManager c@AgentClient {subQ} = do
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
-    deleteRcvFiles = do
+    deleteRcvFilesExpired = do
+      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
+      forM_ rcvExpired $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
+        removePath =<< toFSFilePath p
+        withStore' c (`deleteRcvFile'` dbId)
+    deleteRcvFilesDeleted = do
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
       forM_ rcvDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
