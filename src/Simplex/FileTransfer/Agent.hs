@@ -12,7 +12,6 @@
 
 module Simplex.FileTransfer.Agent
   ( startWorkers,
-    deleteRcvFilesExpired,
     closeXFTPAgent,
     toFSFilePath,
     -- Receiving files
@@ -71,20 +70,12 @@ startWorkers c workDir = do
   startFiles
   where
     startFiles = do
-      void . runExceptT $ deleteRcvFilesExpired c `catchError` (liftIO . notify c "" . RFERR)
       pendingRcvServers <- withStore' c getPendingRcvFilesServers
       forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
       -- start local worker for files pending decryption,
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
       addXFTPWorker c Nothing
-
-deleteRcvFilesExpired :: AgentMonad' m => AgentClient -> ExceptT AgentErrorType m ()
-deleteRcvFilesExpired c = do
-  rcvExpired <- withStore' c getRcvFilesExpired
-  forM_ rcvExpired $ \(dbId, entId, p) -> flip catchError (liftIO . notify c entId . RFERR) $ do
-    removePath =<< toFSFilePath p
-    withStore' c (`deleteRcvFile'` dbId)
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
 closeXFTPAgent XFTPAgent {xftpWorkers} = do
