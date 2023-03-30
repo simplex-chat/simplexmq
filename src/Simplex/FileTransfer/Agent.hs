@@ -56,7 +56,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -217,7 +217,7 @@ runXFTPLocalWorker c doWork = do
           decryptFile f `catchError` (workerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, status, chunks} = do
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
         whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
