@@ -56,7 +56,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -219,11 +219,10 @@ runXFTPLocalWorker c doWork = do
           decryptFile f `catchError` (workerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, status, chunks} = do
       fsSavePath <- toFSFilePath savePath
-      -- TODO test; recreate file if it's in status RFSDecrypting
-      -- when (status == RFSDecrypting) $
-      --   whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
+      when (status == RFSDecrypting) $
+        whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
