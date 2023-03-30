@@ -219,9 +219,8 @@ runXFTPLocalWorker c doWork = do
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, chunks} = do
       fsSavePath <- toFSFilePath savePath
-      -- TODO test; recreate file if it's in status RFSDecrypting
-      -- when (status == RFSDecrypting) $
-      --   whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
+      when (status == RFSDecrypting) $
+        whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
