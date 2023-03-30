@@ -197,6 +197,7 @@ agentCfg =
       smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS)},
       ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
+      xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 1000,
       ntfSMPWorkerDelay = 1000,
       caCertificateFile = "tests/fixtures/ca.crt",

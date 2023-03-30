@@ -82,6 +82,7 @@ data AgentConfig = AgentConfig
     initialCleanupDelay :: Int,
     cleanupInterval :: Int,
     rcvFilesTTL :: NominalDiffTime,
+    xftpNotifyErrsOnRetry :: Bool,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
@@ -142,6 +143,7 @@ defaultAgentConfig =
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       rcvFilesTTL = 2 * nominalDay,
+      xftpNotifyErrsOnRetry = True,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds

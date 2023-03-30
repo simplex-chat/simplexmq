@@ -341,6 +341,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
   SFPROG :: Int64 -> Int64 -> ACommand Agent AESndFile
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
+  SFERR :: AgentErrorType -> ACommand Agent AESndFile
 
 deriving instance Eq (ACommand p e)
 
@@ -398,6 +399,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   RFERR_ :: ACommandTag Agent AERcvFile
   SFPROG_ :: ACommandTag Agent AESndFile
   SFDONE_ :: ACommandTag Agent AESndFile
+  SFERR_ :: ACommandTag Agent AESndFile
 
 deriving instance Eq (ACommandTag p e)
 
@@ -447,6 +449,7 @@ aCommandTag = \case
   RFERR {} -> RFERR_
   SFPROG {} -> SFPROG_
   SFDONE {} -> SFDONE_
+  SFERR {} -> SFERR_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -1339,6 +1342,7 @@ instance StrEncoding ACmdTag where
       "RFERR" -> at SAERcvFile RFERR_
       "SFPROG" -> at SAESndFile SFPROG_
       "SFDONE" -> at SAESndFile SFDONE_
+      "SFERR" -> at SAESndFile SFERR_
       _ -> fail "bad ACmdTag"
     where
       t = pure . ACmdTag SClient SAEConn
@@ -1391,6 +1395,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     RFERR_ -> "RFERR"
     SFPROG_ -> "SFPROG"
     SFDONE_ -> "SFDONE"
+    SFERR_ -> "SFERR"
   strP = (\(APCT _ t) -> checkEntity t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
@@ -1451,6 +1456,7 @@ commandP binaryP =
           RFERR_ -> s (RFERR <$> strP)
           SFPROG_ -> s (SFPROG <$> A.decimal <* A.space <*> A.decimal)
           SFDONE_ -> s (sfDone . safeDecodeUtf8 <$?> binaryP)
+          SFERR_ -> s (SFERR <$> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1515,6 +1521,7 @@ serializeCommand = \case
   RFERR e -> s (RFERR_, e)
   SFPROG sent total -> s (SFPROG_, sent, total)
   SFDONE sd rds -> B.unwords [s SFDONE_, serializeBinary (sfDone sd rds)]
+  SFERR e -> s (SFERR_, e)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
