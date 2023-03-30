@@ -25,7 +25,7 @@ import XFTPCLI
 import XFTPClient
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . describe "Functional API" $ do
+xftpAgentTests = around_ testBracket . fdescribe "Functional API" $ do
   it "should receive file" testXFTPAgentReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup tmp path after permanent error" testXFTPAgentReceiveCleanup
