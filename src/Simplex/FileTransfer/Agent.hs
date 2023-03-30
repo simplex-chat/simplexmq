@@ -255,7 +255,7 @@ sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients =
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
   xftpSrvs <- atomically $ TM.lookup userId xftpServers
-  void $ forkIO $ sendCLI sndFileId (maybe [] L.toList xftpSrvs)
+  void $ forkIO $ sendCLI sndFileId $ maybe [] L.toList xftpSrvs
   pure sndFileId
   where
     randomId :: TVar ChaChaDRG -> Int -> IO ByteString
