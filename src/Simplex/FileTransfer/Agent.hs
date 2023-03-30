@@ -161,6 +161,8 @@ runXFTPWorker c srv doWork = do
                 else done e
               where
                 retryLoop = do
+                  notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
+                  when notifyOnRetry $ notifyInternalError c rcvFileEntityId $ show e
                   closeXFTPServerClient c userId replica
                   withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
                   atomically $ endAgentOperation c AORcvNetwork
@@ -253,7 +255,7 @@ sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients =
   g <- asks idsDrg
   sndFileId <- liftIO $ randomId g 12
   xftpSrvs <- atomically $ TM.lookup userId xftpServers
-  void $ forkIO $ sendCLI sndFileId $ maybe [] L.toList xftpSrvs
+  void $ forkIO $ sendCLI sndFileId (maybe [] L.toList xftpSrvs)
   pure sndFileId
   where
     randomId :: TVar ChaChaDRG -> Int -> IO ByteString
@@ -266,21 +268,30 @@ sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients =
       createDirectory outputDir
       let tempPath = workPath </> "snd"
       createDirectoryIfMissing False tempPath
-      let sendOptions =
-            SendOptions
-              { filePath,
-                outputDir = Just outputDir,
-                numRecipients,
-                xftpServers = xftpSrvs,
-                retryCount = 3,
-                tempPath = Just tempPath,
-                verbose = False
-              }
-      liftCLI $ cliSendFileOpts sendOptions False $ notify c sndFileId .: SFPROG
-      (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
-      removePath tempPath
-      removePath outputDir
-      liftIO $ notify c sndFileId $ SFDONE sndDescr rcvDescrs
+      runSend fileName outputDir tempPath `catchError` \e -> do
+        cleanup outputDir tempPath
+        liftIO $ notify c sndFileId $ SFERR e
+      where
+        runSend :: String -> FilePath -> FilePath -> m ()
+        runSend fileName outputDir tempPath = do
+          let sendOptions =
+                SendOptions
+                  { filePath,
+                    outputDir = Just outputDir,
+                    numRecipients,
+                    xftpServers = xftpSrvs,
+                    retryCount = 3,
+                    tempPath = Just tempPath,
+                    verbose = False
+                  }
+          liftCLI $ cliSendFileOpts sendOptions False $ notify c sndFileId .: SFPROG
+          (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
+          cleanup outputDir tempPath
+          liftIO $ notify c sndFileId $ SFDONE sndDescr rcvDescrs
+        cleanup :: FilePath -> FilePath -> m ()
+        cleanup outputDir tempPath = do
+          removePath tempPath
+          removePath outputDir
     liftCLI :: ExceptT CLIError IO () -> m ()
     liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
     readDescrs :: FilePath -> FilePath -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
