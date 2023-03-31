@@ -28,6 +28,12 @@ xftpTest2 test = xftpTestN 2 _test
     _test [h1, h2] = test h1 h2
     _test _ = error "expected 2 handles"
 
+xftpTest4 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> XFTPClient -> XFTPClient -> IO ()) -> Expectation
+xftpTest4 test = xftpTestN 4 _test
+  where
+    _test [h1, h2, h3, h4] = test h1 h2 h3 h4
+    _test _ = error "expected 4 handles"
+
 runXFTPTest :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
 runXFTPTest test = withXFTPServer $ testXFTPClient test
 
