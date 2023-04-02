@@ -296,7 +296,7 @@ testProtocolServer :: forall p m. (ProtocolTypeI p, AgentErrorMonad m) => AgentC
 testProtocolServer c userId srv = withAgentEnv c $ case protocolTypeI @p of
   SPSMP -> runSMPServerTest c userId srv
   SPXFTP -> runXFTPServerTest c userId srv
-  _ -> pure $ Just ProtocolTestFailure {testStep = "unsupportedProtocol", testError = INTERNAL "unsupported protocol"}
+  _ -> pure $ Just ProtocolTestFailure {testStep = TSConnect, testError = INTERNAL "unsupported protocol"}
 
 setNtfServers :: MonadUnliftIO m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c

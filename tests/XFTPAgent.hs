@@ -17,7 +17,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..))
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
@@ -38,11 +38,11 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
     let srv1 = testXFTPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure "connect" $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+      testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testXFTPServer2
-          authErr = Just (ProtocolTestFailure "createFile" $ XFTP AUTH)
+          authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP AUTH)
       it "should pass with correct password" $ testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr

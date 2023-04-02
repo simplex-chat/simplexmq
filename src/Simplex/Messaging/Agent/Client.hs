@@ -20,6 +20,7 @@
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     ProtocolTestFailure (..),
+    ProtocolTestStep (..),
     newAgentClient,
     withConnLock,
     closeAgentClient,
@@ -142,7 +143,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (dropPrefix, enumJSON, parse)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -685,8 +686,25 @@ protocolClientError protocolError_ host = \case
   e@PCECryptoError {} -> INTERNAL $ show e
   PCEIOError {} -> BROKER host NETWORK
 
+data ProtocolTestStep
+  = TSConnect
+  | TSDisconnect
+  | TSCreateQueue
+  | TSSecureQueue
+  | TSDeleteQueue
+  | TSCreateFile
+  | TSUploadFile
+  | TSDownloadFile
+  | TSCompareFile
+  | TSDeleteFile
+  deriving (Eq, Show, Generic)
+
+instance ToJSON ProtocolTestStep where
+  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
+  toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
+
 data ProtocolTestFailure = ProtocolTestFailure
-  { testStep :: String,
+  { testStep :: ProtocolTestStep,
     testError :: AgentErrorType
   }
   deriving (Eq, Show, Generic)
@@ -707,16 +725,16 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, _) <- C.generateSignatureKeyPair a
         (dhKey, _) <- C.generateKeyPair'
         r <- runExceptT $ do
-          SMP.QIK {rcvId} <- liftError (testErr "createQueue") $ createSMPQueue smp rpKey rKey dhKey auth
-          liftError (testErr "secureQueue") $ secureSMPQueue smp rpKey rcvId sKey
-          liftError (testErr "deleteQueue") $ deleteSMPQueue smp rpKey rcvId
+          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey auth
+          liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
+          liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
         incClientStat c userId smp "SMP_TEST" "OK"
-        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure "disconnect" $ BROKER addr TIMEOUT)) (const Nothing) ok
-      Left e -> pure (Just $ testErr "connect" e)
+        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
+      Left e -> pure (Just $ testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
-    testErr :: String -> SMPClientError -> ProtocolTestFailure
+    testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
     testErr step = ProtocolTestFailure step . protocolClientError SMP addr
 
 runXFTPServerTest :: forall m. AgentMonad m => AgentClient -> UserId -> XFTPServerWithAuth -> m (Maybe ProtocolTestFailure)
@@ -737,19 +755,19 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
         let file = FileInfo {sndKey, size = chSize, digest}
             chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
         r <- runExceptT $ do
-          (sId, [rId]) <- liftError (testErr "createFile") $ X.createXFTPChunk xftp spKey file [rcvKey] auth
-          liftError (testErr "uploadFile") $ X.uploadXFTPChunk xftp spKey sId chunkSpec
-          liftError (testErr "downloadFile") $ X.downloadXFTPChunk xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
+          (sId, [rId]) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth
+          liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
+          liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
           rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
-          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure "compareFile" $ XFTP DIGEST
-          liftError (testErr "deleteFile") $ X.deleteXFTPChunk xftp spKey sId
+          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure TSCompareFile $ XFTP DIGEST
+          liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
         ok <- tcpTimeout xftpNetworkConfig `timeout` X.closeXFTPClient xftp
         incClientStat c userId xftp "XFTP_TEST" "OK"
-        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure "disconnect" $ BROKER addr TIMEOUT)) (const Nothing) ok
-      Left e -> pure (Just $ testErr "connect" e)
+        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
+      Left e -> pure (Just $ testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
-    testErr :: String -> XFTPClientError -> ProtocolTestFailure
+    testErr :: ProtocolTestStep -> XFTPClientError -> ProtocolTestFailure
     testErr step = ProtocolTestFailure step . protocolClientError XFTP addr
     chSize :: Integral a => a
     chSize = kb 256
