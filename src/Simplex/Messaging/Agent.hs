@@ -68,8 +68,8 @@ module Simplex.Messaging.Agent
     deleteConnections,
     getConnectionServers,
     getConnectionRatchetAdHash,
-    setSMPServers,
-    testSMPServerConnection,
+    setProtocolServers,
+    testProtocolServer,
     setNtfServers,
     setNetworkConfig,
     getNetworkConfig,
@@ -140,7 +140,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta, SndPublicVerifyKey, protoServer, sameSrvAddr')
+import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, protoServer, sameSrvAddr')
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
@@ -288,12 +288,15 @@ getConnectionRatchetAdHash :: AgentErrorMonad m => AgentClient -> ConnId -> m By
 getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 
 -- | Change servers to be used for creating new queues
-setSMPServers :: MonadUnliftIO m => AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> m ()
-setSMPServers c = withAgentEnv c .: setSMPServers' c
+setProtocolServers :: forall p m. (ProtocolTypeI p, AgentErrorMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
+setProtocolServers c = withAgentEnv c .: setProtocolServers' c
 
--- | Test SMP server
-testSMPServerConnection :: AgentErrorMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe SMPTestFailure)
-testSMPServerConnection c = withAgentEnv c .: runSMPServerTest c
+-- | Test protocol server
+testProtocolServer :: forall p m. (ProtocolTypeI p, AgentErrorMonad m) => AgentClient -> UserId -> ProtoServerWithAuth p -> m (Maybe ProtocolTestFailure)
+testProtocolServer c userId srv = withAgentEnv c $ case protocolTypeI @p of
+  SPSMP -> runSMPServerTest c userId srv
+  SPXFTP -> runXFTPServerTest c userId srv
+  _ -> pure $ Just ProtocolTestFailure {testStep = "unsupportedProtocol", testError = INTERNAL "unsupported protocol"}
 
 setNtfServers :: MonadUnliftIO m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
@@ -1336,8 +1339,13 @@ connectionStats = \case
   NewConnection _ -> ConnectionStats {rcvServers = [], sndServers = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setSMPServers' :: AgentMonad' m => AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> m ()
-setSMPServers' c userId srvs = atomically $ TM.insert userId srvs $ smpServers c
+setProtocolServers' :: forall p m. (ProtocolTypeI p, AgentMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
+setProtocolServers' c userId srvs = servers >>= atomically . TM.insert userId srvs
+  where
+    servers = case protocolTypeI @p of
+      SPSMP -> pure $ smpServers c
+      SPXFTP -> pure $ xftpServers c
+      _ -> throwError $ INTERNAL "use setNtfServers"
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
