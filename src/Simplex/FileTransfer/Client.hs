@@ -161,9 +161,15 @@ createXFTPChunk ::
   NonEmpty C.APublicVerifyKey ->
   Maybe BasicAuth ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
-createXFTPChunk c spKey file rsps auth_ =
-  sendXFTPCommand c spKey "" (FNEW file rsps auth_) Nothing >>= \case
+createXFTPChunk c spKey file rcps auth_ =
+  sendXFTPCommand c spKey "" (FNEW file rcps auth_) Nothing >>= \case
     (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
+    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+addXFTPRecipients :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> NonEmpty C.APublicVerifyKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)
+addXFTPRecipients c spKey fId rcps =
+  sendXFTPCommand c spKey fId (FADD rcps) Nothing >>= \case
+    (FRRcvIds rIds, body) -> noFile body rIds
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
 uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
