@@ -140,7 +140,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, protoServer, sameSrvAddr')
+import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, UserProtocol, XFTPServerWithAuth, protoServer, sameSrvAddr')
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
@@ -175,8 +175,8 @@ resumeAgentClient c = atomically $ writeTVar (active c) True
 
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
-createUser :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> m UserId
-createUser c = withAgentEnv c . createUser' c
+createUser :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> NonEmpty XFTPServerWithAuth -> m UserId
+createUser c = withAgentEnv c .: createUser' c
 
 -- | Delete user record optionally deleting all user's connections on SMP servers
 deleteUser :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> m ()
@@ -288,15 +288,14 @@ getConnectionRatchetAdHash :: AgentErrorMonad m => AgentClient -> ConnId -> m By
 getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 
 -- | Change servers to be used for creating new queues
-setProtocolServers :: forall p m. (ProtocolTypeI p, AgentErrorMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
+setProtocolServers :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentErrorMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
 setProtocolServers c = withAgentEnv c .: setProtocolServers' c
 
 -- | Test protocol server
-testProtocolServer :: forall p m. (ProtocolTypeI p, AgentErrorMonad m) => AgentClient -> UserId -> ProtoServerWithAuth p -> m (Maybe ProtocolTestFailure)
+testProtocolServer :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentErrorMonad m) => AgentClient -> UserId -> ProtoServerWithAuth p -> m (Maybe ProtocolTestFailure)
 testProtocolServer c userId srv = withAgentEnv c $ case protocolTypeI @p of
   SPSMP -> runSMPServerTest c userId srv
   SPXFTP -> runXFTPServerTest c userId srv
-  _ -> pure $ Just ProtocolTestFailure {testStep = TSConnect, testError = INTERNAL "unsupported protocol"}
 
 setNtfServers :: MonadUnliftIO m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
@@ -420,10 +419,11 @@ processCommand c (connId, APC e cmd) =
     userId :: UserId
     userId = 1
 
-createUser' :: AgentMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> m UserId
-createUser' c srvs = do
+createUser' :: AgentMonad m => AgentClient -> NonEmpty SMPServerWithAuth -> NonEmpty XFTPServerWithAuth -> m UserId
+createUser' c smp xftp = do
   userId <- withStore' c createUserRecord
-  atomically $ TM.insert userId srvs $ smpServers c
+  atomically $ TM.insert userId smp $ smpServers c
+  atomically $ TM.insert userId xftp $ xftpServers c
   pure userId
 
 deleteUser' :: AgentMonad m => AgentClient -> UserId -> Bool -> m ()
@@ -1339,13 +1339,12 @@ connectionStats = \case
   NewConnection _ -> ConnectionStats {rcvServers = [], sndServers = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setProtocolServers' :: forall p m. (ProtocolTypeI p, AgentMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
+setProtocolServers' :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
 setProtocolServers' c userId srvs = servers >>= atomically . TM.insert userId srvs
   where
     servers = case protocolTypeI @p of
       SPSMP -> pure $ smpServers c
       SPXFTP -> pure $ xftpServers c
-      _ -> throwError $ INTERNAL "use setNtfServers"
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =

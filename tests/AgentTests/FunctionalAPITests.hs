@@ -63,6 +63,7 @@ import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO
+import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 
@@ -798,7 +799,7 @@ testUsers = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer]
+    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     deleteUser a auId True
@@ -815,7 +816,7 @@ testDeleteUserQuietly = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer]
+    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     deleteUser a auId False
@@ -829,7 +830,7 @@ testUsersNoServer t = do
   (aId, bId, auId, _aId', bId') <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer]
+    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     pure (aId, bId, auId, aId', bId')
@@ -1003,7 +1004,7 @@ testTwoUsers = do
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
 
-    aUserId2 <- createUser a [noAuthSrv testSMPServer]
+    aUserId2 <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
     exchangeGreetings a bId2 b aId2
     (aId2', bId2') <- makeConnectionForUsers a aUserId2 b 1
