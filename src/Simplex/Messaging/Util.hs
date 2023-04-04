@@ -109,13 +109,13 @@ safeDecodeUtf8 = decodeUtf8With onError
   where
     onError _ _ = Just '?'
 
-threadDelay64 :: Int64 -> IO ()
-threadDelay64 time
+threadDelay' :: Int64 -> IO ()
+threadDelay' time
   | time <= 0 = pure ()
-threadDelay64 time = do
+threadDelay' time = do
   let maxWait = min time $ fromIntegral (maxBound :: Int)
   threadDelay $ fromIntegral maxWait
-  when (maxWait /= time) $ threadDelay64 (time - maxWait)
+  when (maxWait /= time) $ threadDelay' (time - maxWait)
 
 diffInSeconds :: UTCTime -> UTCTime -> Int64
 diffInSeconds a b = (`div` 1000000_000000) $ diffInPicos a b

@@ -208,7 +208,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, threadDelay64, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, threadDelay', ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -402,7 +402,7 @@ withTransaction st action = withConnection st $ loop 500 3_000_000
       DB.withImmediateTransaction db (action db) `E.catch` \(e :: SQLError) ->
         if tLim > t && DB.sqlError e == DB.ErrorBusy
           then do
-            threadDelay64 $ fromIntegral t
+            threadDelay' $ fromIntegral t
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
 

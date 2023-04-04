@@ -1559,7 +1559,7 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
           suspendSendingAndDatabase c
       readTVar as
   when (state == ASSuspending) . void . forkIO $ do
-    liftIO $ threadDelay64 $ fromIntegral maxDelay
+    liftIO $ threadDelay' $ fromIntegral maxDelay
     -- liftIO $ putStrLn "suspendAgent after timeout"
     atomically . whenSuspending c $ do
       -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
@@ -1613,7 +1613,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
 cleanupManager :: forall m. AgentMonad' m => AgentClient -> m ()
 cleanupManager c@AgentClient {subQ} = do
   delay <- asks (initialCleanupDelay . config)
-  liftIO $ threadDelay64 $ fromIntegral delay
+  liftIO $ threadDelay' $ fromIntegral delay
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
@@ -1621,7 +1621,7 @@ cleanupManager c@AgentClient {subQ} = do
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
-    liftIO $ threadDelay64 $ fromIntegral int
+    liftIO $ threadDelay' $ fromIntegral int
   where
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do

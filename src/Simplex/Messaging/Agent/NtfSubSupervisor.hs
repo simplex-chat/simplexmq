@@ -23,10 +23,9 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
-import Data.Fixed (Fixed (MkFixed), Pico)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
+import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ACommand (..), APartyCmd (..), AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..), SAEntity (..))
@@ -40,7 +39,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, ProtocolServer, SMPServer, sameSrvAddr)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (diffInMicros, threadDelay64, tshow, unlessM)
+import Simplex.Messaging.Util (diffInMicros, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -161,7 +160,7 @@ runNtfWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfOperation
-    liftIO $ threadDelay64 $ fromIntegral delay
+    liftIO $ threadDelay' $ fromIntegral delay
   where
     runNtfOperation :: m ()
     runNtfOperation = do
@@ -246,7 +245,7 @@ runNtfSMPWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfSMPOperation
-    liftIO $ threadDelay64 $ fromIntegral delay
+    liftIO $ threadDelay' $ fromIntegral delay
   where
     runNtfSMPOperation = do
       nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
@@ -292,7 +291,7 @@ rescheduleAction doWork ts actionTs
   | otherwise = do
     void . atomically $ tryTakeTMVar doWork
     void . forkIO $ do
-      liftIO $ threadDelay64 $ diffInMicros actionTs ts
+      liftIO $ threadDelay' $ diffInMicros actionTs ts
       void . atomically $ tryPutTMVar doWork ()
     pure True
 

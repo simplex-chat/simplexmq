@@ -95,11 +95,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       st <- asks store
       let interval = checkInterval expCfg * 1000000
       forever $ do
-        liftIO $ threadDelay64 $ fromIntegral interval
+        liftIO $ threadDelay' $ fromIntegral interval
         old <- liftIO $ expireBeforeEpoch expCfg
         sIds <- M.keysSet <$> readTVarIO (files st)
         forM_ sIds $ \sId -> do
-          liftIO $ threadDelay64 100000
+          liftIO $ threadDelay' 100000
           atomically (expiredFilePath st sId old)
             >>= mapM_ (remove $ delete st sId)
       where
@@ -121,7 +121,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay64 $ fromIntegral $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+      liftIO $ threadDelay' $ fromIntegral $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
@@ -154,7 +154,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
                 show filesCount',
                 show filesSize'
               ]
-        liftIO $ threadDelay64 $ fromIntegral interval
+        liftIO $ threadDelay' $ fromIntegral interval
 
 data ServerFile = ServerFile
   { filePath :: FilePath,

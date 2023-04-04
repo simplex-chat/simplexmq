@@ -32,7 +32,7 @@ module AgentTests.FunctionalAPITests
 where
 
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams)
-import Control.Concurrent (killThread)
+import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
@@ -59,7 +59,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
-import Simplex.Messaging.Util (threadDelay64, tryError)
+import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO
@@ -470,7 +470,7 @@ testDuplicateMessage t = do
   nGet bob1 =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
   -- commenting two lines below and uncommenting further two lines would also runRight_,
   -- it is the scenario tested above, when the message was not acknowledged by the user
-  threadDelay64 200000
+  threadDelay 200000
   Left (BROKER _ TIMEOUT) <- runExceptT $ ackMessage bob1 aliceId 5
 
   disconnectAgentClient alice
@@ -529,13 +529,13 @@ testActiveClientNotDisconnected t = do
       if milliseconds ts' - milliseconds ts < 2200
         then do
           -- keep sending SUB for 2.2 seconds
-          liftIO $ threadDelay64 200000
+          liftIO $ threadDelay 200000
           subscribeConnection alice connId
           keepSubscribing alice connId ts
         else do
           -- check that nothing is sent from agent
           Nothing <- 800000 `timeout` get alice
-          liftIO $ threadDelay64 1200000
+          liftIO $ threadDelay 1200000
           -- and after 2 sec of inactivity DOWN is sent
           nGet alice ##> ("", "", DOWN testSMPServer [connId])
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
@@ -575,7 +575,7 @@ testSuspendingAgentCompleteSending t = do
     ("", "", DOWN {}) <- nGet b
     5 <- sendMessage b aId SMP.noMsgFlags "hello too"
     6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
-    liftIO $ threadDelay64 100000
+    liftIO $ threadDelay 100000
     suspendAgent b 5000000
 
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
@@ -621,7 +621,7 @@ testBatchedSubscriptions t = do
     let (aIds', bIds') = unzip $ take 10 conns
     delete a bIds'
     delete b aIds'
-    liftIO $ threadDelay64 1000000
+    liftIO $ threadDelay 1000000
     pure conns
   ("", "", DOWN {}) <- nGet a
   ("", "", DOWN {}) <- nGet a
@@ -632,7 +632,7 @@ testBatchedSubscriptions t = do
     ("", "", UP {}) <- nGet a
     ("", "", UP {}) <- nGet b
     ("", "", UP {}) <- nGet b
-    liftIO $ threadDelay64 1000000
+    liftIO $ threadDelay 1000000
     let (aIds, bIds) = unzip conns
         conns' = drop 10 conns
         (aIds', bIds') = unzip conns'
@@ -910,7 +910,7 @@ testSwitchAsync servers = do
       withC $ \c -> runRight_ $ do
         subscribeConnection c connId
         r <- a c
-        liftIO $ threadDelay64 500000
+        liftIO $ threadDelay 500000
         pure r
     withA = withAgent agentCfg testDB
     withB = withAgent agentCfg {initialClientId = 1} testDB2
@@ -987,16 +987,16 @@ testTwoUsers = do
     a `hasClients` 1
     b `hasClients` 1
     setNetworkConfig a nc {sessionMode = TSMEntity}
-    liftIO $ threadDelay64 250000
+    liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 2
 
     exchangeGreetingsMsgId 6 a bId1 b aId1
     exchangeGreetingsMsgId 6 a bId1' b aId1'
-    liftIO $ threadDelay64 250000
+    liftIO $ threadDelay 250000
     setNetworkConfig a nc {sessionMode = TSMUser}
-    liftIO $ threadDelay64 250000
+    liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
@@ -1011,7 +1011,7 @@ testTwoUsers = do
     a `hasClients` 2
     b `hasClients` 1
     setNetworkConfig a nc {sessionMode = TSMEntity}
-    liftIO $ threadDelay64 250000
+    liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
@@ -1021,9 +1021,9 @@ testTwoUsers = do
     exchangeGreetingsMsgId 8 a bId1' b aId1'
     exchangeGreetingsMsgId 6 a bId2 b aId2
     exchangeGreetingsMsgId 6 a bId2' b aId2'
-    liftIO $ threadDelay64 250000
+    liftIO $ threadDelay 250000
     setNetworkConfig a nc {sessionMode = TSMUser}
-    liftIO $ threadDelay64 250000
+    liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a

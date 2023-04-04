@@ -101,7 +101,7 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay64 $ fromIntegral $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      liftIO $ threadDelay' $ fromIntegral $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -136,7 +136,7 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
                 weekCount sub,
                 monthCount sub
               ]
-          threadDelay64 $ fromIntegral interval
+          threadDelay' $ fromIntegral interval
 
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do
@@ -144,7 +144,7 @@ resubscribe NtfSubscriber {newSubQ} subs = do
   forM_ subs $ \sub@NtfSubData {} ->
     whenM (ntfShouldSubscribe <$> readTVarIO (subStatus sub)) $ do
       atomically $ writeTBQueue newSubQ $ NtfSub sub
-      liftIO $ threadDelay64 $ fromIntegral d
+      liftIO $ threadDelay' $ fromIntegral d
   liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: NtfSubscriber -> M ()
@@ -494,7 +494,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                 atomically $ TM.insert tknId notifier intervalNotifiers
                 where
                   intervalNotifier delay = forever $ do
-                    liftIO $ threadDelay64 delay
+                    liftIO $ threadDelay' delay
                     atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
       NtfReqNew corrId (ANE SSubscription newSub) -> do
         logDebug "SNEW - new subscription"

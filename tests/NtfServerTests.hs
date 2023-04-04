@@ -9,6 +9,7 @@
 
 module NtfServerTests where
 
+import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
@@ -39,7 +40,6 @@ import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (threadDelay64)
 import Test.Hspec
 import UnliftIO.STM
 
@@ -116,7 +116,7 @@ testNotificationSubscription (ATransport t) =
               rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)
           -- send message
-          threadDelay64 50000
+          threadDelay 50000
           Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
           -- receive notification
           APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ

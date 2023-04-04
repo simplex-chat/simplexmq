@@ -1136,7 +1136,7 @@ incClientStat c userId pc = incClientStatN c userId pc 1
 
 incServerStat :: AgentClient -> UserId -> ProtocolServer p -> ByteString -> ByteString -> IO ()
 incServerStat c userId ProtocolServer {host} cmd res = do
-  threadDelay64 100000
+  threadDelay' 100000
   atomically $ incStat c 1 statsKey
   where
     statsKey = AgentStatsKey {userId, host = strEncode $ L.head host, clientTs = "", cmd, res}
