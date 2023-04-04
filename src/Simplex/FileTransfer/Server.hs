@@ -54,10 +54,10 @@ import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
 import UnliftIO (IOMode (..), withFile)
+import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
-import Control.Concurrent (threadDelay)
 
 type M a = ReaderT XFTPEnv IO a
 
@@ -101,7 +101,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
         old <- liftIO $ expireBeforeEpoch expCfg
         sIds <- M.keysSet <$> readTVarIO (files st)
         forM_ sIds $ \sId -> do
-          liftIO $ threadDelay 100000
+          threadDelay 100000
           atomically (expiredFilePath st sId old)
             >>= mapM_ (remove $ delete st sId)
       where
