@@ -11,6 +11,7 @@ import Control.Concurrent.Async (Async)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
@@ -52,8 +53,8 @@ data NtfServerConfig = NtfServerConfig
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
     -- stats config - see SMP server config
-    logStatsInterval :: Maybe Int,
-    logStatsStartTime :: Int,
+    logStatsInterval :: Maybe Int64,
+    logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
     logTLSErrors :: Bool
