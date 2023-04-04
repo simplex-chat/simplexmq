@@ -44,6 +44,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
+import System.Info (os)
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -72,6 +73,9 @@ testNtfClient client = do
     liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedNTFServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
+
+xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
+xit' = if os == "linux" then xit else it
 
 ntfServerCfg :: NtfServerConfig
 ntfServerCfg =
