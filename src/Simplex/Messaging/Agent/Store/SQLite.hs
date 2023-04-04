@@ -157,6 +157,7 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
@@ -208,7 +209,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, threadDelay', ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -402,7 +403,7 @@ withTransaction st action = withConnection st $ loop 500 3_000_000
       DB.withImmediateTransaction db (action db) `E.catch` \(e :: SQLError) ->
         if tLim > t && DB.sqlError e == DB.ErrorBusy
           then do
-            threadDelay' $ fromIntegral t
+            threadDelay t
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
 
@@ -844,7 +845,7 @@ getPendingMsgData db connId msgId = do
           WHERE m.conn_id = ? AND m.internal_id = ?
         |]
         (connId, msgId)
-    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int, Maybe Int) -> PendingMsgData
+    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
     pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
       let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
           msgRetryState = RI2State <$> riSlow_ <*> riFast_

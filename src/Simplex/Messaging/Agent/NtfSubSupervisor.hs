@@ -42,7 +42,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffInMicros, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
-import UnliftIO.Concurrent (forkIO)
+import UnliftIO.Concurrent (forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 
 runNtfSupervisor :: forall m. AgentMonad' m => AgentClient -> m ()
@@ -160,7 +160,7 @@ runNtfWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfOperation
-    liftIO $ threadDelay' $ fromIntegral delay
+    threadDelay delay
   where
     runNtfOperation :: m ()
     runNtfOperation = do
@@ -245,7 +245,7 @@ runNtfSMPWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfSMPOperation
-    liftIO $ threadDelay' $ fromIntegral delay
+    threadDelay delay
   where
     runNtfSMPOperation = do
       nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)

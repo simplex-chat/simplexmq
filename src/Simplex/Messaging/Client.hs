@@ -170,7 +170,7 @@ data NetworkConfig = NetworkConfig
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds, 0 to disable)
-    smpPingInterval :: Int,
+    smpPingInterval :: Int64,
     -- | the count of PING errors after which SMP client terminates (and will be reconnected), 0 to disable
     smpPingCount :: Int,
     logTLSErrors :: Bool
@@ -347,7 +347,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
 
     ping :: ProtocolClient err msg -> IO ()
     ping c@ProtocolClient {client_ = PClient {pingErrorCount}} = do
-      threadDelay' $ fromIntegral smpPingInterval
+      threadDelay' smpPingInterval
       runExceptT (sendProtocolCommand c Nothing "" $ protocolPing @err @msg) >>= \case
         Left PCEResponseTimeout -> do
           cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)

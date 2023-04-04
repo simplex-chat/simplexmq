@@ -55,6 +55,7 @@ import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
+import Data.Int (Int64)
 
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
 
@@ -79,8 +80,8 @@ data AgentConfig = AgentConfig
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
-    initialCleanupDelay :: Int,
-    cleanupInterval :: Int,
+    initialCleanupDelay :: Int64,
+    cleanupInterval :: Int64,
     rcvFilesTTL :: NominalDiffTime,
     xftpNotifyErrsOnRetry :: Bool,
     deleteErrorCount :: Int,

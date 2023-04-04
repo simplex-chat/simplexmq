@@ -46,6 +46,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -157,7 +158,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
       quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
       forever $ do
-        liftIO $ threadDelay' $ fromIntegral interval
+        liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- M.keysSet <$> readTVarIO ms
         forM_ rIds $ \rId ->
@@ -169,11 +170,11 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
-    logServerStats :: Int -> Int -> FilePath -> M ()
+    logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay' $ fromIntegral $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -212,7 +213,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
                 show qCount',
                 show msgCount'
               ]
-          threadDelay' $ fromIntegral interval
+          threadDelay' interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
     runClient _ h = do
@@ -292,7 +293,7 @@ disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar Sys
 disconnectTransport THandle {connection} c activeAt expCfg = do
   let interval = checkInterval expCfg * 1000000
   forever . liftIO $ do
-    threadDelay' $ fromIntegral interval
+    threadDelay' interval
     old <- expireBeforeEpoch expCfg
     ts <- readTVarIO $ activeAt c
     when (systemSeconds ts < old) $ closeConnection connection

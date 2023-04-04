@@ -19,6 +19,7 @@ import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (intercalate)
 import Data.Map.Strict (Map)
 import qualified Data.Text as T
@@ -50,7 +51,7 @@ import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (IOMode (..), async, uninterruptibleCancel, withFile)
-import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId, threadDelay)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
@@ -97,11 +98,11 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
-    logServerStats :: Int -> Int -> FilePath -> M ()
+    logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay' $ fromIntegral $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -136,7 +137,7 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
                 weekCount sub,
                 monthCount sub
               ]
-          threadDelay' $ fromIntegral interval
+          threadDelay' interval
 
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do
@@ -144,7 +145,7 @@ resubscribe NtfSubscriber {newSubQ} subs = do
   forM_ subs $ \sub@NtfSubData {} ->
     whenM (ntfShouldSubscribe <$> readTVarIO (subStatus sub)) $ do
       atomically $ writeTBQueue newSubQ $ NtfSub sub
-      liftIO $ threadDelay' $ fromIntegral d
+      threadDelay d
   liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: NtfSubscriber -> M ()

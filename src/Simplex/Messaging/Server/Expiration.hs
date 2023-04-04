@@ -10,7 +10,7 @@ data ExpirationConfig = ExpirationConfig
   { -- time after which the entity can be expired, seconds
     ttl :: Int64,
     -- interval to check expiration, seconds
-    checkInterval :: Int
+    checkInterval :: Int64
   }
 
 expireBeforeEpoch :: ExpirationConfig -> IO Int64

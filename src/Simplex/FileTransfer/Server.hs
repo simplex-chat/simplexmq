@@ -22,6 +22,7 @@ import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -95,7 +96,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       st <- asks store
       let interval = checkInterval expCfg * 1000000
       forever $ do
-        liftIO $ threadDelay' $ fromIntegral interval
+        liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
         sIds <- M.keysSet <$> readTVarIO (files st)
         forM_ sIds $ \sId -> do
@@ -117,11 +118,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
-    logServerStats :: Int -> Int -> FilePath -> M ()
+    logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay' $ fromIntegral $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+      liftIO $ threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
@@ -154,7 +155,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
                 show filesCount',
                 show filesSize'
               ]
-        liftIO $ threadDelay' $ fromIntegral interval
+        liftIO $ threadDelay' interval
 
 data ServerFile = ServerFile
   { filePath :: FilePath,

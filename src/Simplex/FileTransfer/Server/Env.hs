@@ -51,8 +51,8 @@ data XFTPServerConfig = XFTPServerConfig
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
     -- stats config - see SMP server config
-    logStatsInterval :: Maybe Int,
-    logStatsStartTime :: Int,
+    logStatsInterval :: Maybe Int64,
+    logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
     logTLSErrors :: Bool
