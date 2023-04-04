@@ -34,6 +34,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
 import System.Directory (doesFileExist, removeFile)
+import System.Info (os)
 import Test.Hspec
 import UnliftIO
 
@@ -207,6 +208,9 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
+  print "***"
+  print os
+  print "***"
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
   (bobId, aliceId, nonce, message) <- runRight $ do
