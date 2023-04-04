@@ -32,7 +32,7 @@ getBuffered tb@TBuffer {buffer} n getChunk = withBufferLock tb $ do
   let (s, b') = B.splitAt n b
   atomically $ writeTVar buffer $! b'
   -- This would prevent the need to pad auth tag in HTTP2
-  -- threadDelay' 150
+  -- threadDelay 150
   pure s
   where
     readChunks :: ByteString -> IO ByteString

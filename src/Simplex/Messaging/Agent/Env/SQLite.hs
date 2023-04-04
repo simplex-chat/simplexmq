@@ -30,6 +30,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
@@ -55,7 +56,6 @@ import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
-import Data.Int (Int64)
 
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
 
