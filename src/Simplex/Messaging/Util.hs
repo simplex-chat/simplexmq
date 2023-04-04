@@ -112,8 +112,6 @@ safeDecodeUtf8 = decodeUtf8With onError
 threadDelay64 :: Int64 -> IO ()
 threadDelay64 time
   | time <= 0 =
-    -- When time is a big negative integer, casting it to Int may overflow.
-    -- So we handle it as a special case here.
     pure ()
 threadDelay64 time = do
   let maxWait = min time $ fromIntegral (maxBound :: Int)
