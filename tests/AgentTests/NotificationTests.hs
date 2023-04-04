@@ -20,7 +20,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
-import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
+import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn, xit')
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
