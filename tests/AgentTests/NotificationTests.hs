@@ -63,10 +63,7 @@ notificationTests t =
           testNtfTokenServerRestart t apns
     describe "Managing notification subscriptions" $ do
       -- fails on Ubuntu 20/22
-      xit' "should create notification subscription for existing connection" $ \_ -> do
-        logError "***"
-        logError $ T.pack os
-        logError "***"
+      xit "should create notification subscription for existing connection" $ \_ -> do
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testNotificationSubscriptionExistingConnection apns
