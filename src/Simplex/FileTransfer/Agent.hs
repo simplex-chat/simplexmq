@@ -153,7 +153,7 @@ runXFTPWorker c srv doWork = do
             downloadFileChunk fc replica
               `catchError` retryOnError delay' loop (workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) . show)
           where
-            retryOnError :: Int -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
+            retryOnError :: Int64 -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
             retryOnError replicaDelay loop done e = do
               logError $ "XFTP worker error: " <> tshow e
               if temporaryAgentError e
