@@ -41,6 +41,7 @@ xftpServerTests =
     $ do
       it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
       it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
+      it "should create, add recipients, upload and receive file chunk" testFileChunkDeliveryAddRecipients
       it "should delete file chunk (1 client)" testFileChunkDelete
       it "should delete file chunk (2 clients)" testFileChunkDelete2
       it "should acknowledge file chunk reception (1 client)" testFileChunkAck
@@ -96,6 +97,26 @@ runTestFileChunkDelivery s r = do
     `catchError` (liftIO . (`shouldBe` PCEResponseError DIGEST))
   downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+
+testFileChunkDeliveryAddRecipients :: Expectation
+testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
+  (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey1, rpKey1) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey2, rpKey2) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  (rcvKey3, rpKey3) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  bytes <- liftIO $ createTestChunk testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = chSize, digest}
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+  (sId, [rId1]) <- createXFTPChunk s spKey file [rcvKey1] Nothing
+  [rId2, rId3] <- addXFTPRecipients s spKey sId [rcvKey2, rcvKey3]
+  uploadXFTPChunk s spKey sId chunkSpec
+  let testReceiveChunk r rpKey rId fPath = do
+        downloadXFTPChunk r rpKey rId $ XFTPRcvChunkSpec fPath chSize digest
+        liftIO $ B.readFile fPath `shouldReturn` bytes
+  testReceiveChunk r1 rpKey1 rId1 "tests/tmp/received_chunk1"
+  testReceiveChunk r2 rpKey2 rId2 "tests/tmp/received_chunk2"
+  testReceiveChunk r3 rpKey3 rId3 "tests/tmp/received_chunk3"
 
 testFileChunkDelete :: Expectation
 testFileChunkDelete = xftpTest $ \c -> runRight_ $ runTestFileChunkDelete c c

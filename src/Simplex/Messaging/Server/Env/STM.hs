@@ -9,6 +9,7 @@ import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -54,10 +55,10 @@ data ServerConfig = ServerConfig
     -- and check interval, seconds
     inactiveClientExpiration :: Maybe ExpirationConfig,
     -- | log SMP server usage statistics, only aggregates are logged, seconds
-    logStatsInterval :: Maybe Int,
+    logStatsInterval :: Maybe Int64,
     -- | time of the day when the stats are logged first, to log at consistent times,
     -- irrespective of when the server is started (seconds from 00:00 UTC)
-    logStatsStartTime :: Int,
+    logStatsStartTime :: Int64,
     -- | file to log stats
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats

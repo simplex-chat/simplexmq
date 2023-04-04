@@ -101,7 +101,7 @@ data RcvFileChunkReplica = RcvFileChunkReplica
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateSignKey,
     received :: Bool,
-    delay :: Maybe Int,
+    delay :: Maybe Int64,
     retries :: Int
   }
   deriving (Eq, Show)

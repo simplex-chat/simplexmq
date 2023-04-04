@@ -22,6 +22,7 @@ import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -96,7 +97,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       st <- asks store
       let interval = checkInterval expCfg * 1000000
       forever $ do
-        threadDelay interval
+        liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
         sIds <- M.keysSet <$> readTVarIO (files st)
         forM_ sIds $ \sId -> do
@@ -118,11 +119,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
-    logServerStats :: Int -> Int -> FilePath -> M ()
+    logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      threadDelay $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+      liftIO $ threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
@@ -155,7 +156,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
                 show filesCount',
                 show filesSize'
               ]
-        threadDelay interval
+        liftIO $ threadDelay' interval
 
 data ServerFile = ServerFile
   { filePath :: FilePath,
@@ -217,19 +218,13 @@ verifyXFTPTransmission sig_ signed fId cmd =
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
-  XFTPReqNew file rks auth -> do
-    st <- asks store
-    noFile
-      =<< ifM
-        allowNew
-        (createFile st file rks)
-        (pure $ FRErr AUTH)
+  XFTPReqNew file rks auth -> noFile =<< ifM allowNew (createFile file rks) (pure $ FRErr AUTH)
     where
       allowNew = do
         XFTPServerConfig {allowNewFiles, newFileBasicAuth} <- asks config
         pure $ allowNewFiles && maybe True ((== auth) . Just) newFileBasicAuth
   XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
-    FADD _rcps -> noFile FROk
+    FADD rks -> noFile =<< addRecipients fId rks
     FPUT -> noFile =<< receiveServerFile fr
     FDEL -> noFile =<< deleteServerFile fr
     FGET rDhKey -> sendServerFile fr rDhKey
@@ -240,15 +235,16 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileStore -> FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
-    createFile st file rks = do
+    createFile :: FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    createFile file rks = do
+      st <- asks store
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
         unless (size file `elem` sizes) $ throwError SIZE
         ts <- liftIO getSystemTime
         -- TODO validate body empty
-        sId <- ExceptT $ addFileRetry 3 ts
-        rcps <- mapM (ExceptT . addRecipientRetry 3 sId) rks
+        sId <- ExceptT $ addFileRetry st file 3 ts
+        rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         withFileLog $ \sl -> do
           logAddFile sl sId file ts
           logAddRecipients sl sId rcps
@@ -258,25 +254,35 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
       pure $ either FRErr id r
-      where
-        addFileRetry :: Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
-        addFileRetry n ts =
-          retryAdd n $ \sId -> runExceptT $ do
-            ExceptT $ addFile st sId file ts
-            pure sId
-        addRecipientRetry :: Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
-        addRecipientRetry n sId rpk =
-          retryAdd n $ \rId -> runExceptT $ do
-            let rcp = FileRecipient rId rpk
-            ExceptT $ addRecipient st sId rcp
-            pure rcp
-        retryAdd :: Int -> (XFTPFileId -> STM (Either XFTPErrorType a)) -> M (Either XFTPErrorType a)
-        retryAdd 0 _ = pure $ Left INTERNAL
-        retryAdd n add = do
-          fId <- getFileId
-          atomically (add fId) >>= \case
-            Left DUPLICATE_ -> retryAdd (n - 1) add
-            r -> pure r
+    addFileRetry :: FileStore -> FileInfo -> Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
+    addFileRetry st file n ts =
+      retryAdd n $ \sId -> runExceptT $ do
+        ExceptT $ addFile st sId file ts
+        pure sId
+    addRecipientRetry :: FileStore -> Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
+    addRecipientRetry st n sId rpk =
+      retryAdd n $ \rId -> runExceptT $ do
+        let rcp = FileRecipient rId rpk
+        ExceptT $ addRecipient st sId rcp
+        pure rcp
+    retryAdd :: Int -> (XFTPFileId -> STM (Either XFTPErrorType a)) -> M (Either XFTPErrorType a)
+    retryAdd 0 _ = pure $ Left INTERNAL
+    retryAdd n add = do
+      fId <- getFileId
+      atomically (add fId) >>= \case
+        Left DUPLICATE_ -> retryAdd (n - 1) add
+        r -> pure r
+    addRecipients :: XFTPFileId -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    addRecipients sId rks = do
+      st <- asks store
+      r <- runExceptT $ do
+        rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
+        withFileLog $ \sl -> logAddRecipients sl sId rcps
+        stats <- asks serverStats
+        atomically $ modifyTVar' (fileRecipients stats) (+ length rks)
+        let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
+        pure $ FRRcvIds rIds
+      pure $ either FRErr id r
     receiveServerFile :: FileRec -> M FileResponse
     receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
       -- TODO do not allow repeated file upload

@@ -86,8 +86,8 @@ v .-> key =
 
 testNotificationSubscription :: ATransport -> Spec
 testNotificationSubscription (ATransport t) =
-  -- hangs on Ubuntu 20.04
-  xit "should create notification subscription and notify when message is received" $ do
+  -- hangs on Ubuntu 20/22
+  xit' "should create notification subscription and notify when message is received" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     (tknPub, tknKey) <- C.generateSignatureKeyPair C.SEd25519

@@ -30,6 +30,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
@@ -79,8 +80,8 @@ data AgentConfig = AgentConfig
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
-    initialCleanupDelay :: Int,
-    cleanupInterval :: Int,
+    initialCleanupDelay :: Int64,
+    cleanupInterval :: Int64,
     rcvFilesTTL :: NominalDiffTime,
     xftpNotifyErrsOnRetry :: Bool,
     deleteErrorCount :: Int,

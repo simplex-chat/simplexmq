@@ -14,16 +14,17 @@ module Simplex.Messaging.Agent.RetryInterval
   )
 where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Simplex.Messaging.Util (whenM)
+import Data.Int (Int64)
+import Simplex.Messaging.Util (threadDelay', whenM)
 import UnliftIO.STM
 
 data RetryInterval = RetryInterval
-  { initialInterval :: Int,
-    increaseAfter :: Int,
-    maxInterval :: Int
+  { initialInterval :: Int64,
+    increaseAfter :: Int64,
+    maxInterval :: Int64
   }
 
 data RetryInterval2 = RetryInterval2
@@ -32,8 +33,8 @@ data RetryInterval2 = RetryInterval2
   }
 
 data RI2State = RI2State
-  { slowInterval :: Int,
-    fastInterval :: Int
+  { slowInterval :: Int64,
+    fastInterval :: Int64
   }
   deriving (Show)
 
@@ -47,14 +48,14 @@ updateRetryInterval2 RI2State {slowInterval, fastInterval} RetryInterval2 {riSlo
 data RetryIntervalMode = RISlow | RIFast
   deriving (Eq, Show)
 
-withRetryInterval :: forall m. MonadIO m => RetryInterval -> (Int -> m () -> m ()) -> m ()
+withRetryInterval :: forall m. MonadIO m => RetryInterval -> (Int64 -> m () -> m ()) -> m ()
 withRetryInterval ri action = callAction 0 $ initialInterval ri
   where
-    callAction :: Int -> Int -> m ()
+    callAction :: Int64 -> Int64 -> m ()
     callAction elapsed delay = action delay loop
       where
         loop = do
-          liftIO $ threadDelay delay
+          liftIO $ threadDelay' delay
           let elapsed' = elapsed + delay
           callAction elapsed' $ nextDelay elapsed' delay ri
 
@@ -63,7 +64,7 @@ withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> (RI2State
 withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
   callAction (0, initialInterval riSlow) (0, initialInterval riFast)
   where
-    callAction :: (Int, Int) -> (Int, Int) -> m ()
+    callAction :: (Int64, Int64) -> (Int64, Int64) -> m ()
     callAction slow fast = action (RI2State (snd slow) (snd fast)) loop
       where
         loop = \case
@@ -77,13 +78,13 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
         wait delay = do
           waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
-            threadDelay delay
+            threadDelay' delay
             atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
           atomically $ do
             takeTMVar lock
             writeTVar waiting False
 
-nextDelay :: Int -> Int -> RetryInterval -> Int
+nextDelay :: Int64 -> Int64 -> RetryInterval -> Int64
 nextDelay elapsed delay RetryInterval {increaseAfter, maxInterval} =
   if elapsed < increaseAfter || delay == maxInterval
     then delay

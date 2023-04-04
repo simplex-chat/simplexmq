@@ -23,10 +23,9 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
-import Data.Fixed (Fixed (MkFixed), Pico)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
+import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ACommand (..), APartyCmd (..), AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..), SAEntity (..))
@@ -40,7 +39,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, ProtocolServer, SMPServer, sameSrvAddr)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (tshow, unlessM)
+import Simplex.Messaging.Util (diffInMicros, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO, threadDelay)
@@ -292,15 +291,9 @@ rescheduleAction doWork ts actionTs
   | otherwise = do
     void . atomically $ tryTakeTMVar doWork
     void . forkIO $ do
-      threadDelay $ diffInMicros actionTs ts
+      liftIO $ threadDelay' $ diffInMicros actionTs ts
       void . atomically $ tryPutTMVar doWork ()
     pure True
-
-fromPico :: Pico -> Integer
-fromPico (MkFixed i) = i
-
-diffInMicros :: UTCTime -> UTCTime -> Int
-diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
 
 retryOnError :: AgentMonad' m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
 retryOnError c name loop done e = do

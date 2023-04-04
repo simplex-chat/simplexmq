@@ -1619,7 +1619,8 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 cleanupManager :: forall m. AgentMonad' m => AgentClient -> m ()
 cleanupManager c@AgentClient {subQ} = do
-  threadDelay =<< asks (initialCleanupDelay . config)
+  delay <- asks (initialCleanupDelay . config)
+  liftIO $ threadDelay' delay
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
@@ -1627,7 +1628,7 @@ cleanupManager c@AgentClient {subQ} = do
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
-    threadDelay int
+    liftIO $ threadDelay' int
   where
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do

@@ -25,6 +25,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Version
+import System.Info (os)
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -54,6 +55,9 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
+
+xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
+xit' = if os == "linux" then xit else it
 
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testSMPClient client = do
