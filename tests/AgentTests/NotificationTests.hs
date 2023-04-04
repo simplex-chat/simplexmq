@@ -45,7 +45,7 @@ removeFileIfExists filePath = do
 
 notificationTests :: ATransport -> Spec
 notificationTests t =
-  after_ (removeFile testDB >> removeFileIfExists testDB2) $ do
+  after_ (removeFileIfExists testDB >> removeFileIfExists testDB2) $ do
     describe "Managing notification tokens" $ do
       it "should register and verify notification token" $
         withAPNSMockServer $ \apns ->
@@ -56,11 +56,11 @@ notificationTests t =
       it "should allow the second registration with different credentials and delete the first after verification" $ \_ ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNtfTokenSecondRegistration apns
-      -- fails on Ubuntu 20/22, and shows as the failure of the next test
-      xit' "should re-register token when notification server is restarted" $ \_ ->
+      it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
     describe "Managing notification subscriptions" $ do
+      -- fails on Ubuntu CI?
       xit' "should create notification subscription for existing connection" $ \_ -> do
         withSmpServer t $
           withAPNSMockServer $ \apns ->
