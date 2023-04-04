@@ -86,7 +86,7 @@ module Simplex.Messaging.Agent.Client
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, stateTVar, throwSTM)
 import Control.Exception (AsyncException (..))
@@ -1136,7 +1136,7 @@ incClientStat c userId pc = incClientStatN c userId pc 1
 
 incServerStat :: AgentClient -> UserId -> ProtocolServer p -> ByteString -> ByteString -> IO ()
 incServerStat c userId ProtocolServer {host} cmd res = do
-  threadDelay 100000
+  threadDelay64 100000
   atomically $ incStat c 1 statsKey
   where
     statsKey = AgentStatsKey {userId, host = strEncode $ L.head host, clientTs = "", cmd, res}

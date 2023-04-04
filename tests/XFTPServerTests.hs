@@ -7,7 +7,6 @@
 module XFTPServerTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad.Except
@@ -28,6 +27,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Util (threadDelay64)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -197,7 +197,7 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
     downloadXFTPChunk c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
     liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
-    liftIO $ threadDelay 1000000
+    liftIO $ threadDelay64 1000000
     downloadXFTPChunk c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
     deleteXFTPChunk c spKey sId

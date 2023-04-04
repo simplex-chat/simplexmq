@@ -147,7 +147,7 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
-import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
+import UnliftIO.Concurrent (forkFinally, forkIO)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -1559,7 +1559,7 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
           suspendSendingAndDatabase c
       readTVar as
   when (state == ASSuspending) . void . forkIO $ do
-    threadDelay maxDelay
+    liftIO $ threadDelay64 $ fromIntegral maxDelay
     -- liftIO $ putStrLn "suspendAgent after timeout"
     atomically . whenSuspending c $ do
       -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
@@ -1612,7 +1612,8 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 cleanupManager :: forall m. AgentMonad' m => AgentClient -> m ()
 cleanupManager c@AgentClient {subQ} = do
-  threadDelay =<< asks (initialCleanupDelay . config)
+  delay <- asks (initialCleanupDelay . config)
+  liftIO $ threadDelay64 $ fromIntegral delay
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
@@ -1620,7 +1621,7 @@ cleanupManager c@AgentClient {subQ} = do
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
-    threadDelay int
+    liftIO $ threadDelay64 $ fromIntegral int
   where
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do

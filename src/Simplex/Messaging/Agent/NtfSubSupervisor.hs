@@ -40,10 +40,10 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, ProtocolServer, SMPServer, sameSrvAddr)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (tshow, unlessM)
+import Simplex.Messaging.Util (diffInMicros, threadDelay64, tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
-import UnliftIO.Concurrent (forkIO, threadDelay)
+import UnliftIO.Concurrent (forkIO)
 import qualified UnliftIO.Exception as E
 
 runNtfSupervisor :: forall m. AgentMonad' m => AgentClient -> m ()
@@ -161,7 +161,7 @@ runNtfWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfOperation
-    threadDelay delay
+    liftIO $ threadDelay64 $ fromIntegral delay
   where
     runNtfOperation :: m ()
     runNtfOperation = do
@@ -246,7 +246,7 @@ runNtfSMPWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfSMPOperation
-    threadDelay delay
+    liftIO $ threadDelay64 $ fromIntegral delay
   where
     runNtfSMPOperation = do
       nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
@@ -292,15 +292,9 @@ rescheduleAction doWork ts actionTs
   | otherwise = do
     void . atomically $ tryTakeTMVar doWork
     void . forkIO $ do
-      threadDelay $ diffInMicros actionTs ts
+      liftIO $ threadDelay64 $ diffInMicros actionTs ts
       void . atomically $ tryPutTMVar doWork ()
     pure True
-
-fromPico :: Pico -> Integer
-fromPico (MkFixed i) = i
-
-diffInMicros :: UTCTime -> UTCTime -> Int
-diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
 
 retryOnError :: AgentMonad' m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
 retryOnError c name loop done e = do

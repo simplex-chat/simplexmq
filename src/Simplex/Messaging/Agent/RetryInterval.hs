@@ -14,10 +14,10 @@ module Simplex.Messaging.Agent.RetryInterval
   )
 where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Simplex.Messaging.Util (whenM)
+import Simplex.Messaging.Util (threadDelay64, whenM)
 import UnliftIO.STM
 
 data RetryInterval = RetryInterval
@@ -54,7 +54,7 @@ withRetryInterval ri action = callAction 0 $ initialInterval ri
     callAction elapsed delay = action delay loop
       where
         loop = do
-          liftIO $ threadDelay delay
+          liftIO $ threadDelay64 $ fromIntegral delay
           let elapsed' = elapsed + delay
           callAction elapsed' $ nextDelay elapsed' delay ri
 
@@ -77,7 +77,7 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
         wait delay = do
           waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
-            threadDelay delay
+            threadDelay64 $ fromIntegral delay
             atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
           atomically $ do
             takeTMVar lock

@@ -157,7 +157,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
       quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
       forever $ do
-        threadDelay interval
+        liftIO $ threadDelay64 $ fromIntegral interval
         old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- M.keysSet <$> readTVarIO ms
         forM_ rIds $ \rId ->
@@ -173,7 +173,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      liftIO $ threadDelay64 $ fromIntegral $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -212,7 +212,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
                 show qCount',
                 show msgCount'
               ]
-          threadDelay interval
+          threadDelay64 $ fromIntegral interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
     runClient _ h = do
@@ -292,7 +292,7 @@ disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar Sys
 disconnectTransport THandle {connection} c activeAt expCfg = do
   let interval = checkInterval expCfg * 1000000
   forever . liftIO $ do
-    threadDelay interval
+    threadDelay64 $ fromIntegral interval
     old <- expireBeforeEpoch expCfg
     ts <- readTVarIO $ activeAt c
     when (systemSeconds ts < old) $ closeConnection connection

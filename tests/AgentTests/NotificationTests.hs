@@ -10,7 +10,7 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
-import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent (killThread)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -32,7 +32,7 @@ import Simplex.Messaging.Notifications.Types (NtfToken (..))
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Util (tryE)
+import Simplex.Messaging.Util (threadDelay64, tryE)
 import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
@@ -165,7 +165,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     -- at this point the first token is still active
     NTActive <- checkNtfToken a tkn
     -- and the second is not yet verified
-    liftIO $ threadDelay 50000
+    liftIO $ threadDelay64 50000
     NTConfirmed <- checkNtfToken a' tkn
     -- now the second token registration is verified
     verifyNtfToken a' tkn nonce' verification'
@@ -186,7 +186,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse APNSRespOk
     pure ntfData
   -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
-  threadDelay 1000000
+  threadDelay64 1000000
   disconnectAgentClient a
   a' <- getSMPAgentClient' agentCfg initAgentServers testDB
   -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
@@ -228,7 +228,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
     -- send message
-    liftIO $ threadDelay 50000
+    liftIO $ threadDelay64 50000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
@@ -250,7 +250,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     ackMessage alice bobId $ baseId + 1
     -- delete notification subscription
     toggleConnectionNtfs alice bobId False
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay64 250000
     -- send message
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
@@ -270,14 +270,14 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     -- bob registers notification token
     DeviceToken {} <- registerTestToken bob "bcde" NMInstant apnsQ
     -- establish connection
-    liftIO $ threadDelay 50000
+    liftIO $ threadDelay64 50000
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
-    liftIO $ threadDelay 1000000
+    liftIO $ threadDelay64 1000000
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
-    liftIO $ threadDelay 750000
+    liftIO $ threadDelay64 750000
     void $ messageNotification apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     allowConnection alice bobId confId "alice's connInfo"
     void $ messageNotification apnsQ
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -332,7 +332,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- register notification token, set mode to NMInstant
     tkn <- registerTestToken alice "abcd" NMInstant apnsQ
     -- send message, receive notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     void $ messageNotification apnsQ
@@ -341,7 +341,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- set mode to NMPeriodic
     NTActive <- registerNtfToken alice tkn NMPeriodic
     -- send message, no notification
-    liftIO $ threadDelay 750000
+    liftIO $ threadDelay64 750000
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     noNotification apnsQ
@@ -350,7 +350,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- set mode to NMInstant
     NTActive <- registerNtfToken alice tkn NMInstant
     -- send message, receive notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     3 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
     void $ messageNotification apnsQ
@@ -359,7 +359,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- turn off notifications
     deleteNtfToken alice tkn
     -- send message, no notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     4 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "why hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     noNotification apnsQ
@@ -368,7 +368,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- turn on notifications, set mode to NMInstant
     void $ registerTestToken alice "abcd" NMInstant apnsQ
     -- send message, receive notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     5 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hey"
     get bob ##> ("", aliceId, SENT $ baseId + 5)
     void $ messageNotification apnsQ
@@ -396,7 +396,7 @@ testChangeToken APNSMockServer {apnsQ} = do
     -- register notification token, set mode to NMInstant
     void $ registerTestToken alice "abcd" NMInstant apnsQ
     -- send message, receive notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     void $ messageNotification apnsQ
@@ -411,7 +411,7 @@ testChangeToken APNSMockServer {apnsQ} = do
     -- change notification token
     void $ registerTestToken alice1 "bcde" NMInstant apnsQ
     -- send message, receive notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     void $ messageNotification apnsQ
@@ -430,7 +430,7 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
   (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
     _ <- registerTestToken alice "abcd" NMInstant apnsQ
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay64 250000
     4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT 4)
     void $ messageNotification apnsQ
@@ -439,10 +439,10 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
     liftIO $ killThread threadId
     pure (aliceId, bobId)
 
-  liftIO $ threadDelay 250000
+  liftIO $ threadDelay64 250000
 
   withNtfServerStoreLog t $ \threadId -> runRight_ $ do
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay64 250000
     5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT 5)
     void $ messageNotification apnsQ
@@ -456,7 +456,7 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \threadId -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
     _ <- registerTestToken alice "abcd" NMInstant apnsQ
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay64 250000
     4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT 4)
     void $ messageNotification apnsQ
@@ -472,7 +472,7 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
   withSmpServerStoreLogOn t testPort $ \threadId -> runRight_ $ do
     nGet alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
     nGet bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
-    liftIO $ threadDelay 1000000
+    liftIO $ threadDelay64 1000000
     5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT 5)
     _ <- messageNotificationData alice apnsQ
@@ -487,7 +487,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     _ <- registerTestToken a "abcd" NMInstant apnsQ
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay64 250000
     let testMessage msg = do
           msgId <- sendMessage b aId (SMP.MsgFlags True) msg
           get b ##> ("", aId, SENT msgId)
@@ -497,7 +497,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
     testMessage "hello"
     switchConnectionAsync a "" bId
     switchComplete a bId b aId
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay64 500000
     testMessage "hello again"
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)

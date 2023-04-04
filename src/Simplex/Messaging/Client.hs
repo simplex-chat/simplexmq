@@ -70,7 +70,6 @@ module Simplex.Messaging.Client
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -102,7 +101,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, raceAny_)
+import Simplex.Messaging.Util (bshow, raceAny_, threadDelay64)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 
@@ -348,7 +347,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
 
     ping :: ProtocolClient err msg -> IO ()
     ping c@ProtocolClient {client_ = PClient {pingErrorCount}} = do
-      threadDelay smpPingInterval
+      threadDelay64 $ fromIntegral smpPingInterval
       runExceptT (sendProtocolCommand c Nothing "" $ protocolPing @err @msg) >>= \case
         Left PCEResponseTimeout -> do
           cnt <- atomically $ stateTVar pingErrorCount $ \cnt -> (cnt + 1, cnt + 1)

@@ -12,7 +12,7 @@
 module ServerTests where
 
 import AgentTests.NotificationTests (removeFileIfExists)
-import Control.Concurrent (ThreadId, killThread, threadDelay)
+import Control.Concurrent (ThreadId, killThread)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad.Except (forM, forM_)
@@ -32,6 +32,7 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (threadDelay64)
 import System.Directory (removeFile)
 import System.TimeIt (timeItT)
 import System.Timeout
@@ -890,7 +891,7 @@ testMsgExpireOnSend t =
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         let dec = decryptMsgV3 dhShared
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should expire)")
-        threadDelay 2500000
+        threadDelay64 2500000
         Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND "hello (should NOT expire)")
         testSMPClient @c $ \rh -> do
           Resp "3" _ (Msg mId msg) <- signSendRecv rh rKey ("3", rId, SUB)
@@ -908,7 +909,7 @@ testMsgExpireOnInterval t =
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should expire)")
-        threadDelay 2500000
+        threadDelay64 2500000
         testSMPClient @c $ \rh -> do
           Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, SUB)
           1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
@@ -925,7 +926,7 @@ testMsgNOTExpireOnInterval t =
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         let dec = decryptMsgV3 dhShared
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should NOT expire)")
-        threadDelay 2500000
+        threadDelay64 2500000
         testSMPClient @c $ \rh -> do
           Resp "2" _ (Msg mId msg) <- signSendRecv rh rKey ("2", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
