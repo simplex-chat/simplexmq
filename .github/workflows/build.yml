@@ -53,9 +53,9 @@ jobs:
         shell: bash
         run: |
           mv $(cabal list-bin smp-server) smp-server-ubuntu-$platform_name
-          mv $(cabal list-bin ntf-server) ntf-server-ubuntu--$platform_name
-          mv $(cabal list-bin xftp-server) xftp-server-ubuntu--$platform_name
-          mv $(cabal list-bin xftp) xftp-ubuntu--$platform_name
+          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-$platform_name
+          mv $(cabal list-bin xftp-server) xftp-server-ubuntu-$platform_name
+          mv $(cabal list-bin xftp) xftp-ubuntu-$platform_name
 
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
@@ -81,10 +81,10 @@ jobs:
           prerelease: true
           files: |
             LICENSE
-            smp-server-ubuntu--$platform_name
-            ntf-server-ubuntu--$platform_name
-            xftp-server-ubuntu--$platform_name
-            xftp-ubuntu--$platform_name
+            smp-server-ubuntu-$platform_name
+            ntf-server-ubuntu-$platform_name
+            xftp-server-ubuntu-$platform_name
+            xftp-ubuntu-$platform_name
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
