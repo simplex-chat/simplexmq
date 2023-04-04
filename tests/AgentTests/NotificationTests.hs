@@ -61,7 +61,10 @@ notificationTests t =
           testNtfTokenServerRestart t apns
     describe "Managing notification subscriptions" $ do
       -- fails on Ubuntu 20/22
-      xit' "should create notification subscription for existing connection" $ \_ ->
+      xit' "should create notification subscription for existing connection" $ \_ -> do
+        print "***"
+        print os
+        print "***"
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testNotificationSubscriptionExistingConnection apns
@@ -208,9 +211,6 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
-  print "***"
-  print os
-  print "***"
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
   (bobId, aliceId, nonce, message) <- runRight $ do
