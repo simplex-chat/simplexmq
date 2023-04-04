@@ -17,8 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-18.04
           - os: ubuntu-20.04
+            platform_name: 20_04-x86-64
+          - os: ubuntu-22.04
+            platform_name: 22_04-x86-64
     steps:
       - name: Clone project
         uses: actions/checkout@v2
@@ -42,19 +44,18 @@ jobs:
         run: cabal build --enable-tests
 
       - name: Test
-        if: matrix.os == 'ubuntu-18.04'
         timeout-minutes: 30
         shell: bash
         run: cabal test --test-show-details=direct
 
       - name: Prepare binaries
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          mv $(cabal list-bin smp-server) smp-server-ubuntu-20_04-x86-64
-          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-20_04-x86-64
-          mv $(cabal list-bin xftp-server) xftp-server-ubuntu-20_04-x86-64
-          mv $(cabal list-bin xftp) xftp-ubuntu-20_04-x86-64
+          mv $(cabal list-bin smp-server) smp-server-ubuntu-$platform_name
+          mv $(cabal list-bin ntf-server) ntf-server-ubuntu-$platform_name
+          mv $(cabal list-bin xftp-server) xftp-server-ubuntu-$platform_name
+          mv $(cabal list-bin xftp) xftp-ubuntu-$platform_name
 
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
@@ -80,10 +81,10 @@ jobs:
           prerelease: true
           files: |
             LICENSE
-            smp-server-ubuntu-20_04-x86-64
-            ntf-server-ubuntu-20_04-x86-64
-            xftp-server-ubuntu-20_04-x86-64
-            xftp-ubuntu-20_04-x86-64
+            smp-server-ubuntu-$platform_name
+            ntf-server-ubuntu-$platform_name
+            xftp-server-ubuntu-$platform_name
+            xftp-ubuntu-$platform_name
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
