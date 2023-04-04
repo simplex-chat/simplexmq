@@ -11,12 +11,14 @@ module AgentTests.NotificationTests where
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (killThread, threadDelay)
+import Control.Logger.Simple
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
@@ -62,9 +64,9 @@ notificationTests t =
     describe "Managing notification subscriptions" $ do
       -- fails on Ubuntu 20/22
       xit' "should create notification subscription for existing connection" $ \_ -> do
-        print "***"
-        print os
-        print "***"
+        logError "***"
+        logError $ T.pack os
+        logError "***"
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testNotificationSubscriptionExistingConnection apns
