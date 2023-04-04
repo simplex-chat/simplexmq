@@ -111,8 +111,7 @@ safeDecodeUtf8 = decodeUtf8With onError
 
 threadDelay64 :: Int64 -> IO ()
 threadDelay64 time
-  | time <= 0 =
-    pure ()
+  | time <= 0 = pure ()
 threadDelay64 time = do
   let maxWait = min time $ fromIntegral (maxBound :: Int)
   threadDelay $ fromIntegral maxWait
