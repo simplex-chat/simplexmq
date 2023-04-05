@@ -462,8 +462,8 @@ runXFTPSndWorker c srv doWork = do
                   atomically $ beginAgentOperation c AOSndNetwork
                   loop
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
-    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec} replica@SndFileChunkReplica {sndChunkReplicaId} = do
-      replica' <- addRecipients sndFileChunk replica
+    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec} replica = do
+      replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       agentXFTPUploadChunk c userId replica' chunkSpec
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
@@ -478,7 +478,7 @@ runXFTPSndWorker c srv doWork = do
         liftIO $ notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> m SndFileChunkReplica
-        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
+        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {sndChunkReplicaId, rcvIdsKeys}
           | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
