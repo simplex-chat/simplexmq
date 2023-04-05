@@ -19,14 +19,16 @@
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
-    SMPTestFailure (..),
-    SMPTestStep (..),
+    ProtocolTestFailure (..),
+    ProtocolTestStep (..),
     newAgentClient,
     withConnLock,
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
     runSMPServerTest,
+    runXFTPServerTest,
+    getXFTPWorkPath,
     newRcvQueue,
     subscribeQueues,
     getQueueMessage,
@@ -94,6 +96,7 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Crypto.Random (getRandomBytes)
 import Data.Aeson (ToJSON)
 import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
@@ -111,17 +114,18 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
-import Data.Time (UTCTime)
+import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
-import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..))
+import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
-import Simplex.FileTransfer.Description (ChunkReplicaId (..))
-import Simplex.FileTransfer.Protocol (FileResponse, XFTPErrorType)
-import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec)
+import Simplex.FileTransfer.Description (ChunkReplicaId (..), kb)
+import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, XFTPErrorType (DIGEST))
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types (RcvFileChunkReplica (..))
+import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Protocol
@@ -171,6 +175,7 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (mapConcurrently)
+import UnliftIO.Directory (getTemporaryDirectory)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -681,24 +686,34 @@ protocolClientError protocolError_ host = \case
   e@PCECryptoError {} -> INTERNAL $ show e
   PCEIOError {} -> BROKER host NETWORK
 
-data SMPTestStep = TSConnect | TSCreateQueue | TSSecureQueue | TSDeleteQueue | TSDisconnect
+data ProtocolTestStep
+  = TSConnect
+  | TSDisconnect
+  | TSCreateQueue
+  | TSSecureQueue
+  | TSDeleteQueue
+  | TSCreateFile
+  | TSUploadFile
+  | TSDownloadFile
+  | TSCompareFile
+  | TSDeleteFile
   deriving (Eq, Show, Generic)
 
-instance ToJSON SMPTestStep where
+instance ToJSON ProtocolTestStep where
   toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
   toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
 
-data SMPTestFailure = SMPTestFailure
-  { testStep :: SMPTestStep,
+data ProtocolTestFailure = ProtocolTestFailure
+  { testStep :: ProtocolTestStep,
     testError :: AgentErrorType
   }
   deriving (Eq, Show, Generic)
 
-instance ToJSON SMPTestFailure where
+instance ToJSON ProtocolTestFailure where
   toEncoding = J.genericToEncoding J.defaultOptions
   toJSON = J.genericToJSON J.defaultOptions
 
-runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe SMPTestFailure)
+runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
   C.SignAlg a <- asks $ cmdSignAlg . config
@@ -714,13 +729,60 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
           liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
-        incClientStat c userId smp "TEST" "OK"
-        pure $ either Just (const Nothing) r <|> maybe (Just (SMPTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
+        incClientStat c userId smp "SMP_TEST" "OK"
+        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
       Left e -> pure (Just $ testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
-    testErr :: SMPTestStep -> SMPClientError -> SMPTestFailure
-    testErr step = SMPTestFailure step . protocolClientError SMP addr
+    testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
+    testErr step = ProtocolTestFailure step . protocolClientError SMP addr
+
+runXFTPServerTest :: forall m. AgentMonad m => AgentClient -> UserId -> XFTPServerWithAuth -> m (Maybe ProtocolTestFailure)
+runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
+  cfg <- asks $ xftpCfg . config
+  xftpNetworkConfig <- readTVarIO $ useNetworkConfig c
+  workDir <- getXFTPWorkPath
+  filePath <- getTempFilePath workDir
+  rcvPath <- getTempFilePath workDir
+  liftIO $ do
+    let tSess = (userId, srv, Nothing)
+    X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
+      Right xftp -> do
+        (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+        (rcvKey, rpKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+        createTestChunk filePath
+        digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
+        let file = FileInfo {sndKey, size = chSize, digest}
+            chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
+        r <- runExceptT $ do
+          (sId, [rId]) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth
+          liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
+          liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
+          rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
+          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure TSCompareFile $ XFTP DIGEST
+          liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
+        ok <- tcpTimeout xftpNetworkConfig `timeout` X.closeXFTPClient xftp
+        incClientStat c userId xftp "XFTP_TEST" "OK"
+        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
+      Left e -> pure (Just $ testErr TSConnect e)
+  where
+    addr = B.unpack $ strEncode srv
+    testErr :: ProtocolTestStep -> XFTPClientError -> ProtocolTestFailure
+    testErr step = ProtocolTestFailure step . protocolClientError XFTP addr
+    chSize :: Integral a => a
+    chSize = kb 256
+    getTempFilePath :: FilePath -> m FilePath
+    getTempFilePath workPath = do
+      ts <- liftIO getCurrentTime
+      let isoTime = formatTime defaultTimeLocale "%Y-%m-%dT%H%M%S.%6q" ts
+      uniqueCombine workPath isoTime
+    createTestChunk :: FilePath -> IO ()
+    createTestChunk fp = B.writeFile fp =<< getRandomBytes chSize
+
+getXFTPWorkPath :: AgentMonad m => m FilePath
+getXFTPWorkPath = do
+  workDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
+  maybe getTemporaryDirectory pure workDir
 
 mkTransportSession :: AgentMonad' m => AgentClient -> UserId -> ProtoServer msg -> EntityId -> m (TransportSession msg)
 mkTransportSession c userId srv entityId = mkTSession userId srv entityId <$> getSessionMode c

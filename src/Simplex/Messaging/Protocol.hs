@@ -68,6 +68,7 @@ module Simplex.Messaging.Protocol
     SProtocolType (..),
     AProtocolType (..),
     ProtocolTypeI (..),
+    UserProtocol,
     ProtocolServer (..),
     ProtoServer,
     SMPServer,
@@ -111,6 +112,7 @@ module Simplex.Messaging.Protocol
     SMPMsgMeta (..),
     NMsgMeta (..),
     MsgFlags (..),
+    userProtocol,
     rcvMessageMeta,
     noMsgFlags,
 
@@ -152,6 +154,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
+import Data.Constraint (Dict (..))
 import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
@@ -161,7 +164,7 @@ import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.Generics (Generic)
-import GHC.TypeLits (type (+))
+import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -704,6 +707,10 @@ instance StrEncoding AProtocolType where
   strEncode (AProtocolType p) = strEncode p
   strP = aProtocolType <$> strP
 
+instance ProtocolTypeI p => ToJSON (SProtocolType p) where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
 instance ToJSON AProtocolType where
   toEncoding = strToJEncoding
   toJSON = strToJSON
@@ -721,6 +728,18 @@ instance ProtocolTypeI 'PSMP where protocolTypeI = SPSMP
 instance ProtocolTypeI 'PNTF where protocolTypeI = SPNTF
 
 instance ProtocolTypeI 'PXFTP where protocolTypeI = SPXFTP
+
+type family UserProtocol (p :: ProtocolType) :: Constraint where
+  UserProtocol PSMP = ()
+  UserProtocol PXFTP = ()
+  UserProtocol a =
+    (Int ~ Bool, TypeError (Text "Servers for protocol " :<>: ShowType a :<>: Text " cannot be configured by the users"))
+
+userProtocol :: SProtocolType p -> Maybe (Dict (UserProtocol p))
+userProtocol = \case
+  SPSMP -> Just Dict
+  SPXFTP -> Just Dict
+  _ -> Nothing
 
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer

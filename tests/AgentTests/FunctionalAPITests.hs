@@ -47,7 +47,7 @@ import Data.Type.Equality
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Client (SMPTestFailure (..), SMPTestStep (..))
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
@@ -63,6 +63,7 @@ import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO
+import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 
@@ -217,11 +218,11 @@ functionalAPITests t = do
     it "should pass without basic auth" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
     let srv1 = testSMPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testSMPServerConnectionTest t Nothing (noAuthSrv srv1) `shouldReturn` Just (SMPTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+      testSMPServerConnectionTest t Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
-          authErr = Just (SMPTestFailure TSCreateQueue $ SMP AUTH)
+          authErr = Just (ProtocolTestFailure TSCreateQueue $ SMP AUTH)
       it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testSMPServerConnectionTest t auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
@@ -798,7 +799,7 @@ testUsers = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer]
+    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     deleteUser a auId True
@@ -815,7 +816,7 @@ testDeleteUserQuietly = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer]
+    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     deleteUser a auId False
@@ -829,7 +830,7 @@ testUsersNoServer t = do
   (aId, bId, auId, _aId', bId') <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer]
+    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetingsMsgId 4 a bId' b aId'
     pure (aId, bId, auId, aId', bId')
@@ -957,11 +958,11 @@ testCreateQueueAuth clnt1 clnt2 = do
           smpCfg = (defaultClientConfig :: ProtocolClientConfig) {smpServerVRange = mkVersionRange 4 clntVersion}
        in getSMPAgentClient' agentCfg {smpCfg} servers testDB
 
-testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe SMPTestFailure)
+testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testSMPServerConnectionTest t newQueueBasicAuth srv =
   withSmpServerConfigOn t cfg {newQueueBasicAuth} testPort2 $ \_ -> do
     a <- getSMPAgentClient' agentCfg initAgentServers testDB -- initially passed server is not running
-    runRight $ testSMPServerConnection a 1 srv
+    runRight $ testProtocolServer a 1 srv
 
 testRatchetAdHash :: IO ()
 testRatchetAdHash = do
@@ -1003,7 +1004,7 @@ testTwoUsers = do
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
 
-    aUserId2 <- createUser a [noAuthSrv testSMPServer]
+    aUserId2 <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
     exchangeGreetings a bId2 b aId2
     (aId2', bId2') <- makeConnectionForUsers a aUserId2 b 1
