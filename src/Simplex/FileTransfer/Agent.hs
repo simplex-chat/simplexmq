@@ -19,7 +19,7 @@ module Simplex.FileTransfer.Agent
     deleteRcvFile,
     -- Sending files
     sendFileExperimental,
-    _sendFile,
+    sendFile,
   )
 where
 
@@ -33,6 +33,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:))
 import Data.Int (Int64)
 import Data.List (foldl', isSuffixOf, partition)
@@ -41,10 +42,11 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Simplex.FileTransfer.Client.Main (CLIError, SendOptions (..), cliSendFileOpts)
+import Simplex.FileTransfer.Client (XFTPChunkSpec)
+import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), FilePartyI)
+import Simplex.FileTransfer.Protocol (FileInfo (..), FileParty (..), FilePartyI)
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -53,6 +55,9 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import qualified Simplex.Messaging.TMap as TM
@@ -72,24 +77,23 @@ startWorkers c workDir = do
     startFiles = do
       rcvFilesTTL <- asks (rcvFilesTTL . config)
       pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
-      forM_ pendingRcvServers $ \s -> addXFTPWorker c (Just s)
+      forM_ pendingRcvServers $ \s -> addXFTPRcvWorker c (Just s)
       -- start local worker for files pending decryption,
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
-      addXFTPWorker c Nothing
+      addXFTPRcvWorker c Nothing
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
-closeXFTPAgent XFTPAgent {xftpWorkers} = do
-  ws <- atomically $ stateTVar xftpWorkers (,M.empty)
-  mapM_ (uninterruptibleCancel . snd) ws
+closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
+  rws <- atomically $ stateTVar xftpRcvWorkers (,M.empty)
+  mapM_ (uninterruptibleCancel . snd) rws
+  sws <- atomically $ stateTVar xftpSndWorkers (,M.empty)
+  mapM_ (uninterruptibleCancel . snd) sws
 
 receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
 receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
   g <- asks idsDrg
-  workPath <- getWorkPath
-  ts <- liftIO getCurrentTime
-  let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
-  prefixPath <- uniqueCombine workPath (isoTime <> "_rcv.xftp")
+  prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
       relTmpPath = relPrefixPath </> "xftp.encrypted"
@@ -102,13 +106,20 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
   where
     downloadChunk :: AgentMonad m => FileChunk -> m ()
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
-      addXFTPWorker c (Just server)
+      addXFTPRcvWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
 getWorkPath :: AgentMonad m => m FilePath
 getWorkPath = do
   workDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
   maybe getTemporaryDirectory pure workDir
+
+getPrefixPath :: AgentMonad m => String -> m FilePath
+getPrefixPath suffix = do
+  workPath <- getWorkPath
+  ts <- liftIO getCurrentTime
+  let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
+  uniqueCombine workPath (isoTime <> "_" <> suffix)
 
 toFSFilePath :: AgentMonad m => FilePath -> m FilePath
 toFSFilePath f = (</> f) <$> getWorkPath
@@ -118,22 +129,22 @@ createEmptyFile fPath = do
   h <- openFile fPath AppendMode
   liftIO $ B.hPut h "" >> hFlush h
 
-addXFTPWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
-addXFTPWorker c srv_ = do
-  ws <- asks $ xftpWorkers . xftpAgent
+addXFTPRcvWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
+addXFTPRcvWorker c srv_ = do
+  ws <- asks $ xftpRcvWorkers . xftpAgent
   atomically (TM.lookup srv_ ws) >>= \case
     Nothing -> do
       doWork <- newTMVarIO ()
       let runWorker = case srv_ of
-            Just srv -> runXFTPWorker c srv doWork
-            Nothing -> runXFTPLocalWorker c doWork
+            Just srv -> runXFTPRcvWorker c srv doWork
+            Nothing -> runXFTPRcvLocalWorker c doWork
       worker <- async $ runWorker `E.finally` atomically (TM.delete srv_ ws)
       atomically $ TM.insert srv_ (doWork, worker) ws
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
 
-runXFTPWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
-runXFTPWorker c srv doWork = do
+runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
+runXFTPRcvWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AORcvNetwork waitUntilActive runXftpOperation
@@ -145,13 +156,13 @@ runXFTPWorker c srv doWork = do
       nextChunk <- withStore' c $ \db -> getNextRcvChunkToDownload db srv rcvFilesTTL
       case nextChunk of
         Nothing -> noWorkToDo
-        Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
+        Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
         Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
             downloadFileChunk fc replica
-              `catchError` retryOnError delay' loop (workerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) . show)
+              `catchError` retryOnError delay' loop (rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) . show)
           where
             retryOnError :: Int64 -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
             retryOnError replicaDelay loop done e = do
@@ -162,7 +173,7 @@ runXFTPWorker c srv doWork = do
               where
                 retryLoop = do
                   notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
-                  when notifyOnRetry $ notifyInternalError c rcvFileEntityId $ show e
+                  when notifyOnRetry $ notifyRcvInternalError c rcvFileEntityId $ show e
                   closeXFTPServerClient c userId replica
                   withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
                   atomically $ endAgentOperation c AORcvNetwork
@@ -184,7 +195,7 @@ runXFTPWorker c srv doWork = do
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
         pure (complete, RFPROG rcvd total)
       liftIO $ notify c rcvFileEntityId progress
-      when complete $ addXFTPWorker c Nothing
+      when complete $ addXFTPRcvWorker c Nothing
       where
         receivedSize :: [RcvFileChunk] -> Int64
         receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
@@ -193,17 +204,17 @@ runXFTPWorker c srv doWork = do
           | otherwise = 0
         chunkReceived RcvFileChunk {replicas} = any received replicas
 
-workerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
-workerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
+rcvWorkerInternalError :: AgentMonad m => AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> m ()
+rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
   forM_ tmpPath (removePath <=< toFSFilePath)
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
-  notifyInternalError c rcvFileEntityId internalErrStr
+  notifyRcvInternalError c rcvFileEntityId internalErrStr
 
-notifyInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
-notifyInternalError AgentClient {subQ} rcvFileEntityId internalErrStr = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC SAERcvFile $ RFERR $ INTERNAL internalErrStr)
+notifyRcvInternalError :: (MonadUnliftIO m) => AgentClient -> RcvFileId -> String -> m ()
+notifyRcvInternalError AgentClient {subQ} rcvFileEntityId internalErrStr = atomically $ writeTBQueue subQ ("", rcvFileEntityId, APC SAERcvFile $ RFERR $ INTERNAL internalErrStr)
 
-runXFTPLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
-runXFTPLocalWorker c doWork = do
+runXFTPRcvLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
+runXFTPRcvLocalWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     -- TODO agentOperationBracket?
@@ -216,7 +227,7 @@ runXFTPLocalWorker c doWork = do
       case nextFile of
         Nothing -> noWorkToDo
         Just f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
-          decryptFile f `catchError` (workerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
+          decryptFile f `catchError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, status, chunks} = do
@@ -307,68 +318,179 @@ sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients =
 notify :: forall e. AEntityI e => AgentClient -> EntityId -> ACommand 'Agent e -> IO ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
 
--- _sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-_sendFile :: AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-_sendFile _c _userId _filePath _numRecipients = do
-  -- db: create file in status New without chunks
-  -- add local snd worker for encryption
-  -- return file id to client
-  undefined
+sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+sendFile c userId filePath numRecipients = do
+  g <- asks idsDrg
+  prefixPath <- getPrefixPath "snd.xftp"
+  createDirectory prefixPath
+  let relPrefixPath = takeFileName prefixPath
+  key <- liftIO C.randomSbKey
+  nonce <- liftIO C.randomCbNonce
+  -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
+  fId <- withStore c $ \db -> createSndFile db g userId numRecipients filePath relPrefixPath key nonce
+  addXFTPSndWorker c Nothing
+  pure fId
 
-_runXFTPSndLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
-_runXFTPSndLocalWorker _c doWork = do
+-- TODO refactor with rcv
+addXFTPSndWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
+addXFTPSndWorker c srv_ = do
+  ws <- asks $ xftpSndWorkers . xftpAgent
+  atomically (TM.lookup srv_ ws) >>= \case
+    Nothing -> do
+      doWork <- newTMVarIO ()
+      let runWorker = case srv_ of
+            Nothing -> runXFTPSndPrepareWorker c doWork
+            Just srv -> runXFTPSndWorker c srv doWork
+      worker <- async $ runWorker `E.finally` atomically (TM.delete srv_ ws)
+      atomically $ TM.insert srv_ (doWork, worker) ws
+    Just (doWork, _) ->
+      void . atomically $ tryPutTMVar doWork ()
+
+runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
+runXFTPSndPrepareWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
+    -- TODO agentOperationBracket
     runXftpOperation
   where
     runXftpOperation :: m ()
     runXftpOperation = do
-      -- db: get next snd file to encrypt (in status New)
-      -- ? (or Encrypted to retry create? - see below)
-      -- with fixed retries (?) encryptFile
-      undefined
-    _encryptFile :: SndFile -> m ()
-    _encryptFile _sndFile = do
-      -- if enc path exists, remove it
-      -- if enc path doesn't exist:
-      --   - choose enc path
-      --   - touch file, db: update enc path (?)
-      -- calculate chunk sizes, encrypt file to enc path
-      -- calculate digest
-      -- prepare chunk specs
-      -- db:
-      --   - update file status to Encrypted
-      --   - create chunks according to chunk specs
-      -- ? since which servers are online is unknown,
-      -- ? we can't blindly assign servers to replicas.
-      -- ? should we XFTP create chunks on servers here,
-      -- ? with retrying for different servers,
-      -- ? keeping a list of servers that were tried?
-      -- ? then we can add replicas to chunks in db
-      -- ? and update file status to Uploading,
-      -- ? probably in same transaction as creating chunks,
-      -- ? and add XFTP snd workers for uploading chunks.
-      undefined
+      nextFile <- withStore' c getNextSndFileToPrepare
+      case nextFile of
+        Nothing -> noWorkToDo
+        Just f@SndFile {sndFileId, sndFileEntityId, prefixPath} ->
+          prepareFile f `catchError` (sndWorkerInternalError c sndFileId sndFileEntityId prefixPath . show)
+    noWorkToDo = void . atomically $ tryTakeTMVar doWork
+    prepareFile :: SndFile -> m ()
+    prepareFile SndFile {prefixPath = Nothing} =
+      throwError $ INTERNAL "no prefix path"
+    prepareFile sndFile@SndFile {sndFileId, prefixPath = Just ppath, status} = do
+      SndFile {numRecipients, chunks} <-
+        if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
+          then do
+            let encPath = sndFileEncPath ppath
+            fsEncPath <- toFSFilePath encPath
+            when (status == SFSEncrypting) $
+              whenM (doesFileExist fsEncPath) $ removeFile fsEncPath
+            withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
+            (digest, chunkSpecs) <- encryptFileForUpload sndFile encPath
+            withStore c $ \db -> do
+              updateSndFileEncrypted db sndFileId digest chunkSpecs
+              getSndFile db sndFileId
+          else pure sndFile
+      maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
+      let numRecipients' = min numRecipients maxRecipients
+      -- concurrently?
+      forM_ chunks $ createChunk numRecipients'
+      withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
+      where
+        encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [XFTPChunkSpec])
+        encryptFileForUpload SndFile {key, nonce, filePath} encPath = do
+          let fileName = takeFileName filePath
+          fileSize <- fromInteger <$> getFileSize filePath
+          when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
+          let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
+              fileSize' = fromIntegral (B.length fileHdr) + fileSize
+              chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
+              chunkSizes' = map fromIntegral chunkSizes
+              encSize = sum chunkSizes'
+          void $ liftError (INTERNAL . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize encPath
+          digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
+          let chunkSpecs = prepareChunkSpecs encPath chunkSizes
+          pure (FileDigest digest, chunkSpecs)
+        createChunk :: Int -> SndFileChunk -> m ()
+        createChunk numRecipients' SndFileChunk {sndChunkId, userId, chunkSpec} = do
+          (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+          rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
+          ch@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
+          -- TODO with retry on temporary errors
+          xftpServer <- getServer
+          (sndId, rIds) <- agentXFTPCreateChunk c userId xftpServer spKey ch (L.map fst rKeys)
+          let rcvIdsKeys = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
+          withStore' c $ \db -> createSndFileReplica db sndChunkId (FileDigest digest) xftpServer (ChunkReplicaId sndId) spKey rcvIdsKeys
+          addXFTPSndWorker c $ Just xftpServer
+        getServer :: m XFTPServer
+        getServer = do
+          -- TODO get user servers from config
+          -- TODO choose next server (per chunk? per file?)
+          undefined
 
-_runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
-_runXFTPSndWorker c _srv doWork = do
+-- TODO refactor with rcv
+sndWorkerInternalError :: AgentMonad m => AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> String -> m ()
+sndWorkerInternalError c sndFileId sndFileEntityId prefixPath internalErrStr = do
+  forM_ prefixPath (removePath <=< toFSFilePath)
+  withStore' c $ \db -> updateSndFileError db sndFileId internalErrStr
+  notifySndInternalError c sndFileEntityId internalErrStr
+
+notifySndInternalError :: (MonadUnliftIO m) => AgentClient -> SndFileId -> String -> m ()
+notifySndInternalError AgentClient {subQ} sndFileEntityId internalErrStr = atomically $ writeTBQueue subQ ("", sndFileEntityId, APC SAESndFile $ SFERR $ INTERNAL internalErrStr)
+
+runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
+runXFTPSndWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     agentOperationBracket c AOSndNetwork throwWhenInactive runXftpOperation
   where
+    noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXftpOperation :: m ()
     runXftpOperation = do
-      -- db: get next snd chunk to upload (replica is not uploaded)
-      -- with retry interval uploadChunk
-      --   - with fixed retries, repeat N times:
-      --     check if other files are in upload, delay (see xftpSndFiles in XFTPAgent)
-      undefined
-    _uploadFileChunk :: SndFileChunk -> m ()
-    _uploadFileChunk _sndFileChunk = do
-      -- add file id to xftpSndFiles
-      -- XFTP upload chunk
-      -- db: update replica status to Uploaded, return SndFile
-      -- if all SndFile's replicas are uploaded:
-      --   - serialize file descriptions and notify client
-      --   - remove file id from xftpSndFiles
-      undefined
+      nextChunk <- withStore' c $ \db -> getNextSndChunkToUpload db srv
+      case nextChunk of
+        Nothing -> noWorkToDo
+        Just SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
+        Just fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, delay} : _} -> do
+          ri <- asks $ reconnectInterval . config
+          let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
+          withRetryInterval ri' $ \delay' loop ->
+            uploadFileChunk fc replica
+              `catchError` retryOnError delay' loop (sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) . show)
+          where
+            retryOnError :: Int64 -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
+            retryOnError replicaDelay loop done e = do
+              logError $ "XFTP worker error: " <> tshow e
+              if temporaryAgentError e
+                then retryLoop
+                else done e
+              where
+                retryLoop = do
+                  notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
+                  when notifyOnRetry $ notifySndInternalError c sndFileEntityId $ show e
+                  closeXFTPServerClient' c userId replica
+                  withStore' c $ \db -> updateRcvChunkReplicaDelay db sndChunkReplicaId replicaDelay
+                  atomically $ endAgentOperation c AOSndNetwork
+                  atomically $ throwWhenInactive c
+                  atomically $ beginAgentOperation c AOSndNetwork
+                  loop
+    uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
+    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec} replica@SndFileChunkReplica {sndChunkReplicaId} = do
+      replica' <- addRecipients sndFileChunk replica
+      agentXFTPUploadChunk c userId replica' chunkSpec
+      sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
+        updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
+        getSndFile db sndFileId
+      let complete = all chunkUploaded chunks
+      -- TODO calculate progress, notify SFPROG
+      when complete $ do
+        -- maybe better to move this update after event, same for rcv
+        withStore' c $ \db -> updateSndFileStatus db sndFileId SFSComplete
+        (sndDescr, rcvDescrs) <- sndFileToDescriptions sf
+        forM_ prefixPath (removePath <=< toFSFilePath)
+        liftIO $ notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
+      where
+        addRecipients :: SndFileChunk -> SndFileChunkReplica -> m SndFileChunkReplica
+        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
+          | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
+          | length rcvIdsKeys == numRecipients = pure cr
+          | otherwise = do
+            maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
+            let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
+            rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
+            rIds <- agentXFTPAddRecipients c userId cr (L.map fst rKeys)
+            let rcvIdsKeys' = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
+            cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db sndChunkReplicaId rcvIdsKeys'
+            addRecipients ch cr'
+        sndFileToDescriptions :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
+        sndFileToDescriptions =
+          undefined
+        chunkUploaded SndFileChunk {replicas} =
+          any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas

@@ -11,12 +11,13 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.Messaging.Agent.Protocol (RcvFileId)
+import Simplex.Messaging.Agent.Protocol (RcvFileId, SndFileId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol
+import System.FilePath ((</>))
 
 authTagSize :: Int64
 authTagSize = fromIntegral C.authTagSize
@@ -111,26 +112,32 @@ data RcvFileChunkReplica = RcvFileChunkReplica
 type DBSndFileId = Int64
 
 data SndFile = SndFile
-  { userId :: Int64,
-    sndFileId :: DBSndFileId,
-    size :: FileSize Int64,
-    digest :: FileDigest,
+  { sndFileId :: DBSndFileId,
+    sndFileEntityId :: SndFileId,
+    userId :: Int64,
+    numRecipients :: Int,
+    -- size :: FileSize Int64,
+    digest :: Maybe FileDigest,
     key :: C.SbKey,
     nonce :: C.CbNonce,
-    chunkSize :: FileSize Word32,
-    chunks :: [RcvFileChunk],
-    path :: FilePath,
-    encPath :: Maybe FilePath,
+    -- chunkSize :: FileSize Word32,
+    chunks :: [SndFileChunk],
+    filePath :: FilePath,
+    prefixPath :: Maybe FilePath,
     status :: SndFileStatus
   }
   deriving (Eq, Show)
 
+sndFileEncPath :: FilePath -> FilePath
+sndFileEncPath prefixPath = prefixPath </> "xftp.encrypted"
+
 data SndFileStatus
-  = SFSNew
-  | SFSEncrypting
-  | SFSEncrypted
-  | SFSUploading
-  | SFSComplete
+  = SFSNew -- db record created
+  | SFSEncrypting -- encryption started
+  | SFSEncrypted -- encryption complete
+  | SFSUploading -- all chunk replicas are created on servers
+  | SFSComplete -- all chunk replicas are uploaded
+  | SFSError -- permanent error
   deriving (Eq, Show)
 
 instance FromField SndFileStatus where fromField = fromTextField_ textDecode
@@ -144,6 +151,7 @@ instance TextEncoding SndFileStatus where
     "encrypted" -> Just SFSEncrypted
     "uploading" -> Just SFSUploading
     "complete" -> Just SFSComplete
+    "error" -> Just SFSError
     _ -> Nothing
   textEncode = \case
     SFSNew -> "new"
@@ -151,16 +159,19 @@ instance TextEncoding SndFileStatus where
     SFSEncrypted -> "encrypted"
     SFSUploading -> "uploading"
     SFSComplete -> "complete"
+    SFSError -> "error"
 
 data SndFileChunk = SndFileChunk
-  { userId :: Int64,
-    sndFileId :: DBSndFileId,
+  { sndFileId :: DBSndFileId,
+    sndFileEntityId :: SndFileId,
+    userId :: Int64,
+    numRecipients :: Int,
     sndChunkId :: Int64,
     chunkNo :: Int,
     chunkSpec :: XFTPChunkSpec,
-    digest :: FileDigest,
-    replicas :: [SndFileChunkReplica],
-    delay :: Maybe Int
+    filePrefixPath :: FilePath,
+    digest :: Maybe FileDigest,
+    replicas :: [SndFileChunkReplica]
   }
   deriving (Eq, Show)
 
@@ -170,15 +181,26 @@ data SndFileChunkReplica = SndFileChunkReplica
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateSignKey,
     rcvIdsKeys :: [(ChunkReplicaId, C.APrivateSignKey)],
-    -- created :: Bool,
-    uploaded :: Bool,
+    replicaStatus :: SndFileReplicaStatus,
+    delay :: Maybe Int64,
     retries :: Int
   }
   deriving (Eq, Show)
 
--- to be used in reply to client
-data SndFileDescription = SndFileDescription
-  { description :: String,
-    sender :: Bool
-  }
+data SndFileReplicaStatus
+  = SFRSCreated
+  | SFRSUploaded
   deriving (Eq, Show)
+
+instance FromField SndFileReplicaStatus where fromField = fromTextField_ textDecode
+
+instance ToField SndFileReplicaStatus where toField = toField . textEncode
+
+instance TextEncoding SndFileReplicaStatus where
+  textDecode = \case
+    "created" -> Just SFRSCreated
+    "uploaded" -> Just SFRSUploaded
+    _ -> Nothing
+  textEncode = \case
+    SFRSCreated -> "created"
+    SFRSUploaded -> "uploaded"

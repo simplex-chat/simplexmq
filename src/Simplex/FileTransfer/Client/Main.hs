@@ -16,6 +16,13 @@ module Simplex.FileTransfer.Client.Main
     cliSendFile,
     cliSendFileOpts,
     prepareChunkSizes,
+    prepareChunkSpecs,
+    chunkSize1,
+    chunkSize2,
+    chunkSize3,
+    maxFileSize,
+    fileSizeLen,
+    getChunkInfo,
   )
 where
 
@@ -332,12 +339,6 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
           pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
-        getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> IO FileInfo
-        getChunkInfo sndKey XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
-          withFile chunkPath ReadMode $ \h -> do
-            hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-            digest <- LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
-            pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
         getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
         getXFTPServer gen = \case
           srv :| [] -> pure srv
@@ -405,6 +406,13 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       let fdSndPath = outDir </> "snd.xftp.private"
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
+
+getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> IO FileInfo
+getChunkInfo sndKey XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
+  withFile chunkPath ReadMode $ \h -> do
+    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+    digest <- LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
+    pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =

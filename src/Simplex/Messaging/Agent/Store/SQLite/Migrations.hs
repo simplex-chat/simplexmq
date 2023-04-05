@@ -57,6 +57,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -80,7 +81,8 @@ schemaMigrations =
     ("m20230120_delete_errors", m20230120_delete_errors, Nothing),
     ("m20230217_server_key_hash", m20230217_server_key_hash, Nothing),
     ("m20230223_files", m20230223_files, Just down_m20230223_files),
-    ("m20230320_retry_state", m20230320_retry_state, Just down_m20230320_retry_state)
+    ("m20230320_retry_state", m20230320_retry_state, Just down_m20230320_retry_state),
+    ("m20230401_snd_files", m20230401_snd_files, Just down_m20230401_snd_files)
   ]
 
 -- | The list of migrations in ascending order by date

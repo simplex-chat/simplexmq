@@ -84,6 +84,7 @@ data AgentConfig = AgentConfig
     cleanupInterval :: Int64,
     rcvFilesTTL :: NominalDiffTime,
     xftpNotifyErrsOnRetry :: Bool,
+    xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
@@ -145,6 +146,7 @@ defaultAgentConfig =
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       rcvFilesTTL = 2 * nominalDay,
       xftpNotifyErrsOnRetry = True,
+      xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds
@@ -205,17 +207,15 @@ newNtfSubSupervisor qSize = do
 data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory
     xftpWorkDir :: TVar (Maybe FilePath),
-    xftpWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
+    xftpRcvWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
     -- separate send workers for unhindered concurrency between download and upload,
     -- clients can also be separate by passing direction to withXFTPClient, and differentiating by it
-    -- xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    -- files currently in upload - to throttle upload of other files' chunks,
-    -- this optimization can be dropped for the MVP
-    -- xftpSndFiles :: TVar (Set DBSndFileId)
+    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
   }
 
 newXFTPAgent :: STM XFTPAgent
 newXFTPAgent = do
   xftpWorkDir <- newTVar Nothing
-  xftpWorkers <- TM.empty
-  pure XFTPAgent {xftpWorkDir, xftpWorkers}
+  xftpRcvWorkers <- TM.empty
+  xftpSndWorkers <- TM.empty
+  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers}
