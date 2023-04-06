@@ -1070,7 +1070,7 @@ agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> RcvFileChunkR
 agentXFTPDownloadChunk c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
   withXFTPClient c (userId, server, fId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
 
-agentXFTPCreateChunk :: AgentMonad m => AgentClient -> UserId -> XFTPServer -> C.APrivateSignKey -> FileInfo -> NonEmpty C.APublicVerifyKey -> m (SenderId, NonEmpty RecipientId)
+agentXFTPCreateChunk :: AgentMonad m => AgentClient -> UserId -> XFTPServerWithAuth -> C.APrivateSignKey -> FileInfo -> NonEmpty C.APublicVerifyKey -> m (SenderId, NonEmpty RecipientId)
 agentXFTPCreateChunk c userId srv spKey file rcps =
   undefined
 
