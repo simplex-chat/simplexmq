@@ -139,7 +139,7 @@ newtype InfoOptions = InfoOptions
 
 data RandomFileOptions = RandomFileOptions
   { filePath :: FilePath,
-    fileSize :: FileSize Int
+    fileSize :: FileSize Int64
   }
   deriving (Show)
 
@@ -586,7 +586,7 @@ cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do
   putStrLn $ "File created: " <> filePath
   where
     saveRandomFile h sz = do
-      bytes <- getRandomBytes $ min mb' sz
+      bytes <- getRandomBytes $ fromIntegral $ min mb' sz
       B.hPut h bytes
       when (sz > mb') $ saveRandomFile h (sz - mb')
     mb' = mb 1

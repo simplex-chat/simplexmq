@@ -49,7 +49,7 @@ extra-deps:
   - github: simplex-chat/aeson
     commit: 3eb66f9a68f103b5f1489382aad89f5712a64db7
   - github: kazu-yamamoto/http2
-    commit: b3b903e8130a7172b8dfa18b67bcc59620fc0ca0
+    commit: b5a1b7200cf5bc7044af34ba325284271f6dff25
   # - ../direct-sqlcipher
   - github: simplex-chat/direct-sqlcipher
     commit: 34309410eb2069b029b8fc1872deb1e0db123294
