@@ -109,20 +109,15 @@ receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
       addXFTPRcvWorker c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
-getWorkPath :: AgentMonad m => m FilePath
-getWorkPath = do
-  workDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
-  maybe getTemporaryDirectory pure workDir
-
 getPrefixPath :: AgentMonad m => String -> m FilePath
 getPrefixPath suffix = do
-  workPath <- getWorkPath
+  workPath <- getXFTPWorkPath
   ts <- liftIO getCurrentTime
   let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
   uniqueCombine workPath (isoTime <> "_" <> suffix)
 
 toFSFilePath :: AgentMonad m => FilePath -> m FilePath
-toFSFilePath f = (</> f) <$> getWorkPath
+toFSFilePath f = (</> f) <$> getXFTPWorkPath
 
 createEmptyFile :: AgentMonad m => FilePath -> m ()
 createEmptyFile fPath = do
@@ -273,7 +268,7 @@ sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients =
     sendCLI :: SndFileId -> [XFTPServerWithAuth] -> m ()
     sendCLI sndFileId xftpSrvs = do
       let fileName = takeFileName filePath
-      workPath <- getWorkPath
+      workPath <- getXFTPWorkPath
       outputDir <- uniqueCombine workPath $ fileName <> ".descr"
       createDirectory outputDir
       let tempPath = workPath </> "snd"

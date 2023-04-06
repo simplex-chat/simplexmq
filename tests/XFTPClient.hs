@@ -71,6 +71,9 @@ xftpTestPort2 = "7001"
 testXFTPServer :: XFTPServer
 testXFTPServer = fromString testXFTPServerStr
 
+testXFTPServer2 :: XFTPServer
+testXFTPServer2 = fromString testXFTPServerStr2
+
 testXFTPServerStr :: String
 testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
 
