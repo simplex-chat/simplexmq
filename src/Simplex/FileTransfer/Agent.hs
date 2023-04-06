@@ -87,10 +87,12 @@ startWorkers c workDir = do
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
 closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
-  rws <- atomically $ stateTVar xftpRcvWorkers (,M.empty)
-  mapM_ (uninterruptibleCancel . snd) rws
-  sws <- atomically $ stateTVar xftpSndWorkers (,M.empty)
-  mapM_ (uninterruptibleCancel . snd) sws
+  stopWorkers xftpRcvWorkers
+  stopWorkers xftpSndWorkers
+  where
+    stopWorkers wsSel = do
+      ws <- atomically $ stateTVar wsSel (,M.empty)
+      mapM_ (uninterruptibleCancel . snd) ws
 
 receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
 receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
