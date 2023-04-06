@@ -402,11 +402,11 @@ runXFTPSndPrepareWorker c doWork = do
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
           ch@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
           -- TODO with retry on temporary errors
-          xftpServerWithAuth@(ProtoServerWithAuth xftpServer _) <- getServer
-          (sndId, rIds) <- agentXFTPCreateChunk c userId xftpServerWithAuth spKey ch (L.map fst rKeys)
+          srvAuth@(ProtoServerWithAuth srv _) <- getServer
+          (sndId, rIds) <- agentXFTPCreateChunk c userId srvAuth spKey ch (L.map fst rKeys)
           let rcvIdsKeys = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
-          withStore' c $ \db -> createSndFileReplica db sndChunkId (FileDigest digest) xftpServer (ChunkReplicaId sndId) spKey rcvIdsKeys
-          addXFTPSndWorker c $ Just xftpServer
+          withStore' c $ \db -> createSndFileReplica db sndChunkId (FileDigest digest) srv (ChunkReplicaId sndId) spKey rcvIdsKeys
+          addXFTPSndWorker c $ Just srv
         getServer :: m XFTPServerWithAuth
         getServer = do
           -- TODO get user servers from config
