@@ -203,7 +203,7 @@ runXFTPRcvWorker c srv doWork = do
           | otherwise = 0
         chunkReceived RcvFileChunk {replicas} = any received replicas
 
-retryOnError :: AgentMonad' m => AgentClient -> AgentOperation -> Text -> m () -> m () -> m () -> AgentErrorType -> m ()
+retryOnError :: AgentMonad m => AgentClient -> AgentOperation -> Text -> m () -> m () -> m () -> AgentErrorType -> m ()
 retryOnError c agentOp name loop maintenance done e = do
   logError $ name <> " error: " <> tshow e
   if temporaryAgentError e
@@ -211,7 +211,7 @@ retryOnError c agentOp name loop maintenance done e = do
     else done
   where
     retryLoop = do
-      maintenance
+      maintenance `catchError` \_ -> pure ()
       atomically $ endAgentOperation c agentOp
       atomically $ throwWhenInactive c
       atomically $ beginAgentOperation c agentOp
