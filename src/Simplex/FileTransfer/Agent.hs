@@ -476,19 +476,20 @@ runXFTPSndWorker c srv doWork = do
         sndFileToSndDescr :: SndFile -> m (ValidFileDescription 'FSender)
         sndFileToSndDescr SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"
         sndFileToSndDescr SndFile {chunks = []} = throwError $ INTERNAL "snd file has no chunks"
-        sndFileToSndDescr SndFile {digest = Just digest, key, nonce, chunks} = do
-          let defChunkSize = sndChunkSize $ head chunks
-              chunkSizes' = map (fromIntegral . sndChunkSize) chunks
-              encSize = sum chunkSizes'
+        sndFileToSndDescr SndFile {digest = Just digest, key, nonce, chunks = chunks@(fstChunk : _)} = do
+          let chunkSize = FileSize $ sndChunkSize fstChunk
+              size = FileSize $ sum $ map (fromIntegral . sndChunkSize) chunks
           descrChunks <- mapM toDescrChunk chunks
-          let fd = FileDescription {party = SFSender, size = FileSize encSize, digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = descrChunks}
+          let fd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = descrChunks}
           either (throwError . INTERNAL) pure $ validateFileDescription' fd
           where
             toDescrChunk :: SndFileChunk -> m FileChunk
             toDescrChunk SndFileChunk {digest = Nothing} = throwError $ INTERNAL "snd file chunk has no digest"
             toDescrChunk SndFileChunk {replicas = []} = throwError $ INTERNAL "snd file chunk has no replicas"
-            toDescrChunk ch@SndFileChunk {chunkNo, digest = Just chDigest, replicas = (SndFileChunkReplica {server, replicaId, replicaKey} : _)} =
-              pure FileChunk {chunkNo, digest = chDigest, chunkSize = FileSize (sndChunkSize ch), replicas = [FileChunkReplica {server, replicaId, replicaKey}]}
+            toDescrChunk ch@SndFileChunk {chunkNo, digest = Just chDigest, replicas = (SndFileChunkReplica {server, replicaId, replicaKey} : _)} = do
+              let chunkSize = FileSize $ sndChunkSize ch
+                  replicas = [FileChunkReplica {server, replicaId, replicaKey}]
+              pure FileChunk {chunkNo, digest = chDigest, chunkSize, replicas}
         sndFileToRcvDescrs :: SndFile -> m [ValidFileDescription 'FRecipient]
         sndFileToRcvDescrs SndFile {} = do
           undefined
