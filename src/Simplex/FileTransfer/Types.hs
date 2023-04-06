@@ -124,7 +124,8 @@ data SndFile = SndFile
     chunks :: [SndFileChunk],
     filePath :: FilePath,
     prefixPath :: Maybe FilePath,
-    status :: SndFileStatus
+    status :: SndFileStatus,
+    deleted :: Bool
   }
   deriving (Eq, Show)
 

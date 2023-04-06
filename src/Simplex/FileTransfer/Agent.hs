@@ -478,7 +478,7 @@ runXFTPSndWorker c srv doWork = do
         liftIO $ notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> m SndFileChunkReplica
-        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {sndChunkReplicaId, rcvIdsKeys}
+        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
           | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
@@ -487,7 +487,7 @@ runXFTPSndWorker c srv doWork = do
             rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
             rIds <- agentXFTPAddRecipients c userId cr (L.map fst rKeys)
             let rcvIdsKeys' = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
-            cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db sndChunkReplicaId rcvIdsKeys'
+            cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr rcvIdsKeys'
             addRecipients ch cr'
         sndFileToDescriptions :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
         sndFileToDescriptions =
