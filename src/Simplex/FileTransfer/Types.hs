@@ -116,11 +116,9 @@ data SndFile = SndFile
     sndFileEntityId :: SndFileId,
     userId :: Int64,
     numRecipients :: Int,
-    -- size :: FileSize Int64,
     digest :: Maybe FileDigest,
     key :: C.SbKey,
     nonce :: C.CbNonce,
-    -- chunkSize :: FileSize Word32,
     chunks :: [SndFileChunk],
     filePath :: FilePath,
     prefixPath :: Maybe FilePath,
@@ -175,6 +173,9 @@ data SndFileChunk = SndFileChunk
     replicas :: [SndFileChunkReplica]
   }
   deriving (Eq, Show)
+
+sndChunkSize :: SndFileChunk -> Word32
+sndChunkSize SndFileChunk {chunkSpec = XFTPChunkSpec {chunkSize}} = chunkSize
 
 data SndFileChunkReplica = SndFileChunkReplica
   { sndChunkReplicaId :: Int64,

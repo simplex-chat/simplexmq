@@ -43,11 +43,11 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Simplex.FileTransfer.Client (XFTPChunkSpec)
+import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileInfo (..), FileParty (..), FilePartyI)
+import Simplex.FileTransfer.Protocol (FileInfo (..), FileParty (..), FilePartyI, SFileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -455,7 +455,8 @@ runXFTPSndWorker c srv doWork = do
       let complete = all chunkUploaded chunks
       -- TODO calculate progress, notify SFPROG
       when complete $ do
-        (sndDescr, rcvDescrs) <- sndFileToDescriptions sf
+        sndDescr <- sndFileToSndDescr sf
+        rcvDescrs <- sndFileToRcvDescrs sf
         notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
         forM_ prefixPath (removePath <=< toFSFilePath)
         withStore' c $ \db -> updateSndFileStatus db sndFileId SFSComplete
@@ -472,8 +473,24 @@ runXFTPSndWorker c srv doWork = do
             let rcvIdsKeys' = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
             cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr rcvIdsKeys'
             addRecipients ch cr'
-        sndFileToDescriptions :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
-        sndFileToDescriptions =
+        sndFileToSndDescr :: SndFile -> m (ValidFileDescription 'FSender)
+        sndFileToSndDescr SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"
+        sndFileToSndDescr SndFile {chunks = []} = throwError $ INTERNAL "snd file has no chunks"
+        sndFileToSndDescr SndFile {digest = Just digest, key, nonce, chunks} = do
+          let defChunkSize = sndChunkSize $ head chunks
+              chunkSizes' = map (fromIntegral . sndChunkSize) chunks
+              encSize = sum chunkSizes'
+          descrChunks <- mapM toDescrChunk chunks
+          let fd = FileDescription {party = SFSender, size = FileSize encSize, digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = descrChunks}
+          either (throwError . INTERNAL) pure $ validateFileDescription' fd
+          where
+            toDescrChunk :: SndFileChunk -> m FileChunk
+            toDescrChunk SndFileChunk {digest = Nothing} = throwError $ INTERNAL "snd file chunk has no digest"
+            toDescrChunk SndFileChunk {replicas = []} = throwError $ INTERNAL "snd file chunk has no replicas"
+            toDescrChunk ch@SndFileChunk {chunkNo, digest = Just chDigest, replicas = (SndFileChunkReplica {server, replicaId, replicaKey} : _)} =
+              pure FileChunk {chunkNo, digest = chDigest, chunkSize = FileSize (sndChunkSize ch), replicas = [FileChunkReplica {server, replicaId, replicaKey}]}
+        sndFileToRcvDescrs :: SndFile -> m [ValidFileDescription 'FRecipient]
+        sndFileToRcvDescrs SndFile {} = do
           undefined
         chunkUploaded SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
