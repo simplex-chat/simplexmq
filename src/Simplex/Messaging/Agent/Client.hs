@@ -26,7 +26,6 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
-    closeXFTPServerClient',
     runSMPServerTest,
     runXFTPServerTest,
     getXFTPWorkPath,
@@ -613,14 +612,8 @@ closeClient_ c cVar = do
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 
-closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> RcvFileChunkReplica -> m ()
-closeXFTPServerClient c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId} =
-  mkTransportSession c userId server fId >>= liftIO . closeClient c xftpClients
-
--- TODO refactor snd/rcv? separate sessions by snd/rcv?
--- TODO closing client on snd should not close client on rcv and vice versa
-closeXFTPServerClient' :: AgentMonad' m => AgentClient -> UserId -> SndFileChunkReplica -> m ()
-closeXFTPServerClient' c userId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId} =
+closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> ChunkReplicaId -> m ()
+closeXFTPServerClient c userId server (ChunkReplicaId fId) =
   mkTransportSession c userId server fId >>= liftIO . closeClient c xftpClients
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()

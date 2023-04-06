@@ -156,6 +156,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateSndFileError,
     updateSndFileStatus,
     updateSndFileEncrypted,
+    updateSndFileComplete,
     createSndFileReplica,
     getNextSndChunkToUpload,
     updateSndChunkReplicaDelay,
@@ -2208,6 +2209,11 @@ updateSndFileEncrypted db sndFileId digest chunkSpecs = do
   DB.execute db "UPDATE snd_files SET status = ?, digest = ?, updated_at = ? WHERE snd_file_id = ?" (SFSEncrypted, digest, updatedAt, sndFileId)
   forM_ (zip [1 ..] chunkSpecs) $ \(chunkNo :: Int, XFTPChunkSpec {chunkOffset, chunkSize}) ->
     DB.execute db "INSERT INTO snd_file_chunks (snd_file_id, chunk_no, chunk_offset, chunk_size) VALUES (?,?,?,?)" (sndFileId, chunkNo, chunkOffset, chunkSize)
+
+updateSndFileComplete :: DB.Connection -> DBSndFileId -> IO ()
+updateSndFileComplete db sndFileId = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE snd_files SET prefix_path = NULL, status = ?, updated_at = ? WHERE snd_file_id = ?" (SFSComplete, updatedAt, sndFileId)
 
 createSndFileReplica :: DB.Connection -> Int64 -> FileDigest -> XFTPServer -> ChunkReplicaId -> C.APrivateSignKey -> [(ChunkReplicaId, C.APrivateSignKey)] -> IO ()
 createSndFileReplica db sndChunkId digest xftpServer sndId spKey rcvIdsKeys = do
