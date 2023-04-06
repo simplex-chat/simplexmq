@@ -350,8 +350,6 @@ CREATE TABLE snd_files(
   snd_file_entity_id BLOB NOT NULL,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   num_recipients INTEGER NOT NULL,
-  -- enc_size INTEGER NOT NUll,
-  -- original_size INTEGER NOT NUll,
   digest BLOB,
   key BLOB NOT NUll,
   nonce BLOB NOT NUll,
