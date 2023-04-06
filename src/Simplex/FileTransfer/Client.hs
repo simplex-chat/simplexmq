@@ -59,7 +59,7 @@ data XFTPClient = XFTPClient
 
 data XFTPClientConfig = XFTPClientConfig
   { xftpNetworkConfig :: NetworkConfig,
-    uploadTimeoutPerMb :: Int
+    uploadTimeoutPerMb :: Int64
   }
 
 data XFTPChunkBody = XFTPChunkBody
@@ -134,7 +134,7 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
     liftEither . first PCETransportError $
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
-      reqTimeout = (\XFTPChunkSpec {chunkSize} -> (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1) <$> chunkSpec_
+      reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
   HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
@@ -185,7 +185,7 @@ downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {fi
       Just chunkPart -> do
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
-        let t = (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
+        let t = chunkTimeout config chunkSize
         t `timeout` download cbState >>= maybe (throwError PCEResponseTimeout) pure
         where
           download cbState =
@@ -194,6 +194,9 @@ downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {fi
                 whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+
+chunkTimeout :: XFTPClientConfig -> Word32 -> Int
+chunkTimeout config chunkSize = fromIntegral $ (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
 
 deleteXFTPChunk :: XFTPClient -> C.APrivateSignKey -> SenderId -> ExceptT XFTPClientError IO ()
 deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse

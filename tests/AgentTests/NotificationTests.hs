@@ -34,7 +34,6 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
 import System.Directory (doesFileExist, removeFile)
-import System.Info (os)
 import Test.Hspec
 import UnliftIO
 
