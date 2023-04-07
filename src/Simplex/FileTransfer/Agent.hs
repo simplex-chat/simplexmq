@@ -498,21 +498,18 @@ runXFTPSndWorker c srv doWork = do
         createRcvFileDescriptions fd sndChunks = map (\chunks -> (fd :: (FileDescription 'FRecipient)) {chunks}) rcvChunks
           where
             rcvReplicas :: [SentRecipientReplica]
-            rcvReplicas =
-              concatMap
-                ( \ch@SndFileChunk {chunkNo, digest, replicas} ->
-                    concatMap
-                      ( \SndFileChunkReplica {server, rcvIdsKeys} ->
-                          zipWith
-                            ( \rcvNo (replicaId, replicaKey) ->
-                                SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize = FileSize $ sndChunkSize ch}
-                            )
-                            [1 ..]
-                            rcvIdsKeys
-                      )
-                      replicas
-                )
-                sndChunks
+            rcvReplicas = concatMap toSentRecipientReplicas sndChunks
+            toSentRecipientReplicas :: SndFileChunk -> [SentRecipientReplica]
+            toSentRecipientReplicas ch@SndFileChunk {chunkNo, digest, replicas} =
+              let chunkSize = FileSize $ sndChunkSize ch
+               in concatMap
+                    ( \SndFileChunkReplica {server, rcvIdsKeys} ->
+                        zipWith
+                          (\rcvNo (replicaId, replicaKey) -> SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize})
+                          [1 ..]
+                          rcvIdsKeys
+                    )
+                    replicas
             rcvChunks :: [[FileChunk]]
             rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
             sortChunks :: [FileChunk] -> [FileChunk]
