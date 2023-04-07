@@ -400,10 +400,10 @@ runXFTPSndPrepareWorker c doWork = do
           pure (FileDigest digest, zip chunkSpecs chunkDigests)
         createChunk :: Int -> SndFileChunk -> m ()
         createChunk numRecipients' ch = do
-          srv@(ProtoServerWithAuth server _) <- getServer
-          replica <- agentXFTPNewChunk c ch numRecipients' srv
+          srvAuth@(ProtoServerWithAuth srv _) <- getServer
+          replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
           withStore' c $ \db -> createSndFileReplica db ch replica
-          addXFTPSndWorker c $ Just server
+          addXFTPSndWorker c $ Just srv
         getServer :: m XFTPServerWithAuth
         getServer = do
           -- TODO get user servers from config
