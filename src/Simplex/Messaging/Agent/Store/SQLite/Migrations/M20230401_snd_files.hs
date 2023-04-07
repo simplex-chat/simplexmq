@@ -5,21 +5,22 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files where
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
--- this migration is a draft - it is not included in the list of migrations
 m20230401_snd_files :: Query
 m20230401_snd_files =
   [sql|
 CREATE TABLE snd_files (
-  snd_file_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snd_file_id INTEGER PRIMARY KEY,
+  snd_file_entity_id BLOB NOT NULL,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
-  size INTEGER NOT NULL,
-  digest BLOB NOT NULL,
-  key BLOB NOT NULL,
-  nonce BLOB NOT NULL,
-  chunk_size INTEGER NOT NULL,
+  num_recipients INTEGER NOT NULL,
+  digest BLOB,
+  key BLOB NOT NUll,
+  nonce BLOB NOT NUll,
   path TEXT NOT NULL,
-  enc_path TEXT,
+  prefix_path TEXT,
   status TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -32,18 +33,13 @@ CREATE TABLE snd_file_chunks (
   chunk_no INTEGER NOT NULL,
   chunk_offset INTEGER NOT NULL,
   chunk_size INTEGER NOT NULL,
-  digest BLOB NOT NULL,
-  delay INTEGER,
+  digest BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_snd_file_chunks_snd_file_id ON snd_file_chunks(snd_file_id);
 
--- ? add fk to snd_file_descriptions?
--- ? probably it's not necessary since these entities are
--- ? required at different stages of sending files -
--- ? replicas on upload, description on notifying client
 CREATE TABLE snd_file_chunk_replicas (
   snd_file_chunk_replica_id INTEGER PRIMARY KEY,
   snd_file_chunk_id INTEGER NOT NULL REFERENCES snd_file_chunks ON DELETE CASCADE,
@@ -51,8 +47,8 @@ CREATE TABLE snd_file_chunk_replicas (
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
   replica_id BLOB NOT NULL,
   replica_key BLOB NOT NULL,
-  -- created INTEGER NOT NULL DEFAULT 0, -- as in XFTP create - registered on server
-  uploaded INTEGER NOT NULL DEFAULT 0,
+  replica_status TEXT NOT NULL,
+  delay INTEGER,
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -71,15 +67,21 @@ CREATE TABLE snd_file_chunk_replica_recipients (
 );
 
 CREATE INDEX idx_snd_file_chunk_replica_recipients_snd_file_chunk_replica_id ON snd_file_chunk_replica_recipients(snd_file_chunk_replica_id);
+|]
 
-CREATE TABLE snd_file_descriptions (
-  snd_file_description_id INTEGER PRIMARY KEY,
-  snd_file_id INTEGER NOT NULL REFERENCES snd_files ON DELETE CASCADE,
-  sender INTEGER NOT NULL, -- 1 for sender file description
-  descr_text TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+down_m20230401_snd_files :: Query
+down_m20230401_snd_files =
+  [sql|
+DROP INDEX idx_snd_file_chunk_replica_recipients_snd_file_chunk_replica_id;
+DROP TABLE snd_file_chunk_replica_recipients;
 
-CREATE INDEX idx_snd_file_descriptions_snd_file_id ON snd_file_descriptions(snd_file_id);
+DROP INDEX idx_snd_file_chunk_replicas_snd_file_chunk_id;
+DROP INDEX idx_snd_file_chunk_replicas_xftp_server_id;
+DROP TABLE snd_file_chunk_replicas;
+
+DROP INDEX idx_snd_file_chunks_snd_file_id;
+DROP TABLE snd_file_chunks;
+
+DROP INDEX idx_snd_files_user_id;
+DROP TABLE snd_files;
 |]

@@ -53,6 +53,9 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
+    agentXFTPCreateChunk,
+    agentXFTPUploadChunk,
+    agentXFTPAddRecipients,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -119,12 +122,12 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
-import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..), XFTPClientError)
+import Simplex.FileTransfer.Client (XFTPChunkSpec, XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, XFTPErrorType (DIGEST))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
-import Simplex.FileTransfer.Types (RcvFileChunkReplica (..))
+import Simplex.FileTransfer.Types (RcvFileChunkReplica (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
@@ -163,8 +166,11 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
+    RecipientId,
     SMPMsgMeta (..),
+    SenderId,
     SndPublicVerifyKey,
+    XFTPServer,
     XFTPServerWithAuth,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -606,8 +612,8 @@ closeClient_ c cVar = do
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 
-closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> RcvFileChunkReplica -> m ()
-closeXFTPServerClient c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId} =
+closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> ChunkReplicaId -> m ()
+closeXFTPServerClient c userId server (ChunkReplicaId fId) =
   mkTransportSession c userId server fId >>= liftIO . closeClient c xftpClients
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
@@ -1063,6 +1069,18 @@ agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
 agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
 agentXFTPDownloadChunk c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
   withXFTPClient c (userId, server, fId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+
+agentXFTPCreateChunk :: AgentMonad m => AgentClient -> UserId -> XFTPServerWithAuth -> C.APrivateSignKey -> FileInfo -> NonEmpty C.APublicVerifyKey -> m (SenderId, NonEmpty RecipientId)
+agentXFTPCreateChunk c userId srv spKey file rcps =
+  undefined
+
+agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
+agentXFTPUploadChunk c usedId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  undefined
+
+agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> SndFileChunkReplica -> NonEmpty C.APublicVerifyKey -> m (NonEmpty RecipientId)
+agentXFTPAddRecipients c usedId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} rcps =
+  undefined
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do

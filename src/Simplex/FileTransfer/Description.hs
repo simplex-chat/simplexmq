@@ -25,6 +25,7 @@ module Simplex.FileTransfer.Description
     YAMLFileDescription (..), -- for tests
     YAMLServerReplicas (..), -- for tests
     validateFileDescription,
+    validateFileDescription',
     groupReplicasByServer,
     replicaServer,
     fdSeparator,
@@ -201,6 +202,17 @@ validateFileDescription = \case
     | chunkNos /= [1 .. length chunks] -> Left "chunk numbers are not sequential"
     | chunksSize chunks /= unFileSize size -> Left "chunks total size is different than file size"
     | otherwise -> Right $ AVFD (ValidFD fd)
+    where
+      chunkNos = map (chunkNo :: FileChunk -> Int) chunks
+      chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
+
+-- TODO refactor
+validateFileDescription' :: FileDescription p -> Either String (ValidFileDescription p)
+validateFileDescription' = \case
+  fd@FileDescription {size, chunks}
+    | chunkNos /= [1 .. length chunks] -> Left "chunk numbers are not sequential"
+    | chunksSize chunks /= unFileSize size -> Left "chunks total size is different than file size"
+    | otherwise -> Right $ ValidFD fd
     where
       chunkNos = map (chunkNo :: FileChunk -> Int) chunks
       chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
