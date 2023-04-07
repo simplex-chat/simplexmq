@@ -22,7 +22,8 @@ module Simplex.FileTransfer.Client.Main
     chunkSize3,
     maxFileSize,
     fileSizeLen,
-    getChunkInfo,
+    getChunkDigest,
+    SentRecipientReplica (..),
   )
 where
 
@@ -33,6 +34,7 @@ import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
@@ -408,11 +410,15 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       pure (fdRcvPaths, fdSndPath)
 
 getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> IO FileInfo
-getChunkInfo sndKey XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
+getChunkInfo sndKey spec@XFTPChunkSpec {chunkSize} = do
+  digest <- getChunkDigest spec
+  pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
+
+getChunkDigest :: XFTPChunkSpec -> IO ByteString
+getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
   withFile chunkPath ReadMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    digest <- LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
-    pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
+    LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =

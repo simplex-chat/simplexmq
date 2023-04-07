@@ -2137,7 +2137,7 @@ getSndFile db sndFileId = runExceptT $ do
         replicas' <- getChunkReplicas sndChunkId
         pure (chunk {replicas = replicas'} :: SndFileChunk)
       where
-        toChunk :: (Int64, Int, Int64, Word32, Maybe FileDigest) -> SndFileChunk
+        toChunk :: (Int64, Int, Int64, Word32, FileDigest) -> SndFileChunk
         toChunk (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) =
           let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
            in SndFileChunk {sndFileId, sndFileEntityId, userId, numRecipients, sndChunkId, chunkNo, chunkSpec, filePrefixPath, digest, replicas = []}
@@ -2203,23 +2203,21 @@ updateSndFileStatus db sndFileId status = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE snd_files SET status = ?, updated_at = ? WHERE snd_file_id = ?" (status, updatedAt, sndFileId)
 
-updateSndFileEncrypted :: DB.Connection -> DBSndFileId -> FileDigest -> [XFTPChunkSpec] -> IO ()
-updateSndFileEncrypted db sndFileId digest chunkSpecs = do
+updateSndFileEncrypted :: DB.Connection -> DBSndFileId -> FileDigest -> [(XFTPChunkSpec, FileDigest)] -> IO ()
+updateSndFileEncrypted db sndFileId digest chunkSpecsDigests = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE snd_files SET status = ?, digest = ?, updated_at = ? WHERE snd_file_id = ?" (SFSEncrypted, digest, updatedAt, sndFileId)
-  forM_ (zip [1 ..] chunkSpecs) $ \(chunkNo :: Int, XFTPChunkSpec {chunkOffset, chunkSize}) ->
-    DB.execute db "INSERT INTO snd_file_chunks (snd_file_id, chunk_no, chunk_offset, chunk_size) VALUES (?,?,?,?)" (sndFileId, chunkNo, chunkOffset, chunkSize)
+  forM_ (zip [1 ..] chunkSpecsDigests) $ \(chunkNo :: Int, (XFTPChunkSpec {chunkOffset, chunkSize}, chunkDigest)) ->
+    DB.execute db "INSERT INTO snd_file_chunks (snd_file_id, chunk_no, chunk_offset, chunk_size, digest) VALUES (?,?,?,?,?)" (sndFileId, chunkNo, chunkOffset, chunkSize, chunkDigest)
 
 updateSndFileComplete :: DB.Connection -> DBSndFileId -> IO ()
 updateSndFileComplete db sndFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE snd_files SET prefix_path = NULL, status = ?, updated_at = ? WHERE snd_file_id = ?" (SFSComplete, updatedAt, sndFileId)
 
-createSndFileReplica :: DB.Connection -> Int64 -> FileDigest -> XFTPServer -> ChunkReplicaId -> C.APrivateSignKey -> [(ChunkReplicaId, C.APrivateSignKey)] -> IO ()
-createSndFileReplica db sndChunkId digest xftpServer sndId spKey rcvIdsKeys = do
+createSndFileReplica :: DB.Connection -> Int64 -> XFTPServer -> ChunkReplicaId -> C.APrivateSignKey -> [(ChunkReplicaId, C.APrivateSignKey)] -> IO ()
+createSndFileReplica db sndChunkId xftpServer sndId spKey rcvIdsKeys = do
   srvId <- createXFTPServer_ db xftpServer
-  updatedAt <- getCurrentTime
-  DB.execute db "UPDATE snd_file_chunks SET digest = ?, updated_at = ? WHERE snd_file_chunk_id = ?" (digest, updatedAt, sndChunkId)
   DB.execute
     db
     [sql|
@@ -2267,7 +2265,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} = do
       pure replica {rcvIdsKeys}
     pure (chunk {replicas = replicas'} :: SndFileChunk)
   where
-    toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, Maybe FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
+    toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
     toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
       let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
        in SndFileChunk

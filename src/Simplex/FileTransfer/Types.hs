@@ -169,7 +169,7 @@ data SndFileChunk = SndFileChunk
     chunkNo :: Int,
     chunkSpec :: XFTPChunkSpec,
     filePrefixPath :: FilePath,
-    digest :: Maybe FileDigest,
+    digest :: FileDigest,
     replicas :: [SndFileChunkReplica]
   }
   deriving (Eq, Show)

@@ -36,9 +36,10 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:))
 import Data.Int (Int64)
-import Data.List (foldl', isSuffixOf, partition)
+import Data.List (foldl', isSuffixOf, partition, sortOn)
 import Data.List.NonEmpty (nonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
@@ -371,9 +372,9 @@ runXFTPSndPrepareWorker c doWork = do
             when (status == SFSEncrypting) $
               whenM (doesFileExist fsEncPath) $ removeFile fsEncPath
             withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
-            (digest, chunkSpecs) <- encryptFileForUpload sndFile encPath
+            (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile encPath
             withStore c $ \db -> do
-              updateSndFileEncrypted db sndFileId digest chunkSpecs
+              updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
               getSndFile db sndFileId
           else pure sndFile
       maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
@@ -382,7 +383,7 @@ runXFTPSndPrepareWorker c doWork = do
       forM_ chunks $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
-        encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [XFTPChunkSpec])
+        encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
         encryptFileForUpload SndFile {key, nonce, filePath} encPath = do
           let fileName = takeFileName filePath
           fileSize <- fromInteger <$> getFileSize filePath
@@ -395,17 +396,17 @@ runXFTPSndPrepareWorker c doWork = do
           void $ liftError (INTERNAL . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize encPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
           let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          pure (FileDigest digest, chunkSpecs)
+          chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs
+          pure (FileDigest digest, zip chunkSpecs chunkDigests)
         createChunk :: Int -> SndFileChunk -> m ()
-        createChunk numRecipients' SndFileChunk {sndChunkId, userId, chunkSpec} = do
+        createChunk numRecipients' SndFileChunk {sndChunkId, userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chDigest} = do
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
-          ch@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
-          -- TODO with retry on temporary errors
+          let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest = chDigest}
           srvAuth@(ProtoServerWithAuth srv _) <- getServer
-          (sndId, rIds) <- agentXFTPCreateChunk c userId srvAuth spKey ch (L.map fst rKeys)
+          (sndId, rIds) <- agentXFTPCreateChunk c userId srvAuth spKey fileInfo (L.map fst rKeys)
           let rcvIdsKeys = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
-          withStore' c $ \db -> createSndFileReplica db sndChunkId (FileDigest digest) srv (ChunkReplicaId sndId) spKey rcvIdsKeys
+          withStore' c $ \db -> createSndFileReplica db sndChunkId srv (ChunkReplicaId sndId) spKey rcvIdsKeys
           addXFTPSndWorker c $ Just srv
         getServer :: m XFTPServerWithAuth
         getServer = do
@@ -484,14 +485,56 @@ runXFTPSndWorker c srv doWork = do
           either (throwError . INTERNAL) pure $ validateFileDescription' fd
           where
             toDescrChunk :: SndFileChunk -> m FileChunk
-            toDescrChunk SndFileChunk {digest = Nothing} = throwError $ INTERNAL "snd file chunk has no digest"
             toDescrChunk SndFileChunk {replicas = []} = throwError $ INTERNAL "snd file chunk has no replicas"
-            toDescrChunk ch@SndFileChunk {chunkNo, digest = Just chDigest, replicas = (SndFileChunkReplica {server, replicaId, replicaKey} : _)} = do
+            toDescrChunk ch@SndFileChunk {chunkNo, digest = chDigest, replicas = (SndFileChunkReplica {server, replicaId, replicaKey} : _)} = do
               let chunkSize = FileSize $ sndChunkSize ch
                   replicas = [FileChunkReplica {server, replicaId, replicaKey}]
               pure FileChunk {chunkNo, digest = chDigest, chunkSize, replicas}
         sndFileToRcvDescrs :: SndFile -> m [ValidFileDescription 'FRecipient]
-        sndFileToRcvDescrs SndFile {} = do
-          undefined
+        sndFileToRcvDescrs SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"
+        sndFileToRcvDescrs SndFile {chunks = []} = throwError $ INTERNAL "snd file has no chunks"
+        sndFileToRcvDescrs SndFile {digest = Just digest, key, nonce, chunks = chunks@(fstChunk : _)} = do
+          let chunkSize = FileSize $ sndChunkSize fstChunk
+              size = FileSize $ sum $ map (fromIntegral . sndChunkSize) chunks
+              fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = []}
+              fdRcvs = createRcvFileDescriptions fdRcv chunks
+          either (throwError . INTERNAL) pure $ mapM validateFileDescription' fdRcvs
+        createRcvFileDescriptions :: FileDescription 'FRecipient -> [SndFileChunk] -> [FileDescription 'FRecipient]
+        createRcvFileDescriptions fd sndChunks = map (\chunks -> (fd :: (FileDescription 'FRecipient)) {chunks}) rcvChunks
+          where
+            rcvReplicas :: [SentRecipientReplica]
+            rcvReplicas =
+              concatMap
+                ( \ch@SndFileChunk {chunkNo, digest, replicas} ->
+                    concatMap
+                      ( \SndFileChunkReplica {server, rcvIdsKeys} ->
+                          zipWith
+                            ( \rcvNo (replicaId, replicaKey) ->
+                                SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize = FileSize $ sndChunkSize ch}
+                            )
+                            [1 ..]
+                            rcvIdsKeys
+                      )
+                      replicas
+                )
+                sndChunks
+            rcvChunks :: [[FileChunk]]
+            rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
+            sortChunks :: [FileChunk] -> [FileChunk]
+            sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
+            reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
+            addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
+            addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
+              M.alter (Just . addOrChangeRecipient) rcvNo m
+              where
+                addOrChangeRecipient :: Maybe (Map Int FileChunk) -> Map Int FileChunk
+                addOrChangeRecipient = \case
+                  Just m' -> M.alter (Just . addOrChangeChunk) chunkNo m'
+                  _ -> M.singleton chunkNo $ FileChunk {chunkNo, digest, chunkSize, replicas = [replica']}
+                addOrChangeChunk :: Maybe FileChunk -> FileChunk
+                addOrChangeChunk = \case
+                  Just ch@FileChunk {replicas} -> ch {replicas = replica' : replicas}
+                  _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica']}
+                replica' = FileChunkReplica {server, replicaId, replicaKey}
         chunkUploaded SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
