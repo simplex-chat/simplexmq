@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -48,7 +49,7 @@ import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileInfo (..), FileParty (..), FilePartyI, SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), FilePartyI, SFileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -186,7 +187,7 @@ runXFTPRcvWorker c srv doWork = do
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
-      agentXFTPDownloadChunk c userId replica chunkSpec
+      agentXFTPDownloadChunk c userId rcvChunkId replica chunkSpec
       (complete, progress) <- withStore c $ \db -> runExceptT $ do
         RcvFile {size = FileSize total, chunks} <-
           ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId relChunkPath
@@ -398,15 +399,11 @@ runXFTPSndPrepareWorker c doWork = do
           chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs
           pure (FileDigest digest, zip chunkSpecs chunkDigests)
         createChunk :: Int -> SndFileChunk -> m ()
-        createChunk numRecipients' SndFileChunk {sndChunkId, userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chDigest} = do
-          (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
-          rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
-          let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest = chDigest}
-          srvAuth@(ProtoServerWithAuth srv _) <- getServer
-          (sndId, rIds) <- agentXFTPCreateChunk c userId srvAuth spKey fileInfo (L.map fst rKeys)
-          let rcvIdsKeys = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
-          withStore' c $ \db -> createSndFileReplica db sndChunkId srv (ChunkReplicaId sndId) spKey rcvIdsKeys
-          addXFTPSndWorker c $ Just srv
+        createChunk numRecipients' ch = do
+          srv@(ProtoServerWithAuth server _) <- getServer
+          replica <- agentXFTPNewChunk c ch numRecipients' srv
+          withStore' c $ \db -> createSndFileReplica db ch replica
+          addXFTPSndWorker c $ Just server
         getServer :: m XFTPServerWithAuth
         getServer = do
           -- TODO get user servers from config
