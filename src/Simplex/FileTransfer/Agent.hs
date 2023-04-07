@@ -65,7 +65,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth, protoServer, sameSrvAddr')
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tryError, tshow, whenM)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
 import System.FilePath (takeFileName, (</>))
 import System.Random (randomR)
 import UnliftIO
