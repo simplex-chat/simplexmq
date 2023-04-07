@@ -482,11 +482,11 @@ runXFTPSndWorker c srv doWork = do
           -- snd description
           sndDescrChunks <- mapM toSndDescrChunk chunks
           let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks}
-          validFdSnd <- either (throwError . INTERNAL) pure $ validateFileDescription' fdSnd
+          validFdSnd <- either (throwError . INTERNAL) pure $ validateFileDescription fdSnd
           -- rcv descriptions
           let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = []}
               fdRcvs = createRcvFileDescriptions fdRcv chunks
-          validFdRcvs <- either (throwError . INTERNAL) pure $ mapM validateFileDescription' fdRcvs
+          validFdRcvs <- either (throwError . INTERNAL) pure $ mapM validateFileDescription fdRcvs
           pure (validFdSnd, validFdRcvs)
         toSndDescrChunk :: SndFileChunk -> m FileChunk
         toSndDescrChunk SndFileChunk {replicas = []} = throwError $ INTERNAL "snd file chunk has no replicas"

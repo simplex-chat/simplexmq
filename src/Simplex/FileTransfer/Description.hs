@@ -25,7 +25,6 @@ module Simplex.FileTransfer.Description
     YAMLFileDescription (..), -- for tests
     YAMLServerReplicas (..), -- for tests
     validateFileDescription,
-    validateFileDescription',
     groupReplicasByServer,
     replicaServer,
     fdSeparator,
@@ -183,7 +182,7 @@ instance FilePartyI p => StrEncoding (ValidFileDescription p) where
 
 instance StrEncoding AValidFileDescription where
   strEncode (AVFD fd) = strEncode fd
-  strDecode = validateFileDescription <=< strDecode
+  strDecode = (\(AFD fd) -> AVFD <$> validateFileDescription fd) <=< strDecode
   strP = strDecode <$?> A.takeByteString
 
 instance FilePartyI p => StrEncoding (FileDescription p) where
@@ -196,26 +195,14 @@ instance StrEncoding AFileDescription where
   strDecode = decodeFileDescription <=< first show . Y.decodeEither'
   strP = strDecode <$?> A.takeByteString
 
-validateFileDescription :: AFileDescription -> Either String AValidFileDescription
-validateFileDescription = \case
-  AFD fd@FileDescription {size, chunks}
-    | chunkNos /= [1 .. length chunks] -> Left "chunk numbers are not sequential"
-    | chunksSize chunks /= unFileSize size -> Left "chunks total size is different than file size"
-    | otherwise -> Right $ AVFD (ValidFD fd)
-    where
-      chunkNos = map (chunkNo :: FileChunk -> Int) chunks
-      chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
-
--- TODO refactor
-validateFileDescription' :: FileDescription p -> Either String (ValidFileDescription p)
-validateFileDescription' = \case
-  fd@FileDescription {size, chunks}
-    | chunkNos /= [1 .. length chunks] -> Left "chunk numbers are not sequential"
-    | chunksSize chunks /= unFileSize size -> Left "chunks total size is different than file size"
-    | otherwise -> Right $ ValidFD fd
-    where
-      chunkNos = map (chunkNo :: FileChunk -> Int) chunks
-      chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
+validateFileDescription :: FileDescription p -> Either String (ValidFileDescription p)
+validateFileDescription fd@FileDescription {size, chunks}
+  | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
+  | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
+  | otherwise = Right $ ValidFD fd
+  where
+    chunkNos = map (chunkNo :: FileChunk -> Int) chunks
+    chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription p -> YAMLFileDescription
 encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks} =
