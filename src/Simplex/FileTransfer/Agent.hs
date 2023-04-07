@@ -421,6 +421,7 @@ runXFTPSndPrepareWorker c doWork = do
               withNextSrv usedSrvs [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
                 pure (replica, srvAuth)
+            -- TODO refactor with SMP
             withNextSrv :: TVar [XFTPServer] -> [XFTPServer] -> (XFTPServerWithAuth -> m a) -> m a
             withNextSrv usedSrvs initUsed action = do
               used <- readTVarIO usedSrvs
