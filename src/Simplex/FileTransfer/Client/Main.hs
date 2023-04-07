@@ -64,7 +64,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, SndPublicVerifyKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (ifM, tshow, whenM)
 import System.Exit (exitFailure)
@@ -328,7 +328,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519)
-          ch@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
+          digest <- liftIO $ getChunkDigest chunkSpec
+          let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
           withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
@@ -408,11 +409,6 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       let fdSndPath = outDir </> "snd.xftp.private"
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
-
-getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> IO FileInfo
-getChunkInfo sndKey spec@XFTPChunkSpec {chunkSize} = do
-  digest <- getChunkDigest spec
-  pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
 
 getChunkDigest :: XFTPChunkSpec -> IO ByteString
 getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =

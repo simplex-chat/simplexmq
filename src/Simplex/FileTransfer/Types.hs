@@ -177,6 +177,14 @@ data SndFileChunk = SndFileChunk
 sndChunkSize :: SndFileChunk -> Word32
 sndChunkSize SndFileChunk {chunkSpec = XFTPChunkSpec {chunkSize}} = chunkSize
 
+data NewSndChunkReplica = NewSndChunkReplica
+  { server :: XFTPServer,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey,
+    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateSignKey)]
+  }
+  deriving (Eq, Show)
+
 data SndFileChunkReplica = SndFileChunkReplica
   { sndChunkReplicaId :: Int64,
     server :: XFTPServer,

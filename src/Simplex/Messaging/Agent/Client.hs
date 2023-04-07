@@ -53,7 +53,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
-    agentXFTPCreateChunk,
+    agentXFTPNewChunk,
     agentXFTPUploadChunk,
     agentXFTPAddRecipients,
     agentCbEncrypt,
@@ -108,6 +108,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (foldl', partition)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -122,12 +123,12 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
-import Simplex.FileTransfer.Client (XFTPChunkSpec, XFTPClient, XFTPClientConfig (..), XFTPClientError)
+import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
-import Simplex.FileTransfer.Description (ChunkReplicaId (..), kb)
+import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, XFTPErrorType (DIGEST))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
-import Simplex.FileTransfer.Types (RcvFileChunkReplica (..), SndFileChunkReplica (..))
+import Simplex.FileTransfer.Types (NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
@@ -168,7 +169,6 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     RecipientId,
     SMPMsgMeta (..),
-    SenderId,
     SndPublicVerifyKey,
     XFTPServer,
     XFTPServerWithAuth,
@@ -669,13 +669,13 @@ withNtfClient c srv = withLogClient c (0, srv, Nothing)
 withXFTPClient ::
   (AgentMonad m, ProtocolServerClient err msg) =>
   AgentClient ->
-  (UserId, ProtoServer msg, EntityId) ->
+  (UserId, ProtoServer msg, Int64) ->
   ByteString ->
   (Client msg -> ExceptT (ProtocolClientError err) IO b) ->
   m b
-withXFTPClient c (userId, srv, fId) cmdStr action = do
-  tSess <- mkTransportSession c userId srv fId
-  withLogClient c tSess (strEncode fId) cmdStr action
+withXFTPClient c (userId, srv, chunkId) cmdStr action = do
+  tSess <- mkTransportSession c userId srv $ bshow chunkId
+  withLogClient c tSess (bshow chunkId) cmdStr action
 
 liftClient :: (AgentMonad m, Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> m a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
@@ -1066,13 +1066,21 @@ agentNtfDeleteSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
 
-agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
-agentXFTPDownloadChunk c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  withXFTPClient c (userId, server, fId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
+agentXFTPDownloadChunk c userId rcvChunkId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, rcvChunkId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
 
-agentXFTPCreateChunk :: AgentMonad m => AgentClient -> UserId -> XFTPServerWithAuth -> C.APrivateSignKey -> FileInfo -> NonEmpty C.APublicVerifyKey -> m (SenderId, NonEmpty RecipientId)
-agentXFTPCreateChunk c userId srv spKey file rcps =
-  undefined
+agentXFTPNewChunk :: AgentMonad m => AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> m NewSndChunkReplica
+agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest digest} numRecipients' (ProtoServerWithAuth srv auth) = do
+  (sndKey, replicaKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
+  let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
+  logServer "-->" c srv "" "FNEW"
+  tSess <- mkTransportSession c userId srv $ bshow sndChunkId
+  (sndId, rIds) <- withClient c tSess "FNEW" $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
+  logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
+  let rcvIdsKeys = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
+  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys}
 
 agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
 agentXFTPUploadChunk c usedId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
