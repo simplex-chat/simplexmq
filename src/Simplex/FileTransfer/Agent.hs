@@ -37,8 +37,8 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:))
 import Data.Int (Int64)
-import Data.List (foldl', isSuffixOf, partition, sortOn)
-import Data.List.NonEmpty (nonEmpty)
+import Data.List (deleteFirstsBy, foldl', isSuffixOf, partition, sortOn, (\\))
+import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
@@ -62,11 +62,12 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth, protoServer, sameSrvAddr')
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
+import Simplex.Messaging.Util (liftError, liftIOEither, tryError, tshow, whenM)
 import System.FilePath (takeFileName, (</>))
+import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -364,7 +365,7 @@ runXFTPSndPrepareWorker c doWork = do
     prepareFile :: SndFile -> m ()
     prepareFile SndFile {prefixPath = Nothing} =
       throwError $ INTERNAL "no prefix path"
-    prepareFile sndFile@SndFile {sndFileId, prefixPath = Just ppath, status} = do
+    prepareFile sndFile@SndFile {sndFileId, sndFileEntityId, userId, prefixPath = Just ppath, status} = do
       SndFile {numRecipients, chunks} <-
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
           then do
@@ -400,15 +401,60 @@ runXFTPSndPrepareWorker c doWork = do
           pure (FileDigest digest, zip chunkSpecs chunkDigests)
         createChunk :: Int -> SndFileChunk -> m ()
         createChunk numRecipients' ch = do
-          srvAuth@(ProtoServerWithAuth srv _) <- getServer
-          replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
+          atomically $ beginAgentOperation c AOSndNetwork
+          (replica, ProtoServerWithAuth srv _) <- tryCreate
+          -- atomically $ endAgentOperation c AOSndNetwork
           withStore' c $ \db -> createSndFileReplica db ch replica
           addXFTPSndWorker c $ Just srv
-        getServer :: m XFTPServerWithAuth
-        getServer = do
-          -- TODO get user servers from config
-          -- TODO choose next server (per chunk? per file?)
-          undefined
+          where
+            tryCreate = do
+              -- TODO different retry interval - don't increase retry on different servers?
+              ri <- asks $ reconnectInterval . config
+              usedSrvs <- newTVarIO ([] :: [XFTPServer])
+              withRetryInterval ri $ \_ loop ->
+                createWithNextSrv usedSrvs
+                  -- `catchError` \e -> retryOnError c AOSndNetwork "XFTP prepare worker" loop (pure ()) (retryDone e) e
+                  -- TODO sndWorkerInternalError
+                  `catchError` \e -> retryCreate loop
+            -- retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just ppath) (show e)
+            createWithNextSrv usedSrvs = do
+              withNextSrv usedSrvs [] $ \srvAuth -> do
+                replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
+                pure (replica, srvAuth)
+            withNextSrv :: TVar [XFTPServer] -> [XFTPServer] -> (XFTPServerWithAuth -> m a) -> m a
+            withNextSrv usedSrvs initUsed action = do
+              used <- readTVarIO usedSrvs
+              srvAuth@(ProtoServerWithAuth srv _) <- getNextXFTPServer c userId used
+              atomically $ do
+                srvs_ <- TM.lookup userId $ xftpServers (c :: AgentClient)
+                let unused = maybe [] ((\\ used) . map protoServer . L.toList) srvs_
+                    used' = if null unused then initUsed else srv : used
+                writeTVar usedSrvs $! used'
+              action srvAuth
+            retryCreate loop = do
+              atomically $ endAgentOperation c AOSndNetwork
+              atomically $ throwWhenInactive c
+              atomically $ beginAgentOperation c AOSndNetwork
+              loop
+
+pickServer :: AgentMonad' m => NonEmpty XFTPServerWithAuth -> m XFTPServerWithAuth
+pickServer = \case
+  srv :| [] -> pure srv
+  servers -> do
+    gen <- asks randomServer
+    atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+
+getNextXFTPServer :: AgentMonad m => AgentClient -> UserId -> [XFTPServer] -> m XFTPServerWithAuth
+getNextXFTPServer c userId usedSrvs = withUserServers c userId $ \srvs ->
+  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
+    Just srvs' -> pickServer srvs'
+    _ -> pickServer srvs
+
+withUserServers :: AgentMonad m => AgentClient -> UserId -> (NonEmpty XFTPServerWithAuth -> m a) -> m a
+withUserServers AgentClient {xftpServers} userId action =
+  atomically (TM.lookup userId xftpServers) >>= \case
+    Just srvs -> action srvs
+    _ -> throwError $ INTERNAL "unknown userId - no XFTP servers"
 
 sndWorkerInternalError :: AgentMonad m => AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> String -> m ()
 sndWorkerInternalError c sndFileId sndFileEntityId prefixPath internalErrStr = do
