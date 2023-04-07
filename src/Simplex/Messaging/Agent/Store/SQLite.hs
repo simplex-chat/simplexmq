@@ -2287,8 +2287,8 @@ updateSndChunkReplicaDelay db replicaId delay = do
   DB.execute db "UPDATE snd_file_chunk_replicas SET delay = ?, retries = retries + 1, updated_at = ? WHERE snd_file_chunk_replica_id = ?" (delay, updatedAt, replicaId)
 
 addSndChunkReplicaRecipients :: DB.Connection -> SndFileChunkReplica -> [(ChunkReplicaId, C.APrivateSignKey)] -> IO SndFileChunkReplica
-addSndChunkReplicaRecipients db r@SndFileChunkReplica {sndChunkReplicaId, rcvIdsKeys} rcvIdsKeys' = do
-  forM_ rcvIdsKeys' $ \(rcvId, rcvKey) -> do
+addSndChunkReplicaRecipients db r@SndFileChunkReplica {sndChunkReplicaId} rcvIdsKeys = do
+  forM_ rcvIdsKeys $ \(rcvId, rcvKey) -> do
     DB.execute
       db
       [sql|
@@ -2297,7 +2297,8 @@ addSndChunkReplicaRecipients db r@SndFileChunkReplica {sndChunkReplicaId, rcvIds
         VALUES (?,?,?)
       |]
       (sndChunkReplicaId, rcvId, rcvKey)
-  pure (r :: SndFileChunkReplica) {rcvIdsKeys = rcvIdsKeys <> rcvIdsKeys'}
+  rcvIdsKeys' <- getChunkReplicaRecipients_ db sndChunkReplicaId
+  pure (r :: SndFileChunkReplica) {rcvIdsKeys = rcvIdsKeys'}
 
 updateSndChunkReplicaStatus :: DB.Connection -> Int64 -> SndFileReplicaStatus -> IO ()
 updateSndChunkReplicaStatus db replicaId status = do
