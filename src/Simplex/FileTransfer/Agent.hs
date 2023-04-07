@@ -367,12 +367,11 @@ runXFTPSndPrepareWorker c doWork = do
       SndFile {numRecipients, chunks} <-
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
           then do
-            let encPath = sndFileEncPath ppath
-            fsEncPath <- toFSFilePath encPath
+            fsEncPath <- toFSFilePath $ sndFileEncPath ppath
             when (status == SFSEncrypting) $
               whenM (doesFileExist fsEncPath) $ removeFile fsEncPath
             withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
-            (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile encPath
+            (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
             withStore c $ \db -> do
               updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
               getSndFile db sndFileId
@@ -384,7 +383,7 @@ runXFTPSndPrepareWorker c doWork = do
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
         encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
-        encryptFileForUpload SndFile {key, nonce, filePath} encPath = do
+        encryptFileForUpload SndFile {key, nonce, filePath} fsEncPath = do
           let fileName = takeFileName filePath
           fileSize <- fromInteger <$> getFileSize filePath
           when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
@@ -393,9 +392,9 @@ runXFTPSndPrepareWorker c doWork = do
               chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
               chunkSizes' = map fromIntegral chunkSizes
               encSize = sum chunkSizes'
-          void $ liftError (INTERNAL . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize encPath
-          digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
-          let chunkSpecs = prepareChunkSpecs encPath chunkSizes
+          void $ liftError (INTERNAL . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize fsEncPath
+          digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
+          let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs
           pure (FileDigest digest, zip chunkSpecs chunkDigests)
         createChunk :: Int -> SndFileChunk -> m ()
