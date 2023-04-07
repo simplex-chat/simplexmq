@@ -414,7 +414,7 @@ runXFTPSndPrepareWorker c doWork = do
               withRetryInterval ri $ \_ loop ->
                 createWithNextSrv usedSrvs
                   -- `catchError` \e -> retryOnError c AOSndNetwork "XFTP prepare worker" loop (pure ()) (retryDone e) e
-                  -- TODO sndWorkerInternalError
+                  -- TODO sndWorkerInternalError on permanent error
                   `catchError` \e -> retryCreate loop
             -- retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just ppath) (show e)
             createWithNextSrv usedSrvs = do
