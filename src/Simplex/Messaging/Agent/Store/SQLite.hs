@@ -2216,10 +2216,8 @@ updateSndFileComplete db sndFileId = do
   DB.execute db "UPDATE snd_files SET prefix_path = NULL, status = ?, updated_at = ? WHERE snd_file_id = ?" (SFSComplete, updatedAt, sndFileId)
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
-createSndFileReplica db SndFileChunk {sndChunkId, digest} NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
+createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
   srvId <- createXFTPServer_ db server
-  updatedAt <- getCurrentTime
-  DB.execute db "UPDATE snd_file_chunks SET digest = ?, updated_at = ? WHERE snd_file_chunk_id = ?" (digest, updatedAt, sndChunkId)
   DB.execute
     db
     [sql|
