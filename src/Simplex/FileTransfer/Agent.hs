@@ -443,11 +443,11 @@ runXFTPSndWorker c srv doWork = do
               withStore' c $ \db -> updateRcvChunkReplicaDelay db sndChunkReplicaId replicaDelay
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
-    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}} replica = do
+    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, sndChunkId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
-      agentXFTPUploadChunk c userId replica' chunkSpec'
+      agentXFTPUploadChunk c userId sndChunkId replica' chunkSpec'
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
@@ -464,12 +464,10 @@ runXFTPSndWorker c srv doWork = do
           | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
-            maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
+            maxRecipients <- asks $ xftpMaxRecipientsPerRequest . config
             let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
-            rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
-            rIds <- agentXFTPAddRecipients c userId cr (L.map fst rKeys)
-            let rcvIdsKeys' = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
-            cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr rcvIdsKeys'
+            rcvIdsKeys' <- agentXFTPAddRecipients c userId sndChunkId cr numRecipients'
+            cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
             addRecipients ch cr'
         sndFileToDescrs :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
         sndFileToDescrs SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"

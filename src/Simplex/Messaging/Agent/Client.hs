@@ -1071,24 +1071,35 @@ agentXFTPDownloadChunk c userId rcvChunkId RcvFileChunkReplica {server, replicaI
   withXFTPClient c (userId, server, rcvChunkId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
 
 agentXFTPNewChunk :: AgentMonad m => AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> m NewSndChunkReplica
-agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest digest} numRecipients' (ProtoServerWithAuth srv auth) = do
+agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest digest} n (ProtoServerWithAuth srv auth) = do
+  rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
-  rKeys <- liftIO $ L.fromList <$> replicateM numRecipients' (C.generateSignatureKeyPair C.SEd25519)
   let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
   logServer "-->" c srv "" "FNEW"
   tSess <- mkTransportSession c userId srv $ bshow sndChunkId
   (sndId, rIds) <- withClient c tSess "FNEW" $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
   logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
-  let rcvIdsKeys = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
-  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys}
+  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
 
-agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
-agentXFTPUploadChunk c usedId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  undefined
+agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
+agentXFTPUploadChunk c usedId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (usedId, server, sndChunkId) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
 
-agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> SndFileChunkReplica -> NonEmpty C.APublicVerifyKey -> m (NonEmpty RecipientId)
-agentXFTPAddRecipients c usedId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} rcps =
-  undefined
+agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateSignKey))
+agentXFTPAddRecipients c usedId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
+  rKeys <- xftpRcvKeys n
+  rIds <- withXFTPClient c (usedId, server, sndChunkId) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
+  pure $ xftpRcvIdsKeys rIds rKeys
+
+xftpRcvKeys :: AgentMonad m => Int -> m (NonEmpty C.ASignatureKeyPair)
+xftpRcvKeys n = do
+  rKeys <- liftIO $ replicateM n $ C.generateSignatureKeyPair C.SEd25519
+  case L.nonEmpty rKeys of
+    Just rKeys' -> pure rKeys'
+    _ -> throwError $ INTERNAL "non-positive number of recipients"
+
+xftpRcvIdsKeys :: NonEmpty ByteString -> NonEmpty C.ASignatureKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateSignKey)
+xftpRcvIdsKeys rIds rKeys = L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
