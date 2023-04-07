@@ -447,9 +447,11 @@ runXFTPSndWorker c srv doWork = do
               withStore' c $ \db -> updateRcvChunkReplicaDelay db sndChunkReplicaId replicaDelay
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
-    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec} replica = do
+    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
-      agentXFTPUploadChunk c userId replica' chunkSpec
+      fsFilePath <- toFSFilePath filePath
+      let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
+      agentXFTPUploadChunk c userId replica' chunkSpec'
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
