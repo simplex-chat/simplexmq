@@ -437,6 +437,7 @@ runXFTPSndPrepareWorker c doWork = do
               atomically $ beginAgentOperation c AOSndNetwork
               loop
 
+-- TODO refactor with SMP
 pickServer :: AgentMonad' m => NonEmpty XFTPServerWithAuth -> m XFTPServerWithAuth
 pickServer = \case
   srv :| [] -> pure srv
