@@ -12,11 +12,14 @@ module Simplex.Messaging.Transport.Server
   )
 where
 
+import Control.Concurrent.Async (mapConcurrently_)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
+import Data.Functor (($>))
+import Data.List (sortOn)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -51,8 +54,10 @@ runTCPServer started port server = do
   clientId <- newTVarIO 0
   E.bracket
     (startTCPServer started port)
-    (closeServer started clients)
-    $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
+    (mapM $ closeServer started clients)
+    (mapConcurrently_ $ runServer clients clientId)
+  where
+    runServer clients clientId sock = forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       -- catchAll_ is needed here in case the connection was closed earlier
       cId <- atomically $ stateTVar clientId $ \cId -> let cId' = cId + 1 in (cId', cId')
       let closeConn _ = atomically (TM.delete cId clients) >> gracefulClose conn 5000 `catchAll_` pure ()
@@ -65,20 +70,21 @@ closeServer started clients sock = do
   close sock
   void . atomically $ tryPutTMVar started False
 
-startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
-startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
+startTCPServer :: TMVar Bool -> ServiceName -> IO [Socket]
+startTCPServer started port = withSocketsDo $ resolve >>= mapM open >>= (setStarted $>)
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in head <$> getAddrInfo (Just hints) Nothing (Just port)
+       in sortOn addrFamily <$> getAddrInfo (Just hints) Nothing (Just port)
     open addr = do
+      print addr
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
       withFdSocket sock setCloseOnExecIfNeeded
       bind sock $ addrAddress addr
       listen sock 1024
       return sock
-    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
+    setStarted = atomically (tryPutTMVar started True)
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters

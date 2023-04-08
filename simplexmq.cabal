@@ -155,6 +155,7 @@ library
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
@@ -218,6 +219,7 @@ executable ntf-server
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
@@ -282,6 +284,7 @@ executable smp-agent
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
@@ -346,6 +349,7 @@ executable smp-server
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
@@ -410,6 +414,7 @@ executable xftp
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
@@ -474,6 +479,7 @@ executable xftp-server
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
@@ -567,6 +573,7 @@ test-suite simplexmq-test
     , http-types ==0.12.*
     , http2 ==4.1.*
     , ini ==0.4.1
+    , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , main-tester ==0.2.*
     , memory ==0.15.*
