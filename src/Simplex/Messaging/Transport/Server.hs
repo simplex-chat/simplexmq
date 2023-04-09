@@ -1,6 +1,8 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.Server
   ( runTransportServer,
@@ -28,12 +30,13 @@ import qualified Network.TLS as T
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_)
+import Simplex.Messaging.Util (catchAll_, tshow)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Control.Logger.Simple
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
@@ -71,17 +74,19 @@ closeServer started clients sock = do
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO [Socket]
-startTCPServer started port = withSocketsDo $ resolve >>= mapM open >>= (setStarted $>)
+startTCPServer started port = withSocketsDo $ resolve >>= mapM open . filter internet >>= (setStarted $>)
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in sortOn addrFamily <$> getAddrInfo (Just hints) Nothing (Just port)
-    open addr = do
-      print addr
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+       in getAddrInfo (Just hints) Nothing (Just port)
+    internet AddrInfo {addrFamily} = addrFamily == AF_INET || addrFamily == AF_INET6
+    open addr@AddrInfo {addrFamily, addrAddress} = do
+      sock <- socket addrFamily (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
+      when (addrFamily == AF_INET6) $ setSocketOption sock IPv6Only 1
       withFdSocket sock setCloseOnExecIfNeeded
-      bind sock $ addrAddress addr
+      logInfo $ "binding to " <> tshow addrAddress
+      bind sock addrAddress
       listen sock 1024
       return sock
     setStarted = atomically (tryPutTMVar started True)
