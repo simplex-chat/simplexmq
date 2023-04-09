@@ -35,6 +35,9 @@ import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 import Control.Logger.Simple
+import Data.List (find)
+import Data.Maybe (fromJust)
+import Data.Functor (($>))
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
@@ -55,10 +58,8 @@ runTCPServer started port server = do
   clientId <- newTVarIO 0
   E.bracket
     (startTCPServer started port)
-    (mapM $ closeServer started clients)
-    (mapConcurrently_ $ runServer clients clientId)
-  where
-    runServer clients clientId sock = forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
+    (closeServer started clients)
+    $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       -- catchAll_ is needed here in case the connection was closed earlier
       cId <- atomically $ stateTVar clientId $ \cId -> let cId' = cId + 1 in (cId', cId')
       let closeConn _ = atomically (TM.delete cId clients) >> gracefulClose conn 5000 `catchAll_` pure ()
@@ -71,23 +72,22 @@ closeServer started clients sock = do
   close sock
   void . atomically $ tryPutTMVar started False
 
-startTCPServer :: TMVar Bool -> ServiceName -> IO [Socket]
-startTCPServer started port = withSocketsDo $  (<$ setStarted) =<< mapM open . filter inet =<< resolve
+startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
+startTCPServer started port = withSocketsDo $  resolve >>= open >>= (setStarted $>)
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in getAddrInfo (Just hints) Nothing (Just port)
-    inet AddrInfo {addrFamily} = addrFamily == AF_INET || addrFamily == AF_INET6
-    open AddrInfo {addrFamily, addrSocketType, addrProtocol, addrAddress} = do
-      sock <- socket addrFamily addrSocketType addrProtocol
+       in fromJust . find inet6 <$> getAddrInfo (Just hints) Nothing (Just port)
+    inet6 = (== AF_INET6) . addrFamily
+    open a = do
+      sock <- socket (addrFamily a) (addrSocketType a) (addrProtocol a)
       setSocketOption sock ReuseAddr 1
-      when (addrFamily == AF_INET6) $ setSocketOption sock IPv6Only 1
       withFdSocket sock setCloseOnExecIfNeeded
-      logInfo $ "binding to " <> tshow addrAddress
-      bind sock addrAddress
+      logInfo $ "binding to " <> tshow (addrAddress a)
+      bind sock $ addrAddress a
       listen sock 1024
-      return sock
-    setStarted = atomically (tryPutTMVar started True)
+      pure sock
+    setStarted = atomically $ tryPutTMVar started True
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
