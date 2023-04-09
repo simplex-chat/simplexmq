@@ -20,8 +20,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
-import Data.Functor (($>))
-import Data.List (sortOn)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -74,14 +72,14 @@ closeServer started clients sock = do
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO [Socket]
-startTCPServer started port = withSocketsDo $ resolve >>= mapM open . filter internet >>= (setStarted $>)
+startTCPServer started port = withSocketsDo $  (<$ setStarted) =<< mapM open . filter inet =<< resolve
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
        in getAddrInfo (Just hints) Nothing (Just port)
-    internet AddrInfo {addrFamily} = addrFamily == AF_INET || addrFamily == AF_INET6
-    open addr@AddrInfo {addrFamily, addrAddress} = do
-      sock <- socket addrFamily (addrSocketType addr) (addrProtocol addr)
+    inet AddrInfo {addrFamily} = addrFamily == AF_INET || addrFamily == AF_INET6
+    open AddrInfo {addrFamily, addrSocketType, addrProtocol, addrAddress} = do
+      sock <- socket addrFamily addrSocketType addrProtocol
       setSocketOption sock ReuseAddr 1
       when (addrFamily == AF_INET6) $ setSocketOption sock IPv6Only 1
       withFdSocket sock setCloseOnExecIfNeeded
