@@ -48,10 +48,10 @@ updateRetryInterval2 RI2State {slowInterval, fastInterval} RetryInterval2 {riSlo
 data RetryIntervalMode = RISlow | RIFast
   deriving (Eq, Show)
 
-withRetryInterval :: forall m. MonadIO m => RetryInterval -> (Int64 -> m () -> m ()) -> m ()
+withRetryInterval :: forall m a. MonadIO m => RetryInterval -> (Int64 -> m a -> m a) -> m a
 withRetryInterval ri action = callAction 0 $ initialInterval ri
   where
-    callAction :: Int64 -> Int64 -> m ()
+    callAction :: Int64 -> Int64 -> m a
     callAction elapsed delay = action delay loop
       where
         loop = do

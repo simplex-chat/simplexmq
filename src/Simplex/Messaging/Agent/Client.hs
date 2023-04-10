@@ -87,6 +87,11 @@ module Simplex.Messaging.Agent.Client
     withStore,
     withStore',
     storeError,
+    userServers,
+    pickServer,
+    getNextServer,
+    withUserServers,
+    withNextSrv,
   )
 where
 
@@ -109,7 +114,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (foldl', partition)
+import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -160,6 +165,7 @@ import Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     NtfServer,
     ProtoServer,
+    ProtoServerWithAuth (..),
     Protocol (..),
     ProtocolServer (..),
     ProtocolTypeI (..),
@@ -167,11 +173,13 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
-    RecipientId,
     SMPMsgMeta (..),
+    SProtocolType (..),
     SndPublicVerifyKey,
+    UserProtocol,
     XFTPServer,
     XFTPServerWithAuth,
+    sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
@@ -179,6 +187,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import System.Random (randomR)
 import System.Timeout (timeout)
 import UnliftIO (mapConcurrently)
 import UnliftIO.Directory (getTemporaryDirectory)
@@ -256,7 +265,7 @@ agentOperations = [ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, data
 
 data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 
-data AgentState = ASActive | ASSuspending | ASSuspended
+data AgentState = ASActive | ASSuspending | ASSuspended -- TODO rename ASActive -> ASForeground
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
@@ -1245,3 +1254,38 @@ incClientStatN c userId pc n cmd res = do
   atomically $ incStat c n statsKey
   where
     statsKey = AgentStatsKey {userId, host = strEncode $ clientTransportHost pc, clientTs = strEncode $ clientSessionTs pc, cmd, res}
+
+userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMap UserId (NonEmpty (ProtoServerWithAuth p))
+userServers c = case protocolTypeI @p of
+  SPSMP -> smpServers c
+  SPXFTP -> xftpServers c
+
+pickServer :: forall p m. (AgentMonad' m) => NonEmpty (ProtoServerWithAuth p) -> m (ProtoServerWithAuth p)
+pickServer = \case
+  srv :| [] -> pure srv
+  servers -> do
+    gen <- asks randomServer
+    atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+
+getNextServer :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> [ProtocolServer p] -> m (ProtoServerWithAuth p)
+getNextServer c userId usedSrvs = withUserServers c userId $ \srvs ->
+  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
+    Just srvs' -> pickServer srvs'
+    _ -> pickServer srvs
+
+withUserServers :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> (NonEmpty (ProtoServerWithAuth p) -> m a) -> m a
+withUserServers c userId action =
+  atomically (TM.lookup userId $ userServers c) >>= \case
+    Just srvs -> action srvs
+    _ -> throwError $ INTERNAL "unknown userId - no user servers"
+
+withNextSrv :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> ((ProtoServerWithAuth p) -> m a) -> m a
+withNextSrv c userId usedSrvs initUsed action = do
+  used <- readTVarIO usedSrvs
+  srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
+  atomically $ do
+    srvs_ <- TM.lookup userId $ userServers c
+    let unused = maybe [] ((\\ used) . map protoServer . L.toList) srvs_
+        used' = if null unused then initUsed else srv : used
+    writeTVar usedSrvs $! used'
+  action srvAuth
