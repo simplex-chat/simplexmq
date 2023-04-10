@@ -118,7 +118,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFile, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -348,7 +348,7 @@ xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-xftpSendFile c = withAgentEnv c .:. sendFileExperimental c
+xftpSendFile c = withAgentEnv c .:. sendFile c
 
 -- TODO rename setAgentForeground
 
