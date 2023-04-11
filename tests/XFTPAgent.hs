@@ -129,8 +129,8 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
       liftIO $ sfId' `shouldBe` sfId
       pure rfd1
 
-  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
   -- receive file - should not succeed with server down
+  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
     rfId <- xftpReceiveFile rcp 1 rfd
