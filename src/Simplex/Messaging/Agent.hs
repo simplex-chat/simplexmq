@@ -97,6 +97,7 @@ where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo, showText)
+import Control.Monad ((<=<))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
@@ -1596,6 +1597,7 @@ cleanupManager c@AgentClient {subQ} = do
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
+      deleteSndFilesExpired `catchError` (notify "" . SFERR)
     liftIO $ threadDelay' int
   where
     deleteConns =
@@ -1618,6 +1620,12 @@ cleanupManager c@AgentClient {subQ} = do
       forM_ rcvTmpPaths $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` dbId)
+    deleteSndFilesExpired = do
+      sndFilesTTL <- asks (sndFilesTTL . config)
+      sndExpired <- withStore' c (`getSndFilesExpired` sndFilesTTL)
+      forM_ sndExpired $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+        forM_ p $ removePath <=< toFSFilePath
+        withStore' c (`deleteSndFile'` dbId)
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 

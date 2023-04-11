@@ -75,9 +75,10 @@ startWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
 startWorkers c workDir = do
   wd <- asks $ xftpWorkDir . xftpAgent
   atomically $ writeTVar wd workDir
-  startFiles
+  startRcvFiles
+  startSndFiles
   where
-    startFiles = do
+    startRcvFiles = do
       rcvFilesTTL <- asks (rcvFilesTTL . config)
       pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
       forM_ pendingRcvServers $ \s -> addXFTPRcvWorker c (Just s)
@@ -85,6 +86,12 @@ startWorkers c workDir = do
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
       addXFTPRcvWorker c Nothing
+    startSndFiles = do
+      sndFilesTTL <- asks (sndFilesTTL . config)
+      -- start worker for files pending encryption/creation
+      addXFTPSndWorker c Nothing
+      pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
+      forM_ pendingSndServers $ \s -> addXFTPSndWorker c (Just s)
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
 closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
@@ -158,11 +165,11 @@ runXFTPRcvWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     -- TODO waitUntilNotSuspended
-    agentOperationBracket c AORcvNetwork waitUntilActive runXftpOperation
+    agentOperationBracket c AORcvNetwork waitUntilActive runXFTPOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    runXftpOperation :: m ()
-    runXftpOperation = do
+    runXFTPOperation :: m ()
+    runXFTPOperation = do
       rcvFilesTTL <- asks (rcvFilesTTL . config)
       nextChunk <- withStore' c $ \db -> getNextRcvChunkToDownload db srv rcvFilesTTL
       case nextChunk of
@@ -229,10 +236,10 @@ runXFTPRcvLocalWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     -- TODO waitUntilNotSuspended
-    runXftpOperation
+    runXFTPOperation
   where
-    runXftpOperation :: m ()
-    runXftpOperation = do
+    runXFTPOperation :: m ()
+    runXFTPOperation = do
       rcvFilesTTL <- asks (rcvFilesTTL . config)
       nextFile <- withStore' c (`getNextRcvFileToDecrypt` rcvFilesTTL)
       case nextFile of
@@ -350,11 +357,12 @@ runXFTPSndPrepareWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     -- TODO waitUntilNotSuspended
-    runXftpOperation
+    runXFTPOperation
   where
-    runXftpOperation :: m ()
-    runXftpOperation = do
-      nextFile <- withStore' c getNextSndFileToPrepare
+    runXFTPOperation :: m ()
+    runXFTPOperation = do
+      sndFilesTTL <- asks (sndFilesTTL . config)
+      nextFile <- withStore' c (`getNextSndFileToPrepare` sndFilesTTL)
       case nextFile of
         Nothing -> noWorkToDo
         Just f@SndFile {sndFileId, sndFileEntityId, prefixPath} ->
@@ -436,12 +444,13 @@ runXFTPSndWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     -- TODO waitUntilNotSuspended
-    agentOperationBracket c AOSndNetwork throwWhenInactive runXftpOperation
+    agentOperationBracket c AOSndNetwork throwWhenInactive runXFTPOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    runXftpOperation :: m ()
-    runXftpOperation = do
-      nextChunk <- withStore' c $ \db -> getNextSndChunkToUpload db srv
+    runXFTPOperation :: m ()
+    runXFTPOperation = do
+      sndFilesTTL <- asks (sndFilesTTL . config)
+      nextChunk <- withStore' c $ \db -> getNextSndChunkToUpload db srv sndFilesTTL
       case nextChunk of
         Nothing -> noWorkToDo
         Just SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
