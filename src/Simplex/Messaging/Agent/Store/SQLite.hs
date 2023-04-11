@@ -2253,7 +2253,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} = do
           JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
           JOIN snd_files f ON f.snd_file_id = c.snd_file_id
           WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-            AND r.status = ? AND r.replica_number = 1
+            AND r.replica_status = ? AND r.replica_number = 1
             AND (f.status = ? OR f.status = ?) AND f.deleted = 0
           ORDER BY r.created_at ASC
           LIMIT 1
@@ -2303,4 +2303,4 @@ addSndChunkReplicaRecipients db r@SndFileChunkReplica {sndChunkReplicaId} rcvIds
 updateSndChunkReplicaStatus :: DB.Connection -> Int64 -> SndFileReplicaStatus -> IO ()
 updateSndChunkReplicaStatus db replicaId status = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE snd_file_chunk_replicas SET status = ?, updated_at = ? WHERE snd_file_chunk_replica_id = ?" (status, updatedAt, replicaId)
+  DB.execute db "UPDATE snd_file_chunk_replicas SET replica_status = ?, updated_at = ? WHERE snd_file_chunk_replica_id = ?" (status, updatedAt, replicaId)
