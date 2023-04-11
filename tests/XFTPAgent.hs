@@ -81,7 +81,7 @@ testXFTPAgentSendReceive = withXFTPServer $ do
   rfd <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
     sfId <- xftpSendFile sndr 1 filePath 2
-    -- sfProgress sndr $ mb 18
+    sfProgress sndr $ mb 18
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr
     liftIO $ sfId' `shouldBe` sfId
     pure rfd1
@@ -121,7 +121,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
     runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
       sfId <- xftpSendFile sndr 1 filePath 2
-      -- sfProgress sndr $ mb 18
+      sfProgress sndr $ mb 18
       ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr
       liftIO $ sfId' `shouldBe` sfId
       pure rfd1
@@ -166,7 +166,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
       sfId <- xftpSendFile sndr 1 filePath 2
-      -- sfProgress sndr $ mb 18
+      sfProgress sndr $ mb 18
       ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr
       liftIO $ sfId' `shouldBe` sfId
       pure rfd1

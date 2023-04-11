@@ -134,6 +134,7 @@ module Simplex.Messaging.Agent.Store.SQLite
 
     -- Rcv files
     createRcvFile,
+    getRcvFile,
     getRcvFileByEntityId,
     updateRcvChunkReplicaDelay,
     updateRcvFileChunkReceived,
@@ -1947,12 +1948,11 @@ updateRcvChunkReplicaDelay db replicaId delay = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_file_chunk_replicas SET delay = ?, retries = retries + 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (delay, updatedAt, replicaId)
 
-updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> DBRcvFileId -> FilePath -> IO (Either StoreError RcvFile)
-updateRcvFileChunkReceived db rId cId fId chunkTmpPath = do
+updateRcvFileChunkReceived :: DB.Connection -> Int64 -> Int64 -> FilePath -> IO ()
+updateRcvFileChunkReceived db replicaId chunkId chunkTmpPath = do
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE rcv_file_chunk_replicas SET received = 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (updatedAt, rId)
-  DB.execute db "UPDATE rcv_file_chunks SET tmp_path = ?, updated_at = ? WHERE rcv_file_chunk_id = ?" (chunkTmpPath, updatedAt, cId)
-  getRcvFile db fId
+  DB.execute db "UPDATE rcv_file_chunk_replicas SET received = 1, updated_at = ? WHERE rcv_file_chunk_replica_id = ?" (updatedAt, replicaId)
+  DB.execute db "UPDATE rcv_file_chunks SET tmp_path = ?, updated_at = ? WHERE rcv_file_chunk_id = ?" (chunkTmpPath, updatedAt, chunkId)
 
 updateRcvFileStatus :: DB.Connection -> DBRcvFileId -> RcvFileStatus -> IO ()
 updateRcvFileStatus db rcvFileId status = do

@@ -195,8 +195,8 @@ runXFTPRcvWorker c srv doWork = do
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId rcvChunkId replica chunkSpec
       (complete, progress) <- withStore c $ \db -> runExceptT $ do
-        RcvFile {size = FileSize total, chunks} <-
-          ExceptT $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId rcvFileId relChunkPath
+        liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
+        RcvFile {size = FileSize total, chunks} <- ExceptT $ getRcvFile db rcvFileId
         let rcvd = receivedSize chunks
             complete = all chunkReceived chunks
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
@@ -474,13 +474,15 @@ runXFTPSndWorker c srv doWork = do
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
-      let complete = all chunkUploaded chunks
-      -- TODO calculate progress, notify SFPROG
+      let uploaded = uploadedSize chunks
+          total = totalSize chunks
+          complete = all chunkUploaded chunks
+      notify c sndFileEntityId $ SFPROG uploaded total
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
         notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
         forM_ prefixPath (removePath <=< toFSFilePath)
-        withStore' c $ \db -> updateSndFileStatus db sndFileId SFSComplete
+        withStore' c $ \db -> updateSndFileComplete db sndFileId
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> m SndFileChunkReplica
         addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
@@ -547,6 +549,13 @@ runXFTPSndWorker c srv doWork = do
                   Just ch@FileChunk {replicas} -> ch {replicas = replica' : replicas}
                   _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica']}
                 replica' = FileChunkReplica {server, replicaId, replicaKey}
+        uploadedSize :: [SndFileChunk] -> Int64
+        uploadedSize = foldl' (\sz ch -> sz + uploadedChunkSize ch) 0
+        uploadedChunkSize ch
+          | chunkUploaded ch = fromIntegral (sndChunkSize ch)
+          | otherwise = 0
+        totalSize :: [SndFileChunk] -> Int64
+        totalSize = foldl' (\sz ch -> sz + fromIntegral (sndChunkSize ch)) 0
         chunkUploaded :: SndFileChunk -> Bool
         chunkUploaded SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
