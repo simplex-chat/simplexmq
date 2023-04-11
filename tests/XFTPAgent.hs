@@ -7,7 +7,6 @@
 module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, getSMPAgentClient', rfGet, runRight, runRight_, sfGet)
-import Control.Concurrent (threadDelay)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Data.Bifunctor (first)
