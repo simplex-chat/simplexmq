@@ -216,9 +216,9 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
   dirEntries <- listDirectory senderFiles
   let prefixDir = fromJust $ find (isSuffixOf "_snd.xftp") dirEntries
       prefixPath = senderFiles </> prefixDir
-      tmpPath = prefixPath </> "xftp.encrypted"
+      encPath = prefixPath </> "xftp.encrypted"
   doesDirectoryExist prefixPath `shouldReturn` True
-  doesFileExist tmpPath `shouldReturn` True
+  doesFileExist encPath `shouldReturn` True
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should succeed with server up
@@ -230,7 +230,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
 
     -- prefix path should be removed after sending file
     doesDirectoryExist prefixPath `shouldReturn` False
-    doesFileExist tmpPath `shouldReturn` False
+    doesFileExist encPath `shouldReturn` False
 
     -- receive file
     rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
