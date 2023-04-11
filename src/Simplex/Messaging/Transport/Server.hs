@@ -1,8 +1,8 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.Server
   ( runTransportServer,
@@ -14,12 +14,15 @@ module Simplex.Messaging.Transport.Server
   )
 where
 
-import Control.Concurrent.Async (mapConcurrently_)
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM (stateTVar)
+import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
+import Data.List (find)
+import Data.Maybe (fromJust)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -34,10 +37,6 @@ import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Control.Logger.Simple
-import Data.List (find)
-import Data.Maybe (fromJust)
-import Data.Functor (($>))
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
@@ -73,21 +72,23 @@ closeServer started clients sock = do
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
-startTCPServer started port = withSocketsDo $  resolve >>= open >>= (setStarted $>)
+startTCPServer started port = withSocketsDo $ resolve >>= open . select >>= setStarted
   where
-    resolve =
+    resolve = do
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in fromJust . find inet6 <$> getAddrInfo (Just hints) Nothing (Just port)
-    inet6 = (== AF_INET6) . addrFamily
-    open a = do
-      sock <- socket (addrFamily a) (addrSocketType a) (addrProtocol a)
+      getAddrInfo (Just hints) Nothing (Just port)
+    select as = fromJust $ family AF_INET6 <|> family AF_INET
+      where
+        family f = find ((== f) . addrFamily) as
+    open addr = do
+      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
       withFdSocket sock setCloseOnExecIfNeeded
-      logInfo $ "binding to " <> tshow (addrAddress a)
-      bind sock $ addrAddress a
+      logInfo $ "binding to " <> tshow (addrAddress addr)
+      bind sock $ addrAddress addr
       listen sock 1024
       pure sock
-    setStarted = atomically $ tryPutTMVar started True
+    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
