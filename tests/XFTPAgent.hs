@@ -209,7 +209,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
   sfId <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
     sfId <- xftpSendFile sndr 1 filePath 2
-    liftIO $ timeout 300000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
+    liftIO $ timeout 1000000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
     pure sfId
   disconnectAgentClient sndr
 
