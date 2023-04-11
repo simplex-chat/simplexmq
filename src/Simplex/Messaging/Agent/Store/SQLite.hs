@@ -158,11 +158,14 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateSndFileStatus,
     updateSndFileEncrypted,
     updateSndFileComplete,
+    deleteSndFile',
     createSndFileReplica,
     getNextSndChunkToUpload,
     updateSndChunkReplicaDelay,
     addSndChunkReplicaRecipients,
     updateSndChunkReplicaStatus,
+    getPendingSndFilesServers,
+    getSndFilesExpired,
 
     -- * utilities
     withConnection,
@@ -2176,8 +2179,9 @@ getChunkReplicaRecipients_ db replicaId =
     |]
     (Only replicaId)
 
-getNextSndFileToPrepare :: DB.Connection -> IO (Maybe SndFile)
-getNextSndFileToPrepare db = do
+getNextSndFileToPrepare :: DB.Connection -> NominalDiffTime -> IO (Maybe SndFile)
+getNextSndFileToPrepare db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   fileId_ :: Maybe DBSndFileId <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2185,10 +2189,10 @@ getNextSndFileToPrepare db = do
         [sql|
           SELECT snd_file_id
           FROM snd_files
-          WHERE status IN (?,?,?) AND deleted = 0
+          WHERE status IN (?,?,?) AND deleted = 0 AND created_at >= ?
           ORDER BY created_at ASC LIMIT 1
         |]
-        (SFSNew, SFSEncrypting, SFSEncrypted)
+        (SFSNew, SFSEncrypting, SFSEncrypted, cutoffTs)
   case fileId_ of
     Nothing -> pure Nothing
     Just fileId -> eitherToMaybe <$> getSndFile db fileId
@@ -2215,6 +2219,10 @@ updateSndFileComplete db sndFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE snd_files SET prefix_path = NULL, status = ?, updated_at = ? WHERE snd_file_id = ?" (SFSComplete, updatedAt, sndFileId)
 
+deleteSndFile' :: DB.Connection -> DBSndFileId -> IO ()
+deleteSndFile' db sndFileId =
+  DB.execute db "DELETE FROM snd_files WHERE snd_file_id = ?" (Only sndFileId)
+
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
 createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
   srvId <- createXFTPServer_ db server
@@ -2237,8 +2245,9 @@ createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, re
       |]
       (rId, rcvId, rcvKey)
 
-getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> IO (Maybe SndFileChunk)
-getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} = do
+getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe SndFileChunk)
+getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   chunk_ <-
     maybeFirstRow toChunk $
       DB.query
@@ -2254,11 +2263,11 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} = do
           JOIN snd_files f ON f.snd_file_id = c.snd_file_id
           WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
             AND r.replica_status = ? AND r.replica_number = 1
-            AND (f.status = ? OR f.status = ?) AND f.deleted = 0
+            AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
           ORDER BY r.created_at ASC
           LIMIT 1
         |]
-        (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading)
+        (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
   forM chunk_ $ \chunk@SndFileChunk {replicas} -> do
     replicas' <- forM replicas $ \replica@SndFileChunkReplica {sndChunkReplicaId} -> do
       rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
@@ -2304,3 +2313,36 @@ updateSndChunkReplicaStatus :: DB.Connection -> Int64 -> SndFileReplicaStatus ->
 updateSndChunkReplicaStatus db replicaId status = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE snd_file_chunk_replicas SET replica_status = ?, updated_at = ? WHERE snd_file_chunk_replica_id = ?" (status, updatedAt, replicaId)
+
+getPendingSndFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
+getPendingSndFilesServers db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  map toServer
+    <$> DB.query
+      db
+      [sql|
+        SELECT DISTINCT
+          s.xftp_host, s.xftp_port, s.xftp_key_hash
+        FROM snd_file_chunk_replicas r
+        JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+        JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
+        JOIN snd_files f ON f.snd_file_id = c.snd_file_id
+        WHERE r.replica_status = ? AND r.replica_number = 1
+          AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
+      |]
+      (SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
+  where
+    toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
+    toServer (host, port, keyHash) = XFTPServer host port keyHash
+
+getSndFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBSndFileId, SndFileId, Maybe FilePath)]
+getSndFilesExpired db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  DB.query
+    db
+    [sql|
+      SELECT snd_file_id, snd_file_entity_id, prefix_path
+      FROM snd_files
+      WHERE created_at < ?
+    |]
+    (Only cutoffTs)

@@ -83,6 +83,7 @@ data AgentConfig = AgentConfig
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     rcvFilesTTL :: NominalDiffTime,
+    sndFilesTTL :: NominalDiffTime,
     xftpNotifyErrsOnRetry :: Bool,
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
@@ -145,6 +146,7 @@ defaultAgentConfig =
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       rcvFilesTTL = 2 * nominalDay,
+      sndFilesTTL = nominalDay,
       xftpNotifyErrsOnRetry = True,
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,

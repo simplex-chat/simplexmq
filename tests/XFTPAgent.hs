@@ -12,6 +12,8 @@ import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
+import Data.List (find, isSuffixOf)
+import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
@@ -21,7 +23,7 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
-import System.Directory (doesDirectoryExist, getFileSize, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 import Test.Hspec
@@ -33,6 +35,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
+  it "should resume sending file after restart" testXFTPAgentSendRestore
   describe "XFTP server test via agent API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
     let srv1 = testXFTPServer2 {keyHash = "1234"}
@@ -126,7 +129,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
       liftIO $ sfId' `shouldBe` sfId
       pure rfd1
 
-  -- receive file - should not succeed due to server being down
+  -- receive file - should not succeed with server down
   rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
@@ -171,7 +174,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
       liftIO $ sfId' `shouldBe` sfId
       pure rfd1
 
-  -- receive file - should not succeed due to server being down
+  -- receive file - should not succeed with server down
   rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
@@ -193,6 +196,53 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
 
   -- tmp path should be removed after permanent error
   doesDirectoryExist tmpPath `shouldReturn` False
+
+testXFTPAgentSendRestore :: IO ()
+testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
+  -- create random file using cli
+  let filePath = senderFiles </> "testfile"
+  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
+  getFileSize filePath `shouldReturn` mb 17
+
+  -- send file - should not succeed with server down
+  sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+  sfId <- runRight $ do
+    xftpStartWorkers sndr (Just senderFiles)
+    sfId <- xftpSendFile sndr 1 filePath 2
+    liftIO $ timeout 1000000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
+    pure sfId
+  disconnectAgentClient sndr
+
+  dirEntries <- listDirectory senderFiles
+  let prefixDir = fromJust $ find (isSuffixOf "_snd.xftp") dirEntries
+      prefixPath = senderFiles </> prefixDir
+      encPath = prefixPath </> "xftp.encrypted"
+  doesDirectoryExist prefixPath `shouldReturn` True
+  doesFileExist encPath `shouldReturn` True
+
+  withXFTPServerStoreLogOn $ \_ -> do
+    -- send file - should succeed with server up
+    sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
+    runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
+    sfProgress sndr' $ mb 18
+    ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
+    liftIO $ sfId' `shouldBe` sfId
+
+    -- prefix path should be removed after sending file
+    doesDirectoryExist prefixPath `shouldReturn` False
+    doesFileExist encPath `shouldReturn` False
+
+    -- receive file
+    rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
+    runRight_ $ do
+      xftpStartWorkers rcp (Just recipientFiles)
+      rfId <- xftpReceiveFile rcp 1 rfd1
+      rfProgress rcp $ mb 18
+      ("", rfId', RFDONE path) <- rfGet rcp
+      liftIO $ do
+        rfId' `shouldBe` rfId
+        file <- B.readFile filePath
+        B.readFile path `shouldReturn` file
 
 testXFTPServerTest :: Maybe BasicAuth -> XFTPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testXFTPServerTest newFileBasicAuth srv =
