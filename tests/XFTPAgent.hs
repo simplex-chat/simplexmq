@@ -215,7 +215,9 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
 
   dirEntries <- listDirectory senderFiles
   let prefixDir = fromJust $ find (isSuffixOf "_snd.xftp") dirEntries
-      tmpPath = senderFiles </> prefixDir </> "xftp.encrypted"
+      prefixPath = senderFiles </> prefixDir
+      tmpPath = prefixPath </> "xftp.encrypted"
+  doesDirectoryExist prefixPath `shouldReturn` True
   doesFileExist tmpPath `shouldReturn` True
 
   withXFTPServerStoreLogOn $ \_ -> do
@@ -226,7 +228,8 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
     liftIO $ sfId' `shouldBe` sfId
 
-    -- tmp path should be removed after sending file
+    -- prefix path should be removed after sending file
+    doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist tmpPath `shouldReturn` False
 
     -- receive file
