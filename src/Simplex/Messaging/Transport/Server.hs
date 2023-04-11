@@ -74,7 +74,7 @@ closeServer started clients sock = do
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
   where
-    resolve = do
+    resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
        in select <$> getAddrInfo (Just hints) Nothing (Just port)
     select as = fromJust $ family AF_INET6 <|> family AF_INET
