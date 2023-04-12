@@ -20,6 +20,7 @@ module Simplex.FileTransfer.Agent
     -- Sending files
     sendFileExperimental,
     sendFile,
+    deleteSndFileInternal,
   )
 where
 
@@ -435,7 +436,7 @@ runXFTPSndPrepareWorker c doWork = do
 
 sndWorkerInternalError :: AgentMonad m => AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> String -> m ()
 sndWorkerInternalError c sndFileId sndFileEntityId prefixPath internalErrStr = do
-  forM_ prefixPath (removePath <=< toFSFilePath)
+  forM_ prefixPath $ removePath <=< toFSFilePath
   withStore' c $ \db -> updateSndFileError db sndFileId internalErrStr
   notify c sndFileEntityId $ SFERR $ INTERNAL internalErrStr
 
@@ -490,7 +491,7 @@ runXFTPSndWorker c srv doWork = do
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
         notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
-        forM_ prefixPath (removePath <=< toFSFilePath)
+        forM_ prefixPath $ removePath <=< toFSFilePath
         withStore' c $ \db -> updateSndFileComplete db sndFileId
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> m SndFileChunkReplica
@@ -568,3 +569,12 @@ runXFTPSndWorker c srv doWork = do
         chunkUploaded :: SndFileChunk -> Bool
         chunkUploaded SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
+
+deleteSndFileInternal :: AgentMonad m => AgentClient -> UserId -> SndFileId -> m ()
+deleteSndFileInternal c userId sndFileEntityId = do
+  SndFile {sndFileId, prefixPath, status} <- withStore c $ \db -> getSndFileByEntityId db userId sndFileEntityId
+  if status == SFSComplete || status == SFSError
+    then do
+      forM_ prefixPath $ removePath <=< toFSFilePath
+      withStore' c (`deleteSndFile'` sndFileId)
+    else withStore' c (`updateSndFileDeleted` sndFileId)

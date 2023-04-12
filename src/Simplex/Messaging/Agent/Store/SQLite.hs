@@ -153,11 +153,14 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Snd files
     createSndFile,
     getSndFile,
+    getSndFileByEntityId,
     getNextSndFileToPrepare,
     updateSndFileError,
     updateSndFileStatus,
     updateSndFileEncrypted,
     updateSndFileComplete,
+    updateSndFileNoPrefixPath,
+    updateSndFileDeleted,
     deleteSndFile',
     createSndFileReplica,
     getNextSndChunkToUpload,
@@ -165,6 +168,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     addSndChunkReplicaRecipients,
     updateSndChunkReplicaStatus,
     getPendingSndFilesServers,
+    getCleanupSndFilesPrefixPaths,
+    getCleanupSndFilesDeleted,
     getSndFilesExpired,
 
     -- * utilities
@@ -2103,6 +2108,16 @@ createSndFile db gVar userId numRecipients path prefixPath key nonce =
       "INSERT INTO snd_files (snd_file_entity_id, user_id, num_recipients, key, nonce, path, prefix_path, status) VALUES (?,?,?,?,?,?,?,?)"
       (sndFileEntityId, userId, numRecipients, key, nonce, path, prefixPath, SFSNew)
 
+getSndFileByEntityId :: DB.Connection -> UserId -> SndFileId -> IO (Either StoreError SndFile)
+getSndFileByEntityId db userId sndFileEntityId = runExceptT $ do
+  sndFileId <- ExceptT $ getSndFileIdByEntityId_ db userId sndFileEntityId
+  ExceptT $ getSndFile db sndFileId
+
+getSndFileIdByEntityId_ :: DB.Connection -> UserId -> SndFileId -> IO (Either StoreError DBSndFileId)
+getSndFileIdByEntityId_ db userId sndFileEntityId =
+  firstRow fromOnly SEFileNotFound $
+    DB.query db "SELECT snd_file_id FROM snd_files WHERE user_id = ? AND snd_file_entity_id = ?" (userId, sndFileEntityId)
+
 getSndFile :: DB.Connection -> DBSndFileId -> IO (Either StoreError SndFile)
 getSndFile db sndFileId = runExceptT $ do
   f@SndFile {sndFileEntityId, userId, numRecipients, prefixPath} <- ExceptT getFile
@@ -2219,6 +2234,16 @@ updateSndFileComplete db sndFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE snd_files SET prefix_path = NULL, status = ?, updated_at = ? WHERE snd_file_id = ?" (SFSComplete, updatedAt, sndFileId)
 
+updateSndFileNoPrefixPath :: DB.Connection -> DBSndFileId -> IO ()
+updateSndFileNoPrefixPath db sndFileId = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE snd_files SET prefix_path = NULL, updated_at = ? WHERE snd_file_id = ?" (updatedAt, sndFileId)
+
+updateSndFileDeleted :: DB.Connection -> DBSndFileId -> IO ()
+updateSndFileDeleted db sndFileId = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE snd_files SET deleted = 1, updated_at = ? WHERE snd_file_id = ?" (updatedAt, sndFileId)
+
 deleteSndFile' :: DB.Connection -> DBSndFileId -> IO ()
 deleteSndFile' db sndFileId =
   DB.execute db "DELETE FROM snd_files WHERE snd_file_id = ?" (Only sndFileId)
@@ -2334,6 +2359,27 @@ getPendingSndFilesServers db ttl = do
   where
     toServer :: (NonEmpty TransportHost, ServiceName, C.KeyHash) -> XFTPServer
     toServer (host, port, keyHash) = XFTPServer host port keyHash
+
+getCleanupSndFilesPrefixPaths :: DB.Connection -> IO [(DBSndFileId, SndFileId, FilePath)]
+getCleanupSndFilesPrefixPaths db =
+  DB.query
+    db
+    [sql|
+      SELECT snd_file_id, snd_file_entity_id, prefix_path
+      FROM snd_files
+      WHERE status IN (?,?) AND prefix_path IS NOT NULL
+    |]
+    (SFSComplete, SFSError)
+
+getCleanupSndFilesDeleted :: DB.Connection -> IO [(DBSndFileId, SndFileId, Maybe FilePath)]
+getCleanupSndFilesDeleted db =
+  DB.query_
+    db
+    [sql|
+      SELECT snd_file_id, snd_file_entity_id, prefix_path
+      FROM snd_files
+      WHERE deleted = 1
+    |]
 
 getSndFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBSndFileId, SndFileId, Maybe FilePath)]
 getSndFilesExpired db ttl = do
