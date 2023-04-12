@@ -1100,6 +1100,8 @@ cryptoError = \case
   C.AESDecryptError -> AGENT A_ENCRYPTION
   C.CBDecryptError -> AGENT A_ENCRYPTION
   C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
+  C.CERatchetHeader -> AGENT A_RATCHET_HEADER
+  C.CERatchetTooManySkipped -> AGENT A_RATCHET_SKIPPED
   e -> INTERNAL $ show e
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()

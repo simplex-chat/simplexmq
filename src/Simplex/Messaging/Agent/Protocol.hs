@@ -1243,6 +1243,10 @@ data SMPAgentError
     A_ENCRYPTION
   | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
     A_DUPLICATE
+  | -- | can't decrypt ratchet header, possibly ratchet out of sync due to device change
+    A_RATCHET_HEADER
+  | -- | too many skipped messages
+    A_RATCHET_SKIPPED
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
   deriving (Eq, Generic, Read, Show, Exception)
