@@ -93,6 +93,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionErrorType (..),
     BrokerErrorType (..),
     SMPAgentError (..),
+    AgentCryptoError (..),
     ATransmission,
     ATransmissionOrError,
     ARawTransmission,
@@ -160,6 +161,7 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
+import Data.Word (Word32)
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
@@ -1240,16 +1242,30 @@ data SMPAgentError
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
   | -- | cannot decrypt message
-    A_ENCRYPTION
+    A_CRYPTO {cryptoErr :: AgentCryptoError}
   | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
+    -- it may also indicate a loss of ratchet synchronization (when only one message is sent via copied ratchet)
     A_DUPLICATE
-  | -- | can't decrypt ratchet header, possibly ratchet out of sync due to device change
-    A_RATCHET_HEADER
-  | -- | too many skipped messages
-    A_RATCHET_SKIPPED
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
   deriving (Eq, Generic, Read, Show, Exception)
+
+data AgentCryptoError
+  = -- | AES decryption error
+    DECRYPT_AES
+  | -- CryptoBox decryption error
+    DECRYPT_CB
+  | -- | can't decrypt ratchet header, possibly ratchet out of sync due to device change
+    RATCHET_HEADER
+  | -- | earlier message number (or, possibly, skipped message that failed to decrypt?)
+    RATCHET_EARLIER Word32
+  | -- | too many skipped messages
+    RATCHET_SKIPPED Word32
+  deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON AgentCryptoError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance ToJSON SMPAgentError where
   toJSON = J.genericToJSON $ sumTypeJSON id
@@ -1265,6 +1281,7 @@ instance StrEncoding AgentErrorType where
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
       <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
+      <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
@@ -1279,6 +1296,7 @@ instance StrEncoding AgentErrorType where
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
     BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
+    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
@@ -1294,6 +1312,8 @@ instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
 instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
+
+instance Arbitrary AgentCryptoError where arbitrary = genericArbitraryU
 
 -- | SMP agent command and response parser for commands passed via network (only parses binary length)
 networkCommandP :: Parser ACmd
