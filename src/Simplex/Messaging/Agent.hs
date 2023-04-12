@@ -84,6 +84,7 @@ module Simplex.Messaging.Agent
     xftpReceiveFile,
     xftpDeleteRcvFile,
     xftpSendFile,
+    xftpDeleteSndFileInternal,
     activateAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -119,7 +120,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFile, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteSndFileInternal, receiveFile, sendFile, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -350,6 +351,10 @@ xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
 xftpSendFile c = withAgentEnv c .:. sendFile c
+
+-- | Delete XFTP snd file internally (deletes work files from file system and db records)
+xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> m ()
+xftpDeleteSndFileInternal c = withAgentEnv c .: deleteSndFileInternal c
 
 -- TODO rename setAgentForeground
 
@@ -1598,6 +1603,8 @@ cleanupManager c@AgentClient {subQ} = do
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
       deleteSndFilesExpired `catchError` (notify "" . SFERR)
+      deleteSndFilesDeleted `catchError` (notify "" . SFERR)
+      deleteSndFilesPrefixPaths `catchError` (notify "" . SFERR)
     liftIO $ threadDelay' int
   where
     deleteConns =
@@ -1626,6 +1633,16 @@ cleanupManager c@AgentClient {subQ} = do
       forM_ sndExpired $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
         forM_ p $ removePath <=< toFSFilePath
         withStore' c (`deleteSndFile'` dbId)
+    deleteSndFilesDeleted = do
+      sndDeleted <- withStore' c getCleanupSndFilesDeleted
+      forM_ sndDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+        forM_ p $ removePath <=< toFSFilePath
+        withStore' c (`deleteSndFile'` dbId)
+    deleteSndFilesPrefixPaths = do
+      sndPrefixPaths <- withStore' c getCleanupSndFilesPrefixPaths
+      forM_ sndPrefixPaths $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+        removePath =<< toFSFilePath p
+        withStore' c (`updateSndFileNoPrefixPath` dbId)
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 
