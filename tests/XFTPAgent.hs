@@ -39,6 +39,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
+  it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
     let srv1 = testXFTPServer2 {keyHash = "1234"}
@@ -329,6 +330,34 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       rfId <- xftpReceiveFile rcp2 1 rfd2
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
       liftIO $ rfId' `shouldBe` rfId
+
+testXFTPAgentRequestAdditionalRecipientIDs :: IO ()
+testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
+  filePath <- createRandomFile
+
+  -- send file, delete snd file internally
+  sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+  rfds <- runRight $ do
+    xftpStartWorkers sndr (Just senderFiles)
+    sfId <- xftpSendFile sndr 1 filePath 500
+    sfProgress sndr $ mb 18
+    ("", sfId', SFDONE _sndDescr rfds) <- sfGet sndr
+    liftIO $ do
+      sfId' `shouldBe` sfId
+      length rfds `shouldBe` 500
+    pure rfds
+
+  -- receive file using different descriptions
+  -- ! revise number of recipients and indexes if xftpMaxRecipientsPerRequest is changed
+  testReceive' (head rfds) filePath
+  testReceive' (rfds !! 99) filePath
+  testReceive' (rfds !! 299) filePath
+  testReceive' (rfds !! 499) filePath
+  where
+    testReceive' rfd originalFilePath = do
+      rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
+      runRight_ $
+        void $ testReceive rcp rfd originalFilePath
 
 testXFTPServerTest :: Maybe BasicAuth -> XFTPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testXFTPServerTest newFileBasicAuth srv =
