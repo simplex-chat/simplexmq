@@ -82,7 +82,7 @@ startWorkers c workDir = do
   startDelFiles
   where
     startRcvFiles = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
       forM_ pendingRcvServers $ \s -> addXFTPRcvWorker c (Just s)
       -- start local worker for files pending decryption,
@@ -90,15 +90,15 @@ startWorkers c workDir = do
       -- as the worker will check the store anyway
       addXFTPRcvWorker c Nothing
     startSndFiles = do
-      sndFilesTTL <- asks (sndFilesTTL . config)
+      sndFilesTTL <- asks $ sndFilesTTL . config
       -- start worker for files pending encryption/creation
       addXFTPSndWorker c Nothing
       pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
       forM_ pendingSndServers $ \s -> addXFTPSndWorker c (Just s)
     startDelFiles = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       pendingDelServers <- withStore' c (`getPendingDelFilesServers` rcvFilesTTL)
-      forM_ pendingDelServers $ \s -> addXFTPDelWorker c s
+      forM_ pendingDelServers $ addXFTPDelWorker c
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
 closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do

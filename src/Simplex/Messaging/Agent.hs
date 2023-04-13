@@ -1650,7 +1650,7 @@ cleanupManager c@AgentClient {subQ} = do
         removePath =<< toFSFilePath p
         withStore' c (`updateSndFileNoPrefixPath` dbId)
     deleteExpiredReplicasForDeletion = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       withStore' c (`deleteDeletedSndChunkReplicasExpired` rcvFilesTTL)
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
