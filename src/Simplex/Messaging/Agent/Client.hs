@@ -56,6 +56,7 @@ module Simplex.Messaging.Agent.Client
     agentXFTPNewChunk,
     agentXFTPUploadChunk,
     agentXFTPAddRecipients,
+    agentXFTPDeleteChunk,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -133,7 +134,7 @@ import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, XFTPErrorType (DIGEST))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
-import Simplex.FileTransfer.Types (NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
+import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
@@ -621,9 +622,9 @@ closeClient_ c cVar = do
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 
-closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> ChunkReplicaId -> m ()
-closeXFTPServerClient c userId server (ChunkReplicaId fId) =
-  mkTransportSession c userId server fId >>= liftIO . closeClient c xftpClients
+closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> ByteString -> m ()
+closeXFTPServerClient c userId server entityId =
+  mkTransportSession c userId server entityId >>= liftIO . closeClient c xftpClients
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterruptibleCancel)
@@ -678,13 +679,13 @@ withNtfClient c srv = withLogClient c (0, srv, Nothing)
 withXFTPClient ::
   (AgentMonad m, ProtocolServerClient err msg) =>
   AgentClient ->
-  (UserId, ProtoServer msg, Int64) ->
+  (UserId, ProtoServer msg, EntityId) ->
   ByteString ->
   (Client msg -> ExceptT (ProtocolClientError err) IO b) ->
   m b
-withXFTPClient c (userId, srv, chunkId) cmdStr action = do
-  tSess <- mkTransportSession c userId srv $ bshow chunkId
-  withLogClient c tSess (bshow chunkId) cmdStr action
+withXFTPClient c (userId, srv, entityId) cmdStr action = do
+  tSess <- mkTransportSession c userId srv entityId
+  withLogClient c tSess entityId cmdStr action
 
 liftClient :: (AgentMonad m, Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> m a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
@@ -1077,7 +1078,7 @@ agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
 
 agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
 agentXFTPDownloadChunk c userId rcvChunkId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  withXFTPClient c (userId, server, rcvChunkId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+  withXFTPClient c (userId, server, bshow rcvChunkId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
 
 agentXFTPNewChunk :: AgentMonad m => AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> m NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest digest} n (ProtoServerWithAuth srv auth) = do
@@ -1091,14 +1092,18 @@ agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec 
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
 
 agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
-agentXFTPUploadChunk c usedId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  withXFTPClient c (usedId, server, sndChunkId) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
+agentXFTPUploadChunk c userId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, bshow sndChunkId) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
 
 agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateSignKey))
-agentXFTPAddRecipients c usedId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
+agentXFTPAddRecipients c userId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
   rKeys <- xftpRcvKeys n
-  rIds <- withXFTPClient c (usedId, server, sndChunkId) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
+  rIds <- withXFTPClient c (userId, server, bshow sndChunkId) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
   pure $ xftpRcvIdsKeys rIds rKeys
+
+agentXFTPDeleteChunk :: AgentMonad m => AgentClient -> UserId -> DeletedSndChunkReplica -> m ()
+agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} =
+  withXFTPClient c (userId, server, fId) "FDEL" $ \xftp -> X.deleteXFTPChunk xftp replicaKey fId
 
 xftpRcvKeys :: AgentMonad m => Int -> m (NonEmpty C.ASignatureKeyPair)
 xftpRcvKeys n = do

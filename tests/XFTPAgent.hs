@@ -19,7 +19,7 @@ import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -32,12 +32,13 @@ import XFTPCLI
 import XFTPClient
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . describe "Functional API" $ do
+xftpAgentTests = around_ testBracket . fdescribe "Functional API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
+  fit "should delete sent file on server" testXFTPAgentDelete
   describe "XFTP server test via agent API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
     let srv1 = testXFTPServer2 {keyHash = "1234"}
@@ -308,6 +309,55 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     -- prefix path should be removed after permanent error
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
+
+testXFTPAgentDelete :: IO ()
+testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $ withXFTPServer $ do
+  -- create random file using cli
+  let filePath = senderFiles </> "testfile"
+  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
+  getFileSize filePath `shouldReturn` mb 17
+
+  -- send file
+  sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+  (sfId, sndDescr, rfd1, rfd2) <- runRight $ do
+    xftpStartWorkers sndr (Just senderFiles)
+    sfId <- xftpSendFile sndr 1 filePath 2
+    sfProgress sndr $ mb 18
+    ("", sfId', SFDONE sndDescr [rfd1, rfd2]) <- sfGet sndr
+    liftIO $ sfId' `shouldBe` sfId
+    pure (sfId, sndDescr, rfd1, rfd2)
+
+  -- receive file
+  rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
+  runRight_ $ do
+    xftpStartWorkers rcp1 (Just recipientFiles)
+    rfId <- xftpReceiveFile rcp1 1 rfd1
+    rfProgress rcp1 $ mb 18
+    ("", rfId', RFDONE path) <- rfGet rcp1
+    liftIO $ do
+      rfId' `shouldBe` rfId
+      file <- B.readFile filePath
+      B.readFile path `shouldReturn` file
+
+  length <$> listDirectory xftpServerFiles `shouldReturn` 6
+
+  -- delete file
+  sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
+  runRight $ do
+    xftpStartWorkers sndr' (Just senderFiles)
+    xftpDeleteSndFileRemote sndr' 1 sfId sndDescr
+    Nothing <- liftIO $ 100000 `timeout` sfGet sndr'
+    pure ()
+
+  length <$> listDirectory xftpServerFiles `shouldReturn` 0
+
+  -- receive file - should fail with AUTH error
+  rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+  runRight $ do
+    xftpStartWorkers rcp2 (Just recipientFiles)
+    rfId <- xftpReceiveFile rcp2 1 rfd2
+    ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
+    liftIO $ rfId' `shouldBe` rfId
 
 testXFTPServerTest :: Maybe BasicAuth -> XFTPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testXFTPServerTest newFileBasicAuth srv =

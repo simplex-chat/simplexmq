@@ -539,4 +539,6 @@ data StoreError
     SEXFTPServerNotFound
   | -- | XFTP File not found.
     SEFileNotFound
+  | -- | XFTP Deleted snd chunk replica not found.
+    SEDeletedSndChunkReplicaNotFound
   deriving (Eq, Show, Exception)
