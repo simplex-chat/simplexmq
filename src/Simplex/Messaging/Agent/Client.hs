@@ -81,6 +81,8 @@ module Simplex.Messaging.Agent.Client
     throwWhenNoDelivery,
     beginAgentOperation,
     endAgentOperation,
+    waitUntilForeground,
+    checkAgentForeground,
     suspendSendingAndDatabase,
     suspendOperation,
     notifySuspended,
@@ -266,7 +268,7 @@ agentOperations = [ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, data
 
 data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 
-data AgentState = ASActive | ASSuspending | ASSuspended -- TODO rename ASActive -> ASForeground
+data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
@@ -311,7 +313,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   msgDeliveryOp <- newTVar $ AgentOpState False 0
   sndNetworkOp <- newTVar $ AgentOpState False 0
   databaseOp <- newTVar $ AgentOpState False 0
-  agentState <- newTVar ASActive
+  agentState <- newTVar ASForeground
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
   deleteLock <- createLock
@@ -1211,6 +1213,14 @@ agentOperationBracket c op check action =
     (atomically (check c) >> atomically (beginAgentOperation c op))
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
+
+waitUntilForeground :: AgentClient -> STM ()
+waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
+
+checkAgentForeground :: AgentClient -> STM ()
+checkAgentForeground c = do
+  throwWhenInactive c
+  waitUntilForeground c
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
 withStore' c action = withStore c $ fmap Right . action

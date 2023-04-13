@@ -86,7 +86,7 @@ module Simplex.Messaging.Agent
     xftpSendFile,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFileRemote,
-    activateAgent,
+    foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
     getAgentMigrations,
@@ -99,7 +99,6 @@ where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo, showText)
-import Control.Monad ((<=<))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
@@ -361,11 +360,9 @@ xftpDeleteSndFileInternal c = withAgentEnv c .: deleteSndFileInternal c
 xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
 
--- TODO rename setAgentForeground
-
 -- | Activate operations
-activateAgent :: MonadUnliftIO m => AgentClient -> m ()
-activateAgent c = withAgentEnv c $ activateAgent' c
+foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
+foregroundAgent c = withAgentEnv c $ foregroundAgent' c
 
 -- | Suspend operations with max delay to deliver pending messages
 suspendAgent :: MonadUnliftIO m => AgentClient -> Int -> m ()
@@ -1541,9 +1538,9 @@ sendNtfConnCommands c cmd = do
 setNtfServers' :: AgentMonad' m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c = atomically . writeTVar (ntfServers c)
 
-activateAgent' :: AgentMonad' m => AgentClient -> m ()
-activateAgent' c = do
-  atomically $ writeTVar (agentState c) ASActive
+foregroundAgent' :: AgentMonad' m => AgentClient -> m ()
+foregroundAgent' c = do
+  atomically $ writeTVar (agentState c) ASForeground
   mapM_ activate $ reverse agentOperations
   where
     activate opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
