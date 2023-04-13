@@ -214,3 +214,14 @@ instance TextEncoding SndFileReplicaStatus where
   textEncode = \case
     SFRSCreated -> "created"
     SFRSUploaded -> "uploaded"
+
+data DeletedSndChunkReplica = DeletedSndChunkReplica
+  { deletedSndChunkReplicaId :: Int64,
+    userId :: Int64,
+    server :: XFTPServer,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateSignKey,
+    delay :: Maybe Int64,
+    retries :: Int
+  }
+  deriving (Eq, Show)

@@ -21,6 +21,7 @@ module Simplex.FileTransfer.Agent
     sendFileExperimental,
     sendFile,
     deleteSndFileInternal,
+    deleteSndFileRemote,
   )
 where
 
@@ -65,7 +66,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
+import Simplex.Messaging.Util (bshow, liftError, liftIOEither, tshow, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -78,9 +79,10 @@ startWorkers c workDir = do
   atomically $ writeTVar wd workDir
   startRcvFiles
   startSndFiles
+  startDelFiles
   where
     startRcvFiles = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
       forM_ pendingRcvServers $ \s -> addXFTPRcvWorker c (Just s)
       -- start local worker for files pending decryption,
@@ -88,11 +90,15 @@ startWorkers c workDir = do
       -- as the worker will check the store anyway
       addXFTPRcvWorker c Nothing
     startSndFiles = do
-      sndFilesTTL <- asks (sndFilesTTL . config)
+      sndFilesTTL <- asks $ sndFilesTTL . config
       -- start worker for files pending encryption/creation
       addXFTPSndWorker c Nothing
       pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
       forM_ pendingSndServers $ \s -> addXFTPSndWorker c (Just s)
+    startDelFiles = do
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
+      pendingDelServers <- withStore' c (`getPendingDelFilesServers` rcvFilesTTL)
+      forM_ pendingDelServers $ addXFTPDelWorker c
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
 closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
@@ -176,7 +182,7 @@ runXFTPRcvWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
-        Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, delay} : _} -> do
+        Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -187,7 +193,7 @@ runXFTPRcvWorker c srv doWork = do
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
-                closeXFTPServerClient c userId server replicaId
+                closeXFTPServerClient c userId server $ bshow rcvChunkId
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ checkAgentForeground c
               loop
@@ -422,6 +428,8 @@ runXFTPSndPrepareWorker c doWork = do
               where
                 retryLoop loop = atomically (checkAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
+              deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
+              when deleted $ throwError $ INTERNAL "file deleted, aborting chunk creation"
               withNextSrv c userId usedSrvs [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
                 pure (replica, srvAuth)
@@ -447,7 +455,7 @@ runXFTPSndWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
-        Just fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, replicaId, delay} : _} -> do
+        Just fc@SndFileChunk {userId, sndFileId, sndChunkId, sndFileEntityId, filePrefixPath, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -458,7 +466,7 @@ runXFTPSndWorker c srv doWork = do
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
-                closeXFTPServerClient c userId server replicaId
+                closeXFTPServerClient c userId server $ bshow sndChunkId
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ checkAgentForeground c
               loop
@@ -567,3 +575,66 @@ deleteSndFileInternal c userId sndFileEntityId = do
       forM_ prefixPath $ removePath <=< toFSFilePath
       withStore' c (`deleteSndFile'` sndFileId)
     else withStore' c (`updateSndFileDeleted` sndFileId)
+
+deleteSndFileRemote :: forall m. AgentMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
+deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescription {chunks}) = do
+  deleteSndFileInternal c userId sndFileEntityId `catchError` (notify c sndFileEntityId . SFERR)
+  forM_ chunks $ \ch -> deleteFileChunk ch `catchError` (notify c sndFileEntityId . SFERR)
+  where
+    deleteFileChunk :: FileChunk -> m ()
+    deleteFileChunk FileChunk {replicas = replica@FileChunkReplica {server} : _} = do
+      withStore' c $ \db -> createDeletedSndChunkReplica db userId replica
+      addXFTPDelWorker c server
+    deleteFileChunk _ = pure ()
+
+addXFTPDelWorker :: AgentMonad m => AgentClient -> XFTPServer -> m ()
+addXFTPDelWorker c srv = do
+  ws <- asks $ xftpDelWorkers . xftpAgent
+  atomically (TM.lookup srv ws) >>= \case
+    Nothing -> do
+      doWork <- newTMVarIO ()
+      worker <- async $ runXFTPDelWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
+      atomically $ TM.insert srv (doWork, worker) ws
+    Just (doWork, _) ->
+      void . atomically $ tryPutTMVar doWork ()
+
+runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
+runXFTPDelWorker c srv doWork = do
+  forever $ do
+    void . atomically $ readTMVar doWork
+    atomically $ checkAgentForeground c
+    runXFTPOperation
+  where
+    noWorkToDo = void . atomically $ tryTakeTMVar doWork
+    runXFTPOperation :: m ()
+    runXFTPOperation = do
+      -- no point in deleting files older than rcv ttl, as they will be expired on server
+      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      nextReplica <- withStore' c $ \db -> getNextDeletedSndChunkReplica db srv rcvFilesTTL
+      case nextReplica of
+        Nothing -> noWorkToDo
+        Just replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, replicaId = ChunkReplicaId replId, delay} -> do
+          ri <- asks $ reconnectInterval . config
+          let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
+          withRetryInterval ri' $ \delay' loop ->
+            deleteChunkReplica replica
+              `catchError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
+          where
+            retryLoop loop e replicaDelay = do
+              flip catchError (\_ -> pure ()) $ do
+                notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
+                when notifyOnRetry $ notify c "" $ SFERR e
+                closeXFTPServerClient c userId server replId
+                withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
+              atomically $ checkAgentForeground c
+              loop
+            retryDone e = delWorkerInternalError c deletedSndChunkReplicaId e
+    deleteChunkReplica :: DeletedSndChunkReplica -> m ()
+    deleteChunkReplica replica@DeletedSndChunkReplica {userId, deletedSndChunkReplicaId} = do
+      agentXFTPDeleteChunk c userId replica
+      withStore' c $ \db -> deleteDeletedSndChunkReplica db deletedSndChunkReplicaId
+
+delWorkerInternalError :: AgentMonad m => AgentClient -> Int64 -> AgentErrorType -> m ()
+delWorkerInternalError c deletedSndChunkReplicaId e = do
+  withStore' c $ \db -> deleteDeletedSndChunkReplica db deletedSndChunkReplicaId
+  notify c "" $ SFERR e

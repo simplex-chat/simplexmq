@@ -85,6 +85,7 @@ module Simplex.Messaging.Agent
     xftpDeleteRcvFile,
     xftpSendFile,
     xftpDeleteSndFileInternal,
+    xftpDeleteSndFileRemote,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -119,7 +120,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteSndFileInternal, receiveFile, sendFile, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteSndFileInternal, deleteSndFileRemote, receiveFile, sendFile, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -354,6 +355,10 @@ xftpSendFile c = withAgentEnv c .:. sendFile c
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
 xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> m ()
 xftpDeleteSndFileInternal c = withAgentEnv c .: deleteSndFileInternal c
+
+-- | Delete XFTP snd file chunks on servers
+xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
+xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
@@ -1602,6 +1607,7 @@ cleanupManager c@AgentClient {subQ} = do
       deleteSndFilesExpired `catchError` (notify "" . SFERR)
       deleteSndFilesDeleted `catchError` (notify "" . SFERR)
       deleteSndFilesPrefixPaths `catchError` (notify "" . SFERR)
+      deleteExpiredReplicasForDeletion `catchError` (notify "" . SFERR)
     liftIO $ threadDelay' int
   where
     deleteConns =
@@ -1609,7 +1615,7 @@ cleanupManager c@AgentClient {subQ} = do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
     deleteRcvFilesExpired = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
       forM_ rcvExpired $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
@@ -1625,7 +1631,7 @@ cleanupManager c@AgentClient {subQ} = do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` dbId)
     deleteSndFilesExpired = do
-      sndFilesTTL <- asks (sndFilesTTL . config)
+      sndFilesTTL <- asks $ sndFilesTTL . config
       sndExpired <- withStore' c (`getSndFilesExpired` sndFilesTTL)
       forM_ sndExpired $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
         forM_ p $ removePath <=< toFSFilePath
@@ -1640,6 +1646,9 @@ cleanupManager c@AgentClient {subQ} = do
       forM_ sndPrefixPaths $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateSndFileNoPrefixPath` dbId)
+    deleteExpiredReplicasForDeletion = do
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
+      withStore' c (`deleteDeletedSndChunkReplicasExpired` rcvFilesTTL)
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 

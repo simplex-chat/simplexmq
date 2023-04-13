@@ -210,9 +210,8 @@ data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory
     xftpWorkDir :: TVar (Maybe FilePath),
     xftpRcvWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    -- separate send workers for unhindered concurrency between download and upload,
-    -- clients can also be separate by passing direction to withXFTPClient, and differentiating by it
-    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ())
+    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
+    xftpDelWorkers :: TMap XFTPServer (TMVar (), Async ())
   }
 
 newXFTPAgent :: STM XFTPAgent
@@ -220,4 +219,5 @@ newXFTPAgent = do
   xftpWorkDir <- newTVar Nothing
   xftpRcvWorkers <- TM.empty
   xftpSndWorkers <- TM.empty
-  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers}
+  xftpDelWorkers <- TM.empty
+  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
