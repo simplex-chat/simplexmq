@@ -335,7 +335,7 @@ testXFTPAgentRequestAdditionalRecipientIDs :: IO ()
 testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
   filePath <- createRandomFile
 
-  -- send file, delete snd file internally
+  -- send file
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   rfds <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
