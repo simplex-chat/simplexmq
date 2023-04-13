@@ -319,6 +319,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
 
+    threadDelay 300000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
     -- receive file - should fail with AUTH error
