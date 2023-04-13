@@ -212,7 +212,5 @@ noFile HTTP2Body {bodyPart} a = case bodyPart of
   Just _ -> pure a -- throwError $ PCEResponseError HAS_FILE
   _ -> pure a
 
--- FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand Sender
--- FDEL :: FileCommand Sender
 -- FACK :: FileCommand Recipient
 -- PING :: FileCommand Recipient

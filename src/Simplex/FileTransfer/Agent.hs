@@ -165,8 +165,8 @@ runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar
 runXFTPRcvWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    -- TODO waitUntilNotSuspended
-    agentOperationBracket c AORcvNetwork waitUntilActive runXFTPOperation
+    atomically $ checkAgentForeground c
+    runXFTPOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXFTPOperation :: m ()
@@ -189,10 +189,7 @@ runXFTPRcvWorker c srv doWork = do
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
                 closeXFTPServerClient c userId server replicaId
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
-              -- TODO waitUntilNotSuspended
-              atomically $ endAgentOperation c AORcvNetwork
-              atomically $ throwWhenInactive c
-              atomically $ beginAgentOperation c AORcvNetwork
+              atomically $ checkAgentForeground c
               loop
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
@@ -236,7 +233,7 @@ runXFTPRcvLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m 
 runXFTPRcvLocalWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    -- TODO waitUntilNotSuspended
+    atomically $ checkAgentForeground c
     runXFTPOperation
   where
     runXFTPOperation :: m ()
@@ -357,7 +354,7 @@ runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> 
 runXFTPSndPrepareWorker c doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    -- TODO waitUntilNotSuspended
+    atomically $ checkAgentForeground c
     runXFTPOperation
   where
     runXFTPOperation :: m ()
@@ -411,7 +408,7 @@ runXFTPSndPrepareWorker c doWork = do
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSCreated) replicas
         createChunk :: Int -> SndFileChunk -> m ()
         createChunk numRecipients' ch = do
-          -- TODO waitUntilNotSuspended
+          atomically $ checkAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- agentOperationBracket c AOSndNetwork throwWhenInactive tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
           addXFTPSndWorker c $ Just srv
@@ -423,12 +420,7 @@ runXFTPSndPrepareWorker c doWork = do
                 createWithNextSrv usedSrvs
                   `catchError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where
-                retryLoop loop = do
-                  -- TODO waitUntilNotSuspended
-                  atomically $ endAgentOperation c AOSndNetwork
-                  atomically $ throwWhenInactive c
-                  atomically $ beginAgentOperation c AOSndNetwork
-                  loop
+                retryLoop loop = atomically (checkAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
               withNextSrv c userId usedSrvs [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
@@ -444,7 +436,7 @@ runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar
 runXFTPSndWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
-    -- TODO waitUntilNotSuspended
+    atomically $ checkAgentForeground c
     agentOperationBracket c AOSndNetwork throwWhenInactive runXFTPOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
@@ -468,10 +460,7 @@ runXFTPSndWorker c srv doWork = do
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
                 closeXFTPServerClient c userId server replicaId
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
-              -- TODO waitUntilNotSuspended
-              atomically $ endAgentOperation c AOSndNetwork
-              atomically $ throwWhenInactive c
-              atomically $ beginAgentOperation c AOSndNetwork
+              atomically $ checkAgentForeground c
               loop
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
@@ -479,7 +468,7 @@ runXFTPSndWorker c srv doWork = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
-      -- TODO waitUntilNotSuspended
+      atomically $ checkAgentForeground c
       agentXFTPUploadChunk c userId sndChunkId replica' chunkSpec'
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
