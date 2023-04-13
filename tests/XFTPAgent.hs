@@ -303,13 +303,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
 
     -- send file
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-    (sfId, sndDescr, rfd1, rfd2) <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      sfId <- xftpSendFile sndr 1 filePath 2
-      sfProgress sndr $ mb 18
-      ("", sfId', SFDONE sndDescr [rfd1, rfd2]) <- sfGet sndr
-      liftIO $ sfId' `shouldBe` sfId
-      pure (sfId, sndDescr, rfd1, rfd2)
+    (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
 
     -- receive file
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
@@ -319,11 +313,10 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
     -- delete file
-    sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
     runRight $ do
-      xftpStartWorkers sndr' (Just senderFiles)
-      xftpDeleteSndFileRemote sndr' 1 sfId sndDescr
-      Nothing <- liftIO $ 100000 `timeout` sfGet sndr'
+      xftpStartWorkers sndr (Just senderFiles)
+      xftpDeleteSndFileRemote sndr 1 sfId sndDescr
+      Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
 
     length <$> listDirectory xftpServerFiles `shouldReturn` 0

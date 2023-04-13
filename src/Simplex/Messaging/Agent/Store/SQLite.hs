@@ -162,6 +162,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateSndFileNoPrefixPath,
     updateSndFileDeleted,
     deleteSndFile',
+    getSndFileDeleted,
     createSndFileReplica,
     getNextSndChunkToUpload,
     updateSndChunkReplicaDelay,
@@ -2253,6 +2254,11 @@ updateSndFileDeleted db sndFileId = do
 deleteSndFile' :: DB.Connection -> DBSndFileId -> IO ()
 deleteSndFile' db sndFileId =
   DB.execute db "DELETE FROM snd_files WHERE snd_file_id = ?" (Only sndFileId)
+
+getSndFileDeleted :: DB.Connection -> DBSndFileId -> IO Bool
+getSndFileDeleted db sndFileId =
+  fromMaybe True
+    <$> maybeFirstRow fromOnly (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
 createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do

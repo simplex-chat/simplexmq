@@ -436,6 +436,8 @@ runXFTPSndPrepareWorker c doWork = do
                   atomically $ beginAgentOperation c AOSndNetwork
                   loop
             createWithNextSrv usedSrvs = do
+              deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
+              when deleted $ throwError $ INTERNAL "file deleted, aborting chunk creation"
               withNextSrv c userId usedSrvs [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
                 pure (replica, srvAuth)
