@@ -1618,7 +1618,7 @@ cleanupManager c@AgentClient {subQ} = do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
     deleteRcvFilesExpired = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
       forM_ rcvExpired $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
@@ -1634,7 +1634,7 @@ cleanupManager c@AgentClient {subQ} = do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` dbId)
     deleteSndFilesExpired = do
-      sndFilesTTL <- asks (sndFilesTTL . config)
+      sndFilesTTL <- asks $ sndFilesTTL . config
       sndExpired <- withStore' c (`getSndFilesExpired` sndFilesTTL)
       forM_ sndExpired $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
         forM_ p $ removePath <=< toFSFilePath
