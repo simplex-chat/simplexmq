@@ -16,6 +16,14 @@ module Simplex.FileTransfer.Client.Main
     cliSendFile,
     cliSendFileOpts,
     prepareChunkSizes,
+    prepareChunkSpecs,
+    chunkSize1,
+    chunkSize2,
+    chunkSize3,
+    maxFileSize,
+    fileSizeLen,
+    getChunkDigest,
+    SentRecipientReplica (..),
   )
 where
 
@@ -26,6 +34,7 @@ import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
@@ -55,7 +64,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, SndPublicVerifyKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (ifM, tshow, whenM)
 import System.Exit (exitFailure)
@@ -319,7 +328,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
           (sndKey, spKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
           rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519)
-          ch@FileInfo {digest} <- liftIO $ getChunkInfo sndKey chunkSpec
+          digest <- liftIO $ getChunkDigest chunkSpec
+          let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
           withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
@@ -332,12 +342,6 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
           pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
-        getChunkInfo :: SndPublicVerifyKey -> XFTPChunkSpec -> IO FileInfo
-        getChunkInfo sndKey XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
-          withFile chunkPath ReadMode $ \h -> do
-            hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-            digest <- LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
-            pure FileInfo {sndKey, size = fromIntegral chunkSize, digest}
         getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
         getXFTPServer gen = \case
           srv :| [] -> pure srv
@@ -405,6 +409,12 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       let fdSndPath = outDir </> "snd.xftp.private"
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
+
+getChunkDigest :: XFTPChunkSpec -> IO ByteString
+getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
+  withFile chunkPath ReadMode $ \h -> do
+    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+    LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =

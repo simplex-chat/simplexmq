@@ -556,7 +556,7 @@ testSuspendingAgent = do
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
-    activateAgent b
+    foregroundAgent b
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
 
 testSuspendingAgentCompleteSending :: ATransport -> IO ()

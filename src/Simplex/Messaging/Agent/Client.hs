@@ -53,6 +53,10 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
+    agentXFTPNewChunk,
+    agentXFTPUploadChunk,
+    agentXFTPAddRecipients,
+    agentXFTPDeleteChunk,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -77,6 +81,8 @@ module Simplex.Messaging.Agent.Client
     throwWhenNoDelivery,
     beginAgentOperation,
     endAgentOperation,
+    waitUntilForeground,
+    checkAgentForeground,
     suspendSendingAndDatabase,
     suspendOperation,
     notifySuspended,
@@ -84,6 +90,11 @@ module Simplex.Messaging.Agent.Client
     withStore,
     withStore',
     storeError,
+    userServers,
+    pickServer,
+    getNextServer,
+    withUserServers,
+    withNextSrv,
   )
 where
 
@@ -105,7 +116,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
-import Data.List (foldl', partition)
+import Data.Int (Int64)
+import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -119,12 +131,12 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
-import Simplex.FileTransfer.Client (XFTPClient, XFTPClientConfig (..), XFTPClientError)
+import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
-import Simplex.FileTransfer.Description (ChunkReplicaId (..), kb)
+import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, XFTPErrorType (DIGEST))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
-import Simplex.FileTransfer.Types (RcvFileChunkReplica (..))
+import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
@@ -156,6 +168,7 @@ import Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     NtfServer,
     ProtoServer,
+    ProtoServerWithAuth (..),
     Protocol (..),
     ProtocolServer (..),
     ProtocolTypeI (..),
@@ -164,8 +177,12 @@ import Simplex.Messaging.Protocol
     RcvMessage (..),
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
+    SProtocolType (..),
     SndPublicVerifyKey,
+    UserProtocol,
+    XFTPServer,
     XFTPServerWithAuth,
+    sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
@@ -173,6 +190,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import System.Random (randomR)
 import System.Timeout (timeout)
 import UnliftIO (mapConcurrently)
 import UnliftIO.Directory (getTemporaryDirectory)
@@ -250,7 +268,7 @@ agentOperations = [ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, data
 
 data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 
-data AgentState = ASActive | ASSuspending | ASSuspended
+data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
@@ -295,7 +313,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   msgDeliveryOp <- newTVar $ AgentOpState False 0
   sndNetworkOp <- newTVar $ AgentOpState False 0
   databaseOp <- newTVar $ AgentOpState False 0
-  agentState <- newTVar ASActive
+  agentState <- newTVar ASForeground
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
   deleteLock <- createLock
@@ -606,9 +624,9 @@ closeClient_ c cVar = do
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 
-closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> RcvFileChunkReplica -> m ()
-closeXFTPServerClient c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId} =
-  mkTransportSession c userId server fId >>= liftIO . closeClient c xftpClients
+closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> ByteString -> m ()
+closeXFTPServerClient c userId server entityId =
+  mkTransportSession c userId server entityId >>= liftIO . closeClient c xftpClients
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterruptibleCancel)
@@ -667,9 +685,9 @@ withXFTPClient ::
   ByteString ->
   (Client msg -> ExceptT (ProtocolClientError err) IO b) ->
   m b
-withXFTPClient c (userId, srv, fId) cmdStr action = do
-  tSess <- mkTransportSession c userId srv fId
-  withLogClient c tSess (strEncode fId) cmdStr action
+withXFTPClient c (userId, srv, entityId) cmdStr action = do
+  tSess <- mkTransportSession c userId srv entityId
+  withLogClient c tSess entityId cmdStr action
 
 liftClient :: (AgentMonad m, Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> m a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
@@ -1060,9 +1078,44 @@ agentNtfDeleteSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
 
-agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
-agentXFTPDownloadChunk c userId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  withXFTPClient c (userId, server, fId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
+agentXFTPDownloadChunk c userId rcvChunkId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, bshow rcvChunkId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+
+agentXFTPNewChunk :: AgentMonad m => AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> m NewSndChunkReplica
+agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest digest} n (ProtoServerWithAuth srv auth) = do
+  rKeys <- xftpRcvKeys n
+  (sndKey, replicaKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
+  let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
+  logServer "-->" c srv "" "FNEW"
+  tSess <- mkTransportSession c userId srv $ bshow sndChunkId
+  (sndId, rIds) <- withClient c tSess "FNEW" $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
+  logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
+  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
+
+agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
+agentXFTPUploadChunk c userId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, bshow sndChunkId) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
+
+agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateSignKey))
+agentXFTPAddRecipients c userId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
+  rKeys <- xftpRcvKeys n
+  rIds <- withXFTPClient c (userId, server, bshow sndChunkId) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
+  pure $ xftpRcvIdsKeys rIds rKeys
+
+agentXFTPDeleteChunk :: AgentMonad m => AgentClient -> UserId -> DeletedSndChunkReplica -> m ()
+agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} =
+  withXFTPClient c (userId, server, fId) "FDEL" $ \xftp -> X.deleteXFTPChunk xftp replicaKey fId
+
+xftpRcvKeys :: AgentMonad m => Int -> m (NonEmpty C.ASignatureKeyPair)
+xftpRcvKeys n = do
+  rKeys <- liftIO $ replicateM n $ C.generateSignatureKeyPair C.SEd25519
+  case L.nonEmpty rKeys of
+    Just rKeys' -> pure rKeys'
+    _ -> throwError $ INTERNAL "non-positive number of recipients"
+
+xftpRcvIdsKeys :: NonEmpty ByteString -> NonEmpty C.ASignatureKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateSignKey)
+xftpRcvIdsKeys rIds rKeys = L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
@@ -1161,6 +1214,14 @@ agentOperationBracket c op check action =
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
 
+waitUntilForeground :: AgentClient -> STM ()
+waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
+
+checkAgentForeground :: AgentClient -> STM ()
+checkAgentForeground c = do
+  throwWhenInactive c
+  waitUntilForeground c
+
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
 withStore' c action = withStore c $ fmap Right . action
 
@@ -1208,3 +1269,38 @@ incClientStatN c userId pc n cmd res = do
   atomically $ incStat c n statsKey
   where
     statsKey = AgentStatsKey {userId, host = strEncode $ clientTransportHost pc, clientTs = strEncode $ clientSessionTs pc, cmd, res}
+
+userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMap UserId (NonEmpty (ProtoServerWithAuth p))
+userServers c = case protocolTypeI @p of
+  SPSMP -> smpServers c
+  SPXFTP -> xftpServers c
+
+pickServer :: forall p m. (AgentMonad' m) => NonEmpty (ProtoServerWithAuth p) -> m (ProtoServerWithAuth p)
+pickServer = \case
+  srv :| [] -> pure srv
+  servers -> do
+    gen <- asks randomServer
+    atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+
+getNextServer :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> [ProtocolServer p] -> m (ProtoServerWithAuth p)
+getNextServer c userId usedSrvs = withUserServers c userId $ \srvs ->
+  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
+    Just srvs' -> pickServer srvs'
+    _ -> pickServer srvs
+
+withUserServers :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> (NonEmpty (ProtoServerWithAuth p) -> m a) -> m a
+withUserServers c userId action =
+  atomically (TM.lookup userId $ userServers c) >>= \case
+    Just srvs -> action srvs
+    _ -> throwError $ INTERNAL "unknown userId - no user servers"
+
+withNextSrv :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> ((ProtoServerWithAuth p) -> m a) -> m a
+withNextSrv c userId usedSrvs initUsed action = do
+  used <- readTVarIO usedSrvs
+  srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
+  atomically $ do
+    srvs_ <- TM.lookup userId $ userServers c
+    let unused = maybe [] ((\\ used) . map protoServer . L.toList) srvs_
+        used' = if null unused then initUsed else srv : used
+    writeTVar usedSrvs $! used'
+  action srvAuth

@@ -84,7 +84,9 @@ module Simplex.Messaging.Agent
     xftpReceiveFile,
     xftpDeleteRcvFile,
     xftpSendFile,
-    activateAgent,
+    xftpDeleteSndFileInternal,
+    xftpDeleteSndFileRemote,
+    foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
     getAgentMigrations,
@@ -107,7 +109,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::))
 import Data.Foldable (foldl')
 import Data.Functor (($>))
-import Data.List (deleteFirstsBy, find, (\\))
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -118,7 +120,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, receiveFile, sendFileExperimental, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteSndFileInternal, deleteSndFileRemote, receiveFile, sendFile, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -140,12 +142,11 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, UserProtocol, XFTPServerWithAuth, protoServer, sameSrvAddr')
+import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, UserProtocol, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
-import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
@@ -349,11 +350,19 @@ xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-xftpSendFile c = withAgentEnv c .:. sendFileExperimental c
+xftpSendFile c = withAgentEnv c .:. sendFile c
+
+-- | Delete XFTP snd file internally (deletes work files from file system and db records)
+xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> m ()
+xftpDeleteSndFileInternal c = withAgentEnv c .: deleteSndFileInternal c
+
+-- | Delete XFTP snd file chunks on servers
+xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
+xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
 
 -- | Activate operations
-activateAgent :: MonadUnliftIO m => AgentClient -> m ()
-activateAgent c = withAgentEnv c $ activateAgent' c
+foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
+foregroundAgent c = withAgentEnv c $ foregroundAgent' c
 
 -- | Suspend operations with max delay to deliver pending messages
 suspendAgent :: MonadUnliftIO m => AgentClient -> Int -> m ()
@@ -551,7 +560,7 @@ joinConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> Bool -> C
 joinConn c userId connId asyncMode enableNtfs cReq cInfo = do
   srv <- case cReq of
     CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ ->
-      getNextSMPServer c userId [qServer q]
+      getNextServer c userId [qServer q]
     _ -> getSMPServer c userId
   joinConnSrv c userId connId asyncMode enableNtfs cReq cInfo srv
 
@@ -847,13 +856,13 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
       AClientCommand (APC _ cmd) -> case cmd of
         NEW enableNtfs (ACM cMode) -> noServer $ do
           usedSrvs <- newTVarIO ([] :: [SMPServer])
-          tryCommand . withNextSrv usedSrvs [] $ \srv -> do
+          tryCommand . withNextSrv c userId usedSrvs [] $ \srv -> do
             (_, cReq) <- newRcvConnSrv c userId connId enableNtfs cMode Nothing srv
             notify $ INV (ACR cMode cReq)
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) connInfo -> noServer $ do
           let initUsed = [qServer q]
           usedSrvs <- newTVarIO initUsed
-          tryCommand . withNextSrv usedSrvs initUsed $ \srv -> do
+          tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
             void $ joinConnSrv c userId connId True enableNtfs cReq connInfo srv
             notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
@@ -933,16 +942,6 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
         notify cmd = atomically $ writeTBQueue subQ (corrId, connId, APC (sAEntity @e) cmd)
-        withNextSrv :: TVar [SMPServer] -> [SMPServer] -> (SMPServerWithAuth -> m ()) -> m ()
-        withNextSrv usedSrvs initUsed action = do
-          used <- readTVarIO usedSrvs
-          srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId used
-          atomically $ do
-            srvs_ <- TM.lookup userId $ smpServers c
-            let unused = maybe [] ((\\ used) . map protoServer . L.toList) srvs_
-                used' = if null unused then initUsed else srv : used
-            writeTVar usedSrvs $! used'
-          action srvAuth
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
@@ -1023,7 +1022,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
     atomically $ throwWhenNoDelivery c sq
     msgId <- atomically $ readTQueue mq
     atomically $ beginAgentOperation c AOSndNetwork
-    atomically $ endAgentOperation c AOMsgDelivery
+    atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in queuePendingMsgs
     let mId = unId msgId
     E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left (e :: E.SomeException) ->
@@ -1185,8 +1184,8 @@ switchConnection' c connId = withConnLock c connId "switchConnection" $ do
     DuplexConnection cData@ConnData {userId} rqs@(rq@RcvQueue {server, dbQueueId, sndId} :| rqs_) sqs -> do
       clientVRange <- asks $ smpClientVRange . config
       -- try to get the server that is different from all queues, or at least from the primary rcv queue
-      srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
-      srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
+      srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
+      srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
       (q, qUri) <- newRcvQueue c userId connId srv' clientVRange
       let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
       void . withStore c $ \db -> addConnRcvQueue db connId rq'
@@ -1340,11 +1339,7 @@ connectionStats = \case
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setProtocolServers' :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
-setProtocolServers' c userId srvs = servers >>= atomically . TM.insert userId srvs
-  where
-    servers = case protocolTypeI @p of
-      SPSMP -> pure $ smpServers c
-      SPXFTP -> pure $ xftpServers c
+setProtocolServers' c userId srvs = atomically $ TM.insert userId srvs (userServers c)
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
@@ -1543,9 +1538,9 @@ sendNtfConnCommands c cmd = do
 setNtfServers' :: AgentMonad' m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c = atomically . writeTVar (ntfServers c)
 
-activateAgent' :: AgentMonad' m => AgentClient -> m ()
-activateAgent' c = do
-  atomically $ writeTVar (agentState c) ASActive
+foregroundAgent' :: AgentMonad' m => AgentClient -> m ()
+foregroundAgent' c = do
+  atomically $ writeTVar (agentState c) ASForeground
   mapM_ activate $ reverse agentOperations
   where
     activate opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
@@ -1590,25 +1585,6 @@ debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = 
 getSMPServer :: AgentMonad m => AgentClient -> UserId -> m SMPServerWithAuth
 getSMPServer c userId = withUserServers c userId pickServer
 
-pickServer :: AgentMonad' m => NonEmpty SMPServerWithAuth -> m SMPServerWithAuth
-pickServer = \case
-  srv :| [] -> pure srv
-  servers -> do
-    gen <- asks randomServer
-    atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
-
-getNextSMPServer :: AgentMonad m => AgentClient -> UserId -> [SMPServer] -> m SMPServerWithAuth
-getNextSMPServer c userId usedSrvs = withUserServers c userId $ \srvs ->
-  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
-    Just srvs' -> pickServer srvs'
-    _ -> pickServer srvs
-
-withUserServers :: AgentMonad m => AgentClient -> UserId -> (NonEmpty SMPServerWithAuth -> m a) -> m a
-withUserServers c userId action =
-  atomically (TM.lookup userId $ smpServers c) >>= \case
-    Just srvs -> action srvs
-    _ -> throwError $ INTERNAL "unknown userId - no SMP servers"
-
 subscriber :: AgentMonad' m => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
@@ -1628,6 +1604,10 @@ cleanupManager c@AgentClient {subQ} = do
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
+      deleteSndFilesExpired `catchError` (notify "" . SFERR)
+      deleteSndFilesDeleted `catchError` (notify "" . SFERR)
+      deleteSndFilesPrefixPaths `catchError` (notify "" . SFERR)
+      deleteExpiredReplicasForDeletion `catchError` (notify "" . SFERR)
     liftIO $ threadDelay' int
   where
     deleteConns =
@@ -1635,7 +1615,7 @@ cleanupManager c@AgentClient {subQ} = do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
     deleteRcvFilesExpired = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
       forM_ rcvExpired $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
@@ -1650,6 +1630,25 @@ cleanupManager c@AgentClient {subQ} = do
       forM_ rcvTmpPaths $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` dbId)
+    deleteSndFilesExpired = do
+      sndFilesTTL <- asks $ sndFilesTTL . config
+      sndExpired <- withStore' c (`getSndFilesExpired` sndFilesTTL)
+      forM_ sndExpired $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+        forM_ p $ removePath <=< toFSFilePath
+        withStore' c (`deleteSndFile'` dbId)
+    deleteSndFilesDeleted = do
+      sndDeleted <- withStore' c getCleanupSndFilesDeleted
+      forM_ sndDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+        forM_ p $ removePath <=< toFSFilePath
+        withStore' c (`deleteSndFile'` dbId)
+    deleteSndFilesPrefixPaths = do
+      sndPrefixPaths <- withStore' c getCleanupSndFilesPrefixPaths
+      forM_ sndPrefixPaths $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+        removePath =<< toFSFilePath p
+        withStore' c (`updateSndFileNoPrefixPath` dbId)
+    deleteExpiredReplicasForDeletion = do
+      rcvFilesTTL <- asks $ rcvFilesTTL . config
+      withStore' c (`deleteDeletedSndChunkReplicasExpired` rcvFilesTTL)
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 
