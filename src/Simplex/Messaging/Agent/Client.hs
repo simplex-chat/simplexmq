@@ -1078,34 +1078,34 @@ agentNtfDeleteSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
 
-agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
-agentXFTPDownloadChunk c userId rcvChunkId RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  withXFTPClient c (userId, server, bshow rcvChunkId) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
+agentXFTPDownloadChunk :: AgentMonad m => AgentClient -> UserId -> FileDigest -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> m ()
+agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, chunkDigest) "FGET" $ \xftp -> X.downloadXFTPChunk xftp replicaKey fId chunkSpec
 
 agentXFTPNewChunk :: AgentMonad m => AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> m NewSndChunkReplica
-agentXFTPNewChunk c SndFileChunk {userId, sndChunkId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest digest} n (ProtoServerWithAuth srv auth) = do
+agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) = do
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- liftIO $ C.generateSignatureKeyPair C.SEd25519
-  let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
+  let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest = chunkDigest}
   logServer "-->" c srv "" "FNEW"
-  tSess <- mkTransportSession c userId srv $ bshow sndChunkId
+  tSess <- mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c tSess "FNEW" $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
   logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
 
-agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
-agentXFTPUploadChunk c userId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
-  withXFTPClient c (userId, server, bshow sndChunkId) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
+agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> m ()
+agentXFTPUploadChunk c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
+  withXFTPClient c (userId, server, chunkDigest) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
 
-agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> Int64 -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateSignKey))
-agentXFTPAddRecipients c userId sndChunkId SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
+agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateSignKey))
+agentXFTPAddRecipients c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
   rKeys <- xftpRcvKeys n
-  rIds <- withXFTPClient c (userId, server, bshow sndChunkId) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
+  rIds <- withXFTPClient c (userId, server, chunkDigest) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
   pure $ xftpRcvIdsKeys rIds rKeys
 
 agentXFTPDeleteChunk :: AgentMonad m => AgentClient -> UserId -> DeletedSndChunkReplica -> m ()
-agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} =
-  withXFTPClient c (userId, server, fId) "FDEL" $ \xftp -> X.deleteXFTPChunk xftp replicaKey fId
+agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey, chunkDigest = FileDigest chunkDigest} =
+  withXFTPClient c (userId, server, chunkDigest) "FDEL" $ \xftp -> X.deleteXFTPChunk xftp replicaKey fId
 
 xftpRcvKeys :: AgentMonad m => Int -> m (NonEmpty C.ASignatureKeyPair)
 xftpRcvKeys n = do

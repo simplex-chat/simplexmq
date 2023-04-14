@@ -204,7 +204,7 @@ runXFTPRcvWorker c srv doWork = do
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
-      agentXFTPDownloadChunk c userId rcvChunkId replica chunkSpec
+      agentXFTPDownloadChunk c userId digest replica chunkSpec
       (complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
         RcvFile {size = FileSize total, chunks} <- ExceptT $ getRcvFile db rcvFileId
@@ -472,12 +472,12 @@ runXFTPSndWorker c srv doWork = do
               loop
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
-    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, sndChunkId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}} replica = do
+    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ checkAgentForeground c
-      agentXFTPUploadChunk c userId sndChunkId replica' chunkSpec'
+      agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
@@ -498,7 +498,7 @@ runXFTPSndWorker c srv doWork = do
           | otherwise = do
             maxRecipients <- asks $ xftpMaxRecipientsPerRequest . config
             let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
-            rcvIdsKeys' <- agentXFTPAddRecipients c userId sndChunkId cr numRecipients'
+            rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
             cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
             addRecipients ch cr'
         sndFileToDescrs :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
