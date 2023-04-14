@@ -180,6 +180,7 @@ import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
+import Data.Word (Word32)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -719,9 +720,9 @@ data CryptoError
   | -- | header decryption error (could indicate that another key should be tried)
     CERatchetHeader
   | -- | too many skipped messages
-    CERatchetTooManySkipped
+    CERatchetTooManySkipped Word32
   | -- | earlier message number (or, possibly, skipped message that failed to decrypt?)
-    CERatchetEarlierMessage
+    CERatchetEarlierMessage Word32
   | -- | duplicate message number
     CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)

@@ -1148,11 +1148,16 @@ agentCbDecrypt dhSecret nonce msg =
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE
-  C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
-  C.AESDecryptError -> AGENT A_ENCRYPTION
-  C.CBDecryptError -> AGENT A_ENCRYPTION
+  C.CryptoHeaderError _ -> AGENT A_MESSAGE -- parsing error
   C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
+  C.AESDecryptError -> c DECRYPT_AES
+  C.CBDecryptError -> c DECRYPT_CB
+  C.CERatchetHeader -> c RATCHET_HEADER
+  C.CERatchetTooManySkipped n -> c $ RATCHET_SKIPPED n
+  C.CERatchetEarlierMessage n -> c $ RATCHET_EARLIER n
   e -> INTERNAL $ show e
+  where
+    c = AGENT . A_CRYPTO
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c op = endOperation c op $ case op of
