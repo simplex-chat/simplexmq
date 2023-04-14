@@ -82,7 +82,6 @@ module Simplex.Messaging.Agent.Client
     beginAgentOperation,
     endAgentOperation,
     waitUntilForeground,
-    checkAgentForeground,
     suspendSendingAndDatabase,
     suspendOperation,
     notifySuspended,
@@ -1216,11 +1215,6 @@ agentOperationBracket c op check action =
 
 waitUntilForeground :: AgentClient -> STM ()
 waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
-
-checkAgentForeground :: AgentClient -> STM ()
-checkAgentForeground c = do
-  throwWhenInactive c
-  waitUntilForeground c
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
 withStore' c action = withStore c $ fmap Right . action
