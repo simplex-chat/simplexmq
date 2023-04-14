@@ -221,6 +221,7 @@ data DeletedSndChunkReplica = DeletedSndChunkReplica
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateSignKey,
+    chunkDigest :: FileDigest,
     delay :: Maybe Int64,
     retries :: Int
   }

@@ -66,7 +66,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, liftError, liftIOEither, tshow, whenM)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -182,7 +182,7 @@ runXFTPRcvWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
-        Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
+        Just fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -193,7 +193,7 @@ runXFTPRcvWorker c srv doWork = do
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
-                closeXFTPServerClient c userId server $ bshow rcvChunkId
+                closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
@@ -204,7 +204,7 @@ runXFTPRcvWorker c srv doWork = do
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
-      agentXFTPDownloadChunk c userId rcvChunkId replica chunkSpec
+      agentXFTPDownloadChunk c userId digest replica chunkSpec
       (complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
         RcvFile {size = FileSize total, chunks} <- ExceptT $ getRcvFile db rcvFileId
@@ -455,7 +455,7 @@ runXFTPSndWorker c srv doWork = do
       case nextChunk of
         Nothing -> noWorkToDo
         Just SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
-        Just fc@SndFileChunk {userId, sndFileId, sndChunkId, sndFileEntityId, filePrefixPath, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
+        Just fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -466,18 +466,18 @@ runXFTPSndWorker c srv doWork = do
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
-                closeXFTPServerClient c userId server $ bshow sndChunkId
+                closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
-    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, sndChunkId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}} replica = do
+    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
-      agentXFTPUploadChunk c userId sndChunkId replica' chunkSpec'
+      agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
@@ -498,7 +498,7 @@ runXFTPSndWorker c srv doWork = do
           | otherwise = do
             maxRecipients <- asks $ xftpMaxRecipientsPerRequest . config
             let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
-            rcvIdsKeys' <- agentXFTPAddRecipients c userId sndChunkId cr numRecipients'
+            rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
             cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
             addRecipients ch cr'
         sndFileToDescrs :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
@@ -582,8 +582,8 @@ deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescripti
   forM_ chunks $ \ch -> deleteFileChunk ch `catchError` (notify c sndFileEntityId . SFERR)
   where
     deleteFileChunk :: FileChunk -> m ()
-    deleteFileChunk FileChunk {replicas = replica@FileChunkReplica {server} : _} = do
-      withStore' c $ \db -> createDeletedSndChunkReplica db userId replica
+    deleteFileChunk FileChunk {digest, replicas = replica@FileChunkReplica {server} : _} = do
+      withStore' c $ \db -> createDeletedSndChunkReplica db userId replica digest
       addXFTPDelWorker c server
     deleteFileChunk _ = pure ()
 
@@ -613,7 +613,7 @@ runXFTPDelWorker c srv doWork = do
       nextReplica <- withStore' c $ \db -> getNextDeletedSndChunkReplica db srv rcvFilesTTL
       case nextReplica of
         Nothing -> noWorkToDo
-        Just replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, replicaId = ChunkReplicaId replId, delay} -> do
+        Just replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} -> do
           ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
@@ -624,7 +624,7 @@ runXFTPDelWorker c srv doWork = do
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c "" $ SFERR e
-                closeXFTPServerClient c userId server replId
+                closeXFTPServerClient c userId server chunkDigest
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
