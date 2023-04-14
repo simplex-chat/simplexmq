@@ -624,9 +624,9 @@ closeClient_ c cVar = do
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 
-closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> ByteString -> m ()
-closeXFTPServerClient c userId server entityId =
-  mkTransportSession c userId server entityId >>= liftIO . closeClient c xftpClients
+closeXFTPServerClient :: AgentMonad' m => AgentClient -> UserId -> XFTPServer -> FileDigest -> m ()
+closeXFTPServerClient c userId server (FileDigest chunkDigest) =
+  mkTransportSession c userId server chunkDigest >>= liftIO . closeClient c xftpClients
 
 cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
 cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterruptibleCancel)

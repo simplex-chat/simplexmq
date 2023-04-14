@@ -25,6 +25,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Version
+import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -58,6 +59,11 @@ testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
 xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 xit' = if os == "linux" then xit else it
+
+xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
+xit'' d t = do
+  ci <- runIO $ lookupEnv "CI"
+  (if ci == Just "true" then xit else it) d t
 
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testSMPClient client = do

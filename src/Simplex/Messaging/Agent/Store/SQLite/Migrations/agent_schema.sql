@@ -368,7 +368,7 @@ CREATE TABLE snd_file_chunks(
   chunk_no INTEGER NOT NULL,
   chunk_offset INTEGER NOT NULL,
   chunk_size INTEGER NOT NULL,
-  digest BLOB,
+  digest BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
@@ -409,6 +409,7 @@ CREATE TABLE deleted_snd_chunk_replicas(
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
   replica_id BLOB NOT NULL,
   replica_key BLOB NOT NULL,
+  chunk_digest BLOB NOT NULL,
   delay INTEGER,
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),

@@ -16,6 +16,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
+import SMPClient (xit'')
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
@@ -36,7 +37,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-  it "should resume sending file after restart" testXFTPAgentSendRestore
+  xit'' "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs

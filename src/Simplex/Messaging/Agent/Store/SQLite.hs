@@ -2402,13 +2402,13 @@ getSndFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createDeletedSndChunkReplica :: DB.Connection -> UserId -> FileChunkReplica -> IO ()
-createDeletedSndChunkReplica db userId FileChunkReplica {server, replicaId, replicaKey} = do
+createDeletedSndChunkReplica :: DB.Connection -> UserId -> FileChunkReplica -> FileDigest -> IO ()
+createDeletedSndChunkReplica db userId FileChunkReplica {server, replicaId, replicaKey} chunkDigest = do
   srvId <- createXFTPServer_ db server
   DB.execute
     db
-    "INSERT INTO deleted_snd_chunk_replicas (user_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?)"
-    (userId, srvId, replicaId, replicaKey)
+    "INSERT INTO deleted_snd_chunk_replicas (user_id, xftp_server_id, replica_id, replica_key, chunk_digest) VALUES (?,?,?,?,?)"
+    (userId, srvId, replicaId, replicaKey, chunkDigest)
 
 getDeletedSndChunkReplica :: DB.Connection -> DBSndFileId -> IO (Either StoreError DeletedSndChunkReplica)
 getDeletedSndChunkReplica db deletedSndChunkReplicaId =
@@ -2417,7 +2417,7 @@ getDeletedSndChunkReplica db deletedSndChunkReplicaId =
       db
       [sql|
         SELECT
-          r.user_id, r.replica_id, r.replica_key, r.delay, r.retries,
+          r.user_id, r.replica_id, r.replica_key, r.chunk_digest, r.delay, r.retries,
           s.xftp_host, s.xftp_port, s.xftp_key_hash
         FROM deleted_snd_chunk_replicas r
         JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -2425,10 +2425,10 @@ getDeletedSndChunkReplica db deletedSndChunkReplicaId =
       |]
       (Only deletedSndChunkReplicaId)
   where
-    toReplica :: (UserId, ChunkReplicaId, C.APrivateSignKey, Maybe Int64, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> DeletedSndChunkReplica
-    toReplica (userId, replicaId, replicaKey, delay, retries, host, port, keyHash) =
+    toReplica :: (UserId, ChunkReplicaId, C.APrivateSignKey, FileDigest, Maybe Int64, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> DeletedSndChunkReplica
+    toReplica (userId, replicaId, replicaKey, chunkDigest, delay, retries, host, port, keyHash) =
       let server = XFTPServer host port keyHash
-       in DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, replicaId, replicaKey, delay, retries}
+       in DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, replicaId, replicaKey, chunkDigest, delay, retries}
 
 getNextDeletedSndChunkReplica :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe DeletedSndChunkReplica)
 getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl = do
