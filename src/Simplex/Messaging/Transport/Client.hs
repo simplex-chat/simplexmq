@@ -26,13 +26,14 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAsciiLower, isDigit)
+import Data.Char (isAsciiLower, isDigit, isHexDigit)
 import Data.Default (def)
+import Data.IP
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Data.String
-import Data.Word (Word8)
+import Data.Word (Word32, Word8)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import Data.X509.Validation (Fingerprint (..))
@@ -55,6 +56,7 @@ import qualified UnliftIO.Exception as E
 
 data TransportHost
   = THIPv4 (Word8, Word8, Word8, Word8)
+  | THIPv6 (Word32, Word32, Word32, Word32)
   | THOnionHost ByteString
   | THDomainName HostName
   deriving (Eq, Ord, Show)
@@ -66,11 +68,13 @@ instance Encoding TransportHost where
 instance StrEncoding TransportHost where
   strEncode = \case
     THIPv4 (a1, a2, a3, a4) -> B.intercalate "." $ map bshow [a1, a2, a3, a4]
+    THIPv6 addr -> bshow $ toIPv6w addr
     THOnionHost host -> host
     THDomainName host -> B.pack host
   strP =
     A.choice
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
+        maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> A.takeWhile1 (\c -> isHexDigit c || c == ':'),
         THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
         THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t"))
       ]
@@ -129,6 +133,7 @@ runTLSTransportClient tlsParams caStore_ TransportClientConfig {socksProxy, tcpK
   where
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
+      THIPv6 addr -> SocksAddrIPV6 addr
       THOnionHost h -> SocksAddrDomainName h
       THDomainName h -> SocksAddrDomainName $ B.pack h
 

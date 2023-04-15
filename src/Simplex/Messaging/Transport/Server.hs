@@ -1,5 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport.Server
@@ -12,11 +14,15 @@ module Simplex.Messaging.Transport.Server
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM (stateTVar)
+import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
+import Data.List (find)
+import Data.Maybe (fromJust)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -25,7 +31,7 @@ import qualified Network.TLS as T
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_)
+import Simplex.Messaging.Util (catchAll_, tshow)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO.Concurrent
@@ -70,14 +76,18 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in head <$> getAddrInfo (Just hints) Nothing (Just port)
+       in select <$> getAddrInfo (Just hints) Nothing (Just port)
+    select as = fromJust $ family AF_INET6 <|> family AF_INET
+      where
+        family f = find ((== f) . addrFamily) as
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
       withFdSocket sock setCloseOnExecIfNeeded
+      logInfo $ "binding to " <> tshow (addrAddress addr)
       bind sock $ addrAddress addr
       listen sock 1024
-      return sock
+      pure sock
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
