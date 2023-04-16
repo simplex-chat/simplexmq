@@ -450,7 +450,7 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
 
 reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
 reconnectSMPClient c tSess@(_, srv, _) =
-  withLockMap_ (reconnectLocks c) tSess "reconnect" $
+  withLockMap (reconnectLocks c) tSess "reconnect" $
     atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
   where
     resubscribe :: NonEmpty RcvQueue -> m ()
@@ -632,12 +632,7 @@ cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterru
 
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
-withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
-
-withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
-withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
-  where
-    newLock = createLock >>= \l -> TM.insert key l locks $> l
+withConnLock AgentClient {connLocks} connId name = withLockMap connLocks connId name
 
 withClient_ :: forall a m err msg. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do

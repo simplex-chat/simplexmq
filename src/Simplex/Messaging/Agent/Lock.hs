@@ -2,9 +2,12 @@
 
 module Simplex.Messaging.Agent.Lock where
 
-import Control.Monad (void)
+import Control.Concurrent.STM (retry)
+import Control.Monad (unless, void)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -20,9 +23,17 @@ withLock lock name =
     (atomically $ putTMVar lock name)
     (void . atomically $ takeTMVar lock)
 
+waitForLock :: Lock -> STM ()
+waitForLock lock = isEmptyTMVar lock >>= (`unless` retry)
+
 withGetLock :: MonadUnliftIO m => STM Lock -> String -> m a -> m a
 withGetLock getLock name a =
   E.bracket
     (atomically $ getLock >>= \l -> putTMVar l name $> l)
     (atomically . takeTMVar)
     (const a)
+
+withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
+withLockMap locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
+  where
+    newLock = createLock >>= \l -> TM.insert key l locks $> l
