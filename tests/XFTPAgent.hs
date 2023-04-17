@@ -40,6 +40,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   xit'' "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
+  it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
@@ -320,6 +321,49 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       xftpDeleteSndFileRemote sndr 1 sfId sndDescr
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
+
+    threadDelay 1000000
+    length <$> listDirectory xftpServerFiles `shouldReturn` 0
+
+    -- receive file - should fail with AUTH error
+    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+    runRight $ do
+      xftpStartWorkers rcp2 (Just recipientFiles)
+      rfId <- xftpReceiveFile rcp2 1 rfd2
+      ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
+      liftIO $ rfId' `shouldBe` rfId
+
+testXFTPAgentDeleteRestore :: IO ()
+testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
+  filePath <- createRandomFile
+
+  (sfId, sndDescr, rfd2) <- withXFTPServerStoreLogOn $ \_ -> do
+    -- send file
+    sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+    (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
+
+    -- receive file
+    rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
+    runRight_ $
+      void $ testReceive rcp1 rfd1 filePath
+
+    pure (sfId, sndDescr, rfd2)
+
+  -- delete file - should not succeed with server down
+  sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+  runRight $ do
+    xftpStartWorkers sndr (Just senderFiles)
+    xftpDeleteSndFileRemote sndr 1 sfId sndDescr
+    liftIO $ timeout 300000 (get sndr) `shouldReturn` Nothing -- wait for worker attempt
+  disconnectAgentClient sndr
+
+  threadDelay 300000
+  length <$> listDirectory xftpServerFiles `shouldReturn` 6
+
+  withXFTPServerStoreLogOn $ \_ -> do
+    -- delete file - should succeed with server up
+    sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
+    runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
 
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
