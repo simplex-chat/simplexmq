@@ -1,6 +1,5 @@
 # 5.0.0
 
-protocol
 - XFTP server
 - XFTP CLI
 - support XFTP in the agent
