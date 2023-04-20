@@ -1,11 +1,16 @@
 # 5.0.0
 
+SimpleX File Transfer Protocol (XFTP):
 - XFTP server
 - XFTP CLI
 - support XFTP in the agent
+
+Other changes:
 - preserve retry interval for sending messages on agent restarts
 - support IPv6 in the servers and in the agent
 - support for 32-bit platforms
+
+Read more about XFTP in this post: https://simplex.chat/blog/20230301-simplex-file-transfer-protocol.html
 
 # 4.4.1
 
