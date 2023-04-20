@@ -1,3 +1,13 @@
+# 5.0.0
+
+protocol
+- XFTP server
+- XFTP CLI
+- support XFTP in the agent
+- preserve retry interval for sending messages on agent restarts
+- support IPv6 in the servers and in the agent
+- support for 32-bit platforms
+
 # 4.4.1
 
 SMP agent:
