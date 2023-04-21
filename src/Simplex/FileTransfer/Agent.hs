@@ -197,7 +197,9 @@ runXFTPRcvWorker c srv doWork = do
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
-            retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
+            retryDone e = do
+              withStore' c (`deleteSndFileReplica` rcvChunkReplicaId)
+              rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
       fsFileTmpPath <- toFSFilePath fileTmpPath
@@ -415,7 +417,7 @@ runXFTPSndPrepareWorker c doWork = do
         createChunk :: Int -> SndFileChunk -> m ()
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
-          (replica, ProtoServerWithAuth srv _) <- agentOperationBracket c AOSndNetwork throwWhenInactive tryCreate
+          (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
           addXFTPSndWorker c $ Just srv
           where
@@ -445,7 +447,7 @@ runXFTPSndWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     atomically $ assertAgentForeground c
-    agentOperationBracket c AOSndNetwork throwWhenInactive runXFTPOperation
+    runXFTPOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXFTPOperation :: m ()
@@ -470,7 +472,9 @@ runXFTPSndWorker c srv doWork = do
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
-            retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
+            retryDone e = do
+              withStore' c (`deleteSndFileReplica` sndChunkReplicaId)
+              sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
     uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
@@ -628,11 +632,13 @@ runXFTPDelWorker c srv doWork = do
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
-            retryDone e = delWorkerInternalError c deletedSndChunkReplicaId e
+            retryDone e = do
+              withStore' c (`deleteDeletedSndChunkReplica` deletedSndChunkReplicaId)
+              delWorkerInternalError c deletedSndChunkReplicaId e
     deleteChunkReplica :: DeletedSndChunkReplica -> m ()
     deleteChunkReplica replica@DeletedSndChunkReplica {userId, deletedSndChunkReplicaId} = do
       agentXFTPDeleteChunk c userId replica
-      withStore' c $ \db -> deleteDeletedSndChunkReplica db deletedSndChunkReplicaId
+      withStore' c (`deleteDeletedSndChunkReplica` deletedSndChunkReplicaId)
 
 delWorkerInternalError :: AgentMonad m => AgentClient -> Int64 -> AgentErrorType -> m ()
 delWorkerInternalError c deletedSndChunkReplicaId e = do

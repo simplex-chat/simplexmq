@@ -144,6 +144,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileNoTmpPath,
     updateRcvFileDeleted,
     deleteRcvFile',
+    deleteRcvFileReplica,
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
     getPendingRcvFilesServers,
@@ -162,6 +163,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateSndFileNoPrefixPath,
     updateSndFileDeleted,
     deleteSndFile',
+    deleteSndFileReplica,
     getSndFileDeleted,
     createSndFileReplica,
     getNextSndChunkToUpload,
@@ -1998,6 +2000,10 @@ deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
+deleteRcvFileReplica :: DB.Connection -> Int64 -> IO ()
+deleteRcvFileReplica db replicaId =
+  DB.execute db "DELETE FROM rcv_file_chunk_replicas WHERE rcv_file_chunk_replica_id = ?" (Only replicaId)
+
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe RcvFileChunk)
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
   cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
@@ -2015,7 +2021,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
         WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
           AND r.received = 0 AND r.replica_number = 1
           AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
-        ORDER BY r.created_at ASC
+        ORDER BY r.retries ASC, r.created_at ASC
         LIMIT 1
       |]
       (host, port, keyHash, RFSReceiving, cutoffTs)
@@ -2255,6 +2261,10 @@ deleteSndFile' :: DB.Connection -> DBSndFileId -> IO ()
 deleteSndFile' db sndFileId =
   DB.execute db "DELETE FROM snd_files WHERE snd_file_id = ?" (Only sndFileId)
 
+deleteSndFileReplica :: DB.Connection -> Int64 -> IO ()
+deleteSndFileReplica db replicaId =
+  DB.execute db "DELETE FROM snd_file_chunk_replicas WHERE snd_file_chunk_replica_id = ?" (Only replicaId)
+
 getSndFileDeleted :: DB.Connection -> DBSndFileId -> IO Bool
 getSndFileDeleted db sndFileId =
   fromMaybe True
@@ -2301,7 +2311,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
           WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
             AND r.replica_status = ? AND r.replica_number = 1
             AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
-          ORDER BY r.created_at ASC
+          ORDER BY r.retries ASC, r.created_at ASC
           LIMIT 1
         |]
         (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
@@ -2443,7 +2453,8 @@ getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl = do
           JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
           WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
             AND r.created_at >= ?
-          ORDER BY r.created_at ASC LIMIT 1
+          ORDER BY r.retries ASC, r.created_at ASC
+          LIMIT 1
         |]
         (host, port, keyHash, cutoffTs)
   case replicaId_ of
