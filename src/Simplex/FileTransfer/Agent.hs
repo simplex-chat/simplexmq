@@ -390,6 +390,8 @@ runXFTPSndPrepareWorker c doWork = do
           else pure sndFile
       maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
       let numRecipients' = min numRecipients maxRecipients
+      liftIO $ print "finished encrypting"
+      threadDelay 30000000
       -- concurrently?
       forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
@@ -463,6 +465,7 @@ runXFTPSndWorker c srv doWork = do
               `catchError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
+              liftIO $ print $ "replica " <> show sndChunkReplicaId <> " temporary error"
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e

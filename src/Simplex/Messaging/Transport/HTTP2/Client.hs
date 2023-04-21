@@ -108,16 +108,19 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
       atomically $ do
         writeTVar (connected c) True
         putTMVar cVar (Right c')
-      process c' sendReq `E.finally` disconnected
+      process c' sendReq `E.finally` (putStrLn "process error" >> disconnected)
 
     process :: HTTP2Client -> H.Client HTTP2Response
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
       (req, respVar) <- atomically $ readTBQueue reqQ
-      sendReq req $ \r -> do
-        respBody <- getHTTP2Body r bodyHeadSize
-        let resp = HTTP2Response {response = r, respBody}
-        atomically $ putTMVar respVar resp
-        pure resp
+      do
+        ( sendReq req $ \r -> do
+            respBody <- getHTTP2Body r bodyHeadSize
+            let resp = HTTP2Response {response = r, respBody}
+            atomically $ putTMVar respVar resp
+            pure resp
+          )
+          `E.finally` print "sendReq error"
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTP2Client :: HTTP2Client -> IO ()
