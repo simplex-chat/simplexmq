@@ -198,7 +198,7 @@ runXFTPRcvWorker c srv doWork = do
               atomically $ assertAgentForeground c
               loop
             retryDone e = do
-              withStore' c (`deleteSndFileReplica` rcvChunkReplicaId)
+              withStore' c (`deleteRcvFileReplica` rcvChunkReplicaId)
               rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
