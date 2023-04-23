@@ -1,4 +1,4 @@
-name: Build and push SimpleXMQ Docker image
+name: Build and push Docker image to Docker Hub
 
 on:
   push:
@@ -7,8 +7,14 @@ on:
 
 jobs:
   build-and-push:
-    name: Build and push Docker image to Docker Hub
+    name: Build and push Docker image
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - application: simplexmq
+            dockerfile: build.Dockerfile
     steps:
       - name: Clone project
         uses: actions/checkout@v3
@@ -31,7 +37,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/simplexmq
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.application }}
           flavor: |
             latest=auto
           tags: |
@@ -43,7 +49,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           push: true
-          file: build.Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64,linux/386
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
