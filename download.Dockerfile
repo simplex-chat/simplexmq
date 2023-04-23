@@ -3,6 +3,8 @@ FROM ubuntu:focal
 # Install curl
 RUN apt-get update && apt-get install -y curl
 
+ARG version=undefined
+
 # Download latest smp-server release and assign executable permission
 RUN curl -L https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64 -o /usr/bin/smp-server && \
 	chmod +x /usr/bin/smp-server
