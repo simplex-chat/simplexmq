@@ -23,6 +23,9 @@ WORKDIR /project
 RUN cabal update
 RUN cabal install
 
+# Strip the binary from debug symbols to reduce size
+RUN strip /root/.cabal/bin/smp-server
+
 ### Final stage
 
 FROM final
