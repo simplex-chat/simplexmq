@@ -390,8 +390,6 @@ runXFTPSndPrepareWorker c doWork = do
           else pure sndFile
       maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
       let numRecipients' = min numRecipients maxRecipients
-      liftIO $ print "finished encrypting"
-      threadDelay 30000000
       -- concurrently?
       forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading

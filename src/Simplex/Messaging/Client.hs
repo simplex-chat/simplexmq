@@ -417,6 +417,8 @@ data ProtocolClientError err
     PCECryptoError C.CryptoError
   | -- | IO Error
     PCEIOError IOException
+  | -- | Internal error
+    PCEInternalError String
   deriving (Eq, Show, Exception)
 
 type SMPClientError = ProtocolClientError ErrorType

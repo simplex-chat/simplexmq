@@ -233,6 +233,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       PCEProtocolError AUTH -> updateSubStatus smpQueue NSAuth
       PCEProtocolError e -> updateErr "SMP error " e
       PCEIOError e -> updateErr "IOError " e
+      PCEInternalError e -> updateErr "InternalError " e
       PCEResponseError e -> updateErr "ResponseError " e
       PCEUnexpectedResponse r -> updateErr "UnexpectedResponse " r
       PCETransportError e -> updateErr "TransportError " e

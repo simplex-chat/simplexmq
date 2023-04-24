@@ -29,10 +29,10 @@ import UnliftIO.STM
 import UnliftIO.Timeout
 
 data HTTP2Client = HTTP2Client
-  { action :: Maybe (Async HTTP2Response),
+  { action :: Maybe (Async HTTP2RequestResult),
     sessionId :: SessionId,
     sessionTs :: UTCTime,
-    sendReq :: Request -> (Response -> IO HTTP2Response) -> IO HTTP2Response,
+    sendReq :: Request -> (Response -> IO HTTP2RequestResult) -> IO HTTP2RequestResult,
     client_ :: HClient
   }
 
@@ -42,8 +42,12 @@ data HClient = HClient
     host :: TransportHost,
     port :: ServiceName,
     config :: HTTP2ClientConfig,
-    reqQ :: TBQueue (Request, TMVar HTTP2Response)
+    reqQ :: TBQueue (Request, TMVar HTTP2RequestResult)
   }
+
+data HTTP2RequestResult
+  = HTTP2RequestResponse HTTP2Response
+  | HTTP2RequestError E.SomeException
 
 data HTTP2Response = HTTP2Response
   { response :: Response,
@@ -101,40 +105,42 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
         Just (Left e) -> Left e
         Nothing -> Left HCNetworkError
 
-    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> SessionId -> H.Client HTTP2Response
+    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> SessionId -> H.Client HTTP2RequestResult
     client c cVar sessionId sendReq = do
       sessionTs <- getCurrentTime
       let c' = HTTP2Client {action = Nothing, client_ = c, sendReq, sessionId, sessionTs}
       atomically $ do
         writeTVar (connected c) True
         putTMVar cVar (Right c')
-      process c' sendReq `E.finally` (putStrLn "process error" >> disconnected)
+      process c' sendReq `E.finally` disconnected
 
-    process :: HTTP2Client -> H.Client HTTP2Response
+    process :: HTTP2Client -> H.Client HTTP2RequestResult
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
-      (req, respVar) <- atomically $ readTBQueue reqQ
-      do
-        ( sendReq req $ \r -> do
-            respBody <- getHTTP2Body r bodyHeadSize
-            let resp = HTTP2Response {response = r, respBody}
-            atomically $ putTMVar respVar resp
-            pure resp
-          )
-          `E.finally` print "sendReq error"
+      (req, resVar) <- atomically $ readTBQueue reqQ
+      sendReq req (processResp resVar) `E.catch` \e -> do
+        let res = HTTP2RequestError e
+        atomically $ putTMVar resVar res
+        pure res
+      where
+        processResp resVar r = do
+          respBody <- getHTTP2Body r bodyHeadSize
+          let res = HTTP2RequestResponse $ HTTP2Response {response = r, respBody}
+          atomically $ putTMVar resVar res
+          pure res
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTP2Client :: HTTP2Client -> IO ()
 closeHTTP2Client = mapM_ uninterruptibleCancel . action
 
-sendRequest :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
+sendRequest :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2RequestResult)
 sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
-  resp <- newEmptyTMVarIO
-  atomically $ writeTBQueue reqQ (req, resp)
+  resVar <- newEmptyTMVarIO
+  atomically $ writeTBQueue reqQ (req, resVar)
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resp))
+  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resVar))
 
 -- | this function should not be used until HTTP2 is thread safe, use sendRequest
-sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
+sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2RequestResult)
 sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req reqTimeout_ = do
   let reqTimeout = http2RequestTimeout config reqTimeout_
   reqTimeout `timeout` try (sendReq req process) >>= \case
@@ -144,7 +150,7 @@ sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq
   where
     process r = do
       respBody <- getHTTP2Body r $ bodyHeadSize config
-      pure HTTP2Response {response = r, respBody}
+      pure $ HTTP2RequestResponse $ HTTP2Response {response = r, respBody}
 
 http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
 http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)

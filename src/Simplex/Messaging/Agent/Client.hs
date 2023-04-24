@@ -702,6 +702,7 @@ protocolClientError protocolError_ host = \case
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
   PCEIOError {} -> BROKER host NETWORK
+  PCEInternalError e -> INTERNAL e
 
 data ProtocolTestStep
   = TSConnect
