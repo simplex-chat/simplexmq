@@ -1,5 +1,5 @@
-FROM ubuntu:23.04 AS final
-FROM ubuntu:23.04 AS build
+FROM ubuntu:22.04 AS final
+FROM ubuntu:22.04 AS build
 
 ### Build stage
 
