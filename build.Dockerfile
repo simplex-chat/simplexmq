@@ -21,10 +21,10 @@ WORKDIR /project
 
 # Compile smp-server
 RUN cabal update
-RUN cabal install
+RUN cabal build exe:smp-server --bindir=/root/
 
 # Strip the binary from debug symbols to reduce size
-RUN strip /root/.cabal/bin/smp-server
+RUN strip /root/smp-server
 
 ### Final stage
 
@@ -34,7 +34,7 @@ FROM final
 RUN apt-get update && apt-get install -y openssl libnuma-dev
 
 # Copy compiled smp-server from build stage
-COPY --from=build /root/.cabal/bin/smp-server /usr/bin/smp-server
+COPY --from=build /root/smp-server /usr/bin/smp-server
 
 # Copy our helper script
 COPY ./scripts/docker/entrypoint /usr/bin/entrypoint
