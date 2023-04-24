@@ -390,6 +390,8 @@ runXFTPSndPrepareWorker c doWork = do
           else pure sndFile
       maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
       let numRecipients' = min numRecipients maxRecipients
+      liftIO $ print "finished encrypting"
+      threadDelay 10000000
       -- concurrently?
       forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
@@ -463,7 +465,7 @@ runXFTPSndWorker c srv doWork = do
               `catchError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              liftIO $ print $ "replica " <> show sndChunkReplicaId <> " temporary error"
+              liftIO $ print $ "replica " <> show sndChunkReplicaId <> " temporary error" <> show e
               flip catchError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
@@ -471,7 +473,9 @@ runXFTPSndWorker c srv doWork = do
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
-            retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
+            retryDone e = do
+              liftIO $ print $ "replica " <> show sndChunkReplicaId <> " permanent error" <> show e
+              sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
     uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica

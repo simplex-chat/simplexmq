@@ -118,6 +118,7 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
       (req, resVar) <- atomically $ readTBQueue reqQ
       sendReq req (processResp resVar) `E.catch` \e -> do
+        liftIO $ print $ "in process catch e: " <> show e
         let res = HTTP2RequestError e
         atomically $ putTMVar resVar res
         pure res

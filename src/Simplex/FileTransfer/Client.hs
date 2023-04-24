@@ -146,7 +146,9 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
           Just e -> throwError $ PCEProtocolError e
           _ -> pure (r, body)
         Left e -> throwError $ PCEResponseError e
-    HTTP2RequestError e -> throwError $ PCEInternalError $ show e
+    HTTP2RequestError e -> do
+      liftIO $ print $ "in sendXFTPCommand HTTP2RequestError" <> show e
+      throwError $ PCEInternalError $ show e
   where
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
     streamBody t send done = do
