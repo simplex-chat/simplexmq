@@ -1,5 +1,5 @@
-FROM ubuntu:focal AS final
-FROM ubuntu:focal AS build
+FROM --platform=$BUILDPLATFORM ubuntu:23.04 AS final
+FROM --platform=$BUILDPLATFORM ubuntu:23.04 AS build
 
 ### Build stage
 
@@ -22,6 +22,9 @@ WORKDIR /project
 # Compile smp-server
 RUN cabal update
 RUN cabal install
+
+# Strip the binary from debug symbols to reduce size
+RUN strip /root/.cabal/bin/smp-server
 
 ### Final stage
 
