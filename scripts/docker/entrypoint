@@ -24,5 +24,5 @@ fi
 
 # Finally, run smp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
-exec smp-server start
+exec smp-server start +RTS -N -RTS
 
