@@ -66,7 +66,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -475,6 +475,7 @@ runXFTPSndWorker c srv doWork = do
     uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
+      unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
