@@ -1,5 +1,5 @@
-FROM ubuntu:focal AS final
-FROM ubuntu:focal AS build
+FROM ubuntu:23.04 AS final
+FROM ubuntu:23.04 AS build
 
 ### Build stage
 
