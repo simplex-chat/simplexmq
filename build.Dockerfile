@@ -1,10 +1,10 @@
-FROM ubuntu:23.04 AS final
-FROM ubuntu:23.04 AS build
+FROM ubuntu:22.04 AS final
+FROM ubuntu:22.04 AS build
 
 ### Build stage
 
 # Install curl and git and smp-related dependencies
-RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev llvm llvm-dev libnuma-dev
+RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev llvm-12 llvm-12-dev libnuma-dev
 
 # Install ghcup
 RUN curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_GHC_VERSION=8.10.7 BOOTSTRAP_HASKELL_CABAL_VERSION=3.6.2.0 sh
@@ -21,10 +21,12 @@ WORKDIR /project
 
 # Compile smp-server
 RUN cabal update
-RUN cabal build exe:smp-server --bindir=/root/
+RUN cabal build exe:smp-server
 
 # Strip the binary from debug symbols to reduce size
-RUN strip /root/smp-server
+RUN smp=$(find ./dist-newstyle -name "smp-server" -type f -executable) && \
+    mv "$smp" ./ && \
+    strip ./smp-server
 
 ### Final stage
 
@@ -34,7 +36,7 @@ FROM final
 RUN apt-get update && apt-get install -y openssl libnuma-dev
 
 # Copy compiled smp-server from build stage
-COPY --from=build /root/smp-server /usr/bin/smp-server
+COPY --from=build /project/smp-server /usr/bin/smp-server
 
 # Copy our helper script
 COPY ./scripts/docker/entrypoint /usr/bin/entrypoint
