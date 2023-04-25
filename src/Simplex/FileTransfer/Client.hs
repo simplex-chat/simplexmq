@@ -9,6 +9,7 @@
 
 module Simplex.FileTransfer.Client where
 
+import qualified Control.Exception as E
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
@@ -154,9 +155,14 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
     streamBody t send done = do
       send $ byteString t
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
-        withFile filePath ReadMode $ \h -> do
-          hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-          sendFile h send $ fromIntegral chunkSize
+        do
+          ( withFile filePath ReadMode $ \h -> do
+              hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+              sendFile h send $ fromIntegral chunkSize
+            )
+            `E.catch` \(e :: SomeException) -> do
+              print $ "in sendXFTPCommand streamBody " <> show e
+              E.throw e
       done
 
 createXFTPChunk ::
