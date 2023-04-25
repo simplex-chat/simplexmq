@@ -1888,15 +1888,15 @@ createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath save
         "INSERT INTO rcv_file_chunk_replicas (replica_number, rcv_file_chunk_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?,?)"
         (replicaNo, chunkId, srvId, replicaId, replicaKey)
 
-getRcvFileByEntityId :: DB.Connection -> UserId -> RcvFileId -> IO (Either StoreError RcvFile)
-getRcvFileByEntityId db userId rcvFileEntityId = runExceptT $ do
-  rcvFileId <- ExceptT $ getRcvFileIdByEntityId_ db userId rcvFileEntityId
+getRcvFileByEntityId :: DB.Connection -> RcvFileId -> IO (Either StoreError RcvFile)
+getRcvFileByEntityId db rcvFileEntityId = runExceptT $ do
+  rcvFileId <- ExceptT $ getRcvFileIdByEntityId_ db rcvFileEntityId
   ExceptT $ getRcvFile db rcvFileId
 
-getRcvFileIdByEntityId_ :: DB.Connection -> UserId -> RcvFileId -> IO (Either StoreError DBRcvFileId)
-getRcvFileIdByEntityId_ db userId rcvFileEntityId =
+getRcvFileIdByEntityId_ :: DB.Connection -> RcvFileId -> IO (Either StoreError DBRcvFileId)
+getRcvFileIdByEntityId_ db rcvFileEntityId =
   firstRow fromOnly SEFileNotFound $
-    DB.query db "SELECT rcv_file_id FROM rcv_files WHERE user_id = ? AND rcv_file_entity_id = ?" (userId, rcvFileEntityId)
+    DB.query db "SELECT rcv_file_id FROM rcv_files WHERE rcv_file_entity_id = ?" (Only rcvFileEntityId)
 
 getRcvFile :: DB.Connection -> DBRcvFileId -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
@@ -2115,15 +2115,15 @@ createSndFile db gVar userId numRecipients path prefixPath key nonce =
       "INSERT INTO snd_files (snd_file_entity_id, user_id, num_recipients, key, nonce, path, prefix_path, status) VALUES (?,?,?,?,?,?,?,?)"
       (sndFileEntityId, userId, numRecipients, key, nonce, path, prefixPath, SFSNew)
 
-getSndFileByEntityId :: DB.Connection -> UserId -> SndFileId -> IO (Either StoreError SndFile)
-getSndFileByEntityId db userId sndFileEntityId = runExceptT $ do
-  sndFileId <- ExceptT $ getSndFileIdByEntityId_ db userId sndFileEntityId
+getSndFileByEntityId :: DB.Connection -> SndFileId -> IO (Either StoreError SndFile)
+getSndFileByEntityId db sndFileEntityId = runExceptT $ do
+  sndFileId <- ExceptT $ getSndFileIdByEntityId_ db sndFileEntityId
   ExceptT $ getSndFile db sndFileId
 
-getSndFileIdByEntityId_ :: DB.Connection -> UserId -> SndFileId -> IO (Either StoreError DBSndFileId)
-getSndFileIdByEntityId_ db userId sndFileEntityId =
+getSndFileIdByEntityId_ :: DB.Connection -> SndFileId -> IO (Either StoreError DBSndFileId)
+getSndFileIdByEntityId_ db sndFileEntityId =
   firstRow fromOnly SEFileNotFound $
-    DB.query db "SELECT snd_file_id FROM snd_files WHERE user_id = ? AND snd_file_entity_id = ?" (userId, sndFileEntityId)
+    DB.query db "SELECT snd_file_id FROM snd_files WHERE snd_file_entity_id = ?" (Only sndFileEntityId)
 
 getSndFile :: DB.Connection -> DBSndFileId -> IO (Either StoreError SndFile)
 getSndFile db sndFileId = runExceptT $ do

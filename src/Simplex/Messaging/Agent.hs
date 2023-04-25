@@ -345,16 +345,16 @@ xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescri
 xftpReceiveFile c = withAgentEnv c .: receiveFile c
 
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
-xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> UserId -> RcvFileId -> m ()
-xftpDeleteRcvFile c = withAgentEnv c .: deleteRcvFile c
+xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> RcvFileId -> m ()
+xftpDeleteRcvFile c = withAgentEnv c . deleteRcvFile c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
 xftpSendFile c = withAgentEnv c .:. sendFile c
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
-xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> m ()
-xftpDeleteSndFileInternal c = withAgentEnv c .: deleteSndFileInternal c
+xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> SndFileId -> m ()
+xftpDeleteSndFileInternal c = withAgentEnv c . deleteSndFileInternal c
 
 -- | Delete XFTP snd file chunks on servers
 xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
