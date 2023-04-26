@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport.HTTP2 where
 
@@ -23,7 +24,16 @@ defaultHTTP2BufferSize :: BufferSize
 defaultHTTP2BufferSize = 32768
 
 withHTTP2 :: BufferSize -> (Config -> SessionId -> IO a) -> TLS -> IO a
-withHTTP2 sz run c = E.bracket (allocHTTP2Config c sz) freeSimpleConfig (`run` tlsUniq c)
+withHTTP2 sz run c =
+  E.bracket
+    (allocHTTP2Config c sz)
+    freeSimpleConfig
+    ( \cfg ->
+        run cfg (tlsUniq c) `E.catch` \(e :: E.SomeException) ->
+          do
+            print $ "withHTTP2 e: " <> show e
+            E.throwIO e
+    )
 
 allocHTTP2Config :: TLS -> BufferSize -> IO Config
 allocHTTP2Config c sz = do
