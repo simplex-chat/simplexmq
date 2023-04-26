@@ -66,7 +66,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow, whenM)
+import Simplex.Messaging.Util (liftError, liftIOEither, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
@@ -273,9 +273,9 @@ runXFTPRcvLocalWorker c doWork = do
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
 
-deleteRcvFile :: AgentMonad m => AgentClient -> UserId -> RcvFileId -> m ()
-deleteRcvFile c userId rcvFileEntityId = do
-  RcvFile {rcvFileId, prefixPath, status} <- withStore c $ \db -> getRcvFileByEntityId db userId rcvFileEntityId
+deleteRcvFile :: AgentMonad m => AgentClient -> RcvFileId -> m ()
+deleteRcvFile c rcvFileEntityId = do
+  RcvFile {rcvFileId, prefixPath, status} <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
   if status == RFSComplete || status == RFSError
     then do
       removePath prefixPath
@@ -480,6 +480,7 @@ runXFTPSndWorker c srv doWork = do
     uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
+      unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
@@ -572,9 +573,9 @@ runXFTPSndWorker c srv doWork = do
         chunkUploaded SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
 
-deleteSndFileInternal :: AgentMonad m => AgentClient -> UserId -> SndFileId -> m ()
-deleteSndFileInternal c userId sndFileEntityId = do
-  SndFile {sndFileId, prefixPath, status} <- withStore c $ \db -> getSndFileByEntityId db userId sndFileEntityId
+deleteSndFileInternal :: AgentMonad m => AgentClient -> SndFileId -> m ()
+deleteSndFileInternal c sndFileEntityId = do
+  SndFile {sndFileId, prefixPath, status} <- withStore c $ \db -> getSndFileByEntityId db sndFileEntityId
   if status == SFSComplete || status == SFSError
     then do
       forM_ prefixPath $ removePath <=< toFSFilePath
@@ -583,7 +584,7 @@ deleteSndFileInternal c userId sndFileEntityId = do
 
 deleteSndFileRemote :: forall m. AgentMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescription {chunks}) = do
-  deleteSndFileInternal c userId sndFileEntityId `catchError` (notify c sndFileEntityId . SFERR)
+  deleteSndFileInternal c sndFileEntityId `catchError` (notify c sndFileEntityId . SFERR)
   forM_ chunks $ \ch -> deleteFileChunk ch `catchError` (notify c sndFileEntityId . SFERR)
   where
     deleteFileChunk :: FileChunk -> m ()

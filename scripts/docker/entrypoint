@@ -20,10 +20,9 @@ if [ ! -f "$confd/smp-server.ini" ]; then
 fi
 
 # backup store log
-[ -f "$logd/smp-server-store.log" ] && cp "$logd"/smp-server-store.log "$logd"/smp-server-store.log.bak
-# rotate server log
-[ -f "$logd/smp-server.log" ] && mv "$logd"/smp-server.log "$logd"/smp-server-"$(date +'%FT%T')".log
+[ -f "$logd/smp-server-store.log" ] && cp "$logd"/smp-server-store.log "$logd"/smp-server-store.log."$(date +'%FT%T')"
 
 # Finally, run smp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
-exec smp-server start > "$logd"/smp-server.log 2>&1
+exec smp-server start +RTS -N -RTS
+

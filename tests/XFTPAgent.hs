@@ -86,7 +86,7 @@ testXFTPAgentSendReceive = withXFTPServer $ do
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   (rfd1, rfd2) <- runRight $ do
     (sfId, _, rfd1, rfd2) <- testSend sndr filePath
-    xftpDeleteSndFileInternal sndr 1 sfId
+    xftpDeleteSndFileInternal sndr sfId
     pure (rfd1, rfd2)
 
   -- receive file, delete rcv file
@@ -97,7 +97,7 @@ testXFTPAgentSendReceive = withXFTPServer $ do
       rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
       runRight_ $ do
         rfId <- testReceive rcp rfd originalFilePath
-        xftpDeleteRcvFile rcp 1 rfId
+        xftpDeleteRcvFile rcp rfId
 
 createRandomFile :: IO FilePath
 createRandomFile = do
