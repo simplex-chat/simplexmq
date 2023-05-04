@@ -57,6 +57,8 @@ testSchemaMigrations = do
       schema'' <- getSchema testDB testSchema
       schema'' `shouldBe` schema
       withConnection st (`Migrations.run` MTRUp [m])
+      schema''' <- getSchema testDB testSchema
+      schema''' `shouldBe` schema'
 
 getSchema :: FilePath -> FilePath -> IO String
 getSchema dpPath schemaPath = do

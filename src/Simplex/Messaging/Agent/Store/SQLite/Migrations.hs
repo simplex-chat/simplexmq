@@ -108,6 +108,7 @@ run db = \case
     runUp Migration {name, up, down} = do
       when (name == "m20220811_onion_hosts") updateServers
       DB.withImmediateTransaction db $ insert >> execSQL up
+      execSQL "VACUUM;"
       where
         insert = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
         updateServers = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
