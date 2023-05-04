@@ -101,14 +101,16 @@ getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrati
 
 run :: Connection -> MigrationsToRun -> IO ()
 run db = \case
-  MTRUp ms -> mapM_ runUp ms
+  MTRUp [] -> pure ()
+  MTRUp ms -> do
+    mapM_ runUp ms
+    execSQL "VACUUM;"
   MTRDown ms -> mapM_ runDown $ reverse ms
   MTRNone -> pure ()
   where
     runUp Migration {name, up, down} = do
       when (name == "m20220811_onion_hosts") updateServers
       DB.withImmediateTransaction db $ insert >> execSQL up
-      execSQL "VACUUM;"
       where
         insert = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
         updateServers = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
