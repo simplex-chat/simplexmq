@@ -101,7 +101,8 @@ getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrati
 
 run :: Connection -> MigrationsToRun -> IO ()
 run db = \case
-  MTRUp ms -> mapM_ runUp ms
+  MTRUp [] -> pure ()
+  MTRUp ms -> mapM_ runUp ms >> execSQL "VACUUM;"
   MTRDown ms -> mapM_ runDown $ reverse ms
   MTRNone -> pure ()
   where
