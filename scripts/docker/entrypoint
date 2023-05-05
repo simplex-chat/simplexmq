@@ -1,26 +1,37 @@
 #!/usr/bin/env sh
-confd="/etc/opt/simplex"
-logd="/var/opt/simplex/"
+confd='/etc/opt/simplex'
+logd='/var/opt/simplex/'
 
 # Check if server has been initialized
-if [ ! -f "$confd/smp-server.ini" ]; then
+if [ ! -f "${confd}/smp-server.ini" ]; then
   # If not, determine ip or domain
-  case $addr in
-    '') printf "Please specify \$addr environment variable.\n"; exit 1 ;;
-    *[a-zA-Z]*) set -- -n $addr ;;
-    *) set -- --ip $addr ;;
-  esac
+  if [ -n "${ADDR}" ] || [ -n "${IP}" ]; then
+    if [ -n "${ADDR}" ]; then
+      set -- -n "${ADDR}"
+    fi
+    if [ -n "${IP}" ]; then
+      set -- --ip "${IP}"
+    fi
+  else
+    printf 'Please specify either $ADDR or $IP environment variable.\n'
+    exit 1
+  fi
 
-  case $pass in
-    '') set -- "$@" --no-password ;;
-    *) set -- "$@" --password $pass ;;
-  esac
+  if [ -n "${PASS}" ]; then
+    set -- "$@" --password "${PASS}"
+  else
+    set -- "$@" --no-password
+  fi
 
   smp-server init -y -l "$@"
 fi
 
 # backup store log
-[ -f "$logd/smp-server-store.log" ] && cp "$logd"/smp-server-store.log "$logd"/smp-server-store.log."$(date +'%FT%T')"
+if [ -f "${logd}/smp-server-store.log" ]; then
+  _ext="$(date +'%FT%T')"
+  cp -v "${logd}/smp-server-store.log" "${logd}/smp-server-store.log.${_ext:-date-failed.$$}"
+  unset -v _ext
+fi
 
 # Finally, run smp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
