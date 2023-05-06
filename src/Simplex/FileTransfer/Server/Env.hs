@@ -68,10 +68,13 @@ data XFTPEnv = XFTPEnv
     serverStats :: FileServerStats
   }
 
+defFileExpirationHours :: Int64
+defFileExpirationHours = 48
+
 defaultFileExpiration :: ExpirationConfig
 defaultFileExpiration =
   ExpirationConfig
-    { ttl = 48 * 3600, -- seconds, 48 hours
+    { ttl = defFileExpirationHours * 3600, -- seconds
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
