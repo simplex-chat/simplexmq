@@ -13,8 +13,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - application: smp-server
-            dockerfile: build.Dockerfile
+          - app: smp-server
+            app_port: 5223
+          - app: xftp-server
+            app_port: 443 
     steps:
       - name: Clone project
         uses: actions/checkout@v3
@@ -29,7 +31,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.application }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.app }}
           flavor: |
             latest=auto
           tags: |
@@ -41,6 +43,8 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           push: true
-          file: ${{ matrix.dockerfile }}
+          build-args: |
+            APP=${{ matrix.app }}
+            APP_PORT=${{ matrix.app_port }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
