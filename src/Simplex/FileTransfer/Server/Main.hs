@@ -77,7 +77,7 @@ xftpServerCLI cfgPath logPath = do
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
-            <> "# Expire messages that were not delivered for the specified number of days.\n"
+            <> "# Expire files after the specified number of hours.\n"
             <> ("expire_files_hours: " <> show defFileExpirationHours <> "\n\n")
             <> "log_stats: off\n\
                \\n\
