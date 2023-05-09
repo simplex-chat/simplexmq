@@ -15,3 +15,14 @@ data ExpirationConfig = ExpirationConfig
 
 expireBeforeEpoch :: ExpirationConfig -> IO Int64
 expireBeforeEpoch ExpirationConfig {ttl} = subtract ttl . systemSeconds <$> liftIO getSystemTime
+
+showTTL :: Int64 -> String
+showTTL s
+  | s' /= 0 = show s <> " seconds"
+  | ms' /= 0 = show ms <> " minutes"
+  | hs' /= 0 = show hs <> " hours"
+  | otherwise = show ds <> " days"
+  where
+    (ms, s') = s `divMod` 60
+    (hs, ms') = ms `divMod` 60
+    (ds, hs') = hs `divMod` 24

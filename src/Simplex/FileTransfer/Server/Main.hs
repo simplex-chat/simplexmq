@@ -18,11 +18,12 @@ import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.FileTransfer.Description (FileSize (..), kb, mb)
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defFileExpirationHours)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -76,6 +77,8 @@ xftpServerCLI cfgPath logPath = do
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> "# Expire files after the specified number of hours.\n"
+            <> ("expire_files_hours: " <> show defFileExpirationHours <> "\n\n")
             <> "log_stats: off\n\
                \\n\
                \[AUTH]\n\
@@ -113,10 +116,13 @@ xftpServerCLI cfgPath logPath = do
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
-        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile} = do
+        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile, fileExpiration} = do
           putStrLn $ case storeLogFile of
             Just f -> "Store log: " <> f
             _ -> "Store log disabled."
+          putStrLn $ case fileExpiration of
+            Just ExpirationConfig {ttl} -> "expiring files after " <> showTTL ttl
+            _ -> "not expiring files"
           putStrLn $
             "Uploading new files "
               <> if allowNewFiles
@@ -134,7 +140,10 @@ xftpServerCLI cfgPath logPath = do
               allowedChunkSizes = [kb 256, mb 1, mb 4],
               allowNewFiles = fromMaybe True $ iniOnOff "AUTH" "new_files" ini,
               newFileBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
-              fileExpiration = Just defaultFileExpiration,
+              fileExpiration =
+                Just defaultFileExpiration
+                  { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
+                  },
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,

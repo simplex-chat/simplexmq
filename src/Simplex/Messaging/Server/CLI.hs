@@ -164,6 +164,9 @@ strictIni section key ini =
 readStrictIni :: Read a => Text -> Text -> Ini -> a
 readStrictIni section key = read . T.unpack . strictIni section key
 
+readIniDefault :: Read a => a -> Text -> Text -> Ini -> a
+readIniDefault def section key = either (const def) (read . T.unpack) . lookupValue section key
+
 iniOnOff :: Text -> Text -> Ini -> Maybe Bool
 iniOnOff section name ini = case lookupValue section name ini of
   Right "on" -> Just True

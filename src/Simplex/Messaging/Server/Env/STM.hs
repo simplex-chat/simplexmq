@@ -72,10 +72,13 @@ data ServerConfig = ServerConfig
     logTLSErrors :: Bool
   }
 
+defMsgExpirationDays :: Int64
+defMsgExpirationDays = 21
+
 defaultMessageExpiration :: ExpirationConfig
 defaultMessageExpiration =
   ExpirationConfig
-    { ttl = 30 * 86400, -- seconds, 30 days
+    { ttl = defMsgExpirationDays * 86400, -- seconds
       checkInterval = 43200 -- seconds, 12 hours
     }
 

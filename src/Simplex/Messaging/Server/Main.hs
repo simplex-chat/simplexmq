@@ -24,7 +24,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration, defMsgExpirationDays)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -106,7 +106,8 @@ smpServerCLI cfgPath logPath =
                 <> ("enable: " <> onOff enableStoreLog <> "\n\n")
                 <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
                    \# they are preserved in the .bak file until the next restart.\n"
-                <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
+                <> ("restore_messages: " <> onOff enableStoreLog <> "\n")
+                <> ("expire_messages_days: " <> show defMsgExpirationDays <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
                 <> "[AUTH]\n\
@@ -140,10 +141,13 @@ smpServerCLI cfgPath logPath =
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {transports, storeLogFile, newQueueBasicAuth, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
       printServerConfig transports storeLogFile
+      putStrLn $ case messageExpiration of
+        Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
+        _ -> "not expiring messages"
       putStrLn $ case inactiveClientExpiration of
         Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
         _ -> "not expiring inactive clients"
@@ -179,7 +183,10 @@ smpServerCLI cfgPath logPath =
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
-              messageExpiration = Just defaultMessageExpiration,
+              messageExpiration =
+                Just defaultMessageExpiration
+                  { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
+                  },
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig
