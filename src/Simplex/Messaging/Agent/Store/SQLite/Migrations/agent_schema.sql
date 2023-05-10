@@ -421,3 +421,14 @@ CREATE INDEX idx_deleted_snd_chunk_replicas_user_id ON deleted_snd_chunk_replica
 CREATE INDEX idx_deleted_snd_chunk_replicas_xftp_server_id ON deleted_snd_chunk_replicas(
   xftp_server_id
 );
+CREATE INDEX idx_rcv_file_chunk_replicas_pending ON rcv_file_chunk_replicas(
+  received,
+  replica_number
+);
+CREATE INDEX idx_snd_file_chunk_replicas_pending ON snd_file_chunk_replicas(
+  replica_status,
+  replica_number
+);
+CREATE INDEX idx_deleted_snd_chunk_replicas_pending ON deleted_snd_chunk_replicas(
+  created_at
+);
