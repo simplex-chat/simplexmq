@@ -27,7 +27,13 @@ if [ ! -f "$confd/smp-server.ini" ]; then
 fi
 
 # Backup store log just in case
-[ -f "$logd/smp-server-store.log" ] && cp "$logd"/smp-server-store.log "$logd"/smp-server-store.log."$(date +'%FT%T')"
+_file="${logd}/smp-server-store.log"
+if [ -f "${_file}" ]; then
+  _backup_extension="$(date +'%FT%T')"
+  cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
+  unset -v _backup_extension
+fi
+unset -v _file
 
 # Finally, run smp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
