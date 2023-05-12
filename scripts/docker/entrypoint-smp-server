@@ -29,7 +29,7 @@ fi
 # Backup store log just in case
 _file="${logd}/smp-server-store.log"
 if [ -f "${_file}" ]; then
-  _backup_extension="$(date --universal '+%FT%T')"
+  _backup_extension="$(date --universal '+%04Y-%03m-%02dT%T')"
   cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
   unset -v _backup_extension
 fi
