@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
-confd="/etc/opt/simplex"
-logd="/var/opt/simplex/"
+confd='/etc/opt/simplex'
+logd='/var/opt/simplex/'
 
 # Check if server has been initialized
 if [ ! -f "$confd/smp-server.ini" ]; then
   # If not, determine ip or domain
   case "$ADDR" in
-    '') printf "Please specify \$ADDR environment variable.\n"; exit 1 ;;
+    '') printf 'Please specify $ADDR environment variable.\n'; exit 1 ;;
     *[a-zA-Z]*)
       case "$ADDR" in
         *:*) set -- --ip "$ADDR" ;;
