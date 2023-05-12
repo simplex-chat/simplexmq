@@ -3,23 +3,23 @@ confd='/etc/opt/simplex'
 logd='/var/opt/simplex/'
 
 # Check if server has been initialized
-if [ ! -f "$confd/smp-server.ini" ]; then
+if [ ! -f "${confd}/smp-server.ini" ]; then
   # If not, determine ip or domain
-  case "$ADDR" in
+  case "${ADDR}" in
     '') printf 'Please specify $ADDR environment variable.\n'; exit 1 ;;
     *[a-zA-Z]*)
-      case "$ADDR" in
-        *:*) set -- --ip "$ADDR" ;;
-        *) set -- -n "$ADDR" ;;
+      case "${ADDR}" in
+        *:*) set -- --ip "${ADDR}" ;;
+        *) set -- -n "${ADDR}" ;;
       esac
       ;;
-    *) set -- --ip "$ADDR" ;;
+    *) set -- --ip "${ADDR}" ;;
   esac
 
   # Optionally, set password
-  case "$PASS" in
+  case "${PASS}" in
     '') set -- "$@" --no-password ;;
-    *) set -- "$@" --password "$PASS" ;;
+    *) set -- "$@" --password "${PASS}" ;;
   esac
 
   # And init certificates and configs
