@@ -1,25 +1,25 @@
 #!/usr/bin/env sh
-confd="/etc/opt/simplex-xftp"
-logd="/var/opt/simplex-xftp"
+confd='/etc/opt/simplex-xftp'
+logd='/var/opt/simplex-xftp'
 
 # Check if server has been initialized
-if [ ! -f "$confd/file-server.ini" ]; then
+if [ ! -f "${confd}/file-server.ini" ]; then
   # If not, determine ip or domain
-  case "$ADDR" in
-    '') printf "Please specify \$ADDR environment variable.\n"; exit 1 ;;
+  case "${ADDR}" in
+    '') printf 'Please specify $ADDR environment variable.\n'; exit 1 ;;
     *[a-zA-Z]*)
-      case "$ADDR" in
-        *:*) set -- --ip "$ADDR" ;;
-        *) set -- -n "$ADDR" ;;
+      case "${ADDR}" in
+        *:*) set -- --ip "${ADDR}" ;;
+        *) set -- -n "${ADDR}" ;;
       esac
       ;;
-    *) set -- --ip "$ADDR" ;;
+    *) set -- --ip "${ADDR}" ;;
   esac
 
   # Set quota
-  case "$QUOTA" in
-    '') printf "Please specify \$QUOTA environment variable.\n"; exit 1 ;;
-    *) set -- "$@" --quota "$QUOTA" ;;
+  case "${QUOTA}" in
+    '') printf 'Please specify $QUOTA environment variable.\n'; exit 1 ;;
+    *) set -- "$@" --quota "${QUOTA}" ;;
   esac
 
   # Init the certificates and configs
@@ -27,7 +27,7 @@ if [ ! -f "$confd/file-server.ini" ]; then
 fi
 
 # Backup store log just in case
-[ -f "$logd/file-server-store.log" ] && cp "$logd"/file-server-store.log "$logd"/file-server-store.log."$(date +'%FT%T')"
+[ -f "${logd}/file-server-store.log" ] && cp "${logd}"/file-server-store.log "${logd}"/file-server-store.log."$(date +'%FT%T')"
 
 # Finally, run xftp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
