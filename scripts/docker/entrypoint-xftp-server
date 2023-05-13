@@ -27,7 +27,13 @@ if [ ! -f "${confd}/file-server.ini" ]; then
 fi
 
 # Backup store log just in case
-[ -f "${logd}/file-server-store.log" ] && cp "${logd}"/file-server-store.log "${logd}"/file-server-store.log."$(date +'%FT%T')"
+_file="${logd}/file-server-store.log"
+if [ -f "${_file}" ]; then
+  _backup_extension="$(date --universal '+%04Y-%03m-%02dT%T')"
+  cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
+  unset -v _backup_extension
+fi
+unset -v _file
 
 # Finally, run xftp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
