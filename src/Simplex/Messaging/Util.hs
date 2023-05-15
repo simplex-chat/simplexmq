@@ -115,11 +115,8 @@ threadDelay' time = do
   threadDelay $ fromIntegral maxWait
   when (maxWait /= time) $ threadDelay' (time - maxWait)
 
-diffToInt64 :: NominalDiffTime -> Int64
-diffToInt64 diff = fromIntegral ((truncate $ nominalDiffTimeToSeconds diff) :: Integer)
-
 diffToMicroseconds :: NominalDiffTime -> Int64
-diffToMicroseconds = (* 1000000) . diffToInt64
+diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
 
 diffToMilliseconds :: NominalDiffTime -> Int64
-diffToMilliseconds = (* 1000) . diffToInt64
+diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
