@@ -12,13 +12,11 @@ import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Fixed (Fixed (MkFixed), Pico)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
-import Data.Time (nominalDiffTimeToSeconds)
-import Data.Time.Clock (UTCTime, diffUTCTime)
+import Data.Time (NominalDiffTime, nominalDiffTimeToSeconds)
 import UnliftIO.Async
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -117,14 +115,11 @@ threadDelay' time = do
   threadDelay $ fromIntegral maxWait
   when (maxWait /= time) $ threadDelay' (time - maxWait)
 
-diffInSeconds :: UTCTime -> UTCTime -> Int64
-diffInSeconds a b = (`div` 1000000_000000) $ diffInPicos a b
+diffToInt64 :: NominalDiffTime -> Int64
+diffToInt64 diff = fromIntegral ((truncate $ nominalDiffTimeToSeconds diff) :: Integer)
 
-diffInMicros :: UTCTime -> UTCTime -> Int64
-diffInMicros a b = (`div` 1000000) $ diffInPicos a b
+diffToMicroseconds :: NominalDiffTime -> Int64
+diffToMicroseconds = (* 1000000) . diffToInt64
 
-diffInPicos :: UTCTime -> UTCTime -> Int64
-diffInPicos a b = fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
-
-fromPico :: Pico -> Integer
-fromPico (MkFixed i) = i
+diffToMilliseconds :: NominalDiffTime -> Int64
+diffToMilliseconds = (* 1000) . diffToInt64
