@@ -27,9 +27,16 @@ if [ ! -f "${confd}/smp-server.ini" ]; then
 fi
 
 # Backup store log just in case
+#
+# The date format should be unambiguous
+# for both time zone and month (M)/day (D).
+#
+# Uses the UTC (universal) time zone and this
+# format: YYYY-0MM-DD'T'hh:mm:ss
+#
 _file="${logd}/smp-server-store.log"
 if [ -f "${_file}" ]; then
-  _backup_extension="$(date --universal '+%04Y-%03m-%02dT%T')"
+  _backup_extension="$(date -u '+%04Y-%03m-%02dT%T')"
   cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
   unset -v _backup_extension
 fi
