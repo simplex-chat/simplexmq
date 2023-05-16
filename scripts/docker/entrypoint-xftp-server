@@ -32,7 +32,7 @@ fi
 # for both time zone and month (M)/day (D).
 #
 # Uses the UTC (universal) time zone and this
-# format: YYYY-0mm-dd'T'HH':'MM':'SS
+# format: YYYY-0mm-dd'T'HH:MM:SS
 # year, month, day, letter T, hour, minute, second
 #
 _file="${logd}/file-server-store.log"
