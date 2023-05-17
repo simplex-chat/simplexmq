@@ -428,6 +428,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
       internalHash,
+      encryptedMsgHash = "encrypted_msg_hash",
       externalPrevSndHash = "hash_from_sender"
     }
 

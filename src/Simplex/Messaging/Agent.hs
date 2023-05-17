@@ -871,7 +871,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
-        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
+        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> setEmptyMsgBody db connId msgId)
         ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
         ICAllowSecure _rId senderKey -> withServer' . tryWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
@@ -1175,7 +1175,7 @@ ackMessage' c connId msgId = withConnLock c connId "ackMessage" $ do
       let mId = InternalId msgId
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
       ackQueueMessage c rq srvMsgId
-      withStore' c $ \db -> deleteMsg db connId mId
+      withStore' c $ \db -> setEmptyMsgBody db connId mId
 
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection' c connId = withConnLock c connId "switchConnection" $ do
@@ -1697,7 +1697,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
                             _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
                         _ -> pure ()
-                      tryError agentClientMsg >>= \case
+                      let encryptedMsgHash = C.sha256Hash encAgentMsg
+                      tryError (agentClientMsg encryptedMsgHash) >>= \case
                         Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
                           HELLO -> helloMsg >> ackDel msgId
                           REPLY cReq -> replyMsg cReq >> ackDel msgId
@@ -1728,11 +1729,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                     logServer "<--" c srv rId "MSG <MSG>"
                                     notify $ MSG msgMeta msgFlags body
                                   _ -> pure ()
-                            _ -> throwError e
-                        Left e -> throwError e
+                            _ -> checkDuplicateHash e encryptedMsgHash
+                        Left e -> checkDuplicateHash e encryptedMsgHash
                       where
-                        agentClientMsg :: m (Maybe (InternalId, MsgMeta, AMessage))
-                        agentClientMsg = withStore c $ \db -> runExceptT $ do
+                        checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
+                        checkDuplicateHash e encryptedMsgHash = do
+                          withStore' c (\db -> checkEncryptedMsgHashExists db connId encryptedMsgHash) >>= \case
+                            True -> pure ()
+                            _ -> throwError e
+                        agentClientMsg :: ByteString -> m (Maybe (InternalId, MsgMeta, AMessage))
+                        agentClientMsg encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                           agentMsgBody <- agentRatchetDecrypt db connId encAgentMsg
                           liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
                             agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
@@ -1744,7 +1750,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                   recipient = (unId internalId, internalTs)
                                   broker = (srvMsgId, systemToUTCTime srvTs)
                                   msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
-                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash}
+                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, encryptedMsgHash, externalPrevSndHash = prevMsgHash}
                               liftIO $ createRcvMsg db connId rq rcvMsg
                               pure $ Just (internalId, msgMeta, aMessage)
                             _ -> pure Nothing

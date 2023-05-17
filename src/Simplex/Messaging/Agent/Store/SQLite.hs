@@ -94,6 +94,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     deletePendingMsgs,
     setMsgUserAck,
     getLastMsg,
+    checkEncryptedMsgHashExists,
+    setEmptyMsgBody,
     deleteMsg,
     deleteSndMsgDelivery,
     -- Double ratchet persistence
@@ -925,6 +927,21 @@ getLastMsg db connId msgId =
       let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
        in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgBody, userAck}
 
+checkEncryptedMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
+checkEncryptedMsgHashExists db connId encryptedMsgHash = do
+  fromMaybe False
+    <$> maybeFirstRow
+      fromOnly
+      ( DB.query
+          db
+          "SELECT 1 FROM rcv_messages WHERE conn_id = ? AND encrypted_msg_hash = ? LIMIT 1"
+          (connId, encryptedMsgHash)
+      )
+
+setEmptyMsgBody :: DB.Connection -> ConnId -> InternalId -> IO ()
+setEmptyMsgBody db connId msgId =
+  DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =
   DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
@@ -1690,7 +1707,7 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody,
     ]
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash} = do
+insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, encryptedMsgHash, externalPrevSndHash} = do
   let MsgMeta {integrity, recipient, broker, sndMsgId} = msgMeta
   DB.executeNamed
     dbConn
@@ -1698,11 +1715,11 @@ insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, int
       INSERT INTO rcv_messages
         ( conn_id, rcv_queue_id, internal_rcv_id, internal_id, external_snd_id,
           broker_id, broker_ts,
-          internal_hash, external_prev_snd_hash, integrity)
+          internal_hash, encrypted_msg_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_id,:rcv_queue_id,:internal_rcv_id,:internal_id,:external_snd_id,
          :broker_id,:broker_ts,
-         :internal_hash,:external_prev_snd_hash,:integrity);
+         :internal_hash,:encrypted_msg_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_id" := connId,
       ":rcv_queue_id" := dbQueueId,
@@ -1712,6 +1729,7 @@ insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, int
       ":broker_id" := fst broker,
       ":broker_ts" := snd broker,
       ":internal_hash" := internalHash,
+      ":encrypted_msg_hash" := encryptedMsgHash,
       ":external_prev_snd_hash" := externalPrevSndHash,
       ":integrity" := integrity
     ]

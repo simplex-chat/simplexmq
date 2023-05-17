@@ -103,6 +103,7 @@ CREATE TABLE rcv_messages(
   integrity BLOB NOT NULL,
   user_ack INTEGER NULL DEFAULT 0,
   rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
+  encrypted_msg_hash BLOB,
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE

@@ -428,6 +428,7 @@ data RcvMsgData = RcvMsgData
     msgBody :: MsgBody,
     internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
+    encryptedMsgHash :: MsgHash,
     externalPrevSndHash :: MsgHash
   }
 
