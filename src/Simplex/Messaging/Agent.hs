@@ -1737,10 +1737,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         Left e -> checkDuplicateHash e encryptedMsgHash
                       where
                         checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
-                        checkDuplicateHash e encryptedMsgHash = do
-                          withStore' c (\db -> checkRcvMsgHashExists db connId encryptedMsgHash) >>= \case
-                            True -> pure ()
-                            _ -> throwError e
+                        checkDuplicateHash e encryptedMsgHash =
+                          unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) $
+                            throwError e
                         agentClientMsg :: ByteString -> m (Maybe (InternalId, MsgMeta, AMessage))
                         agentClientMsg encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                           agentMsgBody <- agentRatchetDecrypt db connId encAgentMsg
