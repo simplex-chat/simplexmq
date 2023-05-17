@@ -346,6 +346,13 @@ CREATE TABLE deleted_snd_chunk_replicas(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
+CREATE TABLE encrypted_rcv_message_hashes(
+  encrypted_rcv_message_hash_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  hash BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -431,4 +438,8 @@ CREATE INDEX idx_snd_file_chunk_replicas_pending ON snd_file_chunk_replicas(
 );
 CREATE INDEX idx_deleted_snd_chunk_replicas_pending ON deleted_snd_chunk_replicas(
   created_at
+);
+CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hashes(
+  conn_id,
+  hash
 );

@@ -59,6 +59,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -84,7 +85,8 @@ schemaMigrations =
     ("m20230223_files", m20230223_files, Just down_m20230223_files),
     ("m20230320_retry_state", m20230320_retry_state, Just down_m20230320_retry_state),
     ("m20230401_snd_files", m20230401_snd_files, Just down_m20230401_snd_files),
-    ("m20230510_files_pending_replicas_indexes", m20230510_files_pending_replicas_indexes, Just down_m20230510_files_pending_replicas_indexes)
+    ("m20230510_files_pending_replicas_indexes", m20230510_files_pending_replicas_indexes, Just down_m20230510_files_pending_replicas_indexes),
+    ("m20230516_encrypted_rcv_message_hashes", m20230516_encrypted_rcv_message_hashes, Just down_m20230516_encrypted_rcv_message_hashes)
   ]
 
 -- | The list of migrations in ascending order by date

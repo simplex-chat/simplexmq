@@ -1601,6 +1601,7 @@ cleanupManager c@AgentClient {subQ} = do
   forever $ do
     void . runExceptT $ do
       deleteConns `catchError` (notify "" . ERR)
+      deleteRcvMsgHashes `catchError` (notify "" . ERR)
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
@@ -1614,6 +1615,9 @@ cleanupManager c@AgentClient {subQ} = do
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
+    deleteRcvMsgHashes = do
+      rcvMsgHashesTTL <- asks $ rcvMsgHashesTTL . config
+      withStore' c (`deleteRcvMsgHashesExpired` rcvMsgHashesTTL)
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
@@ -1697,7 +1701,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
                             _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
                         _ -> pure ()
-                      tryError agentClientMsg >>= \case
+                      let encryptedMsgHash = C.sha256Hash encAgentMsg
+                      tryError (agentClientMsg encryptedMsgHash) >>= \case
                         Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
                           HELLO -> helloMsg >> ackDel msgId
                           REPLY cReq -> replyMsg cReq >> ackDel msgId
@@ -1728,11 +1733,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                     logServer "<--" c srv rId "MSG <MSG>"
                                     notify $ MSG msgMeta msgFlags body
                                   _ -> pure ()
-                            _ -> throwError e
-                        Left e -> throwError e
+                            _ -> checkDuplicateHash e encryptedMsgHash
+                        Left e -> checkDuplicateHash e encryptedMsgHash
                       where
-                        agentClientMsg :: m (Maybe (InternalId, MsgMeta, AMessage))
-                        agentClientMsg = withStore c $ \db -> runExceptT $ do
+                        checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
+                        checkDuplicateHash e encryptedMsgHash =
+                          unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) $
+                            throwError e
+                        agentClientMsg :: ByteString -> m (Maybe (InternalId, MsgMeta, AMessage))
+                        agentClientMsg encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                           agentMsgBody <- agentRatchetDecrypt db connId encAgentMsg
                           liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
                             agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
@@ -1744,7 +1753,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                   recipient = (unId internalId, internalTs)
                                   broker = (srvMsgId, systemToUTCTime srvTs)
                                   msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
-                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash}
+                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash, encryptedMsgHash}
                               liftIO $ createRcvMsg db connId rq rcvMsg
                               pure $ Just (internalId, msgMeta, aMessage)
                             _ -> pure Nothing
