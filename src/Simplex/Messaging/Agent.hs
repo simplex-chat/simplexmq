@@ -871,7 +871,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
-        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> setEmptyMsgBody db connId msgId)
+        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
         ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
         ICAllowSecure _rId senderKey -> withServer' . tryWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
@@ -1175,7 +1175,7 @@ ackMessage' c connId msgId = withConnLock c connId "ackMessage" $ do
       let mId = InternalId msgId
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
       ackQueueMessage c rq srvMsgId
-      withStore' c $ \db -> setEmptyMsgBody db connId mId
+      withStore' c $ \db -> deleteMsg db connId mId
 
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection' c connId = withConnLock c connId "switchConnection" $ do
@@ -1601,6 +1601,7 @@ cleanupManager c@AgentClient {subQ} = do
   forever $ do
     void . runExceptT $ do
       deleteConns `catchError` (notify "" . ERR)
+      deleteRcvMsgHashes `catchError` (notify "" . ERR)
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
@@ -1614,6 +1615,9 @@ cleanupManager c@AgentClient {subQ} = do
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
+    deleteRcvMsgHashes = do
+      rcvMsgHashesTTL <- asks $ rcvMsgHashesTTL . config
+      withStore' c (`deleteRcvMsgHashesExpired` rcvMsgHashesTTL)
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
@@ -1734,7 +1738,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                       where
                         checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
                         checkDuplicateHash e encryptedMsgHash = do
-                          withStore' c (\db -> checkEncryptedMsgHashExists db connId encryptedMsgHash) >>= \case
+                          withStore' c (\db -> checkRcvMsgHashExists db connId encryptedMsgHash) >>= \case
                             True -> pure ()
                             _ -> throwError e
                         agentClientMsg :: ByteString -> m (Maybe (InternalId, MsgMeta, AMessage))
@@ -1750,7 +1754,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                   recipient = (unId internalId, internalTs)
                                   broker = (srvMsgId, systemToUTCTime srvTs)
                                   msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
-                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, encryptedMsgHash, externalPrevSndHash = prevMsgHash}
+                                  rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash, encryptedMsgHash}
                               liftIO $ createRcvMsg db connId rq rcvMsg
                               pure $ Just (internalId, msgMeta, aMessage)
                             _ -> pure Nothing

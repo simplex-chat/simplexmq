@@ -94,10 +94,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     deletePendingMsgs,
     setMsgUserAck,
     getLastMsg,
-    checkEncryptedMsgHashExists,
-    setEmptyMsgBody,
+    checkRcvMsgHashExists,
     deleteMsg,
     deleteSndMsgDelivery,
+    deleteRcvMsgHashesExpired,
     -- Double ratchet persistence
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
@@ -927,20 +927,16 @@ getLastMsg db connId msgId =
       let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
        in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgBody, userAck}
 
-checkEncryptedMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
-checkEncryptedMsgHashExists db connId encryptedMsgHash = do
+checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
+checkRcvMsgHashExists db connId hash = do
   fromMaybe False
     <$> maybeFirstRow
       fromOnly
       ( DB.query
           db
-          "SELECT 1 FROM rcv_messages WHERE conn_id = ? AND encrypted_msg_hash = ? LIMIT 1"
-          (connId, encryptedMsgHash)
+          "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
+          (connId, hash)
       )
-
-setEmptyMsgBody :: DB.Connection -> ConnId -> InternalId -> IO ()
-setEmptyMsgBody db connId msgId =
-  DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =
@@ -954,6 +950,11 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId = do
     (connId, dbQueueId, msgId)
   (Only (cnt :: Int) : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
   when (cnt == 0) $ deleteMsg db connId msgId
+
+deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
+deleteRcvMsgHashesExpired db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  DB.execute db "DELETE FROM encrypted_rcv_message_hashes WHERE created_at < ?" (Only cutoffTs)
 
 createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
 createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
@@ -1707,19 +1708,19 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody,
     ]
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, encryptedMsgHash, externalPrevSndHash} = do
+insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash, encryptedMsgHash} = do
   let MsgMeta {integrity, recipient, broker, sndMsgId} = msgMeta
   DB.executeNamed
-    dbConn
+    db
     [sql|
       INSERT INTO rcv_messages
         ( conn_id, rcv_queue_id, internal_rcv_id, internal_id, external_snd_id,
           broker_id, broker_ts,
-          internal_hash, encrypted_msg_hash, external_prev_snd_hash, integrity)
+          internal_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_id,:rcv_queue_id,:internal_rcv_id,:internal_id,:external_snd_id,
          :broker_id,:broker_ts,
-         :internal_hash,:encrypted_msg_hash,:external_prev_snd_hash,:integrity);
+         :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_id" := connId,
       ":rcv_queue_id" := dbQueueId,
@@ -1729,10 +1730,10 @@ insertRcvMsgDetails_ dbConn connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, int
       ":broker_id" := fst broker,
       ":broker_ts" := snd broker,
       ":internal_hash" := internalHash,
-      ":encrypted_msg_hash" := encryptedMsgHash,
       ":external_prev_snd_hash" := externalPrevSndHash,
       ":integrity" := integrity
     ]
+  DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, encryptedMsgHash)
 
 updateHashRcv_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
 updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =

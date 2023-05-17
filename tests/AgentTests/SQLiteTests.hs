@@ -428,8 +428,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
       internalHash,
-      encryptedMsgHash = "encrypted_msg_hash",
-      externalPrevSndHash = "hash_from_sender"
+      externalPrevSndHash = "hash_from_sender",
+      encryptedMsgHash = "encrypted_msg_hash"
     }
 
 testCreateRcvMsg_ :: DB.Connection -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvQueue -> RcvMsgData -> Expectation

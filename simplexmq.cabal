@@ -81,7 +81,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_rcv_messages_encrypted_msg_hash
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
