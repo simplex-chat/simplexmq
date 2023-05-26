@@ -184,6 +184,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- * utilities
     withConnection,
     withTransaction,
+    withTransactionCtx,
     firstRow,
     firstRow',
     maybeFirstRow,
@@ -214,7 +215,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Data.Word (Word32)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
@@ -243,7 +244,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, diffToMilliseconds, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -444,15 +445,15 @@ withTransactionCtx ctx_ st action = withConnection st $ loop 500 3_000_000
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
       where
-      transactionWithCtx = case ctx_ of
-        Nothing -> DB.withImmediateTransaction db (action db)
-        Just ctx -> do
-          t1 <- getCurrentTime
-          r <- DB.withImmediateTransaction db (action db)
-          t2 <- getCurrentTime
-          putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
-          putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx
-          pure r
+        transactionWithCtx = case ctx_ of
+          Nothing -> DB.withImmediateTransaction db (action db)
+          Just ctx -> do
+            t1 <- getCurrentTime
+            r <- DB.withImmediateTransaction db (action db)
+            t2 <- getCurrentTime
+            putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
+            putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
+            pure r
 
 createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
