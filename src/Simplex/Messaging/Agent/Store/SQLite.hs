@@ -430,16 +430,29 @@ withConnection SQLiteStore {dbConnection} =
     (atomically . putTMVar dbConnection)
 
 withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction st action = withConnection st $ loop 500 3_000_000
+withTransaction = withTransactionCtx Nothing
+
+withTransactionCtx :: forall a. Maybe String -> SQLiteStore -> (DB.Connection -> IO a) -> IO a
+withTransactionCtx ctx_ st action = withConnection st $ loop 500 3_000_000
   where
     loop :: Int -> Int -> DB.Connection -> IO a
     loop t tLim db =
-      DB.withImmediateTransaction db (action db) `E.catch` \(e :: SQLError) ->
+      transactionWithCtx `E.catch` \(e :: SQLError) ->
         if tLim > t && DB.sqlError e == DB.ErrorBusy
           then do
             threadDelay t
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
+      where
+      transactionWithCtx = case ctx_ of
+        Nothing -> DB.withImmediateTransaction db (action db)
+        Just ctx -> do
+          t1 <- getCurrentTime
+          r <- DB.withImmediateTransaction db (action db)
+          t2 <- getCurrentTime
+          putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
+          putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx
+          pure r
 
 createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
