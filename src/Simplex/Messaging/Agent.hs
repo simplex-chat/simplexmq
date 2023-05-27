@@ -1656,6 +1656,8 @@ cleanupManager c@AgentClient {subQ} = do
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 
+-- | make sure to ACK or throw in each message processing branch
+-- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, sessId, rId, cmd) = do
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
@@ -1733,8 +1735,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                     logServer "<--" c srv rId "MSG <MSG>"
                                     notify $ MSG msgMeta msgFlags body
                                   _ -> pure ()
-                            _ -> checkDuplicateHash e encryptedMsgHash
-                        Left e -> checkDuplicateHash e encryptedMsgHash
+                            _ -> checkDuplicateHash e encryptedMsgHash >> ack
+                        Left e -> checkDuplicateHash e encryptedMsgHash >> ack
                       where
                         checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
                         checkDuplicateHash e encryptedMsgHash =
