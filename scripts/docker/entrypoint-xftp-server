@@ -36,7 +36,7 @@ fi
 #
 _file="${logd}/file-server-store.log"
 if [ -f "${_file}" ]; then
-  _backup_extension="$(date -u '+%FT%T')"
+  _backup_extension="$(date -u '+%Y-%m-%dT%H:%M:%S')"
   cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
   unset -v _backup_extension
 fi
