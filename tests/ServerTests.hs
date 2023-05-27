@@ -824,7 +824,9 @@ testRestoreExpireMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     -- two messages expired
-    logSize testStoreMsgsFile `shouldReturn` 2
+    msgs'' <- B.readFile testStoreMsgsFile
+    length (B.lines msgs'') `shouldBe` 2
+    B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
 
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
