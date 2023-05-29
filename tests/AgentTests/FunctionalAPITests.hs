@@ -163,8 +163,10 @@ functionalAPITests t = do
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
   describe "Batching SMP commands" $ do
-    it "should subscribe to multiple subscriptions with batching" $
-      testBatchedSubscriptions t
+    it "should subscribe to multiple (200) subscriptions with batching" $
+      testBatchedSubscriptions 200 10 t
+    it "should subscribe to multiple (6) subscriptions with batching" $
+      testBatchedSubscriptions 6 3 t
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
@@ -612,14 +614,14 @@ testSuspendingAgentTimeout t = do
     ("", "", SUSPENDED) <- nGet b
     pure ()
 
-testBatchedSubscriptions :: ATransport -> IO ()
-testBatchedSubscriptions t = do
+testBatchedSubscriptions :: Int -> Int -> ATransport -> IO ()
+testBatchedSubscriptions nCreate nDel t = do
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- forM [1 .. 200 :: Int] . const $ makeConnection a b
+    conns <- forM [1 .. nCreate :: Int] . const $ makeConnection a b
     forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
-    let (aIds', bIds') = unzip $ take 10 conns
+    let (aIds', bIds') = unzip $ take nDel conns
     delete a bIds'
     delete b aIds'
     liftIO $ threadDelay 1000000
@@ -635,11 +637,14 @@ testBatchedSubscriptions t = do
     ("", "", UP {}) <- nGet b
     liftIO $ threadDelay 1000000
     let (aIds, bIds) = unzip conns
-        conns' = drop 10 conns
+        conns' = drop nDel conns
         (aIds', bIds') = unzip conns'
     subscribe a bIds
     subscribe b aIds
     forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
+    void $ resubscribeConnections a bIds
+    void $ resubscribeConnections b aIds
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 8 a bId b aId
     delete a bIds'
     delete b aIds'
     deleteFail a bIds'
@@ -649,7 +654,7 @@ testBatchedSubscriptions t = do
     subscribe c cs = do
       r <- subscribeConnections c cs
       liftIO $ do
-        let dc = S.fromList $ take 10 cs
+        let dc = S.fromList $ take nDel cs
         all isRight (M.withoutKeys r dc) `shouldBe` True
         all (== Left (CONN NOT_FOUND)) (M.restrictKeys r dc) `shouldBe` True
         M.keys r `shouldMatchList` cs
