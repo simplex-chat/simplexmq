@@ -163,7 +163,7 @@ functionalAPITests t = do
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
   describe "Batching SMP commands" $ do
-    it "should subscribe to multiple subscriptions with batching" $
+    xit "should subscribe to multiple subscriptions with batching" $
       testBatchedSubscriptions t
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $

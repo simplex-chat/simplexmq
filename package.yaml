@@ -144,6 +144,8 @@ tests:
       - silently == 1.2.*
       - main-tester == 0.2.*
       - timeit == 2.0.*
+    ghc-options:
+      - -fhpc
 
 ghc-options:
   # - -haddock
