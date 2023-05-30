@@ -61,6 +61,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
 import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
+import System.Directory (copyFile, renameFile)
 import Test.Hspec
 import UnliftIO
 import XFTPClient (testXFTPServer)
@@ -152,6 +153,8 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
+    fit "should report decryption error on ratchet becoming out of sync" $
+      testDecryptionError t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -541,6 +544,49 @@ testSkippedMessages t = do
       get alice2 ##> ("", bobId, SENT 9)
       get bob2 =##> \case ("", c, Msg "hello 6") -> c == aliceId; _ -> False
       ackMessage bob2 aliceId 6
+
+testDecryptionError :: HasCallStack => ATransport -> IO ()
+testDecryptionError t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 4)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 4
+
+      5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
+      get bob ##> ("", aliceId, SENT 5)
+      get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
+      ackMessage alice bobId 5
+
+      liftIO $ copyFile testDB2 (testDB2 <> ".bak")
+
+      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
+      get alice ##> ("", bobId, SENT 6)
+      get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 6
+
+      7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
+      get bob ##> ("", aliceId, SENT 7)
+      get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
+      ackMessage alice bobId 7
+
+    disconnectAgentClient bob
+
+    liftIO $ renameFile (testDB2 <> ".bak") testDB2
+
+    bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+    runRight_ $ do
+      8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
+      get alice ##> ("", bobId, SENT 8)
+      -- get bob2 =##> \case ("", c, Msg "hello 5") -> c == aliceId; _ -> False
+      -- ackMessage bob2 aliceId 5
+      r <- nGet bob2
+      liftIO $ print r
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
