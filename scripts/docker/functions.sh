@@ -5,35 +5,39 @@ print_to_stderr() {
   printf -- '%s\n' "$@" 1>&2
 }
 
-set_args_from_env_addr() {
+print_arg() {
+  printf -- '%s' "$1"
+}
+
+print_arg_from_env_addr() {
   # Determine IP or domain name
   case "${ADDR}" in
     '') print_to_stderr 'Please specify $ADDR environment variable.'; return 1 ;;
     *[a-zA-Z]*)
       case "${ADDR}" in
-        *:*) set -- --ip "${ADDR}" ;;
-        *) set -- -n "${ADDR}" ;;
+        *:*) print_arg --ip ;;
+        *) print_arg -n ;;
       esac
       ;;
-    *) set -- --ip "${ADDR}" ;;
+    *) print_arg --ip ;;
   esac
   return 0
 }
 
-append_args_from_env_pass() {
+print_arg_from_env_pass() {
   # Optionally, set password
   case "${PASS}" in
-    '') set -- "$@" --no-password ;;
-    *) set -- "$@" --password "${PASS}" ;;
+    '') print_arg --no-password ; return 1 ;;
+    *) print_arg --password ;;
   esac
   return 0
 }
 
-append_args_from_env_quota() {
+print_arg_from_env_quota() {
   # Set quota
   case "${QUOTA}" in
     '') print_to_stderr 'Please specify $QUOTA environment variable.'; return 1 ;;
-    *) set -- "$@" --quota "${QUOTA}" ;;
+    *) print_arg --quota ;;
   esac
   return 0
 }
