@@ -24,24 +24,6 @@ print_arg_from_env_addr() {
   return 0
 }
 
-print_arg_from_env_pass() {
-  # Optionally, set password
-  case "${PASS}" in
-    '') print_arg --no-password ; return 1 ;;
-    *) print_arg --password ;;
-  esac
-  return 0
-}
-
-print_arg_from_env_quota() {
-  # Set quota
-  case "${QUOTA}" in
-    '') print_to_stderr 'Please specify $QUOTA environment variable.'; return 1 ;;
-    *) print_arg --quota ;;
-  esac
-  return 0
-}
-
 # Uses the UTC (universal) time zone and this
 # format: YYYY-mm-dd'T'HH:MM:SS
 # year, month, day, letter T, hour, minute, second
