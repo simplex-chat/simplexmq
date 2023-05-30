@@ -147,9 +147,11 @@ functionalAPITests t = do
       testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
-  describe "Duplicate message delivery" $
+  describe "Message delivery" $ do
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage t
+    it "should report error via msg integrity on skipped messages" $
+      testSkippedMessages t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -492,6 +494,53 @@ testDuplicateMessage t = do
       6 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 3"
       get alice2 ##> ("", bobId, SENT 6)
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
+
+testSkippedMessages :: HasCallStack => ATransport -> IO ()
+testSkippedMessages t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 4)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 4
+
+    disconnectAgentClient bob
+
+    runRight_ $ do
+      5 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+      get alice ##> ("", bobId, SENT 5)
+      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
+      get alice ##> ("", bobId, SENT 6)
+      7 <- sendMessage alice bobId SMP.noMsgFlags "hello 4"
+      get alice ##> ("", bobId, SENT 7)
+
+    pure (aliceId, bobId)
+
+  nGet alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+  threadDelay 200000
+
+  disconnectAgentClient alice
+
+  alice2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+      subscribeConnection alice2 bobId
+
+      8 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 5"
+      get alice2 ##> ("", bobId, SENT 8)
+      get bob2 =##> \case ("", c, MSG MsgMeta {integrity = MsgError {errorInfo = MsgSkipped {fromMsgId = 4, toMsgId = 6}}} _ "hello 5") -> c == aliceId; _ -> False
+      ackMessage bob2 aliceId 5
+
+      9 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 6"
+      get alice2 ##> ("", bobId, SENT 9)
+      get bob2 =##> \case ("", c, Msg "hello 6") -> c == aliceId; _ -> False
+      ackMessage bob2 aliceId 6
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
