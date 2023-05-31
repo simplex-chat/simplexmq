@@ -841,6 +841,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
             dbQueueId = 0,
             primary = True,
             dbReplaceQueueId = Nothing,
+            switchStatus = Nothing,
             smpClientVersion = maxVersion vRange,
             clientNtfCreds = Nothing,
             deleteErrors = 0

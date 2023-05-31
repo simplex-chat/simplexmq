@@ -57,6 +57,8 @@ module Simplex.Messaging.Agent.Protocol
     MsgMeta (..),
     ConnectionStats (..),
     SwitchPhase (..),
+    RcvSwitchStatus (..),
+    SndSwitchStatus (..),
     QueueDirection (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
@@ -494,6 +496,102 @@ instance ToJSON SwitchPhase where
 
 instance FromJSON SwitchPhase where
   parseJSON = strParseJSON "SwitchPhase"
+
+data RcvSwitchStatus
+  = -- set in beginning of switchConnectionAsync' before queueing SWCH command
+    RSSQueueingSwch
+  | -- set in beginning of switchConnection'
+    RSSSwchStarted
+  | -- set in switchConnection' before queueing QADD
+    RSSQueueingQADD
+  | -- set on receiving QKEY, in beginning of qKeyMsg
+    RSSReceivedQKEY
+  | -- set before queueing ICQSecure in qKeyMsg
+    RSSQueueingSecure
+  | -- set in beginning of ICQSecure processing in runCommandProcessing
+    RSSSecureStarted
+  | -- set in ICQSecure processing before queueing QUSE
+    RSSQueueingQUSE
+  | -- set before queueing ICQDelete in processSMPTransmission upon receiving first message in the new queue
+    RSSQueueingDelete
+  | -- set in beginning of ICQDelete processing in runCommandProcessing
+    RSSDeleteStarted
+  deriving (Eq, Show)
+
+instance StrEncoding RcvSwitchStatus where
+  strEncode = \case
+    RSSQueueingSwch -> "queueing_swch"
+    RSSSwchStarted -> "swch_started"
+    RSSQueueingQADD -> "queueing_qadd"
+    RSSReceivedQKEY -> "received_qkey"
+    RSSQueueingSecure -> "queueing_secure"
+    RSSSecureStarted -> "secure_started"
+    RSSQueueingQUSE -> "queueing_quse"
+    RSSQueueingDelete -> "queueing_delete"
+    RSSDeleteStarted -> "delete_started"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "queueing_swch" -> pure RSSQueueingSwch
+      "swch_started" -> pure RSSSwchStarted
+      "queueing_qadd" -> pure RSSQueueingQADD
+      "received_qkey" -> pure RSSReceivedQKEY
+      "queueing_secure" -> pure RSSQueueingSecure
+      "secure_started" -> pure RSSSecureStarted
+      "queueing_quse" -> pure RSSQueueingQUSE
+      "queueing_delete" -> pure RSSQueueingDelete
+      "delete_started" -> pure RSSDeleteStarted
+      _ -> fail "bad RcvSwitchStatus"
+
+instance ToField RcvSwitchStatus where toField = toField . strEncode
+
+instance FromField RcvSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+
+instance ToJSON RcvSwitchStatus where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON RcvSwitchStatus where
+  parseJSON = strParseJSON "RcvSwitchStatus"
+
+data SndSwitchStatus
+  = -- set on receiving QADD, in beginning of qAddMsg
+    SSSReceivedQADD
+  | -- set in qAddMsg before queueing QKEY
+    SSSQueueingQKEY
+  | -- set on receiving QUSE, in beginning of qUseMsg
+    SSSReceivedQUSE
+  | -- set in qUseMsg before queueing QTEST
+    SSSQueueingQTEST
+  | -- set in runSmpQueueMsgDelivery after receiving Right in response to sending QTEST
+    SSSSentQTEST
+  deriving (Eq, Show)
+
+instance StrEncoding SndSwitchStatus where
+  strEncode = \case
+    SSSReceivedQADD -> "received_qadd"
+    SSSQueueingQKEY -> "queueing_qkey"
+    SSSReceivedQUSE -> "received_quse"
+    SSSQueueingQTEST -> "queueing_qtest"
+    SSSSentQTEST -> "sent_qtest"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "received_qadd" -> pure SSSReceivedQADD
+      "queueing_qkey" -> pure SSSQueueingQKEY
+      "received_quse" -> pure SSSReceivedQUSE
+      "queueing_qtest" -> pure SSSQueueingQTEST
+      "sent_qtest" -> pure SSSSentQTEST
+      _ -> fail "bad SndSwitchStatus"
+
+instance ToField SndSwitchStatus where toField = toField . strEncode
+
+instance FromField SndSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+
+instance ToJSON SndSwitchStatus where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON SndSwitchStatus where
+  parseJSON = strParseJSON "SndSwitchStatus"
 
 data ConnectionStats = ConnectionStats
   { rcvServers :: [SMPServer],

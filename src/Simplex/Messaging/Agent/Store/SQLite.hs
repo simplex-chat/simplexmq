@@ -54,14 +54,17 @@ module Simplex.Messaging.Agent.Store.SQLite
     setConnDeleted,
     getDeletedConnIds,
     getRcvConn,
+    getRcvQueueById,
     deleteConn,
     upgradeRcvConnToDuplex,
     upgradeSndConnToDuplex,
     addConnRcvQueue,
     addConnSndQueue,
     setRcvQueueStatus,
+    setRcvQueueSwitchStatus,
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
+    setSndQueueSwitchStatus,
     setRcvQueuePrimary,
     setSndQueuePrimary,
     deleteConnRcvQueue,
@@ -620,6 +623,18 @@ setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
+setRcvQueueSwitchStatus :: DB.Connection -> RcvQueue -> Maybe RcvSwitchStatus -> IO RcvQueue
+setRcvQueueSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} switchStatus = do
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET switch_status = ?
+      WHERE host = ? AND port = ? AND rcv_id = ?
+    |]
+    (switchStatus, host, port, rcvId)
+  pure (rq :: RcvQueue) {switchStatus}
+
 setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
 setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
   DB.executeNamed
@@ -650,6 +665,18 @@ setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} stat
       WHERE host = :host AND port = :port AND snd_id = :snd_id;
     |]
     [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
+
+setSndQueueSwitchStatus :: DB.Connection -> SndQueue -> Maybe SndSwitchStatus -> IO SndQueue
+setSndQueueSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} switchStatus = do
+  DB.execute
+    db
+    [sql|
+      UPDATE snd_queues
+      SET switch_status = ?
+      WHERE host = ? AND port = ? AND snd_id = ?
+    |]
+    (switchStatus, host, port, sndId)
+  pure (sq :: SndQueue) {switchStatus}
 
 setRcvQueuePrimary :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 setRcvQueuePrimary db connId RcvQueue {dbQueueId} = do
@@ -918,7 +945,7 @@ setMsgUserAck db connId agentMsgId = runExceptT $ do
   (dbRcvId, srvMsgId) <-
     ExceptT . firstRow id SEMsgNotFound $
       DB.query db "SELECT rcv_queue_id, broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
-  rq <- ExceptT $ getRcvQueueById_ db connId dbRcvId
+  rq <- ExceptT $ getRcvQueueById db connId dbRcvId
   pure (rq, srvMsgId)
 
 getLastMsg :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Maybe RcvMsg)
@@ -1622,7 +1649,7 @@ rcvQueueQuery =
   [sql|
     SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
       q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
-      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.smp_client_version, q.delete_errors,
+      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.switch_status, q.smp_client_version, q.delete_errors,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
@@ -1631,19 +1658,19 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateSignKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
-    :. (Int64, Bool, Maybe Int64, Maybe Version, Int)
+    :. (Int64, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe Version, Int)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe 1 smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
-getRcvQueueById_ :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
-getRcvQueueById_ db connId dbRcvId =
+getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
+getRcvQueueById db connId dbRcvId =
   firstRow toRcvQueue SEConnNotFound $
     DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.rcv_queue_id = ?") (connId, dbRcvId)
 
@@ -1654,7 +1681,7 @@ getSndQueuesByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.snd_queue_id, q.snd_primary, q.replace_snd_queue_id, q.smp_client_version
+        SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.snd_queue_id, q.snd_primary, q.replace_snd_queue_id, q.switch_status, q.smp_client_version
         FROM snd_queues q
         JOIN servers s ON q.host = s.host AND q.port = s.port
         JOIN connections c ON q.conn_id = c.conn_id
@@ -1662,9 +1689,9 @@ getSndQueuesByConnId_ dbConn connId =
       |]
       (Only connId)
   where
-    sndQueue ((userId, keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbQueueId, primary, dbReplaceQueueId, smpClientVersion)) =
+    sndQueue ((userId, keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion)) =
       let server = SMPServer host port keyHash
-       in SndQueue {userId, connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, smpClientVersion}
+       in SndQueue {userId, connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion}
     primaryFirst SndQueue {primary = p, dbReplaceQueueId = i} SndQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
       compare (Down p) (Down p') <> compare i i'

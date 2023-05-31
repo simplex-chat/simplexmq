@@ -21,6 +21,7 @@ import Data.Kind (Type)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -72,6 +73,7 @@ data RcvQueue = RcvQueue
     primary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
     dbReplaceQueueId :: Maybe Int64,
+    switchStatus :: Maybe RcvSwitchStatus,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -113,6 +115,7 @@ data SndQueue = SndQueue
     primary :: Bool,
     -- | ID of the queue this one is replacing
     dbReplaceQueueId :: Maybe Int64,
+    switchStatus :: Maybe SndSwitchStatus,
     -- | SMP client version
     smpClientVersion :: Version
   }
@@ -154,6 +157,22 @@ sndAddress RcvQueue {server, sndId} = (server, sndId)
 findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
 findRQ sAddr = find $ sameQAddress sAddr . sndAddress
 {-# INLINE findRQ #-}
+
+findSwitchedRQ :: NonEmpty RcvQueue -> Maybe RcvQueue
+findSwitchedRQ = find $ isJust . (switchStatus :: RcvQueue -> Maybe RcvSwitchStatus)
+{-# INLINE findSwitchedRQ #-}
+
+findSwitchingRQ :: Int64 -> NonEmpty RcvQueue -> Maybe RcvQueue
+findSwitchingRQ replacedId = find $ \RcvQueue {dbReplaceQueueId} -> dbReplaceQueueId == Just replacedId
+{-# INLINE findSwitchingRQ #-}
+
+findSwitchedSQ :: NonEmpty SndQueue -> Maybe SndQueue
+findSwitchedSQ = find $ isJust . (switchStatus :: SndQueue -> Maybe SndSwitchStatus)
+{-# INLINE findSwitchedSQ #-}
+
+findSwitchingSQ :: Int64 -> NonEmpty SndQueue -> Maybe SndQueue
+findSwitchingSQ replacedId = find $ \SndQueue {dbReplaceQueueId} -> dbReplaceQueueId == Just replacedId
+{-# INLINE findSwitchingSQ #-}
 
 class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
