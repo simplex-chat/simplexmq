@@ -153,7 +153,7 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    fit "should report decryption error on ratchet becoming out of sync" $
+    it "should report decryption error on ratchet becoming out of sync" $
       testDecryptionError t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
@@ -581,12 +581,15 @@ testDecryptionError t = do
     bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
 
     runRight_ $ do
+      subscribeConnection bob2 aliceId
+
       8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
       get alice ##> ("", bobId, SENT 8)
-      -- get bob2 =##> \case ("", c, Msg "hello 5") -> c == aliceId; _ -> False
-      -- ackMessage bob2 aliceId 5
-      r <- nGet bob2
-      liftIO $ print r
+      get bob2 =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == aliceId; _ -> False
+
+      6 <- sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
+      get bob2 ##> ("", aliceId, SENT 6)
+      get alice =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == bobId; _ -> False
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
