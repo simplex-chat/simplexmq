@@ -576,6 +576,8 @@ testDecryptionError t = do
 
     disconnectAgentClient bob
 
+    -- importing database backup after progressing ratchet de-synchronizes ratchet,
+    -- this will be fixed by ratchet re-negotiation
     liftIO $ renameFile (testDB2 <> ".bak") testDB2
 
     bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
