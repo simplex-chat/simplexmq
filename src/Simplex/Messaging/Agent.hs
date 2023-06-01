@@ -1231,34 +1231,31 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
     pure . connectionStats $ DuplexConnection cData (replaced'' <| rq' :| rqs_) sqs
 
 stopConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
-stopConnectionSwitch' c connId =
-  withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rqs _) -> case findSwitchedRQ rqs of
-      Just RcvQueue {dbQueueId} -> do
-        -- re-reading switched queue to check switch status in the same transaction as resetting status
-        -- and deleting switching queues to avoid race condition with processing ICQSecure
-        (switchStoppedConn', switchingQueues) <- withStore c $ \db ->
-          getRcvQueueById db connId dbQueueId >>= \case
-            Right replaced -> do
-              if canStopRcvSwitch replaced
-                then do
-                  -- multiple switching queues were possible when repeating switch while in progress was allowed
-                  switchingQueues <- getSwitchingRcvQueues db dbQueueId
-                  forM_ switchingQueues $ \q -> deleteConnRcvQueue db q
-                  void $ setRcvQueueSwitchStatus db replaced Nothing
-                  -- re-read conn for updated list of rcv queues
-                  getConn db connId >>= \case
-                    Right conn' -> pure $ Right (Just conn', switchingQueues)
-                    _ -> pure $ Right (Nothing, [])
-                else pure $ Right (Nothing, [])
-            _ -> pure $ Right (Nothing, [])
-        case switchStoppedConn' of
-          Just (SomeConn _ conn') -> do
-            forM_ switchingQueues $ \q -> deleteQueue c q `catchError` \_ -> pure ()
-            pure $ connectionStats conn'
-          Nothing -> throwError $ AGENT $ A_QUEUE "cannot stop connection switch"
-      _ -> throwError $ AGENT $ A_QUEUE "connection switched queue not found"
-    _ -> throwError $ CMD PROHIBITED
+stopConnectionSwitch' c connId = do
+  -- reading switched queue in the same transaction as resetting status and deleting switching queues
+  -- to avoid race condition with processing ICQSecure
+  (switchStoppedConn', switchingQueues :: [RcvQueue]) <- withStore c $ \db ->
+    getConn db connId >>= \case
+      Right (SomeConn _ (DuplexConnection _ rqs _)) -> case findSwitchedRQ rqs of
+        Just replaced@RcvQueue {dbQueueId} -> do
+          if canStopRcvSwitch replaced
+            then do
+              -- multiple switching queues were possible when repeating switch while in progress was allowed
+              switchingQueues <- getSwitchingRcvQueues db dbQueueId
+              forM_ switchingQueues $ \q -> deleteConnRcvQueue db q
+              void $ setRcvQueueSwitchStatus db replaced Nothing
+              -- re-read conn for updated list of rcv queues
+              getConn db connId >>= \case
+                Right conn' -> pure $ Right (Just conn', switchingQueues)
+                _ -> pure $ Right (Nothing, [])
+            else pure $ Right (Nothing, [])
+        _ -> pure $ Right (Nothing, [])
+      _ -> pure $ Right (Nothing, [])
+  case switchStoppedConn' of
+    Just (SomeConn _ conn') -> do
+      forM_ switchingQueues $ \q -> deleteQueue c q `catchError` \_ -> pure ()
+      pure $ connectionStats conn'
+    Nothing -> throwError $ AGENT $ A_QUEUE "cannot stop connection switch"
 
 canStopRcvSwitch :: RcvQueue -> Bool
 canStopRcvSwitch RcvQueue {switchStatus} = case switchStatus of
