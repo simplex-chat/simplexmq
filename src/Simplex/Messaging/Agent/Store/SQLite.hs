@@ -57,6 +57,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getSwitchingRcvQueues,
     getRcvConn,
     getRcvQueueById,
+    getSndQueuesByConnId,
+    getSwitchingSndQueues,
     getSndQueueById,
     deleteConn,
     upgradeRcvConnToDuplex,
@@ -1604,7 +1606,7 @@ getAnyConn deleted' dbConn connId =
       | deleted /= deleted' -> pure $ Left SEConnNotFound
       | otherwise -> do
         rQ <- getRcvQueuesByConnId dbConn connId
-        sQ <- getSndQueuesByConnId_ dbConn connId
+        sQ <- getSndQueuesByConnId dbConn connId
         pure $ case (rQ, sQ, cMode) of
           (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
           (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
@@ -1683,14 +1685,19 @@ getRcvQueueById db connId dbRcvId =
     DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.rcv_queue_id = ?") (connId, dbRcvId)
 
 -- | returns all connection queues, the first queue is the primary one
-getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
-getSndQueuesByConnId_ dbConn connId =
+getSndQueuesByConnId :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
+getSndQueuesByConnId dbConn connId =
   L.nonEmpty . sortBy primaryFirst . map toSndQueue
     <$> DB.query dbConn (sndQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
   where
     primaryFirst SndQueue {primary = p, dbReplaceQueueId = i} SndQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
       compare (Down p) (Down p') <> compare i i'
+
+getSwitchingSndQueues :: DB.Connection -> Int64 -> IO [SndQueue]
+getSwitchingSndQueues db dbReplaceQueueId =
+  map toSndQueue
+    <$> DB.query db (sndQueueQuery <> "WHERE q.replace_snd_queue_id = ?") (Only dbReplaceQueueId)
 
 sndQueueQuery :: Query
 sndQueueQuery =
