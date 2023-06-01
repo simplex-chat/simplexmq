@@ -905,15 +905,24 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         ICQSecure rId senderKey -> do
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case findSwitchedRQ rqs of
-              Just replaced -> do
-                replaced' <- withSwitchingRQ replaced RSSQueueingSecure $ withStore' c $ \db -> setRcvQueueSwitchStatus db replaced (Just RSSSecureStarted)
+              Just replaced@RcvQueue {dbQueueId} -> do
+                void $ withSwitchingRQ replaced RSSQueueingSecure $ withStore' c $ \db -> setRcvQueueSwitchStatus db replaced (Just RSSSecureStarted)
                 case find (sameQueue (srv, rId)) rqs of
                   Just rq'@RcvQueue {server, sndId, status} -> when (status == Confirmed) $ do
                     secureQueue c rq' senderKey
                     withStore' c $ \db -> setRcvQueueStatus db rq' Secured
-                    -- TODO re-read from db and update status in the same transaction
-                    void $ withSwitchingRQ replaced' RSSSecureStarted $ withStore' c $ \db -> setRcvQueueSwitchStatus db replaced' (Just RSSQueueingQUSE)
-                    void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
+                    -- re-reading switched queue from db to check switch wasn't stopped
+                    -- (we check status in the same transaction as update it and proceed depending on it)
+                    doProceed <- withStore c $ \db -> do
+                      getRcvQueueById db connId dbQueueId >>= \case
+                        Right replaced'@RcvQueue {switchStatus} ->
+                          if switchStatus == Just RSSSecureStarted
+                            then void (setRcvQueueSwitchStatus db replaced' (Just RSSQueueingQUSE)) $> Right True
+                            else pure $ Right False
+                        _ -> pure $ Right False
+                    if doProceed
+                      then void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
+                      else throwError $ AGENT $ A_QUEUE "ICQSecure: cannot proceed with switch, probably due to unexpected switch status"
                   _ -> internalErr "ICQSecure: queue address not found in connection"
               Nothing -> internalErr "ICQSecure: no switched queue found"
         ICQDelete rId -> do
@@ -1217,18 +1226,33 @@ switchConnection' c connId =
 switchDuplexConnection :: AgentMonad m => AgentClient -> Connection 'CDuplex -> RcvQueue -> [RcvQueue] -> m ConnectionStats
 switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) replaced@RcvQueue {server, dbQueueId, sndId} rqs_ =
   withConnLock c connId "switchConnection" $ do
-    replaced' <- withStore' c $ \db -> setRcvQueueSwitchStatus db replaced (Just RSSSwchStarted)
+    void $ withStore' c $ \db -> setRcvQueueSwitchStatus db replaced (Just RSSSwchStarted)
     clientVRange <- asks $ smpClientVRange . config
     -- try to get the server that is different from all queues, or at least from the primary rcv queue
     srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
     srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
     (q, qUri) <- newRcvQueue c userId connId srv' clientVRange
     let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-    void . withStore c $ \db -> addConnRcvQueue db connId rq'
-    addSubscription c rq'
-    replaced'' <- withSwitchingRQ replaced' RSSSwchStarted $ withStore' c $ \db -> setRcvQueueSwitchStatus db replaced' (Just RSSQueueingQADD)
-    void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
-    pure . connectionStats $ DuplexConnection cData (replaced'' <| rq' :| rqs_) sqs
+    -- re-reading switched queue from db to check switch wasn't stopped
+    -- (we check status in the same transaction as update it and proceed depending on it)
+    replaced' <- withStore c $ \db -> do
+      getRcvQueueById db connId dbQueueId >>= \case
+        Right replaced'@RcvQueue {switchStatus} ->
+          if switchStatus == Just RSSSwchStarted
+            then do
+              void $ addConnRcvQueue db connId rq'
+              replaced'' <- setRcvQueueSwitchStatus db replaced' (Just RSSQueueingQADD)
+              pure $ Right (Just replaced'')
+            else pure $ Right Nothing
+        _ -> pure $ Right Nothing
+    case replaced' of
+      Just replaced'' -> do
+        addSubscription c rq'
+        void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
+        pure . connectionStats $ DuplexConnection cData (replaced'' <| rq' :| rqs_) sqs
+      Nothing -> do
+        deleteQueue c rq' `catchError` \_ -> pure ()
+        throwError $ AGENT $ A_QUEUE "cannot proceed with switch, probably due to unexpected switch status"
 
 stopConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 stopConnectionSwitch' c connId = do
