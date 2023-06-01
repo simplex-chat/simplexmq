@@ -1233,21 +1233,30 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
 stopConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 stopConnectionSwitch' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ conn@(DuplexConnection _ rqs _) -> case findSwitchedRQ rqs of
-      Just RcvQueue {dbQueueId} -> case findSwitchingRQ dbQueueId rqs of
-        Just rq -> do
-          -- re-reading switched queue to check switch status in the same transaction
-          -- as resetting status to avoid race condition with processing ICQSecure
-          -- r <- withStore c $ \db -> do
-          --   r <- getRcvQueueById db connId dbQueueId
-          --   case r of
-          --     Right replaced -> do
-          --       unless (canStopRcvSwitch replaced) $ throwError $ AGENT $ A_QUEUE "connection switch can't be stopped"
-          --       pure $ Right replaced
-          --     _ -> pure $ Left Nothing
-          deleteQueue c rq 
-          pure $ connectionStats conn
-        Nothing -> throwError $ AGENT $ A_QUEUE "connection switching queue not found"
+    SomeConn _ (DuplexConnection _ rqs _) -> case findSwitchedRQ rqs of
+      Just RcvQueue {dbQueueId} -> do
+        -- re-reading switched queue to check switch status in the same transaction as resetting status
+        -- and deleting switching queues to avoid race condition with processing ICQSecure
+        (switchStoppedConn', switchingQueues) <- withStore c $ \db ->
+          getRcvQueueById db connId dbQueueId >>= \case
+            Right replaced -> do
+              if canStopRcvSwitch replaced
+                then do
+                  -- multiple switching queues were possible when repeating switch while in progress was allowed
+                  switchingQueues <- getSwitchingRcvQueues db dbQueueId
+                  forM_ switchingQueues $ \q -> deleteConnRcvQueue db q
+                  void $ setRcvQueueSwitchStatus db replaced Nothing
+                  -- re-read conn for updated list of rcv queues
+                  getConn db connId >>= \case
+                    Right conn' -> pure $ Right (Just conn', switchingQueues)
+                    _ -> pure $ Right (Nothing, [])
+                else pure $ Right (Nothing, [])
+            _ -> pure $ Right (Nothing, [])
+        case switchStoppedConn' of
+          Just (SomeConn _ conn') -> do
+            forM_ switchingQueues $ \q -> deleteQueue c q `catchError` \_ -> pure ()
+            pure $ connectionStats conn'
+          Nothing -> throwError $ AGENT $ A_QUEUE "cannot stop connection switch"
       _ -> throwError $ AGENT $ A_QUEUE "connection switched queue not found"
     _ -> throwError $ CMD PROHIBITED
 

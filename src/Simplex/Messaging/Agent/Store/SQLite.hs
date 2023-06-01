@@ -53,6 +53,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     getDeletedConnIds,
+    getSwitchingRcvQueues,
     getRcvConn,
     getRcvQueueById,
     deleteConn,
@@ -1643,6 +1644,11 @@ getRcvQueuesByConnId_ db connId =
     primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
       compare (Down p) (Down p') <> compare i i'
+
+getSwitchingRcvQueues :: DB.Connection -> Int64 -> IO [RcvQueue]
+getSwitchingRcvQueues db dbReplaceQueueId =
+  map toRcvQueue
+    <$> DB.query db (rcvQueueQuery <> "WHERE q.replace_rcv_queue_id = ?") (Only dbReplaceQueueId)
 
 rcvQueueQuery :: Query
 rcvQueueQuery =
