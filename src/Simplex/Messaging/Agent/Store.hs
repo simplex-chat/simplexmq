@@ -162,17 +162,9 @@ findSwitchedRQ :: NonEmpty RcvQueue -> Maybe RcvQueue
 findSwitchedRQ = find $ isJust . (switchStatus :: RcvQueue -> Maybe RcvSwitchStatus)
 {-# INLINE findSwitchedRQ #-}
 
-findSwitchingRQ :: Int64 -> NonEmpty RcvQueue -> Maybe RcvQueue
-findSwitchingRQ replacedId = find $ \RcvQueue {dbReplaceQueueId} -> dbReplaceQueueId == Just replacedId
-{-# INLINE findSwitchingRQ #-}
-
 findSwitchedSQ :: NonEmpty SndQueue -> Maybe SndQueue
 findSwitchedSQ = find $ isJust . (switchStatus :: SndQueue -> Maybe SndSwitchStatus)
 {-# INLINE findSwitchedSQ #-}
-
-findSwitchingSQ :: Int64 -> NonEmpty SndQueue -> Maybe SndQueue
-findSwitchingSQ replacedId = find $ \SndQueue {dbReplaceQueueId} -> dbReplaceQueueId == Just replacedId
-{-# INLINE findSwitchingSQ #-}
 
 class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
