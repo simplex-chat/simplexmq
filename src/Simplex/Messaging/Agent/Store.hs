@@ -82,6 +82,13 @@ data RcvQueue = RcvQueue
   }
   deriving (Eq, Show)
 
+rcvQueueInfo :: RcvQueue -> RcvQueueInfo
+rcvQueueInfo q@RcvQueue {switchStatus} =
+  RcvQueueInfo
+    { rcvServer = qServer q,
+      rcvSwitchStatus = switchStatus
+    }
+
 data ClientNtfCreds = ClientNtfCreds
   { -- | key pair to be used by the notification server to sign transmissions
     ntfPublicKey :: NtfPublicVerifyKey,
@@ -120,6 +127,13 @@ data SndQueue = SndQueue
     smpClientVersion :: Version
   }
   deriving (Eq, Show)
+
+sndQueueInfo :: SndQueue -> SndQueueInfo
+sndQueueInfo q@SndQueue {switchStatus} =
+  SndQueueInfo
+    { sndServer = qServer q,
+      sndSwitchStatus = switchStatus
+    }
 
 instance SMPQueue RcvQueue where
   qServer RcvQueue {server} = server

@@ -55,6 +55,8 @@ module Simplex.Messaging.Agent.Protocol
     AEntityI (..),
     MsgHash,
     MsgMeta (..),
+    RcvQueueInfo (..),
+    SndQueueInfo (..),
     ConnectionStats (..),
     SwitchPhase (..),
     RcvSwitchStatus (..),
@@ -593,19 +595,51 @@ instance ToJSON SndSwitchStatus where
 instance FromJSON SndSwitchStatus where
   parseJSON = strParseJSON "SndSwitchStatus"
 
+data RcvQueueInfo = RcvQueueInfo
+  { rcvServer :: SMPServer,
+    rcvSwitchStatus :: Maybe RcvSwitchStatus
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions
+
+instance StrEncoding RcvQueueInfo where
+  strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus} =
+    "srv=" <> strEncode rcvServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) rcvSwitchStatus
+  strP = do
+    rcvServer <- "srv=" *> strP
+    rcvSwitchStatus <- optional $ ";switch=" *> strP
+    pure RcvQueueInfo {rcvServer, rcvSwitchStatus}
+
+data SndQueueInfo = SndQueueInfo
+  { sndServer :: SMPServer,
+    sndSwitchStatus :: Maybe SndSwitchStatus
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions
+
+instance StrEncoding SndQueueInfo where
+  strEncode SndQueueInfo {sndServer, sndSwitchStatus} =
+    "srv=" <> strEncode sndServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) sndSwitchStatus
+  strP = do
+    sndServer <- "srv=" *> strP
+    sndSwitchStatus <- optional $ ";switch=" *> strP
+    pure SndQueueInfo {sndServer, sndSwitchStatus}
+
 data ConnectionStats = ConnectionStats
-  { rcvServers :: [SMPServer],
-    sndServers :: [SMPServer]
+  { rcvQueuesInfo :: [RcvQueueInfo],
+    sndQueuesInfo :: [SndQueueInfo]
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {rcvServers, sndServers} =
-    "rcv=" <> strEncodeList rcvServers <> " snd=" <> strEncodeList sndServers
+  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo} =
+    "rcv=" <> strEncodeList rcvQueuesInfo <> " snd=" <> strEncodeList sndQueuesInfo
   strP = do
-    rcvServers <- "rcv=" *> strListP
-    sndServers <- " snd=" *> strListP
-    pure ConnectionStats {rcvServers, sndServers}
+    rcvQueuesInfo <- "rcv=" *> strListP
+    sndQueuesInfo <- " snd=" *> strListP
+    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 

@@ -1451,11 +1451,11 @@ getConnectionRatchetAdHash' c connId = do
 
 connectionStats :: Connection c -> ConnectionStats
 connectionStats = \case
-  RcvConnection _ rq -> ConnectionStats {rcvServers = [qServer rq], sndServers = []}
-  SndConnection _ sq -> ConnectionStats {rcvServers = [], sndServers = [qServer sq]}
-  DuplexConnection _ rqs sqs -> ConnectionStats {rcvServers = map qServer $ L.toList rqs, sndServers = map qServer $ L.toList sqs}
-  ContactConnection _ rq -> ConnectionStats {rcvServers = [qServer rq], sndServers = []}
-  NewConnection _ -> ConnectionStats {rcvServers = [], sndServers = []}
+  RcvConnection _ rq -> ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = []}
+  SndConnection _ sq -> ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [sndQueueInfo sq]}
+  DuplexConnection _ rqs sqs -> ConnectionStats {rcvQueuesInfo = map rcvQueueInfo $ L.toList rqs, sndQueuesInfo = map sndQueueInfo $ L.toList sqs}
+  ContactConnection _ rq -> ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = []}
+  NewConnection _ -> ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setProtocolServers' :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
