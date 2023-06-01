@@ -53,6 +53,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     getDeletedConnIds,
+    getRcvQueuesByConnId,
     getSwitchingRcvQueues,
     getRcvConn,
     getRcvQueueById,
@@ -711,7 +712,7 @@ deleteConnSndQueue db connId SndQueue {dbQueueId} = do
 
 getPrimaryRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getPrimaryRcvQueue db connId =
-  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId_ db connId
+  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId db connId
 
 getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId (SMPServer host port _) rcvId =
@@ -909,7 +910,7 @@ createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
 
 getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
 getPendingMsgData db connId msgId = do
-  rq_ <- L.head <$$> getRcvQueuesByConnId_ db connId
+  rq_ <- L.head <$$> getRcvQueuesByConnId db connId
   (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
   where
     getMsgData_ =
@@ -1602,7 +1603,7 @@ getAnyConn deleted' dbConn connId =
     Just (cData@ConnData {deleted}, cMode)
       | deleted /= deleted' -> pure $ Left SEConnNotFound
       | otherwise -> do
-        rQ <- getRcvQueuesByConnId_ dbConn connId
+        rQ <- getRcvQueuesByConnId dbConn connId
         sQ <- getSndQueuesByConnId_ dbConn connId
         pure $ case (rQ, sQ, cMode) of
           (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
@@ -1637,8 +1638,8 @@ getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
 
 -- | returns all connection queues, the first queue is the primary one
-getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
-getRcvQueuesByConnId_ db connId =
+getRcvQueuesByConnId :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
+getRcvQueuesByConnId db connId =
   L.nonEmpty . sortBy primaryFirst . map toRcvQueue
     <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
   where
