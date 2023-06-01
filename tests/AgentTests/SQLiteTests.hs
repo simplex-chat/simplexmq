@@ -167,6 +167,7 @@ rcvQueue1 =
       dbQueueId = 1,
       primary = True,
       dbReplaceQueueId = Nothing,
+      switchStatus = Nothing,
       smpClientVersion = 1,
       clientNtfCreds = Nothing,
       deleteErrors = 0
@@ -187,6 +188,7 @@ sndQueue1 =
       dbQueueId = 1,
       primary = True,
       dbReplaceQueueId = Nothing,
+      switchStatus = Nothing,
       smpClientVersion = 1
     }
 
