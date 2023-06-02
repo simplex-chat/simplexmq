@@ -39,6 +39,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
+import Data.List (find, isPrefixOf)
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Set as S
@@ -124,6 +125,11 @@ runRight action =
     Right x -> pure x
     Left e -> error $ "Unexpected error: " <> show e
 
+shouldContainPredicate :: (HasCallStack, Show a) => [a] -> (a -> Bool) -> Expectation
+shouldContainPredicate list p = case find p list of
+  Just _ -> return ()
+  Nothing -> expectationFailure $ "list does not contain element matching predicate: " <> show list
+
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $ do
@@ -183,13 +189,21 @@ functionalAPITests t = do
       testUsersNoServer t
     it "should connect two users and switch session mode" $
       withSmpServer t testTwoUsers
-  describe "Queue rotation" $ do
+  describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 t testSwitchConnection
     describe "should switch to new queue asynchronously" $
       testServerMatrix2 t testSwitchAsync
-    describe "should delete connection during rotation" $
+    describe "should delete connection during switch" $
       testServerMatrix2 t testSwitchDelete
+    describe "should stop switch in Started phase" $
+      testServerMatrix2 t testStopSwitchStarted
+    describe "should stop switch in Started phase, reinitiate immediately" $
+      testServerMatrix2 t testStopSwitchStartedReinitiate
+    describe "should stop switch in Confirmed phase" $
+      testServerMatrix2 t testStopSwitchConfirmed
+    describe "should prohibit to stop switch in Finalizing phase" $
+      testServerMatrix2 t testCannotStopSwitchFinalizing
   describe "SMP basic auth" $ do
     describe "with server auth" $ do
       --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
@@ -855,9 +869,14 @@ testSwitchConnection servers = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    switchConnectionAsync a "" bId
-    switchComplete a bId b aId
-    exchangeGreetingsMsgId 10 a bId b aId
+    testFullSwitch a bId b aId 10
+    testFullSwitch a bId b aId 16
+
+testFullSwitch :: AgentClient -> ByteString -> AgentClient -> ByteString -> Int64 -> ExceptT AgentErrorType IO ()
+testFullSwitch a bId b aId msgId = do
+  switchConnectionAsync a "" bId
+  switchComplete a bId b aId
+  exchangeGreetingsMsgId msgId a bId b aId
 
 switchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
 switchComplete a bId b aId = do
@@ -889,13 +908,15 @@ testSwitchAsync servers = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
-  let withA' = session withA bId
-      withB' = session withB aId
+  let withA' = sessionSubscribe withA bId
+      withB' = sessionSubscribe withB aId
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
   withB' $ \b -> phase b aId QDSnd SPStarted
-  withA' $ \a -> phase a bId QDRcv SPConfirmed
+  withA' $ \a -> do
+    phase a bId QDRcv SPConfirmed
+    phase a bId QDRcv SPFinalizing
   withB' $ \b -> do
     phase b aId QDSnd SPConfirmed
     phase b aId QDSnd SPCompleted
@@ -904,18 +925,24 @@ testSwitchAsync servers = do
     subscribeConnection a bId
     subscribeConnection b aId
     exchangeGreetingsMsgId 10 a bId b aId
+    testFullSwitch a bId b aId 16
   where
-    withAgent :: AgentConfig -> FilePath -> (AgentClient -> IO a) -> IO a
-    withAgent cfg' dbPath = bracket (getSMPAgentClient' cfg' servers dbPath) disconnectAgentClient
-    session :: (forall a. (AgentClient -> IO a) -> IO a) -> ConnId -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
-    session withC connId a =
-      withC $ \c -> runRight_ $ do
-        subscribeConnection c connId
-        r <- a c
-        liftIO $ threadDelay 500000
-        pure r
-    withA = withAgent agentCfg testDB
-    withB = withAgent agentCfg {initialClientId = 1} testDB2
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+
+withAgent :: AgentConfig -> InitialAgentServers -> FilePath -> (AgentClient -> IO a) -> IO a
+withAgent cfg' servers dbPath = bracket (getSMPAgentClient' cfg' servers dbPath) disconnectAgentClient
+
+sessionSubscribe :: (forall a. (AgentClient -> IO a) -> IO a) -> ConnId -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
+sessionSubscribe withC connId a =
+  withC $ \c -> runRight_ $ do
+    subscribeConnection c connId
+    r <- a c
+    liftIO $ threadDelay 500000
+    liftIO $ noMessages c "nothing else should be delivered"
+    pure r
 
 testSwitchDelete :: InitialAgentServers -> IO ()
 testSwitchDelete servers = do
@@ -932,6 +959,194 @@ testSwitchDelete servers = do
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
+
+testStopSwitchStarted :: HasCallStack => InitialAgentServers -> IO ()
+testStopSwitchStarted servers = do
+  (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    pure (aId, bId)
+  let withA' = sessionSubscribe withA bId
+      withB' = sessionSubscribe withB aId
+  withA' $ \a -> do
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+    -- repeat switch is prohibited
+    Left AGENT {agentErr = A_QUEUE {queueErr = "connection already switching"}} <- runExceptT $ switchConnectionAsync a "" bId
+    -- stop current switch
+    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
+    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+  withB' $ \b -> do
+    phase b aId QDSnd SPStarted
+  withA' $ \a -> do
+    get a ##> ("", bId, ERR (AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}))
+    -- repeat switch
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    subscribeConnection a bId
+    subscribeConnection b aId
+
+    phase b aId QDSnd SPStarted
+
+    phase a bId QDRcv SPConfirmed
+    phase a bId QDRcv SPFinalizing
+
+    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPCompleted
+
+    phase a bId QDRcv SPCompleted
+
+    exchangeGreetingsMsgId 12 a bId b aId
+
+    testFullSwitch a bId b aId 18
+  where
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+
+testStopSwitchStartedReinitiate :: HasCallStack => InitialAgentServers -> IO ()
+testStopSwitchStartedReinitiate servers = do
+  (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    pure (aId, bId)
+  let withA' = sessionSubscribe withA bId
+      withB' = sessionSubscribe withB aId
+  withA' $ \a -> do
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+    -- stop current switch
+    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
+    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+    -- repeat switch
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+  withB' $ \b -> do
+    phase b aId QDSnd SPStarted
+    phase b aId QDSnd SPStarted
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    subscribeConnection a bId
+    subscribeConnection b aId
+
+    (_, _, r1) <- get a
+    (_, _, r2) <- get a
+    let rcvSwitchConfirmed = \case
+          SWITCH QDRcv SPConfirmed _ -> True
+          _ -> False
+    liftIO $ do
+      [r1, r2] `shouldContain` [ERR $ AGENT $ A_QUEUE "QKEY: queue address not found in connection"]
+      [r1, r2] `shouldContainPredicate` rcvSwitchConfirmed
+
+    phase a bId QDRcv SPFinalizing
+
+    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPCompleted
+
+    phase a bId QDRcv SPCompleted
+
+    exchangeGreetingsMsgId 12 a bId b aId
+
+    testFullSwitch a bId b aId 18
+  where
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+
+testStopSwitchConfirmed :: HasCallStack => InitialAgentServers -> IO ()
+testStopSwitchConfirmed servers = do
+  (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    pure (aId, bId)
+  let withA' = sessionSubscribe withA bId
+      withB' = sessionSubscribe withB aId
+  withA' $ \a -> do
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+  withB' $ \b -> do
+    phase b aId QDSnd SPStarted
+  withA' $ \a -> do
+    phase a bId QDRcv SPConfirmed
+    -- stop current switch
+    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
+    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+    -- repeat switch
+    switchConnectionAsync a "" bId
+
+    (_, _, r1) <- get a
+    (_, _, r2) <- get a
+    let stoppedSwitchErr = \case
+          ERR AGENT {agentErr = A_QUEUE {queueErr}} -> "cannot proceed with switch, expected switch status" `isPrefixOf` queueErr
+          ERR Agent.INTERNAL {internalErr} -> "ICQSecure:" `isPrefixOf` internalErr
+          _ -> False
+        rcvSwitchStarted = \case
+          SWITCH QDRcv SPStarted _ -> True
+          _ -> False
+    liftIO $ do
+      [r1, r2] `shouldContainPredicate` stoppedSwitchErr
+      [r1, r2] `shouldContainPredicate` rcvSwitchStarted
+
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    subscribeConnection a bId
+    subscribeConnection b aId
+
+    phase b aId QDSnd SPStarted
+
+    phase a bId QDRcv SPConfirmed
+    phase a bId QDRcv SPFinalizing
+
+    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPCompleted
+
+    phase a bId QDRcv SPCompleted
+
+    exchangeGreetingsMsgId 12 a bId b aId
+
+    testFullSwitch a bId b aId 18
+  where
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+
+testCannotStopSwitchFinalizing :: HasCallStack => InitialAgentServers -> IO ()
+testCannotStopSwitchFinalizing servers = do
+  (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    pure (aId, bId)
+  let withA' = sessionSubscribe withA bId
+      withB' = sessionSubscribe withB aId
+  withA' $ \a -> do
+    switchConnectionAsync a "" bId
+    phase a bId QDRcv SPStarted
+  withB' $ \b -> do
+    phase b aId QDSnd SPStarted
+  withA' $ \a -> do
+    phase a bId QDRcv SPConfirmed
+    phase a bId QDRcv SPFinalizing
+    Left AGENT {agentErr = A_QUEUE {queueErr = "cannot proceed with switch stop, switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
+    pure ()
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    subscribeConnection a bId
+    subscribeConnection b aId
+
+    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPCompleted
+
+    phase a bId QDRcv SPCompleted
+
+    exchangeGreetingsMsgId 10 a bId b aId
+
+    testFullSwitch a bId b aId 16
+  where
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
 
 testCreateQueueAuth :: (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do

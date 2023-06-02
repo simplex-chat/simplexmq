@@ -2055,14 +2055,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
         -- processed by queue recipient
         qKeyMsg :: NonEmpty (SMPQueueInfo, SndPublicVerifyKey) -> Connection 'CDuplex -> m ()
         qKeyMsg ((qInfo, senderKey) :| _) (DuplexConnection _ rqs sqs) = do
-          withSwitchedRQ c rq RSSQueueingQADD (\db q -> setRcvQueueSwitchStatus db q (Just RSSReceivedQKEY)) >>= \case
-            Left qce -> switchCannotProceedErr $ qceStr qce ("expected switch status " <> show RSSQueueingQADD)
-            Right replaced -> do
-              clientVRange <- asks $ smpClientVRange . config
-              unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
-              case findRQ (smpServer, senderId) rqs of
-                Just rq'@RcvQueue {rcvId, e2ePrivKey = dhPrivKey, smpClientVersion = cVer, status = status'}
-                  | status' == New || status' == Confirmed -> do
+          clientVRange <- asks $ smpClientVRange . config
+          unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
+          case findRQ (smpServer, senderId) rqs of
+            Just rq'@RcvQueue {rcvId, e2ePrivKey = dhPrivKey, smpClientVersion = cVer, status = status'}
+              | status' == New || status' == Confirmed -> do
+                withSwitchedRQ c rq RSSQueueingQADD (\db q -> setRcvQueueSwitchStatus db q (Just RSSReceivedQKEY)) >>= \case
+                  Left qce -> switchCannotProceedErr $ qceStr qce ("expected switch status " <> show RSSQueueingQADD)
+                  Right replaced -> do
                     logServer "<--" c srv rId $ "MSG <QKEY> " <> logSecret senderId
                     let dhSecret = C.dh' dhPublicKey dhPrivKey
                     withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
@@ -2076,8 +2076,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         notify . SWITCH QDRcv SPConfirmed $ connectionStats conn'
                       Right _ -> throwError $ INTERNAL "no rcv queues in connection after processing QKEY"
                       Left qce -> switchCannotProceedErr $ qceStr qce ("expected switch status " <> show RSSReceivedQKEY)
-                  | otherwise -> qError "QKEY: queue already secured"
-                _ -> qError "QKEY: queue address not found in connection"
+              | otherwise -> qError "QKEY: queue already secured"
+            _ -> qError "QKEY: queue address not found in connection"
           where
             SMPQueueInfo cVer' SMPQueueAddress {smpServer, senderId, dhPublicKey} = qInfo
 
