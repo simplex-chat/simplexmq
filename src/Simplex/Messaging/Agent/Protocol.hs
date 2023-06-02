@@ -502,7 +502,7 @@ instance FromJSON SwitchPhase where
 data RcvSwitchStatus
   = -- set in beginning of switchConnectionAsync' before queueing SWCH command
     RSSQueueingSwch
-  | -- set in beginning of switchConnection'
+  | -- set in beginning of switchConnection' or on processing SWCH command
     RSSSwchStarted
   | -- set in switchConnection' before queueing QADD
     RSSQueueingQADD
