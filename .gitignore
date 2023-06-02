@@ -7,3 +7,7 @@ dist-newstyle/
 
 cabal.project.local
 cabal.project.local~
+
+.hpc/
+*.tix
+.coverage

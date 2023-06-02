@@ -62,6 +62,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
 import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
+import System.Directory (copyFile, renameFile)
 import Test.Hspec
 import UnliftIO
 import XFTPClient (testXFTPServer)
@@ -153,9 +154,13 @@ functionalAPITests t = do
       testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
-  describe "Duplicate message delivery" $
+  describe "Message delivery" $ do
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage t
+    it "should report error via msg integrity on skipped messages" $
+      testSkippedMessages t
+    it "should report decryption error on ratchet becoming out of sync" $
+      testDecryptionError t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -169,8 +174,10 @@ functionalAPITests t = do
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
   describe "Batching SMP commands" $ do
-    it "should subscribe to multiple subscriptions with batching" $
-      testBatchedSubscriptions t
+    it "should subscribe to multiple (200) subscriptions with batching" $
+      testBatchedSubscriptions 200 10 t
+    it "should subscribe to multiple (6) subscriptions with batching" $
+      testBatchedSubscriptions 6 3 t
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
@@ -505,6 +512,101 @@ testDuplicateMessage t = do
       get alice2 ##> ("", bobId, SENT 6)
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
 
+testSkippedMessages :: HasCallStack => ATransport -> IO ()
+testSkippedMessages t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 4)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 4
+
+    disconnectAgentClient bob
+
+    runRight_ $ do
+      5 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+      get alice ##> ("", bobId, SENT 5)
+      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
+      get alice ##> ("", bobId, SENT 6)
+      7 <- sendMessage alice bobId SMP.noMsgFlags "hello 4"
+      get alice ##> ("", bobId, SENT 7)
+
+    pure (aliceId, bobId)
+
+  nGet alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+  threadDelay 200000
+
+  disconnectAgentClient alice
+
+  alice2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+      subscribeConnection alice2 bobId
+
+      8 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 5"
+      get alice2 ##> ("", bobId, SENT 8)
+      get bob2 =##> \case ("", c, MSG MsgMeta {integrity = MsgError {errorInfo = MsgSkipped {fromMsgId = 4, toMsgId = 6}}} _ "hello 5") -> c == aliceId; _ -> False
+      ackMessage bob2 aliceId 5
+
+      9 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 6"
+      get alice2 ##> ("", bobId, SENT 9)
+      get bob2 =##> \case ("", c, Msg "hello 6") -> c == aliceId; _ -> False
+      ackMessage bob2 aliceId 6
+
+testDecryptionError :: HasCallStack => ATransport -> IO ()
+testDecryptionError t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 4)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 4
+
+      5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
+      get bob ##> ("", aliceId, SENT 5)
+      get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
+      ackMessage alice bobId 5
+
+      liftIO $ copyFile testDB2 (testDB2 <> ".bak")
+
+      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
+      get alice ##> ("", bobId, SENT 6)
+      get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 6
+
+      7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
+      get bob ##> ("", aliceId, SENT 7)
+      get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
+      ackMessage alice bobId 7
+
+    disconnectAgentClient bob
+
+    -- importing database backup after progressing ratchet de-synchronizes ratchet,
+    -- this will be fixed by ratchet re-negotiation
+    liftIO $ renameFile (testDB2 <> ".bak") testDB2
+
+    bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+
+      8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
+      get alice ##> ("", bobId, SENT 8)
+      get bob2 =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == aliceId; _ -> False
+
+      6 <- sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
+      get bob2 ##> ("", aliceId, SENT 6)
+      get alice =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == bobId; _ -> False
+
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
 
@@ -626,14 +728,14 @@ testSuspendingAgentTimeout t = do
     ("", "", SUSPENDED) <- nGet b
     pure ()
 
-testBatchedSubscriptions :: ATransport -> IO ()
-testBatchedSubscriptions t = do
+testBatchedSubscriptions :: Int -> Int -> ATransport -> IO ()
+testBatchedSubscriptions nCreate nDel t = do
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- forM [1 .. 200 :: Int] . const $ makeConnection a b
+    conns <- forM [1 .. nCreate :: Int] . const $ makeConnection a b
     forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
-    let (aIds', bIds') = unzip $ take 10 conns
+    let (aIds', bIds') = unzip $ take nDel conns
     delete a bIds'
     delete b aIds'
     liftIO $ threadDelay 1000000
@@ -649,11 +751,14 @@ testBatchedSubscriptions t = do
     ("", "", UP {}) <- nGet b
     liftIO $ threadDelay 1000000
     let (aIds, bIds) = unzip conns
-        conns' = drop 10 conns
+        conns' = drop nDel conns
         (aIds', bIds') = unzip conns'
     subscribe a bIds
     subscribe b aIds
     forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
+    void $ resubscribeConnections a bIds
+    void $ resubscribeConnections b aIds
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 8 a bId b aId
     delete a bIds'
     delete b aIds'
     deleteFail a bIds'
@@ -663,7 +768,7 @@ testBatchedSubscriptions t = do
     subscribe c cs = do
       r <- subscribeConnections c cs
       liftIO $ do
-        let dc = S.fromList $ take 10 cs
+        let dc = S.fromList $ take nDel cs
         all isRight (M.withoutKeys r dc) `shouldBe` True
         all (== Left (CONN NOT_FOUND)) (M.restrictKeys r dc) `shouldBe` True
         M.keys r `shouldMatchList` cs
