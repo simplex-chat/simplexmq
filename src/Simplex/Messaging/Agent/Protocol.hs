@@ -477,7 +477,7 @@ instance ToJSON QueueDirection where
 instance FromJSON QueueDirection where
   parseJSON = strParseJSON "QueueDirection"
 
-data SwitchPhase = SPStarted | SPConfirmed | SPCompleted
+data SwitchPhase = SPStarted | SPConfirmed | SPFinalizing | SPCompleted
   deriving (Eq, Show)
 
 instance StrEncoding SwitchPhase where
@@ -485,11 +485,13 @@ instance StrEncoding SwitchPhase where
     SPStarted -> "started"
     SPConfirmed -> "confirmed"
     SPCompleted -> "completed"
+    SPFinalizing -> "finalizing"
   strP =
     A.takeTill (== ' ') >>= \case
       "started" -> pure SPStarted
       "confirmed" -> pure SPConfirmed
       "completed" -> pure SPCompleted
+      "finalizing" -> pure SPFinalizing
       _ -> fail "bad SwitchPhase"
 
 instance ToJSON SwitchPhase where

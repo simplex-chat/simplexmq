@@ -864,6 +864,7 @@ switchComplete a bId b aId = do
   phase a bId QDRcv SPStarted
   phase b aId QDSnd SPStarted
   phase a bId QDRcv SPConfirmed
+  phase a bId QDRcv SPFinalizing
   phase b aId QDSnd SPConfirmed
   phase b aId QDSnd SPCompleted
   phase a bId QDRcv SPCompleted
