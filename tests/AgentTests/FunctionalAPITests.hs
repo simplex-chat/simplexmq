@@ -207,8 +207,6 @@ functionalAPITests t = do
       testServerMatrix2 t testStopSwitchStarted
     describe "should stop switch in Started phase, reinitiate immediately" $
       testServerMatrix2 t testStopSwitchStartedReinitiate
-    describe "should stop switch in Confirmed phase" $
-      testServerMatrix2 t testStopSwitchConfirmed
     describe "should prohibit to stop switch in Finalizing phase" $
       testServerMatrix2 t testCannotStopSwitchFinalizing
   describe "SMP basic auth" $ do
@@ -1160,63 +1158,6 @@ testStopSwitchStartedReinitiate servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
 
-testStopSwitchConfirmed :: HasCallStack => InitialAgentServers -> IO ()
-testStopSwitchConfirmed servers = do
-  (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
-    (aId, bId) <- makeConnection a b
-    exchangeGreetingsMsgId 4 a bId b aId
-    pure (aId, bId)
-  let withA' = sessionSubscribe withA bId
-      withB' = sessionSubscribe withB aId
-  withA' $ \a -> do
-    switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
-  withB' $ \b -> do
-    phase b aId QDSnd SPStarted
-  withA' $ \a -> do
-    phase a bId QDRcv SPConfirmed
-    -- stop current switch
-    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
-    liftIO $ rcvSwitchStatus `shouldBe` Nothing
-    -- repeat switch
-    switchConnectionAsync a "" bId
-
-    (_, _, r1) <- get a
-    (_, _, r2) <- get a
-    let stoppedSwitchErr = \case
-          ERR AGENT {agentErr = A_QUEUE {queueErr}} -> "cannot proceed with switch, expected switch status" `isPrefixOf` queueErr
-          ERR Agent.INTERNAL {internalErr} -> "ICQSecure:" `isPrefixOf` internalErr
-          _ -> False
-        rcvSwitchStarted = \case
-          SWITCH QDRcv SPStarted _ -> True
-          _ -> False
-    liftIO $ do
-      [r1, r2] `shouldContainPredicate` stoppedSwitchErr
-      [r1, r2] `shouldContainPredicate` rcvSwitchStarted
-
-  withA $ \a -> withB $ \b -> runRight_ $ do
-    subscribeConnection a bId
-    subscribeConnection b aId
-
-    phase b aId QDSnd SPStarted
-
-    phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPFinalizing
-
-    phase b aId QDSnd SPConfirmed
-    phase b aId QDSnd SPCompleted
-
-    phase a bId QDRcv SPCompleted
-
-    exchangeGreetingsMsgId 12 a bId b aId
-
-    testFullSwitch a bId b aId 18
-  where
-    withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent agentCfg servers testDB
-    withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
-
 testCannotStopSwitchFinalizing :: HasCallStack => InitialAgentServers -> IO ()
 testCannotStopSwitchFinalizing servers = do
   (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
@@ -1232,6 +1173,8 @@ testCannotStopSwitchFinalizing servers = do
     phase b aId QDSnd SPStarted
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
+    -- ICQSecure takes conn lock faster than stopConnectionSwitch
+    Left AGENT {agentErr = A_QUEUE {queueErr = "cannot proceed with switch stop, switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     phase a bId QDRcv SPFinalizing
     Left AGENT {agentErr = A_QUEUE {queueErr = "cannot proceed with switch stop, switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     pure ()
