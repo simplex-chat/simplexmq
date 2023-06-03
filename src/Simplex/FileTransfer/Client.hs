@@ -9,6 +9,7 @@
 
 module Simplex.FileTransfer.Client where
 
+import qualified Control.Exception as E
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
@@ -135,23 +136,33 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   let req = H.requestStreaming N.methodPost "/" [] $ streamBody t
       reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
-  when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
-  -- TODO validate that the file ID is the same as in the request?
-  (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
-  case respOrErr of
-    Right r -> case protocolError r of
-      Just e -> throwError $ PCEProtocolError e
-      _ -> pure (r, body)
-    Left e -> throwError $ PCEResponseError e
+  res <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
+  case res of
+    HTTP2RequestResponse HTTP2Response {respBody = body@HTTP2Body {bodyHead}} -> do
+      when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
+      -- TODO validate that the file ID is the same as in the request?
+      (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
+      case respOrErr of
+        Right r -> case protocolError r of
+          Just e -> throwError $ PCEProtocolError e
+          _ -> pure (r, body)
+        Left e -> throwError $ PCEResponseError e
+    HTTP2RequestError e -> do
+      liftIO $ print $ "in sendXFTPCommand HTTP2RequestError" <> show e
+      throwError $ PCEInternalError $ show e
   where
     streamBody :: ByteString -> (Builder -> IO ()) -> IO () -> IO ()
     streamBody t send done = do
       send $ byteString t
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
-        withFile filePath ReadMode $ \h -> do
-          hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-          sendFile h send $ fromIntegral chunkSize
+        do
+          ( withFile filePath ReadMode $ \h -> do
+              hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+              sendFile h send $ fromIntegral chunkSize
+            )
+            `E.catch` \(e :: SomeException) -> do
+              print $ "in sendXFTPCommand streamBody " <> show e
+              E.throw e
       done
 
 createXFTPChunk ::

@@ -344,11 +344,14 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
   -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect
-  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
-  let status = H.responseStatus response
-      reason' = maybe "" reason $ J.decodeStrict' bodyHead
-  logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
-  result status reason'
+  res <- liftHTTPS2 $ sendRequest http2 req Nothing
+  case res of
+    HTTP2RequestResponse HTTP2Response {response, respBody = HTTP2Body {bodyHead}} -> do
+      let status = H.responseStatus response
+          reason' = maybe "" reason $ J.decodeStrict' bodyHead
+      logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
+      result status reason'
+    HTTP2RequestError _e -> throwError PPPermanentError
   where
     result :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     result status reason'
