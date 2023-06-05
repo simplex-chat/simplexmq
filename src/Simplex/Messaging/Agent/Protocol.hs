@@ -484,14 +484,14 @@ instance StrEncoding SwitchPhase where
   strEncode = \case
     SPStarted -> "started"
     SPConfirmed -> "confirmed"
-    SPCompleted -> "completed"
     SPFinalizing -> "finalizing"
+    SPCompleted -> "completed"
   strP =
     A.takeTill (== ' ') >>= \case
       "started" -> pure SPStarted
       "confirmed" -> pure SPConfirmed
-      "completed" -> pure SPCompleted
       "finalizing" -> pure SPFinalizing
+      "completed" -> pure SPCompleted
       _ -> fail "bad SwitchPhase"
 
 instance ToJSON SwitchPhase where
@@ -503,47 +503,47 @@ instance FromJSON SwitchPhase where
 
 data RcvSwitchStatus
   = -- set in beginning of switchConnectionAsync' before queueing SWCH command
-    RSSQueueingSwch
+    RSQueueingSwch
   | -- set in beginning of switchConnection' or on processing SWCH command
-    RSSSwchStarted
+    RSSwchStarted
   | -- set in switchConnection' before queueing QADD
-    RSSQueueingQADD
+    RSQueueingQADD
   | -- set on receiving QKEY, in beginning of qKeyMsg
-    RSSReceivedQKEY
+    RSReceivedQKEY
   | -- set before queueing ICQSecure in qKeyMsg
-    RSSQueueingSecure
+    RSQueueingSecure
   | -- set in beginning of ICQSecure processing in runCommandProcessing
-    RSSSecureStarted
+    RSSecureStarted
   | -- set in ICQSecure processing before queueing QUSE
-    RSSQueueingQUSE
+    RSQueueingQUSE
   | -- set before queueing ICQDelete in processSMPTransmission upon receiving first message in the new queue
-    RSSQueueingDelete
+    RSQueueingDelete
   | -- set in beginning of ICQDelete processing in runCommandProcessing
-    RSSDeleteStarted
+    RSDeleteStarted
   deriving (Eq, Show)
 
 instance StrEncoding RcvSwitchStatus where
   strEncode = \case
-    RSSQueueingSwch -> "queueing_swch"
-    RSSSwchStarted -> "swch_started"
-    RSSQueueingQADD -> "queueing_qadd"
-    RSSReceivedQKEY -> "received_qkey"
-    RSSQueueingSecure -> "queueing_secure"
-    RSSSecureStarted -> "secure_started"
-    RSSQueueingQUSE -> "queueing_quse"
-    RSSQueueingDelete -> "queueing_delete"
-    RSSDeleteStarted -> "delete_started"
+    RSQueueingSwch -> "queueing_swch"
+    RSSwchStarted -> "swch_started"
+    RSQueueingQADD -> "queueing_qadd"
+    RSReceivedQKEY -> "received_qkey"
+    RSQueueingSecure -> "queueing_secure"
+    RSSecureStarted -> "secure_started"
+    RSQueueingQUSE -> "queueing_quse"
+    RSQueueingDelete -> "queueing_delete"
+    RSDeleteStarted -> "delete_started"
   strP =
     A.takeTill (== ' ') >>= \case
-      "queueing_swch" -> pure RSSQueueingSwch
-      "swch_started" -> pure RSSSwchStarted
-      "queueing_qadd" -> pure RSSQueueingQADD
-      "received_qkey" -> pure RSSReceivedQKEY
-      "queueing_secure" -> pure RSSQueueingSecure
-      "secure_started" -> pure RSSSecureStarted
-      "queueing_quse" -> pure RSSQueueingQUSE
-      "queueing_delete" -> pure RSSQueueingDelete
-      "delete_started" -> pure RSSDeleteStarted
+      "queueing_swch" -> pure RSQueueingSwch
+      "swch_started" -> pure RSSwchStarted
+      "queueing_qadd" -> pure RSQueueingQADD
+      "received_qkey" -> pure RSReceivedQKEY
+      "queueing_secure" -> pure RSQueueingSecure
+      "secure_started" -> pure RSSecureStarted
+      "queueing_quse" -> pure RSQueueingQUSE
+      "queueing_delete" -> pure RSQueueingDelete
+      "delete_started" -> pure RSDeleteStarted
       _ -> fail "bad RcvSwitchStatus"
 
 instance ToField RcvSwitchStatus where toField = toField . strEncode
@@ -559,31 +559,31 @@ instance FromJSON RcvSwitchStatus where
 
 data SndSwitchStatus
   = -- set on receiving QADD, in beginning of qAddMsg
-    SSSReceivedQADD
+    SSReceivedQADD
   | -- set in qAddMsg before queueing QKEY
-    SSSQueueingQKEY
+    SSQueueingQKEY
   | -- set on receiving QUSE, in beginning of qUseMsg
-    SSSReceivedQUSE
+    SSReceivedQUSE
   | -- set in qUseMsg before queueing QTEST
-    SSSQueueingQTEST
+    SSQueueingQTEST
   | -- set in runSmpQueueMsgDelivery after receiving Right in response to sending QTEST
-    SSSSentQTEST
+    SSSentQTEST
   deriving (Eq, Show)
 
 instance StrEncoding SndSwitchStatus where
   strEncode = \case
-    SSSReceivedQADD -> "received_qadd"
-    SSSQueueingQKEY -> "queueing_qkey"
-    SSSReceivedQUSE -> "received_quse"
-    SSSQueueingQTEST -> "queueing_qtest"
-    SSSSentQTEST -> "sent_qtest"
+    SSReceivedQADD -> "received_qadd"
+    SSQueueingQKEY -> "queueing_qkey"
+    SSReceivedQUSE -> "received_quse"
+    SSQueueingQTEST -> "queueing_qtest"
+    SSSentQTEST -> "sent_qtest"
   strP =
     A.takeTill (== ' ') >>= \case
-      "received_qadd" -> pure SSSReceivedQADD
-      "queueing_qkey" -> pure SSSQueueingQKEY
-      "received_quse" -> pure SSSReceivedQUSE
-      "queueing_qtest" -> pure SSSQueueingQTEST
-      "sent_qtest" -> pure SSSSentQTEST
+      "received_qadd" -> pure SSReceivedQADD
+      "queueing_qkey" -> pure SSQueueingQKEY
+      "received_quse" -> pure SSReceivedQUSE
+      "queueing_qtest" -> pure SSQueueingQTEST
+      "sent_qtest" -> pure SSSentQTEST
       _ -> fail "bad SndSwitchStatus"
 
 instance ToField SndSwitchStatus where toField = toField . strEncode
@@ -603,7 +603,7 @@ data RcvQueueInfo = RcvQueueInfo
   }
   deriving (Eq, Show, Generic)
 
-instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions
+instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding RcvQueueInfo where
   strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus} =
@@ -619,7 +619,7 @@ data SndQueueInfo = SndQueueInfo
   }
   deriving (Eq, Show, Generic)
 
-instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions
+instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding SndQueueInfo where
   strEncode SndQueueInfo {sndServer, sndSwitchStatus} =

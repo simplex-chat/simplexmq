@@ -83,9 +83,9 @@ data RcvQueue = RcvQueue
   deriving (Eq, Show)
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
-rcvQueueInfo q@RcvQueue {switchStatus} =
+rcvQueueInfo RcvQueue {server, switchStatus} =
   RcvQueueInfo
-    { rcvServer = qServer q,
+    { rcvServer = server,
       rcvSwitchStatus = switchStatus
     }
 
@@ -129,9 +129,9 @@ data SndQueue = SndQueue
   deriving (Eq, Show)
 
 sndQueueInfo :: SndQueue -> SndQueueInfo
-sndQueueInfo q@SndQueue {switchStatus} =
+sndQueueInfo SndQueue {server, switchStatus} =
   SndQueueInfo
-    { sndServer = qServer q,
+    { sndServer = server,
       sndSwitchStatus = switchStatus
     }
 
