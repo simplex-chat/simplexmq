@@ -95,7 +95,7 @@ update_bins() {
       systemctl stop smp-server
       printf "${GRN}Done!${NC}\n"
 
-      print -- "- Updating smp-server bin to %s..." "$remote_version"
+      printf -- "- Updating smp-server bin to %s..." "$remote_version"
       curl --proto '=https' --tlsv1.2 -sSf -L "$bin_smp" -o "$bin_path_smp" && chmod +x "$bin_path_smp"
       printf "${GRN}Done!${NC}\n"
       
@@ -103,7 +103,7 @@ update_bins() {
       systemctl stop smp-server
       printf "${GRN}Done!${NC}\n"
     else
-      print -- "- Updating smp-server bin..."
+      printf -- "- Updating smp-server bin..."
       curl --proto '=https' --tlsv1.2 -sSf -L "$bin_smp" -o "$bin_path_smp" && chmod +x "$bin_path_smp"
       printf "${GRN}Done!${NC}\n"
     fi
@@ -113,7 +113,7 @@ update_bins() {
       systemctl stop xftp-server
       printf "${GRN}Done!${NC}\n"
 
-      print -- "- Updating xftp-server bin to %s..." "$remote_version"
+      printf -- "- Updating xftp-server bin to %s..." "$remote_version"
       curl --proto '=https' --tlsv1.2 -sSf -L "$bin_xftp" -o "$bin_path_xftp" && chmod +x "$bin_path_xftp"
       printf "${GRN}Done!${NC}\n"
       
@@ -121,7 +121,7 @@ update_bins() {
       systemctl stop xftp-server
       printf "${GRN}Done!${NC}\n"
     else
-      print -- "- Updating xftp-server bin..."
+      printf -- "- Updating xftp-server bin..."
       curl --proto '=https' --tlsv1.2 -sSf -L "$bin_smp" -o "$bin_path_xftp" && chmod +x "$bin_path_xftp"
       printf "${GRN}Done!${NC}\n"
     fi
