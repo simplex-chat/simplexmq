@@ -1174,9 +1174,9 @@ testCannotStopSwitchFinalizing servers = do
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
     -- ICQSecure takes conn lock faster than stopConnectionSwitch; remove this line if test fails
-    Left AGENT {agentErr = A_QUEUE {queueErr = "cannot proceed with switch stop, switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
+    Left AGENT {agentErr = A_QUEUE {queueErr = "switch stop error: switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     phase a bId QDRcv SPFinalizing
-    Left AGENT {agentErr = A_QUEUE {queueErr = "cannot proceed with switch stop, switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
+    Left AGENT {agentErr = A_QUEUE {queueErr = "switch stop error: switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
