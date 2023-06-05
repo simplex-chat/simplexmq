@@ -87,9 +87,9 @@ setup_users() {
 setup_dirs() {
  # Unquoted varibles, so field splitting can occur
  mkdir -p $path_conf_smp
- chown "$user_smp":"$user_smp" "$path_conf_smp"
+ chown "$user_smp":"$user_smp" $path_conf_smp
  mkdir -p $path_conf_xftp
- chown "$user_xftp":"$user_xftp" "$path_conf_xftp"
+ chown "$user_xftp":"$user_xftp" $path_conf_xftp
 }
 
 setup_systemd() {
