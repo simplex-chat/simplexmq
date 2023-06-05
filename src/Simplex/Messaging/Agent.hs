@@ -880,15 +880,13 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId -> withServer' . tryCommand $ ackMessage' c connId msgId >> notify OK
         SWCH ->
-          noServer $
-            tryCommand $
-              withConnLock c connId "switchConnection" $
-                withStore c (`getConn` connId) >>= \case
-                  SomeConn _ conn@(DuplexConnection _ (replaced :| rqs_) _) ->
-                    withSwitchedRQ c replaced RSQueueingSwch (\db q -> setRcvQueueSwitchStatus db q (Just RSSwchStarted)) >>= \case
-                      Right replaced' -> switchDuplexConnection c conn replaced' rqs_ >>= notify . SWITCH QDRcv SPStarted
-                      Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingSwch)
-                  _ -> throwError $ CMD PROHIBITED
+          noServer . tryCommand . withConnLock c connId "switchConnection" $
+            withStore c (`getConn` connId) >>= \case
+              SomeConn _ conn@(DuplexConnection _ (replaced :| rqs_) _) ->
+                withSwitchedRQ c replaced RSQueueingSwch (\db q -> setRcvQueueSwitchStatus db q (Just RSSwchStarted)) >>= \case
+                  Right replaced' -> switchDuplexConnection c conn replaced' rqs_ >>= notify . SWITCH QDRcv SPStarted
+                  Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingSwch)
+              _ -> throwError $ CMD PROHIBITED
         DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
