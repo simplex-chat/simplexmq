@@ -531,16 +531,14 @@ deleteConnectionsAsync_ onSuccess c connIds = case connIds of
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
 switchConnectionAsync' c corrId connId =
-  withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rqs@(rq :| _rqs) _) -> case findSwitchedRQ rqs of
-      Nothing -> do
-        let queueNotSwitched = \RcvQueue {switchStatus} -> isNothing switchStatus
-            updateSwitchStatus = \db q -> setRcvQueueSwitchStatus db q (Just RSQueueingSwch)
-        withExistingRQ c rq queueNotSwitched updateSwitchStatus >>= \case
-          Right _replaced' -> enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
-          Left qce -> switchErr $ qceStr qce "queue expected to be not switched"
-      Just _ -> throwError $ AGENT $ A_QUEUE "connection already switching"
-    _ -> throwError $ CMD PROHIBITED
+  withConnLock c connId "switchConnectionAsync" $
+    withStore c (`getConn` connId) >>= \case
+      SomeConn _ (DuplexConnection _ rqs@(rq :| _rqs) _) -> case findSwitchedRQ rqs of
+        Nothing -> do
+          void $ withStore' c $ \db -> setRcvQueueSwitchStatus db rq (Just RSSwitchStarted)
+          enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
+        Just _ -> throwError $ AGENT $ A_QUEUE "connection already switching"
+      _ -> throwError $ CMD PROHIBITED
 
 newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
 newConn c userId connId enableNtfs cMode clientData =
@@ -882,10 +880,8 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
         SWCH ->
           noServer . tryCommand . withConnLock c connId "switchConnection" $
             withStore c (`getConn` connId) >>= \case
-              SomeConn _ conn@(DuplexConnection _ (replaced :| rqs_) _) ->
-                withSwitchedRQ c replaced RSQueueingSwch (\db q -> setRcvQueueSwitchStatus db q (Just RSSwchStarted)) >>= \case
-                  Right replaced' -> switchDuplexConnection c conn replaced' rqs_ >>= notify . SWITCH QDRcv SPStarted
-                  Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingSwch)
+              SomeConn _ conn@(DuplexConnection _ (replaced :| _rqs) _) ->
+                switchDuplexConnection c conn replaced >>= notify . SWITCH QDRcv SPStarted
               _ -> throwError $ CMD PROHIBITED
         DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
@@ -910,25 +906,23 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case findSwitchedRQ rqs of
               Just replaced -> do
-                withSwitchedRQ c replaced RSQueueingSecure (\db q -> setRcvQueueSwitchStatus db q (Just RSSecureStarted)) >>= \case
-                  Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingSecure)
-                  Right replaced' -> case find (sameQueue (srv, rId)) rqs of
+                withSwitchedRQ replaced RSReceivedQKEY $ do
+                  case find (sameQueue (srv, rId)) rqs of
                     Nothing -> internalErr "ICQSecure: queue address not found in connection"
                     Just rq'@RcvQueue {status} -> when (status == Confirmed) $ secureSwitchingQueue rq'
-                    where
-                      secureSwitchingQueue rq'@RcvQueue {server, sndId} = do
-                        secureQueue c rq' senderKey
-                        withStore' c $ \db -> setRcvQueueStatus db rq' Secured
-                        let updateSwitchStatus = \db q -> do
-                              void $ setRcvQueueSwitchStatus db q (Just RSQueueingQUSE)
-                              getRcvQueuesByConnId db connId
-                        withSwitchedRQ c replaced' RSSecureStarted updateSwitchStatus >>= \case
-                          Right (Just rqs') -> do
-                            void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
-                            let conn' = DuplexConnection cData rqs' sqs
-                            notify . SWITCH QDRcv SPFinalizing $ connectionStats conn'
-                          Right _ -> throwError $ INTERNAL "no rcv queues in connection after processing ICQSecure"
-                          Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSSecureStarted)
+                where
+                  secureSwitchingQueue rq'@RcvQueue {server, sndId} = do
+                    secureQueue c rq' senderKey
+                    withStore' c $ \db -> setRcvQueueStatus db rq' Secured
+                    void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
+                    rqs_ <- withStore' c $ \db -> do
+                      void $ setRcvQueueSwitchStatus db replaced (Just RSSendingQUSE)
+                      getRcvQueuesByConnId db connId
+                    case rqs_ of
+                      Just rqs' -> do
+                        let conn' = DuplexConnection cData rqs' sqs
+                        notify . SWITCH QDRcv SPFinalizing $ connectionStats conn'
+                      Nothing -> throwError $ INTERNAL "no rcv queues in connection after processing switchDuplexConnection"
               Nothing -> internalErr "ICQSecure: no switched queue found"
         ICQDelete rId -> do
           withServer $ \srv -> tryWithLock "ICQDelete" . withDuplexConn $ \(DuplexConnection cData rqs sqs) -> do
@@ -937,14 +931,12 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
               Just (replaced@RcvQueue {primary}, rq'' : rqs')
                 | primary -> internalErr "ICQDelete: cannot delete primary rcv queue"
                 | otherwise ->
-                  withSwitchedRQ c replaced RSQueueingDelete (\db q -> setRcvQueueSwitchStatus db q (Just RSDeleteStarted)) >>= \case
-                    Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingDelete)
-                    Right replaced' ->
-                      tryError (deleteQueue c replaced') >>= \case
-                        Left e
-                          | temporaryOrHostError e -> throwError e
-                          | otherwise -> finalizeSwitch replaced' >> throwError e
-                        Right () -> finalizeSwitch replaced'
+                  withSwitchedRQ replaced RSReceivedMessage $ do
+                    tryError (deleteQueue c replaced) >>= \case
+                      Left e
+                        | temporaryOrHostError e -> throwError e
+                        | otherwise -> finalizeSwitch replaced >> throwError e
+                      Right () -> finalizeSwitch replaced
                 where
                   finalizeSwitch replaced' = do
                     withStore' c $ \db -> deleteConnRcvQueue db replaced'
@@ -1056,6 +1048,7 @@ getPendingMsgQ c SndQueue {server, sndId} = do
       TM.insert qKey q $ smpQueueMsgQueues c
       pure q
 
+-- TODO withConnLock
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq = do
   (mq, qLock) <- atomically $ getPendingMsgQ c sq
@@ -1172,22 +1165,15 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                           case removeQP (\replaced@SndQueue {dbQueueId} -> dbQueueId == replacedId && not (sameQueue addr replaced)) sqs of
                             Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
                             Just (replaced, sq' : sqs') -> do
-                              withSwitchedSQ c replaced SSQueueingQTEST (\db q -> setSndQueueSwitchStatus db q (Just SSSentQTEST)) >>= \case
-                                Left qce -> switchErr $ qceStr qce ("expected switch status " <> show SSQueueingQTEST)
-                                Right replaced' -> do
-                                  let deleteSwitchedQueue = \db _ -> do
-                                        when primary $ setSndQueuePrimary db connId sq
-                                        deletePendingMsgs db connId replaced'
-                                        deleteConnSndQueue db connId replaced'
-                                  -- the only condition we will not proceed to delete switched queue
-                                  -- is if switching queue was already deleted from db
-                                  withExistingSQ c sq' (const True) deleteSwitchedQueue >>= \case
-                                    Left qce -> switchErr $ qceStr qce "no predicate"
-                                    Right () -> do
-                                      atomically $ TM.delete (qAddress replaced') $ smpQueueMsgQueues c
-                                      let sqs'' = sq' :| sqs'
-                                          conn' = DuplexConnection cData' rqs sqs''
-                                      notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
+                              withSwitchedSQ replaced SSSendingQTEST $ do
+                                withStore' c $ \db -> do
+                                  when primary $ setSndQueuePrimary db connId sq
+                                  deletePendingMsgs db connId replaced
+                                  deleteConnSndQueue db connId replaced
+                                atomically $ TM.delete (qAddress replaced) $ smpQueueMsgQueues c
+                                let sqs'' = sq' :| sqs'
+                                    conn' = DuplexConnection cData' rqs sqs''
+                                notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
                             _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
                         _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
@@ -1232,76 +1218,68 @@ switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection' c connId =
   withConnLock c connId "switchConnection" $
     withStore c (`getConn` connId) >>= \case
-      SomeConn _ conn@(DuplexConnection _ rqs@(replaced :| rqs_) _) -> case findSwitchedRQ rqs of
+      SomeConn _ conn@(DuplexConnection _ rqs@(replaced :| _rqs) _) -> case findSwitchedRQ rqs of
         Nothing -> do
-          let queueNotSwitched = \RcvQueue {switchStatus} -> isNothing switchStatus
-              updateSwitchStatus = \db q -> setRcvQueueSwitchStatus db q (Just RSSwchStarted)
-          withExistingRQ c replaced queueNotSwitched updateSwitchStatus >>= \case
-            Right replaced' -> switchDuplexConnection c conn replaced' rqs_
-            Left qce -> switchErr $ qceStr qce "queue expected to be not switched"
+          replaced' <- withStore' c $ \db -> setRcvQueueSwitchStatus db replaced (Just RSSwitchStarted)
+          switchDuplexConnection c conn replaced'
         Just _ -> throwError $ AGENT $ A_QUEUE "connection already switching"
       _ -> throwError $ CMD PROHIBITED
 
-switchDuplexConnection :: AgentMonad m => AgentClient -> Connection 'CDuplex -> RcvQueue -> [RcvQueue] -> m ConnectionStats
-switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) replaced@RcvQueue {server, dbQueueId, sndId} rqs_ = do
-  clientVRange <- asks $ smpClientVRange . config
-  -- try to get the server that is different from all queues, or at least from the primary rcv queue
-  srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
-  srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
-  (newQ, qUri) <- newRcvQueue c userId connId srv' clientVRange
-  let rq' = (newQ :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-      addQueueUpdateSwitchStatus = \db q -> do
-        void $ addConnRcvQueue db connId rq'
-        void $ setRcvQueueSwitchStatus db q (Just RSQueueingQADD)
-        getRcvQueuesByConnId db connId
-  withSwitchedRQ c replaced RSSwchStarted addQueueUpdateSwitchStatus >>= \case
-    Right (Just rqs') -> do
-      addSubscription c rq'
-      void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
-      pure . connectionStats $ DuplexConnection cData rqs' sqs
-    Right _ -> throwError $ INTERNAL "no rcv queues in connection after processing switchDuplexConnection"
-    Left qce -> do
-      deleteQueue c rq' `catchError` \_ -> pure ()
-      switchErr $ qceStr qce ("expected switch status " <> show RSSwchStarted)
+switchDuplexConnection :: AgentMonad m => AgentClient -> Connection 'CDuplex -> RcvQueue -> m ConnectionStats
+switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) replaced@RcvQueue {server, dbQueueId, sndId} = do
+  withSwitchedRQ replaced RSSwitchStarted $ do
+    clientVRange <- asks $ smpClientVRange . config
+    -- try to get the server that is different from all queues, or at least from the primary rcv queue
+    srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
+    srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
+    (newQ, qUri) <- newRcvQueue c userId connId srv' clientVRange
+    let rq' = (newQ :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
+    withStore' c $ \db -> void $ addConnRcvQueue db connId rq'
+    addSubscription c rq'
+    void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
+    rqs_ <- withStore' c $ \db -> do
+      void $ setRcvQueueSwitchStatus db replaced (Just RSSendingQADD)
+      getRcvQueuesByConnId db connId
+    case rqs_ of
+      Just rqs' -> pure . connectionStats $ DuplexConnection cData rqs' sqs
+      Nothing -> throwError $ INTERNAL "no rcv queues in connection after processing switchDuplexConnection"
 
 stopConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 stopConnectionSwitch' c connId =
   withConnLock c connId "stopConnectionSwitch" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs sqs) -> case findSwitchedRQ rqs of
-        Just replaced -> do
-          let stopSwitch = \db q@RcvQueue {dbQueueId} -> do
+        Just replaced@RcvQueue {dbQueueId} -> do
+          if canStopRcvSwitch replaced
+            then do
+              (rqs_, switchingQueues) <- withStore' c $ \db -> do
                 -- multiple switching queues were possible when repeating switch while in progress was allowed
                 switchingQueues <- getSwitchingRcvQueues db dbQueueId
                 forM_ switchingQueues $ \switchingQ -> deleteConnRcvQueue db switchingQ
-                void $ setRcvQueueSwitchStatus db q Nothing
-                rqs' <- getRcvQueuesByConnId db connId
-                pure (rqs', switchingQueues)
-          withExistingRQ c replaced canStopRcvSwitch stopSwitch >>= \case
-            Right (Just rqs', switchingQueues) -> do
-              forM_ switchingQueues $ \q -> deleteQueue c q `catchError` \_ -> pure ()
-              let conn' = DuplexConnection cData rqs' sqs
-              pure $ connectionStats conn'
-            Right _ -> throwError $ INTERNAL "no rcv queues in connection after stopping switch"
-            Left qce -> throwError $ AGENT $ A_QUEUE $ "switch stop error: " <> qceStr qce "switch cannot be stopped"
+                void $ setRcvQueueSwitchStatus db replaced Nothing
+                rqs_ <- getRcvQueuesByConnId db connId
+                pure (rqs_, switchingQueues)
+              case rqs_ of
+                Just rqs' -> do
+                  forM_ switchingQueues $ \q -> deleteQueue c q `catchError` \_ -> pure ()
+                  let conn' = DuplexConnection cData rqs' sqs
+                  pure $ connectionStats conn'
+                Nothing -> throwError $ INTERNAL "no rcv queues in connection after switch stop"
+            else throwError $ AGENT $ A_QUEUE "switch stop error: switch cannot be stopped"
         Nothing -> throwError $ AGENT $ A_QUEUE "connection not switching"
       _ -> throwError $ CMD PROHIBITED
 
 canStopRcvSwitch :: RcvQueue -> Bool
 canStopRcvSwitch RcvQueue {switchStatus} = case switchStatus of
   Just ss -> case ss of
-    RSQueueingSwch -> True
-    RSSwchStarted -> True
-    RSQueueingQADD -> True
+    RSSwitchStarted -> True
+    RSSendingQADD -> True
     RSReceivedQKEY -> True
-    RSQueueingSecure -> True
-    RSSecureStarted -> True
-    -- if switch is in RSQueueingQUSE, a race condition with sender deleting the original queue is possible
-    RSQueueingQUSE -> False
-    -- if switch is in RSQueueingDelete status or past it, stopping switch (deleting new queue)
+    -- if switch is in RSSendingQUSE, a race condition with sender deleting the original queue is possible
+    RSSendingQUSE -> False
+    -- if switch is in RSReceivedMessage status, stopping switch (deleting new queue)
     -- will break the connection because the sender would have original queue deleted
-    RSQueueingDelete -> False
-    RSDeleteStarted -> False
+    RSReceivedMessage -> False
   Nothing -> False
 
 ackQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> SMP.MsgId -> m ()
@@ -1810,9 +1788,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                           when primary . withStore' c $ \db -> setRcvQueuePrimary db connId rq
                           case find (\RcvQueue {dbQueueId} -> dbQueueId == replacedId) rqs of
                             Just replaced@RcvQueue {server, rcvId} -> do
-                              withSwitchedRQ c replaced RSQueueingQUSE (\db q -> setRcvQueueSwitchStatus db q (Just RSQueueingDelete)) >>= \case
-                                Right _replaced' -> enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
-                                Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingQUSE)
+                              withSwitchedRQ replaced RSSendingQUSE $ do
+                                void $ withStore' c $ \db -> setRcvQueueSwitchStatus db replaced (Just RSReceivedMessage)
+                                enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
                             _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
                         _ -> pure ()
                       let encryptedMsgHash = C.sha256Hash encAgentMsg
@@ -2018,21 +1996,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           case qUri `compatibleVersion` clientVRange of
             Just qInfo@(Compatible sqInfo@SMPQueueInfo {queueAddress}) ->
               case (findQ (qAddress sqInfo) sqs, findQ addr sqs) of
-                -- atomicity of this check is guaranteed by withConnLock in processSMP
                 (Just _, _) -> qError "QADD: queue address is already used in connection"
                 (_, Just replaced@SndQueue {dbQueueId}) -> do
-                  let resetUpdateSwitchStatus = \db q@SndQueue {connId = cId} -> do
-                        -- multiple switching queues were possible when repeating switch while in progress was allowed
-                        switchingQueues <- getSwitchingSndQueues db dbQueueId
-                        forM_ switchingQueues $ \switchingQ -> deleteConnSndQueue db cId switchingQ
-                        setSndQueueSwitchStatus db q (Just SSReceivedQADD)
-                  -- the only condition we will not proceed to delete switching queues
-                  -- is if switched queue was already deleted from db
-                  withExistingSQ c replaced (const True) resetUpdateSwitchStatus >>= \case
-                    Left qce -> switchErr $ qceStr qce "no predicate"
-                    Right replaced' -> replyWithSwitchingQueue replaced'
+                  replaced' <- withStore' c $ \db -> do
+                    switchingQueues <- getSwitchingSndQueues db dbQueueId
+                    forM_ switchingQueues $ \switchingQ -> deleteConnSndQueue db connId switchingQ
+                    setSndQueueSwitchStatus db replaced (Just SSReceivedQADD)
+                  replyWithSwitchingQKey replaced'
                   where
-                    replyWithSwitchingQueue switchedQ = do
+                    replyWithSwitchingQKey switchedQ = do
                       sq_@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue userId connId qInfo
                       let sq' = (sq_ :: SndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
                       void . withStore c $ \db -> addConnSndQueue db connId sq'
@@ -2040,16 +2012,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         (Just sndPubKey, Just dhPublicKey) -> do
                           logServer "<--" c srv rId $ "MSG <QADD> " <> logSecret (senderId queueAddress)
                           let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = queueAddress {dhPublicKey}}
-                              updateSwitchStatus = \db q -> do
-                                void $ setSndQueueSwitchStatus db q (Just SSQueueingQKEY)
-                                getSndQueuesByConnId db connId
-                          withSwitchedSQ c switchedQ SSReceivedQADD updateSwitchStatus >>= \case
-                            Right (Just sqs') -> do
-                              void . enqueueMessages c cData sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPubKey)]
+                          void . enqueueMessages c cData sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPubKey)]
+                          sqs_ <- withStore' c $ \db -> do
+                            void $ setSndQueueSwitchStatus db switchedQ (Just SSSendingQKEY)
+                            getSndQueuesByConnId db connId
+                          case sqs_ of
+                            Just sqs' -> do
                               let conn' = DuplexConnection cData rqs sqs'
                               notify . SWITCH QDSnd SPStarted $ connectionStats conn' -- SPConfirmed?
-                            Right Nothing -> throwError $ INTERNAL "no snd queues in connection after starting switch"
-                            Left qce -> switchErr $ qceStr qce ("expected switch status " <> show SSReceivedQADD)
+                            Nothing -> throwError $ INTERNAL "no snd queues in connection after starting switch"
                         _ -> qError "absent sender keys"
                 _ -> qError "QADD: replaced queue address is not found in connection"
             _ -> throwError $ AGENT A_VERSION
@@ -2062,22 +2033,18 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           case findRQ (smpServer, senderId) rqs of
             Just rq'@RcvQueue {rcvId, e2ePrivKey = dhPrivKey, smpClientVersion = cVer, status = status'}
               | status' == New || status' == Confirmed -> do
-                withSwitchedRQ c rq RSQueueingQADD (\db q -> setRcvQueueSwitchStatus db q (Just RSReceivedQKEY)) >>= \case
-                  Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSQueueingQADD)
-                  Right replaced -> do
-                    logServer "<--" c srv rId $ "MSG <QKEY> " <> logSecret senderId
-                    let dhSecret = C.dh' dhPublicKey dhPrivKey
-                    withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
-                    let updateSwitchStatus = \db q -> do
-                          void $ setRcvQueueSwitchStatus db q (Just RSQueueingSecure)
-                          getRcvQueuesByConnId db connId
-                    withSwitchedRQ c replaced RSReceivedQKEY updateSwitchStatus >>= \case
-                      Right (Just rqs') -> do
-                        enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQSecure rcvId senderKey
-                        let conn' = DuplexConnection cData rqs' sqs
-                        notify . SWITCH QDRcv SPConfirmed $ connectionStats conn'
-                      Right _ -> throwError $ INTERNAL "no rcv queues in connection after processing QKEY"
-                      Left qce -> switchErr $ qceStr qce ("expected switch status " <> show RSReceivedQKEY)
+                withSwitchedRQ rq RSSendingQADD $ do
+                  void $ withStore' c $ \db -> setRcvQueueSwitchStatus db rq (Just RSReceivedQKEY)
+                  logServer "<--" c srv rId $ "MSG <QKEY> " <> logSecret senderId
+                  let dhSecret = C.dh' dhPublicKey dhPrivKey
+                  withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
+                  enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQSecure rcvId senderKey
+                  rqs_ <- withStore' c $ \db -> getRcvQueuesByConnId db connId
+                  case rqs_ of
+                    Just rqs' -> do
+                      let conn' = DuplexConnection cData rqs' sqs
+                      notify . SWITCH QDRcv SPConfirmed $ connectionStats conn'
+                    Nothing -> throwError $ INTERNAL "no rcv queues in connection after processing QKEY"
               | otherwise -> qError "QKEY: queue already secured"
             _ -> qError "QKEY: queue address not found in connection"
           where
@@ -2090,26 +2057,24 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
         qUseMsg ((addr, _primary) :| _) (DuplexConnection _ rqs sqs) =
           case findSwitchedSQ sqs of
             Just replaced -> do
-              withSwitchedSQ c replaced SSQueueingQKEY (\db q -> setSndQueueSwitchStatus db q (Just SSReceivedQUSE)) >>= \case
-                Left qce -> switchErr $ qceStr qce ("expected switch status " <> show SSQueueingQKEY)
-                Right replaced' -> do
-                  case findQ addr sqs of
-                    Just sq' -> do
-                      logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
-                      withStore' c $ \db -> setSndQueueStatus db sq' Secured
-                      let sq'' = (sq' :: SndQueue) {status = Secured}
-                          updateSwitchStatus = \db q -> do
-                            void $ setSndQueueSwitchStatus db q (Just SSQueueingQTEST)
-                            getSndQueuesByConnId db connId
-                      withSwitchedSQ c replaced' SSReceivedQUSE updateSwitchStatus >>= \case
-                        Right (Just sqs') -> do
-                          -- sending QTEST to the new queue only, the old one will be removed if sent successfully
-                          void $ enqueueMessages c cData [sq''] SMP.noMsgFlags $ QTEST [addr]
-                          let conn' = DuplexConnection cData rqs sqs'
-                          notify . SWITCH QDSnd SPConfirmed $ connectionStats conn' -- SPFinalizing?
-                        Right Nothing -> throwError $ INTERNAL "no snd queues in connection after processing QUSE"
-                        Left qce -> switchErr $ qceStr qce ("expected switch status " <> show SSReceivedQUSE)
-                    _ -> qError "QUSE: queue address not found in connection"
+              withSwitchedSQ replaced SSSendingQKEY $ do
+                replaced' <- withStore' c $ \db -> setSndQueueSwitchStatus db replaced (Just SSReceivedQUSE)
+                case findQ addr sqs of
+                  Just sq' -> do
+                    logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
+                    withStore' c $ \db -> setSndQueueStatus db sq' Secured
+                    let sq'' = (sq' :: SndQueue) {status = Secured}
+                    -- sending QTEST to the new queue only, the old one will be removed if sent successfully
+                    void $ enqueueMessages c cData [sq''] SMP.noMsgFlags $ QTEST [addr]
+                    sqs_ <- withStore' c $ \db -> do
+                      void $ setSndQueueSwitchStatus db replaced' (Just SSSendingQTEST)
+                      getSndQueuesByConnId db connId
+                    case sqs_ of
+                      Just sqs' -> do
+                        let conn' = DuplexConnection cData rqs sqs'
+                        notify . SWITCH QDSnd SPConfirmed $ connectionStats conn' -- SPFinalizing?
+                      Nothing -> throwError $ INTERNAL "no snd queues in connection after processing QUSE"
+                  _ -> qError "QUSE: queue address not found in connection"
             _ -> qError "QUSE: switched SndQueue not found in connection"
 
         qError :: String -> m ()
@@ -2136,47 +2101,27 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-withSwitchedRQ :: AgentMonad m => AgentClient -> RcvQueue -> RcvSwitchStatus -> (DB.Connection -> RcvQueue -> IO a) -> m (Either QueueCheckError a)
-withSwitchedRQ c rq expected =
-  withExistingRQ c rq (\RcvQueue {switchStatus} -> switchStatus == Just expected)
+withSwitchedRQ :: AgentMonad m => RcvQueue -> RcvSwitchStatus -> m a -> m a
+withSwitchedRQ RcvQueue {dbQueueId, switchStatus = actual} expected action = do
+  unless (actual == Just expected) internalErr
+  action
+  where
+    internalErr =
+      throwError . INTERNAL $
+        ("unexpected rcv switch status, dbQueueId=" <> show dbQueueId)
+          <> (", expected=" <> show expected)
+          <> (", actual=" <> show actual)
 
-withExistingRQ :: AgentMonad m => AgentClient -> RcvQueue -> (RcvQueue -> Bool) -> (DB.Connection -> RcvQueue -> IO a) -> m (Either QueueCheckError a)
-withExistingRQ c RcvQueue {connId, dbQueueId} qp action =
-  withStore c $ \db ->
-    getRcvQueueById db connId dbQueueId >>= \case
-      Right rq ->
-        if qp rq
-          then do
-            r <- action db rq
-            pure $ Right (Right r)
-          else pure $ Right (Left QCEPredicateFailed)
-      _ -> pure $ Right (Left QCEQueueNotFound)
-
-withSwitchedSQ :: AgentMonad m => AgentClient -> SndQueue -> SndSwitchStatus -> (DB.Connection -> SndQueue -> IO a) -> m (Either QueueCheckError a)
-withSwitchedSQ c sq expected =
-  withExistingSQ c sq (\SndQueue {switchStatus} -> switchStatus == Just expected)
-
-withExistingSQ :: AgentMonad m => AgentClient -> SndQueue -> (SndQueue -> Bool) -> (DB.Connection -> SndQueue -> IO a) -> m (Either QueueCheckError a)
-withExistingSQ c SndQueue {connId, dbQueueId} qp action =
-  withStore c $ \db ->
-    getSndQueueById db connId dbQueueId >>= \case
-      Right sq ->
-        if qp sq
-          then do
-            r <- action db sq
-            pure $ Right (Right r)
-          else pure $ Right (Left QCEPredicateFailed)
-      _ -> pure $ Right (Left QCEQueueNotFound)
-
-data QueueCheckError = QCEQueueNotFound | QCEPredicateFailed
-
-qceStr :: QueueCheckError -> String -> String
-qceStr qce qpFailedStr = case qce of
-  QCEQueueNotFound -> "queue not found"
-  QCEPredicateFailed -> qpFailedStr
-
-switchErr :: AgentMonad m => String -> m a
-switchErr errStr = throwError $ AGENT $ A_QUEUE $ "switch error: " <> errStr
+withSwitchedSQ :: AgentMonad m => SndQueue -> SndSwitchStatus -> m a -> m a
+withSwitchedSQ SndQueue {dbQueueId, switchStatus = actual} expected action = do
+  unless (actual == Just expected) internalErr
+  action
+  where
+    internalErr =
+      throwError . INTERNAL $
+        ("unexpected snd switch status, dbQueueId=" <> show dbQueueId)
+          <> (", expected=" <> show expected)
+          <> (", actual=" <> show actual)
 
 connectReplyQueues :: AgentMonad m => AgentClient -> ConnData -> ConnInfo -> NonEmpty SMPQueueInfo -> m ()
 connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = do

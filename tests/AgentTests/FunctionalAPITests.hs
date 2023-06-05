@@ -39,7 +39,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, isPrefixOf)
+import Data.List (find)
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Set as S
@@ -1173,8 +1173,6 @@ testCannotStopSwitchFinalizing servers = do
     phase b aId QDSnd SPStarted
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
-    -- ICQSecure takes conn lock faster than stopConnectionSwitch; remove this line if test fails
-    Left AGENT {agentErr = A_QUEUE {queueErr = "switch stop error: switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     phase a bId QDRcv SPFinalizing
     Left AGENT {agentErr = A_QUEUE {queueErr = "switch stop error: switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     pure ()
