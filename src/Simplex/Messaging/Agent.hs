@@ -902,14 +902,14 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
-        ICQSecure rId senderKey -> do
+        ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case findSwitchedRQ rqs of
               Just replaced -> do
                 withSwitchedRQ replaced RSReceivedQKEY $ do
                   case find (sameQueue (srv, rId)) rqs of
-                    Nothing -> internalErr "ICQSecure: queue address not found in connection"
                     Just rq'@RcvQueue {status} -> when (status == Confirmed) $ secureSwitchingQueue rq'
+                    Nothing -> internalErr "ICQSecure: queue address not found in connection"
                 where
                   secureSwitchingQueue rq'@RcvQueue {server, sndId} = do
                     secureQueue c rq' senderKey
@@ -922,7 +922,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
                       Just rqs' -> do
                         let conn' = DuplexConnection cData rqs' sqs
                         notify . SWITCH QDRcv SPFinalizing $ connectionStats conn'
-                      Nothing -> throwError $ INTERNAL "no rcv queues in connection after processing switchDuplexConnection"
+                      Nothing -> throwError $ INTERNAL "no rcv queues in connection after processing ICQSecure"
               Nothing -> internalErr "ICQSecure: no switched queue found"
         ICQDelete rId -> do
           withServer $ \srv -> tryWithLock "ICQDelete" . withDuplexConn $ \(DuplexConnection cData rqs sqs) -> do
@@ -1164,13 +1164,14 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                           -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
                           case removeQP (\replaced@SndQueue {dbQueueId} -> dbQueueId == replacedId && not (sameQueue addr replaced)) sqs of
                             Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
-                            Just (replaced, sq' : sqs') -> do
+                            Just (replaced, sq' : sqs') ->
                               withSwitchedSQ replaced SSSendingQTEST $ do
+                                -- remove the delivery from the map to stop the thread when the delivery loop is complete
+                                atomically $ TM.delete (qAddress replaced) $ smpQueueMsgQueues c
                                 withStore' c $ \db -> do
                                   when primary $ setSndQueuePrimary db connId sq
                                   deletePendingMsgs db connId replaced
                                   deleteConnSndQueue db connId replaced
-                                atomically $ TM.delete (qAddress replaced) $ smpQueueMsgQueues c
                                 let sqs'' = sq' :| sqs'
                                     conn' = DuplexConnection cData' rqs sqs''
                                 notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
@@ -1242,7 +1243,7 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
       getRcvQueuesByConnId db connId
     case rqs_ of
       Just rqs' -> pure . connectionStats $ DuplexConnection cData rqs' sqs
-      Nothing -> throwError $ INTERNAL "no rcv queues in connection after processing switchDuplexConnection"
+      Nothing -> throwError $ INTERNAL "no rcv queues in connection after switchDuplexConnection"
 
 stopConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 stopConnectionSwitch' c connId =
