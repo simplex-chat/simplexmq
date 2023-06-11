@@ -39,7 +39,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find)
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Set as S
@@ -125,11 +124,6 @@ runRight action =
   runExceptT action >>= \case
     Right x -> pure x
     Left e -> error $ "Unexpected error: " <> show e
-
-shouldContainPredicate :: (HasCallStack, Show a) => [a] -> (a -> Bool) -> Expectation
-shouldContainPredicate list p = case find p list of
-  Just _ -> return ()
-  Nothing -> expectationFailure $ "list does not contain element matching predicate: " <> show list
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
@@ -1140,7 +1134,7 @@ testStopSwitchStartedReinitiate servers = do
           _ -> False
     liftIO $ do
       [r1, r2] `shouldContain` [ERR $ AGENT $ A_QUEUE "QKEY: queue address not found in connection"]
-      [r1, r2] `shouldContainPredicate` rcvSwitchConfirmed
+      rcvSwitchConfirmed r1 || rcvSwitchConfirmed r2 `shouldBe` True
 
     phase a bId QDRcv SPSecured
 
