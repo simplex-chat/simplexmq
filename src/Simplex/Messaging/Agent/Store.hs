@@ -174,11 +174,16 @@ switchingSQ :: NonEmpty SndQueue -> Maybe SndQueue
 switchingSQ = find $ isJust . sndSwchStatus
 {-# INLINE switchingSQ #-}
 
+updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
+updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
+{-# INLINE updatedQs #-}
+
 class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
   queueId :: q -> QueueId
   dbQId :: q -> Int64
+  dbReplaceQId :: q -> Maybe Int64
 
 instance SMPQueueRec RcvQueue where
   qUserId = userId
@@ -189,6 +194,8 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE queueId #-}
   dbQId = dbQueueId
   {-# INLINE dbQId #-}
+  dbReplaceQId = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
 
 instance SMPQueueRec SndQueue where
   qUserId = userId
@@ -199,6 +206,8 @@ instance SMPQueueRec SndQueue where
   {-# INLINE queueId #-}
   dbQId = dbQueueId
   {-# INLINE dbQId #-}
+  dbReplaceQId = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
 
 -- * Connection types
 

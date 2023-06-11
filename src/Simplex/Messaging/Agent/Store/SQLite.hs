@@ -53,12 +53,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     getDeletedConnIds,
-    getRcvQueuesByConnId,
-    getSwitchingRcvQueues,
     getRcvConn,
     getRcvQueueById,
-    getSndQueuesByConnId,
-    getSwitchingSndQueues,
     getSndQueueById,
     deleteConn,
     upgradeRcvConnToDuplex,
@@ -66,10 +62,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     addConnRcvQueue,
     addConnSndQueue,
     setRcvQueueStatus,
-    setRcvQueueSwitchStatus,
+    setRcvSwitchStatus,
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
-    setSndQueueSwitchStatus,
+    setSndSwitchStatus,
     setRcvQueuePrimary,
     setSndQueuePrimary,
     deleteConnRcvQueue,
@@ -628,8 +624,8 @@ setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-setRcvQueueSwitchStatus :: DB.Connection -> RcvQueue -> Maybe RcvSwitchStatus -> IO RcvQueue
-setRcvQueueSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} rcvSwchStatus = do
+setRcvSwitchStatus :: DB.Connection -> RcvQueue -> Maybe RcvSwitchStatus -> IO RcvQueue
+setRcvSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} rcvSwchStatus = do
   DB.execute
     db
     [sql|
@@ -671,8 +667,8 @@ setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
-setSndQueueSwitchStatus :: DB.Connection -> SndQueue -> Maybe SndSwitchStatus -> IO SndQueue
-setSndQueueSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} sndSwchStatus = do
+setSndSwitchStatus :: DB.Connection -> SndQueue -> Maybe SndSwitchStatus -> IO SndQueue
+setSndSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} sndSwchStatus = do
   DB.execute
     db
     [sql|
@@ -714,7 +710,7 @@ deleteConnSndQueue db connId SndQueue {dbQueueId} = do
 
 getPrimaryRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getPrimaryRcvQueue db connId =
-  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId db connId
+  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId_ db connId
 
 getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId (SMPServer host port _) rcvId =
@@ -912,7 +908,7 @@ createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
 
 getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
 getPendingMsgData db connId msgId = do
-  rq_ <- L.head <$$> getRcvQueuesByConnId db connId
+  rq_ <- L.head <$$> getRcvQueuesByConnId_ db connId
   (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
   where
     getMsgData_ =
@@ -1605,8 +1601,8 @@ getAnyConn deleted' dbConn connId =
     Just (cData@ConnData {deleted}, cMode)
       | deleted /= deleted' -> pure $ Left SEConnNotFound
       | otherwise -> do
-        rQ <- getRcvQueuesByConnId dbConn connId
-        sQ <- getSndQueuesByConnId dbConn connId
+        rQ <- getRcvQueuesByConnId_ dbConn connId
+        sQ <- getSndQueuesByConnId_ dbConn connId
         pure $ case (rQ, sQ, cMode) of
           (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
           (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
@@ -1640,19 +1636,14 @@ getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
 
 -- | returns all connection queues, the first queue is the primary one
-getRcvQueuesByConnId :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
-getRcvQueuesByConnId db connId =
+getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
+getRcvQueuesByConnId_ db connId =
   L.nonEmpty . sortBy primaryFirst . map toRcvQueue
     <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
   where
     primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
       compare (Down p) (Down p') <> compare i i'
-
-getSwitchingRcvQueues :: DB.Connection -> Int64 -> IO [RcvQueue]
-getSwitchingRcvQueues db dbReplaceQueueId =
-  map toRcvQueue
-    <$> DB.query db (rcvQueueQuery <> "WHERE q.replace_rcv_queue_id = ?") (Only dbReplaceQueueId)
 
 rcvQueueQuery :: Query
 rcvQueueQuery =
@@ -1685,19 +1676,14 @@ getRcvQueueById db connId dbRcvId =
     DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.rcv_queue_id = ?") (connId, dbRcvId)
 
 -- | returns all connection queues, the first queue is the primary one
-getSndQueuesByConnId :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
-getSndQueuesByConnId dbConn connId =
+getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
+getSndQueuesByConnId_ dbConn connId =
   L.nonEmpty . sortBy primaryFirst . map toSndQueue
     <$> DB.query dbConn (sndQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
   where
     primaryFirst SndQueue {primary = p, dbReplaceQueueId = i} SndQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
       compare (Down p) (Down p') <> compare i i'
-
-getSwitchingSndQueues :: DB.Connection -> Int64 -> IO [SndQueue]
-getSwitchingSndQueues db dbReplaceQueueId =
-  map toSndQueue
-    <$> DB.query db (sndQueueQuery <> "WHERE q.replace_snd_queue_id = ?") (Only dbReplaceQueueId)
 
 sndQueueQuery :: Query
 sndQueueQuery =
