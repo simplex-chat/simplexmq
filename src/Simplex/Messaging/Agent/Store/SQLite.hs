@@ -629,7 +629,7 @@ setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} stat
     [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
 setRcvQueueSwitchStatus :: DB.Connection -> RcvQueue -> Maybe RcvSwitchStatus -> IO RcvQueue
-setRcvQueueSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} switchStatus = do
+setRcvQueueSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} rcvSwchStatus = do
   DB.execute
     db
     [sql|
@@ -637,8 +637,8 @@ setRcvQueueSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, po
       SET switch_status = ?
       WHERE host = ? AND port = ? AND rcv_id = ?
     |]
-    (switchStatus, host, port, rcvId)
-  pure (rq :: RcvQueue) {switchStatus}
+    (rcvSwchStatus, host, port, rcvId)
+  pure rq {rcvSwchStatus}
 
 setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
 setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
@@ -672,7 +672,7 @@ setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} stat
     [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
 setSndQueueSwitchStatus :: DB.Connection -> SndQueue -> Maybe SndSwitchStatus -> IO SndQueue
-setSndQueueSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} switchStatus = do
+setSndQueueSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} sndSwchStatus = do
   DB.execute
     db
     [sql|
@@ -680,8 +680,8 @@ setSndQueueSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, po
       SET switch_status = ?
       WHERE host = ? AND port = ? AND snd_id = ?
     |]
-    (switchStatus, host, port, sndId)
-  pure (sq :: SndQueue) {switchStatus}
+    (sndSwchStatus, host, port, sndId)
+  pure sq {sndSwchStatus}
 
 setRcvQueuePrimary :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 setRcvQueuePrimary db connId RcvQueue {dbQueueId} = do
@@ -1671,13 +1671,13 @@ toRcvQueue ::
     :. (Int64, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe Version, Int)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe 1 smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
@@ -1719,10 +1719,10 @@ toSndQueue ::
 toSndQueue
   ( (userId, keyHash, connId, host, port, sndId)
       :. (sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
-      :. (dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion)
+      :. (dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion)
     ) =
     let server = SMPServer host port keyHash
-     in SndQueue {userId, connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, switchStatus, smpClientVersion}
+     in SndQueue {userId, connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
 
 getSndQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError SndQueue)
 getSndQueueById db connId dbSndId =

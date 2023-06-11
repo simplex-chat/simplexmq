@@ -986,7 +986,7 @@ switchComplete a bId b aId = do
   phase a bId QDRcv SPStarted
   phase b aId QDSnd SPStarted
   phase a bId QDRcv SPConfirmed
-  phase a bId QDRcv SPFinalizing
+  phase a bId QDRcv SPSecured
   phase b aId QDSnd SPConfirmed
   phase b aId QDSnd SPCompleted
   phase a bId QDRcv SPCompleted
@@ -1019,7 +1019,7 @@ testSwitchAsync servers = do
   withB' $ \b -> phase b aId QDSnd SPStarted
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPFinalizing
+    phase a bId QDRcv SPSecured
   withB' $ \b -> do
     phase b aId QDSnd SPConfirmed
     phase b aId QDSnd SPCompleted
@@ -1093,7 +1093,7 @@ testStopSwitchStarted servers = do
     phase b aId QDSnd SPStarted
 
     phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPFinalizing
+    phase a bId QDRcv SPSecured
 
     phase b aId QDSnd SPConfirmed
     phase b aId QDSnd SPCompleted
@@ -1142,7 +1142,7 @@ testStopSwitchStartedReinitiate servers = do
       [r1, r2] `shouldContain` [ERR $ AGENT $ A_QUEUE "QKEY: queue address not found in connection"]
       [r1, r2] `shouldContainPredicate` rcvSwitchConfirmed
 
-    phase a bId QDRcv SPFinalizing
+    phase a bId QDRcv SPSecured
 
     phase b aId QDSnd SPConfirmed
     phase b aId QDSnd SPCompleted
@@ -1173,7 +1173,7 @@ testCannotStopSwitchFinalizing servers = do
     phase b aId QDSnd SPStarted
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPFinalizing
+    phase a bId QDRcv SPSecured
     Left AGENT {agentErr = A_QUEUE {queueErr = "switch stop error: switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do

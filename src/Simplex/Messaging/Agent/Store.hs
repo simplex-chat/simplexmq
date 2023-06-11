@@ -67,13 +67,13 @@ data RcvQueue = RcvQueue
     sndId :: SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
-    -- | database queue ID (within connection), can be Nothing for old queues
+    -- | database queue ID (within connection)
     dbQueueId :: Int64,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
     dbReplaceQueueId :: Maybe Int64,
-    switchStatus :: Maybe RcvSwitchStatus,
+    rcvSwchStatus :: Maybe RcvSwitchStatus,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -83,11 +83,8 @@ data RcvQueue = RcvQueue
   deriving (Eq, Show)
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
-rcvQueueInfo RcvQueue {server, switchStatus} =
-  RcvQueueInfo
-    { rcvServer = server,
-      rcvSwitchStatus = switchStatus
-    }
+rcvQueueInfo RcvQueue {server, rcvSwchStatus} =
+  RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus}
 
 data ClientNtfCreds = ClientNtfCreds
   { -- | key pair to be used by the notification server to sign transmissions
@@ -116,24 +113,21 @@ data SndQueue = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
-    -- | database queue ID (within connection), can be Nothing for old queues
+    -- | database queue ID (within connection)
     dbQueueId :: Int64,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | ID of the queue this one is replacing
     dbReplaceQueueId :: Maybe Int64,
-    switchStatus :: Maybe SndSwitchStatus,
+    sndSwchStatus :: Maybe SndSwitchStatus,
     -- | SMP client version
     smpClientVersion :: Version
   }
   deriving (Eq, Show)
 
 sndQueueInfo :: SndQueue -> SndQueueInfo
-sndQueueInfo SndQueue {server, switchStatus} =
-  SndQueueInfo
-    { sndServer = server,
-      sndSwitchStatus = switchStatus
-    }
+sndQueueInfo SndQueue {server, sndSwchStatus} =
+  SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
 
 instance SMPQueue RcvQueue where
   qServer RcvQueue {server} = server
@@ -172,18 +166,19 @@ findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
 findRQ sAddr = find $ sameQAddress sAddr . sndAddress
 {-# INLINE findRQ #-}
 
-findSwitchedRQ :: NonEmpty RcvQueue -> Maybe RcvQueue
-findSwitchedRQ = find $ isJust . (switchStatus :: RcvQueue -> Maybe RcvSwitchStatus)
-{-# INLINE findSwitchedRQ #-}
+switchingRQ :: NonEmpty RcvQueue -> Maybe RcvQueue
+switchingRQ = find $ isJust . rcvSwchStatus
+{-# INLINE switchingRQ #-}
 
-findSwitchedSQ :: NonEmpty SndQueue -> Maybe SndQueue
-findSwitchedSQ = find $ isJust . (switchStatus :: SndQueue -> Maybe SndSwitchStatus)
-{-# INLINE findSwitchedSQ #-}
+switchingSQ :: NonEmpty SndQueue -> Maybe SndQueue
+switchingSQ = find $ isJust . sndSwchStatus
+{-# INLINE switchingSQ #-}
 
 class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
   queueId :: q -> QueueId
+  dbQId :: q -> Int64
 
 instance SMPQueueRec RcvQueue where
   qUserId = userId
@@ -192,6 +187,8 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE qConnId #-}
   queueId = rcvId
   {-# INLINE queueId #-}
+  dbQId = dbQueueId
+  {-# INLINE dbQId #-}
 
 instance SMPQueueRec SndQueue where
   qUserId = userId
@@ -200,6 +197,8 @@ instance SMPQueueRec SndQueue where
   {-# INLINE qConnId #-}
   queueId = sndId
   {-# INLINE queueId #-}
+  dbQId = dbQueueId
+  {-# INLINE dbQId #-}
 
 -- * Connection types
 
