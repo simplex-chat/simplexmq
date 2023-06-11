@@ -11,6 +11,7 @@ scripts_systemd_smp="$scripts/smp-server.service"
 scripts_systemd_xftp="$scripts/xftp-server.service"
 scripts_update="$scripts/simplex-servers-update"
 scripts_uninstall="$scripts/simplex-servers-uninstall"
+scripts_stopscript="$scripts/simplex-servers-stopscript"
 
 # Default installation paths
 path_bin="/usr/local/bin"
@@ -18,6 +19,7 @@ path_bin_smp="$path_bin/smp-server"
 path_bin_xftp="$path_bin/xftp-server"
 path_bin_update="$path_bin/simplex-servers-update"
 path_bin_uninstall="$path_bin/simplex-servers-uninstall"
+path_bin_stopscript="$path_bin/simplex-servers-stopscript"
 
 path_conf_etc="/etc/opt"
 path_conf_var="/var/opt"
@@ -60,8 +62,8 @@ ${GRN}3.${NC} Setup user for each server:
 ${GRN}4.${NC} Create systemd services:
     - smp: ${YLW}${path_systemd_smp}${NC}
     - xftp: ${YLW}${path_systemd_xftp}${NC}
-${GRN}5.${NC} Install update and uninstallation script:
-    - all: ${YLW}${path_bin_update}${NC}, ${YLW}${path_bin_uninstall}${NC}
+${GRN}5.${NC} Install stopscript (systemd), update and uninstallation script:
+    - all: ${YLW}${path_bin_update}${NC}, ${YLW}${path_bin_uninstall}${NC}, ${YLW}${path_bin_stopscript}${NC}
 
 Press ${GRN}ENTER${NC} to continue or ${RED}Ctrl+C${NC} to cancel installation"
 
@@ -87,9 +89,9 @@ setup_users() {
 setup_dirs() {
  # Unquoted varibles, so field splitting can occur
  mkdir -p $path_conf_smp
- chown "$user_smp":"$user_smp" "$path_conf_smp"
+ chown "$user_smp":"$user_smp" $path_conf_smp
  mkdir -p $path_conf_xftp
- chown "$user_xftp":"$user_xftp" "$path_conf_xftp"
+ chown "$user_xftp":"$user_xftp" $path_conf_xftp
 }
 
 setup_systemd() {
@@ -100,6 +102,7 @@ setup_systemd() {
 setup_scripts() {
  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_bin_update" && chmod +x "$path_bin_update"
  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_bin_uninstall" && chmod +x "$path_bin_uninstall"
+ curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_bin_stopscript" && chmod +x "$path_bin_stopscript"
  }
 
 checks() {
@@ -131,7 +134,7 @@ main() {
  setup_systemd
  printf "${GRN} Done!${NC}\n"
 
- printf "Installing update and uninstallation script..."
+ printf "Installing stopscript, update and uninstallation script..."
  setup_scripts
  printf "${GRN} Done!${NC}\n"
 

@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+set -eu
+
+path_conf_var="/var/opt"
+path_conf_smp="$path_conf_var/simplex"
+path_conf_xftp="$path_conf_var/simplex-xftp"
+path_conf_storelog_smp="$path_conf_smp/smp-server-store.log"
+path_conf_storelog_xftp="$path_conf_xftp/file-server-store.log"
+date="$(date -u '+%Y-%m-%dT%H:%M:%S')"
+
+backup_smp() {
+ if [ -e "$path_conf_storelog_smp" ]; then
+  cp "$path_conf_storelog_smp" "${path_conf_storelog_smp}.${date:-date-failed}"
+ fi
+}
+
+backup_xftp() {
+ if [ -e "$path_conf_storelog_xftp" ]; then
+  cp "$path_conf_storelog_xftp" "${path_conf_storelog_xftp}.${date:-date-failed}"
+ fi
+}
+
+if [ "$1" = 'smp-server' ]; then
+ backup_smp
+elif [ "$1" = 'xftp-server' ]; then
+ backup_xftp
+else
+ backup_smp
+ backup_xftp
+fi
