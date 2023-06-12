@@ -1691,6 +1691,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                     _ -> prohibited >> ack
                 (Just e2eDh, Nothing) -> do
                   decryptClientMessage e2eDh clientMsg >>= \case
+                    (SMP.PHEmpty, AgentResynchronization {e2eEncryptionResync = _e2eEncryptionResync}) -> do
+                      -- this message means that sending party initiated ratchet re-synchronization
+                      -- reply with own AgentResynchronization, if not already sent (check connection state in db)
+                      pure ()
                     (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
                       -- primary queue is set as Active in helloMsg, below is to set additional queues Active
                       let RcvQueue {primary, dbReplaceQueueId} = rq
@@ -1736,6 +1740,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                     notify $ MSG msgMeta msgFlags body
                                   _ -> pure ()
                             _ -> checkDuplicateHash e encryptedMsgHash >> ack
+                        Left (AGENT (A_CRYPTO _)) -> do
+                          unlessM
+                            (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash)
+                            ( do
+                                -- send AgentResynchronization with new ratchet keys
+                                pure ()
+                            )
+                          ack
                         Left e -> checkDuplicateHash e encryptedMsgHash >> ack
                       where
                         checkDuplicateHash :: AgentErrorType -> ByteString -> m ()

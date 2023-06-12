@@ -622,6 +622,10 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
+  | AgentResynchronization
+      { agentVersion :: Version,
+        e2eEncryptionResync :: E2ERatchetParams 'C.X448
+      }
   deriving (Show)
 
 instance Encoding AgentMsgEnvelope where
@@ -632,6 +636,8 @@ instance Encoding AgentMsgEnvelope where
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
+    AgentResynchronization {agentVersion, e2eEncryptionResync} ->
+      smpEncode (agentVersion, 'R', e2eEncryptionResync)
   smpP = do
     agentVersion <- smpP
     smpP >>= \case
@@ -645,6 +651,9 @@ instance Encoding AgentMsgEnvelope where
         connReq <- strDecode . unLarge <$?> smpP
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
+      'R' -> do
+        e2eEncryptionResync <- smpP
+        pure AgentResynchronization {agentVersion, e2eEncryptionResync}
       _ -> fail "bad AgentMsgEnvelope"
 
 -- SMP agent message formats (after double ratchet decryption,
