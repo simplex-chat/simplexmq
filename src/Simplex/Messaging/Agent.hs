@@ -1230,7 +1230,7 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
   (q, qUri) <- newRcvQueue c userId connId srv' clientVRange
   let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-  withStore' c $ \db -> void $ addConnRcvQueue db connId rq'
+  void . withStore c $ \db -> addConnRcvQueue db connId rq'
   addSubscription c rq'
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
