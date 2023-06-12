@@ -1069,7 +1069,7 @@ testStopSwitchStarted servers = do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
     -- repeat switch is prohibited
-    Left AGENT {agentErr = A_QUEUE {queueErr = "connection already switching"}} <- runExceptT $ switchConnectionAsync a "" bId
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ switchConnectionAsync a "" bId
     -- stop current switch
     ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
     liftIO $ rcvSwitchStatus `shouldBe` Nothing
@@ -1168,7 +1168,7 @@ testCannotStopSwitchFinalizing servers = do
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
     phase a bId QDRcv SPSecured
-    Left AGENT {agentErr = A_QUEUE {queueErr = "switch stop error: switch cannot be stopped"}} <- runExceptT $ stopConnectionSwitch a bId
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ stopConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId

@@ -534,7 +534,7 @@ switchConnectionAsync' c corrId connId =
   withConnLock c connId "switchConnectionAsync" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection _ rqs@(rq :| _rqs) _)
-        | isJust (switchingRQ rqs) -> throwError $ AGENT $ A_QUEUE "connection already switching"
+        | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
           void $ withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
@@ -1215,7 +1215,7 @@ switchConnection' c connId =
   withConnLock c connId "switchConnection" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ conn@(DuplexConnection _ rqs@(rq :| _rqs) _)
-        | isJust (switchingRQ rqs) -> throwError $ AGENT $ A_QUEUE "connection already switching"
+        | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
           rq' <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           switchDuplexConnection c conn rq'
@@ -1257,8 +1257,8 @@ stopConnectionSwitch' c connId =
                       conn' = DuplexConnection cData rqs'' sqs
                   pure $ connectionStats conn'
                 _ -> throwError $ INTERNAL "won't delete all rcv queues in connection"
-            else throwError $ AGENT $ A_QUEUE "switch stop error: switch cannot be stopped"
-        _ -> throwError $ AGENT $ A_QUEUE "connection not switching"
+            else throwError $ CMD PROHIBITED
+        _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD PROHIBITED
 
 canStopRcvSwitch :: RcvQueue -> Bool
@@ -2097,7 +2097,7 @@ checkSQSwchStatus sq@SndQueue {sndSwchStatus} expected =
 switchStatusError :: (SMPQueueRec q, AgentMonad m, Show a) => q -> a -> Maybe a -> m ()
 switchStatusError q expected actual =
   throwError . INTERNAL $
-    ("unexpected switch status, dbQueueId=" <> show (dbQId q))
+    ("unexpected switch status, queueId=" <> show (queueId q))
       <> (", expected=" <> show expected)
       <> (", actual=" <> show actual)
 
