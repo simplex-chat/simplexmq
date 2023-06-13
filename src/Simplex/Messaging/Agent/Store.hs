@@ -337,6 +337,7 @@ data InternalCommand
   | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICDeleteConn
+  | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICQDelete SMP.RecipientId
 
@@ -346,6 +347,7 @@ data InternalCommandTag
   | ICAllowSecure_
   | ICDuplexSecure_
   | ICDeleteConn_
+  | ICDeleteRcvQueue_
   | ICQSecure_
   | ICQDelete_
   deriving (Show)
@@ -357,6 +359,7 @@ instance StrEncoding InternalCommand where
     ICAllowSecure rId sndKey -> strEncode (ICAllowSecure_, rId, sndKey)
     ICDuplexSecure rId sndKey -> strEncode (ICDuplexSecure_, rId, sndKey)
     ICDeleteConn -> strEncode ICDeleteConn_
+    ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
   strP =
@@ -366,6 +369,7 @@ instance StrEncoding InternalCommand where
       ICAllowSecure_ -> ICAllowSecure <$> _strP <*> _strP
       ICDuplexSecure_ -> ICDuplexSecure <$> _strP <*> _strP
       ICDeleteConn_ -> pure ICDeleteConn
+      ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
 
@@ -376,6 +380,7 @@ instance StrEncoding InternalCommandTag where
     ICAllowSecure_ -> "ALLOW_SECURE"
     ICDuplexSecure_ -> "DUPLEX_SECURE"
     ICDeleteConn_ -> "DELETE_CONN"
+    ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
   strP =
@@ -385,6 +390,7 @@ instance StrEncoding InternalCommandTag where
       "ALLOW_SECURE" -> pure ICAllowSecure_
       "DUPLEX_SECURE" -> pure ICDuplexSecure_
       "DELETE_CONN" -> pure ICDeleteConn_
+      "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
       _ -> fail "bad InternalCommandTag"
@@ -401,6 +407,7 @@ internalCmdTag = \case
   ICAllowSecure {} -> ICAllowSecure_
   ICDuplexSecure {} -> ICDuplexSecure_
   ICDeleteConn -> ICDeleteConn_
+  ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
 

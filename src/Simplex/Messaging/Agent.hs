@@ -902,6 +902,10 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
+        ICDeleteRcvQueue rId -> withServer $ \srv -> tryWithLock "ICDeleteRcvQueue" $ do
+          rq <- withStore c (\db -> getDeletedRcvQueue db connId srv rId)
+          deleteQueue c rq
+          withStore' c (`deleteConnRcvQueue` rq)
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameQueue (srv, rId)) rqs of
@@ -1248,9 +1252,9 @@ stopConnectionSwitch' c connId =
               case L.nonEmpty keepRqs of
                 Just rqs' -> do
                   rq' <- withStore' c $ \db -> do
-                    mapM_ (deleteConnRcvQueue db) delRqs
+                    mapM_ (setRcvQueueDeleted db) delRqs
                     setRcvSwitchStatus db rq Nothing
-                  forM_ delRqs $ \q -> deleteQueue c q `catchError` \_ -> pure ()
+                  forM_ delRqs $ \RcvQueue {server, rcvId} -> enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICDeleteRcvQueue rcvId
                   let rqs'' = updatedQs rq' rqs'
                       conn' = DuplexConnection cData rqs'' sqs
                   pure $ connectionStats conn'

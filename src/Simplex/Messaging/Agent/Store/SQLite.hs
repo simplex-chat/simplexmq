@@ -63,6 +63,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     addConnSndQueue,
     setRcvQueueStatus,
     setRcvSwitchStatus,
+    setRcvQueueDeleted,
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
     setSndSwitchStatus,
@@ -73,6 +74,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteConnSndQueue,
     getPrimaryRcvQueue,
     getRcvQueue,
+    getDeletedRcvQueue,
     setRcvQueueNtfCreds,
     -- Confirmations
     createConfirmation,
@@ -565,7 +567,7 @@ getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreE
 getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
   rq@RcvQueue {connId} <-
     ExceptT . firstRow toRcvQueue SEConnNotFound $
-      DB.query db (rcvQueueQuery <> " WHERE q.host = ? AND q.port = ? AND q.rcv_id = ?") (host, port, rcvId)
+      DB.query db (rcvQueueQuery <> " WHERE q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 0") (host, port, rcvId)
   (rq,) <$> ExceptT (getConn db connId)
 
 deleteConn :: DB.Connection -> ConnId -> IO ()
@@ -635,6 +637,17 @@ setRcvSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} 
     |]
     (rcvSwchStatus, host, port, rcvId)
   pure rq {rcvSwchStatus}
+
+setRcvQueueDeleted :: DB.Connection -> RcvQueue -> IO ()
+setRcvQueueDeleted db RcvQueue {rcvId, server = ProtocolServer {host, port}} = do
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET deleted = 1
+      WHERE host = ? AND port = ? AND rcv_id = ?
+    |]
+    (host, port, rcvId)
 
 setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
 setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
@@ -715,7 +728,12 @@ getPrimaryRcvQueue db connId =
 getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId (SMPServer host port _) rcvId =
   firstRow toRcvQueue SEConnNotFound $
-    DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ?") (connId, host, port, rcvId)
+    DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 0") (connId, host, port, rcvId)
+
+getDeletedRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
+getDeletedRcvQueue db connId (SMPServer host port _) rcvId =
+  firstRow toRcvQueue SEConnNotFound $
+    DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 1") (connId, host, port, rcvId)
 
 setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
 setRcvQueueNtfCreds db connId clientNtfCreds =
@@ -1403,7 +1421,7 @@ getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} 
       [sql|
         SELECT conn_id, rcv_ntf_dh_secret
         FROM rcv_queues
-        WHERE host = ? AND port = ? AND ntf_id = ?
+        WHERE host = ? AND port = ? AND ntf_id = ? AND deleted = 0
       |]
       (host, port, notifierId)
   where
@@ -1639,7 +1657,7 @@ getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connect
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
 getRcvQueuesByConnId_ db connId =
   L.nonEmpty . sortBy primaryFirst . map toRcvQueue
-    <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
+    <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.deleted = 0") (Only connId)
   where
     primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
@@ -1673,7 +1691,7 @@ toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSec
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
   firstRow toRcvQueue SEConnNotFound $
-    DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.rcv_queue_id = ?") (connId, dbRcvId)
+    DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.rcv_queue_id = ? AND q.deleted = 0") (connId, dbRcvId)
 
 -- | returns all connection queues, the first queue is the primary one
 getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))

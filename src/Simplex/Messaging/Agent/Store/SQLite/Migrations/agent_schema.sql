@@ -51,6 +51,7 @@ CREATE TABLE rcv_queues(
   delete_errors INTEGER DEFAULT 0 CHECK(delete_errors NOT NULL),
   server_key_hash BLOB,
   switch_status TEXT,
+  deleted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
