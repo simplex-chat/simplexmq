@@ -125,6 +125,18 @@ runRight action =
     Right x -> pure x
     Left e -> error $ "Unexpected error: " <> show e
 
+getInAnyOrder :: HasCallStack => AgentClient -> [AEntityTransmission 'AEConn -> Bool] -> Expectation
+getInAnyOrder _ [] = pure ()
+getInAnyOrder c rs = do
+  r <- get c
+  let rest = filter (not . expected r) rs
+  if length rest < length rs
+    then getInAnyOrder c rest
+    else error $ "unexpected event: " <> show r
+  where
+    expected :: AEntityTransmission 'AEConn -> (AEntityTransmission 'AEConn -> Bool) -> Bool
+    expected r rp = rp r
+
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $ do
@@ -201,8 +213,12 @@ functionalAPITests t = do
       testServerMatrix2 t testStopSwitchStarted
     describe "should stop switch in Started phase, reinitiate immediately" $
       testServerMatrix2 t testStopSwitchStartedReinitiate
-    describe "should prohibit to stop switch in Finalizing phase" $
-      testServerMatrix2 t testCannotStopSwitchFinalizing
+    describe "should prohibit to stop switch in Secured phase" $
+      testServerMatrix2 t testCannotStopSwitchSecured
+    describe "should switch two connections simultaneously" $
+      testServerMatrix2 t testSwitch2Connections
+    describe "should switch two connections simultaneously, stop one" $
+      testServerMatrix2 t testSwitch2ConnectionsStop1
   describe "SMP basic auth" $ do
     describe "with server auth" $ do
       --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
@@ -1005,8 +1021,8 @@ testSwitchAsync servers = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
-  let withA' = sessionSubscribe withA bId
-      withB' = sessionSubscribe withB aId
+  let withA' = sessionSubscribe withA [bId]
+      withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
@@ -1032,10 +1048,10 @@ testSwitchAsync servers = do
 withAgent :: AgentConfig -> InitialAgentServers -> FilePath -> (AgentClient -> IO a) -> IO a
 withAgent cfg' servers dbPath = bracket (getSMPAgentClient' cfg' servers dbPath) disconnectAgentClient
 
-sessionSubscribe :: (forall a. (AgentClient -> IO a) -> IO a) -> ConnId -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
-sessionSubscribe withC connId a =
+sessionSubscribe :: (forall a. (AgentClient -> IO a) -> IO a) -> [ConnId] -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
+sessionSubscribe withC connIds a =
   withC $ \c -> runRight_ $ do
-    subscribeConnection c connId
+    void $ subscribeConnections c connIds
     r <- a c
     liftIO $ threadDelay 500000
     liftIO $ noMessages c "nothing else should be delivered"
@@ -1063,8 +1079,8 @@ testStopSwitchStarted servers = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
-  let withA' = sessionSubscribe withA bId
-      withB' = sessionSubscribe withB aId
+  let withA' = sessionSubscribe withA [bId]
+      withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
@@ -1109,8 +1125,8 @@ testStopSwitchStartedReinitiate servers = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
-  let withA' = sessionSubscribe withA bId
-      withB' = sessionSubscribe withB aId
+  let withA' = sessionSubscribe withA [bId]
+      withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
@@ -1127,14 +1143,10 @@ testStopSwitchStartedReinitiate servers = do
     subscribeConnection a bId
     subscribeConnection b aId
 
-    (_, _, r1) <- get a
-    (_, _, r2) <- get a
-    let rcvSwitchConfirmed = \case
-          SWITCH QDRcv SPConfirmed _ -> True
-          _ -> False
-    liftIO $ do
-      [r1, r2] `shouldContain` [ERR $ AGENT $ A_QUEUE "QKEY: queue address not found in connection"]
-      rcvSwitchConfirmed r1 || rcvSwitchConfirmed r2 `shouldBe` True
+    liftIO . getInAnyOrder a $
+      [ errQueueNotFound bId,
+        switchPhaseConfirmed bId
+      ]
 
     phase a bId QDRcv SPSecured
 
@@ -1151,15 +1163,23 @@ testStopSwitchStartedReinitiate servers = do
     withA = withAgent agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+    errQueueNotFound :: ConnId -> AEntityTransmission 'AEConn -> Bool
+    errQueueNotFound cId = \case
+      (_, cId', ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}) -> cId' == cId
+      _ -> False
+    switchPhaseConfirmed :: ConnId -> AEntityTransmission 'AEConn -> Bool
+    switchPhaseConfirmed cId = \case
+      (_, cId', SWITCH QDRcv SPConfirmed _) -> cId' == cId
+      _ -> False
 
-testCannotStopSwitchFinalizing :: HasCallStack => InitialAgentServers -> IO ()
-testCannotStopSwitchFinalizing servers = do
+testCannotStopSwitchSecured :: HasCallStack => InitialAgentServers -> IO ()
+testCannotStopSwitchSecured servers = do
   (aId, bId) <- withA $ \a -> withB $ \b -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     pure (aId, bId)
-  let withA' = sessionSubscribe withA bId
-      withB' = sessionSubscribe withB aId
+  let withA' = sessionSubscribe withA [bId]
+      withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
@@ -1187,6 +1207,120 @@ testCannotStopSwitchFinalizing servers = do
     withA = withAgent agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+
+testSwitch2Connections :: HasCallStack => InitialAgentServers -> IO ()
+testSwitch2Connections servers = do
+  (aId1, bId1, aId2, bId2) <- withA $ \a -> withB $ \b -> runRight $ do
+    (aId1, bId1) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId1 b aId1
+    (aId2, bId2) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId2 b aId2
+    pure (aId1, bId1, aId2, bId2)
+  withA $ \a -> runRight_ $ do
+    void $ subscribeConnections a [bId1, bId2]
+    switchConnectionAsync a "" bId1
+    phase a bId1 QDRcv SPStarted
+    switchConnectionAsync a "" bId2
+    phase a bId2 QDRcv SPStarted
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    void $ subscribeConnections a [bId1, bId2]
+    void $ subscribeConnections b [aId1, aId2]
+
+    liftIO . getInAnyOrder b $
+      [ switchPhase aId1 QDSnd SPStarted,
+        switchPhase aId2 QDSnd SPStarted
+      ]
+
+    liftIO . getInAnyOrder a $
+      [ switchPhase bId1 QDRcv SPConfirmed,
+        switchPhase bId1 QDRcv SPSecured,
+        switchPhase bId2 QDRcv SPConfirmed,
+        switchPhase bId2 QDRcv SPSecured
+      ]
+
+    liftIO . getInAnyOrder b $
+      [ switchPhase aId1 QDSnd SPConfirmed,
+        switchPhase aId1 QDSnd SPCompleted,
+        switchPhase aId2 QDSnd SPConfirmed,
+        switchPhase aId2 QDSnd SPCompleted
+      ]
+
+    liftIO . getInAnyOrder a $
+      [ switchPhase bId1 QDRcv SPCompleted,
+        switchPhase bId2 QDRcv SPCompleted
+      ]
+
+    exchangeGreetingsMsgId 10 a bId1 b aId1
+    exchangeGreetingsMsgId 10 a bId2 b aId2
+
+    testFullSwitch a bId1 b aId1 16
+    testFullSwitch a bId2 b aId2 16
+  where
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+    switchPhase :: ConnId -> QueueDirection -> SwitchPhase -> AEntityTransmission 'AEConn -> Bool
+    switchPhase cId qd sphase = \case
+      (_, cId', SWITCH qd' sphase' _) -> cId' == cId && qd' == qd && sphase' == sphase
+      _ -> False
+
+testSwitch2ConnectionsStop1 :: HasCallStack => InitialAgentServers -> IO ()
+testSwitch2ConnectionsStop1 servers = do
+  (aId1, bId1, aId2, bId2) <- withA $ \a -> withB $ \b -> runRight $ do
+    (aId1, bId1) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId1 b aId1
+    (aId2, bId2) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId2 b aId2
+    pure (aId1, bId1, aId2, bId2)
+  let withA' = sessionSubscribe withA [bId1, bId2]
+      withB' = sessionSubscribe withB [aId1, aId2]
+  withA' $ \a -> do
+    switchConnectionAsync a "" bId1
+    phase a bId1 QDRcv SPStarted
+    switchConnectionAsync a "" bId2
+    phase a bId2 QDRcv SPStarted
+    -- stop switch of second connection
+    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId2
+    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+  withB' $ \b -> do
+    liftIO . getInAnyOrder b $
+      [ switchPhase aId1 QDSnd SPStarted,
+        switchPhase aId2 QDSnd SPStarted
+      ]
+  withA' $ \a -> do
+    liftIO . getInAnyOrder a $
+      [ switchPhase bId1 QDRcv SPConfirmed,
+        switchPhase bId1 QDRcv SPSecured,
+        errQueueNotFound bId2
+      ]
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    void $ subscribeConnections a [bId1, bId2]
+    void $ subscribeConnections b [aId1, aId2]
+
+    phase b aId1 QDSnd SPConfirmed
+    phase b aId1 QDSnd SPCompleted
+
+    phase a bId1 QDRcv SPCompleted
+
+    exchangeGreetingsMsgId 10 a bId1 b aId1
+    exchangeGreetingsMsgId 8 a bId2 b aId2
+
+    testFullSwitch a bId1 b aId1 16
+    testFullSwitch a bId2 b aId2 14
+  where
+    withA :: (AgentClient -> IO a) -> IO a
+    withA = withAgent agentCfg servers testDB
+    withB :: (AgentClient -> IO a) -> IO a
+    withB = withAgent agentCfg {initialClientId = 1} servers testDB2
+    switchPhase :: ConnId -> QueueDirection -> SwitchPhase -> AEntityTransmission 'AEConn -> Bool
+    switchPhase cId qd sphase = \case
+      (_, cId', SWITCH qd' sphase' _) -> cId' == cId && qd' == qd && sphase' == sphase
+      _ -> False
+    errQueueNotFound :: ConnId -> AEntityTransmission 'AEConn -> Bool
+    errQueueNotFound cId = \case
+      (_, cId', ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}) -> cId' == cId
+      _ -> False
 
 testCreateQueueAuth :: (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
