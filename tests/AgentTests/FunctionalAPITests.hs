@@ -155,7 +155,7 @@ functionalAPITests t = do
       testSkippedMessages t
     it "should report decryption error on ratchet becoming out of sync" $
       testDecryptionError t
-  xdescribe "Inactive client disconnection" $ do
+  describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
     it "should NOT disconnect active clients" $
