@@ -717,63 +717,38 @@ testSuspendingAgentTimeout t = do
 
 testBatchedSubscriptions :: Int -> Int -> ATransport -> IO ()
 testBatchedSubscriptions nCreate nDel t = do
-  liftIO $ print 1
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    liftIO $ print 2
     conns <- forM [1 .. nCreate :: Int] . const $ makeConnection a b
-    liftIO $ print 3
     forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
-    liftIO $ print 4
     let (aIds', bIds') = unzip $ take nDel conns
-    liftIO $ print 5
     delete a bIds'
-    liftIO $ print 6
     delete b aIds'
     liftIO $ threadDelay 1000000
     pure conns
-  liftIO $ print 7
   ("", "", DOWN {}) <- nGet a
-  liftIO $ print "7a"
   ("", "", DOWN {}) <- nGet a
-  liftIO $ print "7b"
   ("", "", DOWN {}) <- nGet b
-  liftIO $ print "7c"
   ("", "", DOWN {}) <- nGet b
-  liftIO $ print 8
   runServers $ do
-    liftIO $ print "8a"
     ("", "", UP {}) <- nGet a
-    liftIO $ print "8b"
     ("", "", UP {}) <- nGet a
-    liftIO $ print "8c"
     ("", "", UP {}) <- nGet b
-    liftIO $ print "8d"
     ("", "", UP {}) <- nGet b
     liftIO $ threadDelay 1000000
     let (aIds, bIds) = unzip conns
         conns' = drop nDel conns
         (aIds', bIds') = unzip conns'
-    liftIO $ print 9
     subscribe a bIds
-    liftIO $ print 10
     subscribe b aIds
-    liftIO $ print 11
     forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
-    liftIO $ print 12
     void $ resubscribeConnections a bIds
-    liftIO $ print 13
     void $ resubscribeConnections b aIds
-    liftIO $ print 14
     forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId 8 a bId b aId
-    liftIO $ print 15
     delete a bIds'
-    liftIO $ print 16
     delete b aIds'
-    liftIO $ print 17
     deleteFail a bIds'
-    liftIO $ print 18
     deleteFail b aIds'
   where
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
