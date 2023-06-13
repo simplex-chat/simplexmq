@@ -504,7 +504,6 @@ instance FromJSON SwitchPhase where
 data RcvSwitchStatus
   = RSSwitchStarted
   | RSSendingQADD
-  | RSReceivedQKEY
   | RSSendingQUSE
   | RSReceivedMessage
   deriving (Eq, Show)
@@ -513,14 +512,12 @@ instance StrEncoding RcvSwitchStatus where
   strEncode = \case
     RSSwitchStarted -> "switch_started"
     RSSendingQADD -> "sending_qadd"
-    RSReceivedQKEY -> "received_qkey"
     RSSendingQUSE -> "sending_quse"
     RSReceivedMessage -> "received_message"
   strP =
     A.takeTill (== ' ') >>= \case
       "switch_started" -> pure RSSwitchStarted
       "sending_qadd" -> pure RSSendingQADD
-      "received_qkey" -> pure RSReceivedQKEY
       "sending_quse" -> pure RSSendingQUSE
       "received_message" -> pure RSReceivedMessage
       _ -> fail "bad RcvSwitchStatus"
@@ -537,23 +534,17 @@ instance FromJSON RcvSwitchStatus where
   parseJSON = strParseJSON "RcvSwitchStatus"
 
 data SndSwitchStatus
-  = SSReceivedQADD
-  | SSSendingQKEY
-  | SSReceivedQUSE
+  = SSSendingQKEY
   | SSSendingQTEST
   deriving (Eq, Show)
 
 instance StrEncoding SndSwitchStatus where
   strEncode = \case
-    SSReceivedQADD -> "received_qadd"
     SSSendingQKEY -> "sending_qkey"
-    SSReceivedQUSE -> "received_quse"
     SSSendingQTEST -> "sending_qtest"
   strP =
     A.takeTill (== ' ') >>= \case
-      "received_qadd" -> pure SSReceivedQADD
       "sending_qkey" -> pure SSSendingQKEY
-      "received_quse" -> pure SSReceivedQUSE
       "sending_qtest" -> pure SSSendingQTEST
       _ -> fail "bad SndSwitchStatus"
 

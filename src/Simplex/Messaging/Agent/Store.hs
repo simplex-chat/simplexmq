@@ -170,10 +170,6 @@ switchingRQ :: NonEmpty RcvQueue -> Maybe RcvQueue
 switchingRQ = find $ isJust . rcvSwchStatus
 {-# INLINE switchingRQ #-}
 
-switchingSQ :: NonEmpty SndQueue -> Maybe SndQueue
-switchingSQ = find $ isJust . sndSwchStatus
-{-# INLINE switchingSQ #-}
-
 updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
 updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
 {-# INLINE updatedQs #-}
