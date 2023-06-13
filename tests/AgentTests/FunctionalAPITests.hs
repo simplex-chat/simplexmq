@@ -182,7 +182,8 @@ functionalAPITests t = do
   describe "Batching SMP commands" $ do
     it "should subscribe to multiple (200) subscriptions with batching" $
       testBatchedSubscriptions 200 10 t
-    it "should subscribe to multiple (6) subscriptions with batching" $
+    -- 200 subscriptions gets very slow with test coverage, use below test instead
+    xit "should subscribe to multiple (6) subscriptions with batching" $
       testBatchedSubscriptions 6 3 t
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $
