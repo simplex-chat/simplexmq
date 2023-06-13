@@ -2017,7 +2017,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
 
         -- processed by queue recipient
         qKeyMsg :: NonEmpty (SMPQueueInfo, SndPublicVerifyKey) -> Connection 'CDuplex -> m ()
-        qKeyMsg ((qInfo, senderKey) :| _) conn'@(DuplexConnection _ rqs _) = do
+        qKeyMsg ((qInfo, senderKey) :| _) (DuplexConnection _ rqs _) = do
           clientVRange <- asks $ smpClientVRange . config
           unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
           case findRQ (smpServer, senderId) rqs of
@@ -2028,7 +2028,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 let dhSecret = C.dh' dhPublicKey dhPrivKey
                 withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
                 enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQSecure rcvId senderKey
-                notify . SWITCH QDRcv SPConfirmed $ connectionStats conn'
+                notify . SWITCH QDRcv SPConfirmed $ connectionStats conn
               | otherwise -> qError "QKEY: queue already secured"
             _ -> qError "QKEY: queue address not found in connection"
           where
