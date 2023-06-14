@@ -994,24 +994,37 @@ testFullSwitch a bId b aId msgId = do
 
 switchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
 switchComplete a bId b aId = do
-  phase a bId QDRcv SPStarted
-  phase b aId QDSnd SPStarted
-  phase b aId QDSnd SPConfirmed
-  phase a bId QDRcv SPConfirmed
-  phase a bId QDRcv SPSecured
-  phase b aId QDSnd SPSecured
-  phase b aId QDSnd SPCompleted
-  phase a bId QDRcv SPCompleted
+  phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+  phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+  phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
+  phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+  phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
+  phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
+  phaseSnd b aId SPCompleted [Nothing]
+  phaseRcv a bId SPCompleted [Nothing]
 
-phase :: AgentClient -> ByteString -> QueueDirection -> SwitchPhase -> ExceptT AgentErrorType IO ()
-phase c connId d p =
+phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
+phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
+
+rcvSwchStatuses' :: ConnectionStats -> [Maybe RcvSwitchStatus]
+rcvSwchStatuses' ConnectionStats {rcvQueuesInfo} = map (\RcvQueueInfo {rcvSwitchStatus} -> rcvSwitchStatus) rcvQueuesInfo
+
+phaseSnd :: AgentClient -> ByteString -> SwitchPhase -> [Maybe SndSwitchStatus] -> ExceptT AgentErrorType IO ()
+phaseSnd c connId p swchStatuses = phase c connId QDSnd p (\stats -> sndSwchStatuses' stats `shouldMatchList` swchStatuses)
+
+sndSwchStatuses' :: ConnectionStats -> [Maybe SndSwitchStatus]
+sndSwchStatuses' ConnectionStats {sndQueuesInfo} = map (\SndQueueInfo {sndSwitchStatus} -> sndSwitchStatus) sndQueuesInfo
+
+phase :: AgentClient -> ByteString -> QueueDirection -> SwitchPhase -> (ConnectionStats -> Expectation) -> ExceptT AgentErrorType IO ()
+phase c connId d p statsExpectation =
   get c >>= \(_, connId', msg) -> do
     liftIO $ connId `shouldBe` connId'
     case msg of
-      SWITCH d' p' _ -> liftIO $ do
+      SWITCH d' p' stats -> liftIO $ do
         d `shouldBe` d'
         p `shouldBe` p'
-      ERR (AGENT A_DUPLICATE) -> phase c connId d p
+        statsExpectation stats
+      ERR (AGENT A_DUPLICATE) -> phase c connId d p statsExpectation
       r -> do
         liftIO . putStrLn $ "expected: " <> show p <> ", received: " <> show r
         SWITCH {} <- pure r
@@ -1027,17 +1040,17 @@ testSwitchAsync servers = do
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
-    phase b aId QDSnd SPStarted
-    phase b aId QDSnd SPConfirmed
+    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
   withA' $ \a -> do
-    phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPSecured
+    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
   withB' $ \b -> do
-    phase b aId QDSnd SPSecured
-    phase b aId QDSnd SPCompleted
-  withA' $ \a -> phase a bId QDRcv SPCompleted
+    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
+    phaseSnd b aId SPCompleted [Nothing]
+  withA' $ \a -> phaseRcv a bId SPCompleted [Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
@@ -1070,7 +1083,7 @@ testSwitchDelete servers = do
     exchangeGreetingsMsgId 4 a bId b aId
     disconnectAgentClient b
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     deleteConnectionAsync a bId
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
@@ -1087,34 +1100,34 @@ testStopSwitchStarted servers = do
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     -- repeat switch is prohibited
     Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ switchConnectionAsync a "" bId
     -- stop current switch
-    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
-    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+    stats <- stopConnectionSwitch a bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing]
   withB' $ \b -> do
-    phase b aId QDSnd SPStarted
-    phase b aId QDSnd SPConfirmed
+    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
   withA' $ \a -> do
     get a ##> ("", bId, ERR (AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}))
     -- repeat switch
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
 
-    phase b aId QDSnd SPStarted
-    phase b aId QDSnd SPConfirmed
+    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
 
-    phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPSecured
+    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
 
-    phase b aId QDSnd SPSecured
-    phase b aId QDSnd SPCompleted
+    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
+    phaseSnd b aId SPCompleted [Nothing]
 
-    phase a bId QDRcv SPCompleted
+    phaseRcv a bId SPCompleted [Nothing]
 
     exchangeGreetingsMsgId 12 a bId b aId
 
@@ -1135,35 +1148,35 @@ testStopSwitchStartedReinitiate servers = do
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     -- stop current switch
-    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId
-    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+    stats <- stopConnectionSwitch a bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing]
     -- repeat switch
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
-    phase b aId QDSnd SPStarted
+    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
     liftIO . getInAnyOrder b $
-      [ switchPhaseP aId QDSnd SPStarted,
-        switchPhaseP aId QDSnd SPConfirmed
+      [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing]
       ]
-    phase b aId QDSnd SPConfirmed
+    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
 
     liftIO . getInAnyOrder a $
       [ errQueueNotFoundP bId,
-        switchPhaseP bId QDRcv SPConfirmed
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
       ]
 
-    phase a bId QDRcv SPSecured
+    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
 
-    phase b aId QDSnd SPSecured
-    phase b aId QDSnd SPCompleted
+    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
+    phaseSnd b aId SPCompleted [Nothing]
 
-    phase a bId QDRcv SPCompleted
+    phaseRcv a bId SPCompleted [Nothing]
 
     exchangeGreetingsMsgId 12 a bId b aId
 
@@ -1174,9 +1187,15 @@ testStopSwitchStartedReinitiate servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
 
-switchPhaseP :: ConnId -> QueueDirection -> SwitchPhase -> AEntityTransmission 'AEConn -> Bool
-switchPhaseP cId qd sphase = \case
-  (_, cId', SWITCH qd' sphase' _) -> cId' == cId && qd' == qd && sphase' == sphase
+switchPhaseRcvP :: ConnId -> SwitchPhase -> [Maybe RcvSwitchStatus] -> AEntityTransmission 'AEConn -> Bool
+switchPhaseRcvP cId sphase swchStatuses = switchPhaseP cId QDRcv sphase (\stats -> rcvSwchStatuses' stats == swchStatuses)
+
+switchPhaseSndP :: ConnId -> SwitchPhase -> [Maybe SndSwitchStatus] -> AEntityTransmission 'AEConn -> Bool
+switchPhaseSndP cId sphase swchStatuses = switchPhaseP cId QDSnd sphase (\stats -> sndSwchStatuses' stats == swchStatuses)
+
+switchPhaseP :: ConnId -> QueueDirection -> SwitchPhase -> (ConnectionStats -> Bool) -> AEntityTransmission 'AEConn -> Bool
+switchPhaseP cId qd sphase statsP = \case
+  (_, cId', SWITCH qd' sphase' stats) -> cId' == cId && qd' == qd && sphase' == sphase && statsP stats
   _ -> False
 
 errQueueNotFoundP :: ConnId -> AEntityTransmission 'AEConn -> Bool
@@ -1194,23 +1213,23 @@ testCannotStopSwitchSecured servers = do
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
     switchConnectionAsync a "" bId
-    phase a bId QDRcv SPStarted
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
-    phase b aId QDSnd SPStarted
-    phase b aId QDSnd SPConfirmed
+    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
   withA' $ \a -> do
-    phase a bId QDRcv SPConfirmed
-    phase a bId QDRcv SPSecured
+    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
     Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ stopConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
 
-    phase b aId QDSnd SPSecured
-    phase b aId QDSnd SPCompleted
+    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
+    phaseSnd b aId SPCompleted [Nothing]
 
-    phase a bId QDRcv SPCompleted
+    phaseRcv a bId SPCompleted [Nothing]
 
     exchangeGreetingsMsgId 10 a bId b aId
 
@@ -1232,37 +1251,37 @@ testSwitch2Connections servers = do
   withA $ \a -> runRight_ $ do
     void $ subscribeConnections a [bId1, bId2]
     switchConnectionAsync a "" bId1
-    phase a bId1 QDRcv SPStarted
+    phaseRcv a bId1 SPStarted [Just RSSendingQADD, Nothing]
     switchConnectionAsync a "" bId2
-    phase a bId2 QDRcv SPStarted
+    phaseRcv a bId2 SPStarted [Just RSSendingQADD, Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     void $ subscribeConnections a [bId1, bId2]
     void $ subscribeConnections b [aId1, aId2]
 
     liftIO . getInAnyOrder b $
-      [ switchPhaseP aId1 QDSnd SPStarted,
-        switchPhaseP aId1 QDSnd SPConfirmed,
-        switchPhaseP aId2 QDSnd SPStarted,
-        switchPhaseP aId2 QDSnd SPConfirmed
+      [ switchPhaseSndP aId1 SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId1 SPConfirmed [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId2 SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId2 SPConfirmed [Just SSSendingQKEY, Nothing]
       ]
 
     liftIO . getInAnyOrder a $
-      [ switchPhaseP bId1 QDRcv SPConfirmed,
-        switchPhaseP bId1 QDRcv SPSecured,
-        switchPhaseP bId2 QDRcv SPConfirmed,
-        switchPhaseP bId2 QDRcv SPSecured
+      [ switchPhaseRcvP bId1 SPConfirmed [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId1 SPSecured [Just RSSendingQUSE, Nothing],
+        switchPhaseRcvP bId2 SPConfirmed [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId2 SPSecured [Just RSSendingQUSE, Nothing]
       ]
 
     liftIO . getInAnyOrder b $
-      [ switchPhaseP aId1 QDSnd SPSecured,
-        switchPhaseP aId1 QDSnd SPCompleted,
-        switchPhaseP aId2 QDSnd SPSecured,
-        switchPhaseP aId2 QDSnd SPCompleted
+      [ switchPhaseSndP aId1 SPSecured [Just SSSendingQTEST, Nothing],
+        switchPhaseSndP aId1 SPCompleted [Nothing],
+        switchPhaseSndP aId2 SPSecured [Just SSSendingQTEST, Nothing],
+        switchPhaseSndP aId2 SPCompleted [Nothing]
       ]
 
     liftIO . getInAnyOrder a $
-      [ switchPhaseP bId1 QDRcv SPCompleted,
-        switchPhaseP bId2 QDRcv SPCompleted
+      [ switchPhaseRcvP bId1 SPCompleted [Nothing],
+        switchPhaseRcvP bId2 SPCompleted [Nothing]
       ]
 
     exchangeGreetingsMsgId 10 a bId1 b aId1
@@ -1288,33 +1307,33 @@ testSwitch2ConnectionsStop1 servers = do
       withB' = sessionSubscribe withB [aId1, aId2]
   withA' $ \a -> do
     switchConnectionAsync a "" bId1
-    phase a bId1 QDRcv SPStarted
+    phaseRcv a bId1 SPStarted [Just RSSendingQADD, Nothing]
     switchConnectionAsync a "" bId2
-    phase a bId2 QDRcv SPStarted
+    phaseRcv a bId2 SPStarted [Just RSSendingQADD, Nothing]
     -- stop switch of second connection
-    ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {rcvSwitchStatus}]} <- stopConnectionSwitch a bId2
-    liftIO $ rcvSwitchStatus `shouldBe` Nothing
+    stats <- stopConnectionSwitch a bId2
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing]
   withB' $ \b -> do
     liftIO . getInAnyOrder b $
-      [ switchPhaseP aId1 QDSnd SPStarted,
-        switchPhaseP aId1 QDSnd SPConfirmed,
-        switchPhaseP aId2 QDSnd SPStarted,
-        switchPhaseP aId2 QDSnd SPConfirmed
+      [ switchPhaseSndP aId1 SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId1 SPConfirmed [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId2 SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId2 SPConfirmed [Just SSSendingQKEY, Nothing]
       ]
   withA' $ \a -> do
     liftIO . getInAnyOrder a $
-      [ switchPhaseP bId1 QDRcv SPConfirmed,
-        switchPhaseP bId1 QDRcv SPSecured,
+      [ switchPhaseRcvP bId1 SPConfirmed [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId1 SPSecured [Just RSSendingQUSE, Nothing],
         errQueueNotFoundP bId2
       ]
   withA $ \a -> withB $ \b -> runRight_ $ do
     void $ subscribeConnections a [bId1, bId2]
     void $ subscribeConnections b [aId1, aId2]
 
-    phase b aId1 QDSnd SPSecured
-    phase b aId1 QDSnd SPCompleted
+    phaseSnd b aId1 SPSecured [Just SSSendingQTEST, Nothing]
+    phaseSnd b aId1 SPCompleted [Nothing]
 
-    phase a bId1 QDRcv SPCompleted
+    phaseRcv a bId1 SPCompleted [Nothing]
 
     exchangeGreetingsMsgId 10 a bId1 b aId1
     exchangeGreetingsMsgId 8 a bId2 b aId2
