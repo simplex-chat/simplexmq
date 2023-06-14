@@ -1045,7 +1045,6 @@ getPendingMsgQ c SndQueue {server, sndId} = do
       TM.insert qKey q $ smpQueueMsgQueues c
       pure q
 
--- TODO withConnLock
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq = do
   (mq, qLock) <- atomically $ getPendingMsgQ c sq
@@ -1146,9 +1145,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                 AM_A_MSG_ -> notify $ SENT mId
                 AM_QCONT_ -> pure ()
                 AM_QADD_ -> pure ()
-                AM_QKEY_ -> pure ()
+                AM_QKEY_ -> do
+                  SomeConn _ conn <- withStore c (`getConn` connId)
+                  notify . SWITCH QDSnd SPConfirmed $ connectionStats conn
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> do
+                AM_QTEST_ -> withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   case conn of
@@ -1994,7 +1995,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   let (delSqs, keepSqs) = L.partition ((Just dbQueueId ==) . dbReplaceQId) sqs
                   case L.nonEmpty keepSqs of
                     Just sqs' -> do
-                      -- TODO should we remove these queues?
                       -- move inside case?
                       withStore' c $ \db -> mapM_ (deleteConnSndQueue db connId) delSqs
                       sq_@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue userId connId qInfo
@@ -2052,7 +2052,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   sq1' <- withStore' c $ \db -> setSndSwitchStatus db sq1 $ Just SSSendingQTEST
                   let sqs' = updatedQs sq1' sqs
                       conn' = DuplexConnection cData rqs sqs'
-                  notify . SWITCH QDSnd SPConfirmed $ connectionStats conn'
+                  notify . SWITCH QDSnd SPSecured $ connectionStats conn'
                 _ -> qError "QUSE: switching SndQueue not found in connection"
             _ -> qError "QUSE: switched queue address not found in connection"
 

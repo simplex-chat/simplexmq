@@ -996,9 +996,10 @@ switchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> Exce
 switchComplete a bId b aId = do
   phase a bId QDRcv SPStarted
   phase b aId QDSnd SPStarted
+  phase b aId QDSnd SPConfirmed
   phase a bId QDRcv SPConfirmed
   phase a bId QDRcv SPSecured
-  phase b aId QDSnd SPConfirmed
+  phase b aId QDSnd SPSecured
   phase b aId QDSnd SPCompleted
   phase a bId QDRcv SPCompleted
 
@@ -1027,12 +1028,14 @@ testSwitchAsync servers = do
   withA' $ \a -> do
     switchConnectionAsync a "" bId
     phase a bId QDRcv SPStarted
-  withB' $ \b -> phase b aId QDSnd SPStarted
+  withB' $ \b -> do
+    phase b aId QDSnd SPStarted
+    phase b aId QDSnd SPConfirmed
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
     phase a bId QDRcv SPSecured
   withB' $ \b -> do
-    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPSecured
     phase b aId QDSnd SPCompleted
   withA' $ \a -> phase a bId QDRcv SPCompleted
   withA $ \a -> withB $ \b -> runRight_ $ do
@@ -1092,6 +1095,7 @@ testStopSwitchStarted servers = do
     liftIO $ rcvSwitchStatus `shouldBe` Nothing
   withB' $ \b -> do
     phase b aId QDSnd SPStarted
+    phase b aId QDSnd SPConfirmed
   withA' $ \a -> do
     get a ##> ("", bId, ERR (AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}))
     -- repeat switch
@@ -1102,11 +1106,12 @@ testStopSwitchStarted servers = do
     subscribeConnection b aId
 
     phase b aId QDSnd SPStarted
+    phase b aId QDSnd SPConfirmed
 
     phase a bId QDRcv SPConfirmed
     phase a bId QDRcv SPSecured
 
-    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPSecured
     phase b aId QDSnd SPCompleted
 
     phase a bId QDRcv SPCompleted
@@ -1139,19 +1144,23 @@ testStopSwitchStartedReinitiate servers = do
     phase a bId QDRcv SPStarted
   withB' $ \b -> do
     phase b aId QDSnd SPStarted
-    phase b aId QDSnd SPStarted
+    liftIO . getInAnyOrder b $
+      [ switchPhaseP aId QDSnd SPStarted,
+        switchPhaseP aId QDSnd SPConfirmed
+      ]
+    phase b aId QDSnd SPConfirmed
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
 
     liftIO . getInAnyOrder a $
-      [ errQueueNotFound bId,
-        switchPhaseConfirmed bId
+      [ errQueueNotFoundP bId,
+        switchPhaseP bId QDRcv SPConfirmed
       ]
 
     phase a bId QDRcv SPSecured
 
-    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPSecured
     phase b aId QDSnd SPCompleted
 
     phase a bId QDRcv SPCompleted
@@ -1164,14 +1173,16 @@ testStopSwitchStartedReinitiate servers = do
     withA = withAgent agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
-    errQueueNotFound :: ConnId -> AEntityTransmission 'AEConn -> Bool
-    errQueueNotFound cId = \case
-      (_, cId', ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}) -> cId' == cId
-      _ -> False
-    switchPhaseConfirmed :: ConnId -> AEntityTransmission 'AEConn -> Bool
-    switchPhaseConfirmed cId = \case
-      (_, cId', SWITCH QDRcv SPConfirmed _) -> cId' == cId
-      _ -> False
+
+switchPhaseP :: ConnId -> QueueDirection -> SwitchPhase -> AEntityTransmission 'AEConn -> Bool
+switchPhaseP cId qd sphase = \case
+  (_, cId', SWITCH qd' sphase' _) -> cId' == cId && qd' == qd && sphase' == sphase
+  _ -> False
+
+errQueueNotFoundP :: ConnId -> AEntityTransmission 'AEConn -> Bool
+errQueueNotFoundP cId = \case
+  (_, cId', ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}) -> cId' == cId
+  _ -> False
 
 testCannotStopSwitchSecured :: HasCallStack => InitialAgentServers -> IO ()
 testCannotStopSwitchSecured servers = do
@@ -1186,6 +1197,7 @@ testCannotStopSwitchSecured servers = do
     phase a bId QDRcv SPStarted
   withB' $ \b -> do
     phase b aId QDSnd SPStarted
+    phase b aId QDSnd SPConfirmed
   withA' $ \a -> do
     phase a bId QDRcv SPConfirmed
     phase a bId QDRcv SPSecured
@@ -1195,7 +1207,7 @@ testCannotStopSwitchSecured servers = do
     subscribeConnection a bId
     subscribeConnection b aId
 
-    phase b aId QDSnd SPConfirmed
+    phase b aId QDSnd SPSecured
     phase b aId QDSnd SPCompleted
 
     phase a bId QDRcv SPCompleted
@@ -1228,27 +1240,29 @@ testSwitch2Connections servers = do
     void $ subscribeConnections b [aId1, aId2]
 
     liftIO . getInAnyOrder b $
-      [ switchPhase aId1 QDSnd SPStarted,
-        switchPhase aId2 QDSnd SPStarted
+      [ switchPhaseP aId1 QDSnd SPStarted,
+        switchPhaseP aId1 QDSnd SPConfirmed,
+        switchPhaseP aId2 QDSnd SPStarted,
+        switchPhaseP aId2 QDSnd SPConfirmed
       ]
 
     liftIO . getInAnyOrder a $
-      [ switchPhase bId1 QDRcv SPConfirmed,
-        switchPhase bId1 QDRcv SPSecured,
-        switchPhase bId2 QDRcv SPConfirmed,
-        switchPhase bId2 QDRcv SPSecured
+      [ switchPhaseP bId1 QDRcv SPConfirmed,
+        switchPhaseP bId1 QDRcv SPSecured,
+        switchPhaseP bId2 QDRcv SPConfirmed,
+        switchPhaseP bId2 QDRcv SPSecured
       ]
 
     liftIO . getInAnyOrder b $
-      [ switchPhase aId1 QDSnd SPConfirmed,
-        switchPhase aId1 QDSnd SPCompleted,
-        switchPhase aId2 QDSnd SPConfirmed,
-        switchPhase aId2 QDSnd SPCompleted
+      [ switchPhaseP aId1 QDSnd SPSecured,
+        switchPhaseP aId1 QDSnd SPCompleted,
+        switchPhaseP aId2 QDSnd SPSecured,
+        switchPhaseP aId2 QDSnd SPCompleted
       ]
 
     liftIO . getInAnyOrder a $
-      [ switchPhase bId1 QDRcv SPCompleted,
-        switchPhase bId2 QDRcv SPCompleted
+      [ switchPhaseP bId1 QDRcv SPCompleted,
+        switchPhaseP bId2 QDRcv SPCompleted
       ]
 
     exchangeGreetingsMsgId 10 a bId1 b aId1
@@ -1261,10 +1275,6 @@ testSwitch2Connections servers = do
     withA = withAgent agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
-    switchPhase :: ConnId -> QueueDirection -> SwitchPhase -> AEntityTransmission 'AEConn -> Bool
-    switchPhase cId qd sphase = \case
-      (_, cId', SWITCH qd' sphase' _) -> cId' == cId && qd' == qd && sphase' == sphase
-      _ -> False
 
 testSwitch2ConnectionsStop1 :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2ConnectionsStop1 servers = do
@@ -1286,20 +1296,22 @@ testSwitch2ConnectionsStop1 servers = do
     liftIO $ rcvSwitchStatus `shouldBe` Nothing
   withB' $ \b -> do
     liftIO . getInAnyOrder b $
-      [ switchPhase aId1 QDSnd SPStarted,
-        switchPhase aId2 QDSnd SPStarted
+      [ switchPhaseP aId1 QDSnd SPStarted,
+        switchPhaseP aId1 QDSnd SPConfirmed,
+        switchPhaseP aId2 QDSnd SPStarted,
+        switchPhaseP aId2 QDSnd SPConfirmed
       ]
   withA' $ \a -> do
     liftIO . getInAnyOrder a $
-      [ switchPhase bId1 QDRcv SPConfirmed,
-        switchPhase bId1 QDRcv SPSecured,
-        errQueueNotFound bId2
+      [ switchPhaseP bId1 QDRcv SPConfirmed,
+        switchPhaseP bId1 QDRcv SPSecured,
+        errQueueNotFoundP bId2
       ]
   withA $ \a -> withB $ \b -> runRight_ $ do
     void $ subscribeConnections a [bId1, bId2]
     void $ subscribeConnections b [aId1, aId2]
 
-    phase b aId1 QDSnd SPConfirmed
+    phase b aId1 QDSnd SPSecured
     phase b aId1 QDSnd SPCompleted
 
     phase a bId1 QDRcv SPCompleted
@@ -1314,14 +1326,6 @@ testSwitch2ConnectionsStop1 servers = do
     withA = withAgent agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
-    switchPhase :: ConnId -> QueueDirection -> SwitchPhase -> AEntityTransmission 'AEConn -> Bool
-    switchPhase cId qd sphase = \case
-      (_, cId', SWITCH qd' sphase' _) -> cId' == cId && qd' == qd && sphase' == sphase
-      _ -> False
-    errQueueNotFound :: ConnId -> AEntityTransmission 'AEConn -> Bool
-    errQueueNotFound cId = \case
-      (_, cId', ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}) -> cId' == cId
-      _ -> False
 
 testCreateQueueAuth :: (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
