@@ -55,8 +55,12 @@ module Simplex.Messaging.Agent.Protocol
     AEntityI (..),
     MsgHash,
     MsgMeta (..),
+    RcvQueueInfo (..),
+    SndQueueInfo (..),
     ConnectionStats (..),
     SwitchPhase (..),
+    RcvSwitchStatus (..),
+    SndSwitchStatus (..),
     QueueDirection (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
@@ -320,6 +324,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
+  RESYNC :: ACommand Agent AEConn
   SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
@@ -378,6 +383,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   DOWN_ :: ACommandTag Agent AENone
   UP_ :: ACommandTag Agent AENone
   SWITCH_ :: ACommandTag Agent AEConn
+  RESYNC_ :: ACommandTag Agent AEConn
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
@@ -429,6 +435,7 @@ aCommandTag = \case
   DOWN {} -> DOWN_
   UP {} -> UP_
   SWITCH {} -> SWITCH_
+  RESYNC {} -> RESYNC_
   SEND {} -> SEND_
   MID _ -> MID_
   SENT _ -> SENT_
@@ -473,18 +480,20 @@ instance ToJSON QueueDirection where
 instance FromJSON QueueDirection where
   parseJSON = strParseJSON "QueueDirection"
 
-data SwitchPhase = SPStarted | SPConfirmed | SPCompleted
+data SwitchPhase = SPStarted | SPConfirmed | SPSecured | SPCompleted
   deriving (Eq, Show)
 
 instance StrEncoding SwitchPhase where
   strEncode = \case
     SPStarted -> "started"
     SPConfirmed -> "confirmed"
+    SPSecured -> "secured"
     SPCompleted -> "completed"
   strP =
     A.takeTill (== ' ') >>= \case
       "started" -> pure SPStarted
       "confirmed" -> pure SPConfirmed
+      "secured" -> pure SPSecured
       "completed" -> pure SPCompleted
       _ -> fail "bad SwitchPhase"
 
@@ -495,19 +504,109 @@ instance ToJSON SwitchPhase where
 instance FromJSON SwitchPhase where
   parseJSON = strParseJSON "SwitchPhase"
 
+data RcvSwitchStatus
+  = RSSwitchStarted
+  | RSSendingQADD
+  | RSSendingQUSE
+  | RSReceivedMessage
+  deriving (Eq, Show)
+
+instance StrEncoding RcvSwitchStatus where
+  strEncode = \case
+    RSSwitchStarted -> "switch_started"
+    RSSendingQADD -> "sending_qadd"
+    RSSendingQUSE -> "sending_quse"
+    RSReceivedMessage -> "received_message"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "switch_started" -> pure RSSwitchStarted
+      "sending_qadd" -> pure RSSendingQADD
+      "sending_quse" -> pure RSSendingQUSE
+      "received_message" -> pure RSReceivedMessage
+      _ -> fail "bad RcvSwitchStatus"
+
+instance ToField RcvSwitchStatus where toField = toField . strEncode
+
+instance FromField RcvSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+
+instance ToJSON RcvSwitchStatus where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON RcvSwitchStatus where
+  parseJSON = strParseJSON "RcvSwitchStatus"
+
+data SndSwitchStatus
+  = SSSendingQKEY
+  | SSSendingQTEST
+  deriving (Eq, Show)
+
+instance StrEncoding SndSwitchStatus where
+  strEncode = \case
+    SSSendingQKEY -> "sending_qkey"
+    SSSendingQTEST -> "sending_qtest"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "sending_qkey" -> pure SSSendingQKEY
+      "sending_qtest" -> pure SSSendingQTEST
+      _ -> fail "bad SndSwitchStatus"
+
+instance ToField SndSwitchStatus where toField = toField . strEncode
+
+instance FromField SndSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+
+instance ToJSON SndSwitchStatus where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON SndSwitchStatus where
+  parseJSON = strParseJSON "SndSwitchStatus"
+
+data RcvQueueInfo = RcvQueueInfo
+  { rcvServer :: SMPServer,
+    rcvSwitchStatus :: Maybe RcvSwitchStatus
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+instance StrEncoding RcvQueueInfo where
+  strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus} =
+    "srv=" <> strEncode rcvServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) rcvSwitchStatus
+  strP = do
+    rcvServer <- "srv=" *> strP
+    rcvSwitchStatus <- optional $ ";switch=" *> strP
+    pure RcvQueueInfo {rcvServer, rcvSwitchStatus}
+
+data SndQueueInfo = SndQueueInfo
+  { sndServer :: SMPServer,
+    sndSwitchStatus :: Maybe SndSwitchStatus
+  }
+  deriving (Eq, Show, Generic)
+
+instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+instance StrEncoding SndQueueInfo where
+  strEncode SndQueueInfo {sndServer, sndSwitchStatus} =
+    "srv=" <> strEncode sndServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) sndSwitchStatus
+  strP = do
+    sndServer <- "srv=" *> strP
+    sndSwitchStatus <- optional $ ";switch=" *> strP
+    pure SndQueueInfo {sndServer, sndSwitchStatus}
+
 data ConnectionStats = ConnectionStats
-  { rcvServers :: [SMPServer],
-    sndServers :: [SMPServer]
+  { rcvQueuesInfo :: [RcvQueueInfo],
+    sndQueuesInfo :: [SndQueueInfo]
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {rcvServers, sndServers} =
-    "rcv=" <> strEncodeList rcvServers <> " snd=" <> strEncodeList sndServers
+  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo} =
+    "rcv=" <> strEncodeList rcvQueuesInfo <> " snd=" <> strEncodeList sndQueuesInfo
   strP = do
-    rcvServers <- "rcv=" *> strListP
-    sndServers <- " snd=" *> strListP
-    pure ConnectionStats {rcvServers, sndServers}
+    rcvQueuesInfo <- "rcv=" *> strListP
+    sndQueuesInfo <- " snd=" *> strListP
+    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
@@ -1353,6 +1452,7 @@ instance StrEncoding ACmdTag where
       "DOWN" -> nt DOWN_
       "UP" -> nt UP_
       "SWITCH" -> ct SWITCH_
+      "RESYNC" -> ct RESYNC_
       "SEND" -> t SEND_
       "MID" -> ct MID_
       "SENT" -> ct SENT_
@@ -1406,6 +1506,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     DOWN_ -> "DOWN"
     UP_ -> "UP"
     SWITCH_ -> "SWITCH"
+    RESYNC_ -> "RESYNC"
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
@@ -1473,6 +1574,7 @@ commandP binaryP =
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
+          RESYNC_ -> pure RESYNC
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
@@ -1531,6 +1633,7 @@ serializeCommand = \case
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
+  RESYNC -> s RESYNC_
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)

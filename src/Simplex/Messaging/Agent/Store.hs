@@ -21,6 +21,7 @@ import Data.Kind (Type)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -66,12 +67,13 @@ data RcvQueue = RcvQueue
     sndId :: SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
-    -- | database queue ID (within connection), can be Nothing for old queues
+    -- | database queue ID (within connection)
     dbQueueId :: Int64,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
     dbReplaceQueueId :: Maybe Int64,
+    rcvSwchStatus :: Maybe RcvSwitchStatus,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -79,6 +81,10 @@ data RcvQueue = RcvQueue
     deleteErrors :: Int
   }
   deriving (Eq, Show)
+
+rcvQueueInfo :: RcvQueue -> RcvQueueInfo
+rcvQueueInfo RcvQueue {server, rcvSwchStatus} =
+  RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus}
 
 data ClientNtfCreds = ClientNtfCreds
   { -- | key pair to be used by the notification server to sign transmissions
@@ -107,16 +113,21 @@ data SndQueue = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
-    -- | database queue ID (within connection), can be Nothing for old queues
+    -- | database queue ID (within connection)
     dbQueueId :: Int64,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | ID of the queue this one is replacing
     dbReplaceQueueId :: Maybe Int64,
+    sndSwchStatus :: Maybe SndSwitchStatus,
     -- | SMP client version
     smpClientVersion :: Version
   }
   deriving (Eq, Show)
+
+sndQueueInfo :: SndQueue -> SndQueueInfo
+sndQueueInfo SndQueue {server, sndSwchStatus} =
+  SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
 
 instance SMPQueue RcvQueue where
   qServer RcvQueue {server} = server
@@ -155,10 +166,20 @@ findRQ :: (SMPServer, SMP.SenderId) -> NonEmpty RcvQueue -> Maybe RcvQueue
 findRQ sAddr = find $ sameQAddress sAddr . sndAddress
 {-# INLINE findRQ #-}
 
+switchingRQ :: NonEmpty RcvQueue -> Maybe RcvQueue
+switchingRQ = find $ isJust . rcvSwchStatus
+{-# INLINE switchingRQ #-}
+
+updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
+updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
+{-# INLINE updatedQs #-}
+
 class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
   queueId :: q -> QueueId
+  dbQId :: q -> Int64
+  dbReplaceQId :: q -> Maybe Int64
 
 instance SMPQueueRec RcvQueue where
   qUserId = userId
@@ -167,6 +188,10 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE qConnId #-}
   queueId = rcvId
   {-# INLINE queueId #-}
+  dbQId = dbQueueId
+  {-# INLINE dbQId #-}
+  dbReplaceQId = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
 
 instance SMPQueueRec SndQueue where
   qUserId = userId
@@ -175,6 +200,10 @@ instance SMPQueueRec SndQueue where
   {-# INLINE qConnId #-}
   queueId = sndId
   {-# INLINE queueId #-}
+  dbQId = dbQueueId
+  {-# INLINE dbQId #-}
+  dbReplaceQId = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
 
 -- * Connection types
 
@@ -308,6 +337,7 @@ data InternalCommand
   | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICDeleteConn
+  | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
   | ICQDelete SMP.RecipientId
 
@@ -317,6 +347,7 @@ data InternalCommandTag
   | ICAllowSecure_
   | ICDuplexSecure_
   | ICDeleteConn_
+  | ICDeleteRcvQueue_
   | ICQSecure_
   | ICQDelete_
   deriving (Show)
@@ -328,6 +359,7 @@ instance StrEncoding InternalCommand where
     ICAllowSecure rId sndKey -> strEncode (ICAllowSecure_, rId, sndKey)
     ICDuplexSecure rId sndKey -> strEncode (ICDuplexSecure_, rId, sndKey)
     ICDeleteConn -> strEncode ICDeleteConn_
+    ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
   strP =
@@ -337,6 +369,7 @@ instance StrEncoding InternalCommand where
       ICAllowSecure_ -> ICAllowSecure <$> _strP <*> _strP
       ICDuplexSecure_ -> ICDuplexSecure <$> _strP <*> _strP
       ICDeleteConn_ -> pure ICDeleteConn
+      ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
 
@@ -347,6 +380,7 @@ instance StrEncoding InternalCommandTag where
     ICAllowSecure_ -> "ALLOW_SECURE"
     ICDuplexSecure_ -> "DUPLEX_SECURE"
     ICDeleteConn_ -> "DELETE_CONN"
+    ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
   strP =
@@ -356,6 +390,7 @@ instance StrEncoding InternalCommandTag where
       "ALLOW_SECURE" -> pure ICAllowSecure_
       "DUPLEX_SECURE" -> pure ICDuplexSecure_
       "DELETE_CONN" -> pure ICDeleteConn_
+      "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
       _ -> fail "bad InternalCommandTag"
@@ -372,6 +407,7 @@ internalCmdTag = \case
   ICAllowSecure {} -> ICAllowSecure_
   ICDuplexSecure {} -> ICDuplexSecure_
   ICDeleteConn -> ICDeleteConn_
+  ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
 
