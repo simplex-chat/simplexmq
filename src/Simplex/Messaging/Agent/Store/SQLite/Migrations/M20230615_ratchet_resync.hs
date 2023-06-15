@@ -8,11 +8,13 @@ import Database.SQLite.Simple.QQ (sql)
 m20230615_ratchet_resync :: Query
 m20230615_ratchet_resync =
   [sql|
-ALTER TABLE connections ADD COLUMN ratchet_resync INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN ratchet_resync_allowed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN ratchet_resync_state INTEGER NOT NULL DEFAULT 0;
 |]
 
 down_m20230615_ratchet_resync :: Query
 down_m20230615_ratchet_resync =
   [sql|
-ALTER TABLE connections DROP COLUMN ratchet_resync;
+ALTER TABLE connections DROP COLUMN ratchet_resync_state;
+ALTER TABLE connections DROP COLUMN ratchet_resync_allowed;
 |]

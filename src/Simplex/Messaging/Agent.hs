@@ -1765,23 +1765,23 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 (Nothing, Just e2ePubKey) -> do
                   let e2eDh = C.dh' e2ePubKey e2ePrivKey
                   decryptClientMessage e2eDh clientMsg >>= \case
-                    (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption, encConnInfo, agentVersion}) ->
-                      smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion >> ack
+                    (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption_, encConnInfo, agentVersion}) ->
+                      smpConfirmation senderKey e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
                     (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                       smpInvitation connReq connInfo >> ack
                     _ -> prohibited >> ack
                 (Just e2eDh, Nothing) -> do
                   decryptClientMessage e2eDh clientMsg >>= \case
                     -- this message means that sending party initiates/confirms ratchet re-synchronization
-                    (SMP.PHEmpty, AgentResynchronization {e2eEncryptionResync = _e2eEncryptionResync}) -> do
-                      -- if own AgentResynchronization was not already sent (check connection `ratchet_resync` in db):
+                    (SMP.PHEmpty, AgentRatchetKey {e2eEncryption = _e2eEncryption}) -> do
+                      -- if own AgentRatchetKey was not already sent (check connection `ratchet_resync_state` in db):
                       --   - generate keys for new ratchet, compute shared secret
                       --   - db: delete and create `ratchets` record
-                      --   - reply with own AgentResynchronization
+                      --   - reply with own AgentRatchetKey
                       --   - notify RESYNC_COMPLETE
                       -- else:
                       --   - compute shared secret
-                      --   - db: reset `ratchet_resync` to False; update `ratchets` record
+                      --   - db: reset `ratchet_resync_state` to False; update `ratchets` record
                       --   - notify RESYNC_COMPLETE
                       pure ()
                     (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
@@ -1837,7 +1837,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                             ( do
                                 -- generate keys for new ratchet
                                 -- db: set `rachet_resync`, delete and create `ratchets` record
-                                -- send AgentResynchronization with new ratchet keys
+                                -- send AgentRatchetKey with new ratchet keys
                                 -- notify RESYNC
                                 pure ()
                             )
@@ -2128,7 +2128,7 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = 
       enqueueConfirmation c cData sq {dbQueueId} ownConnInfo Nothing
 
 confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
-confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption = do
+confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption_ = do
   aMessage <- mkAgentMessage agentVersion
   msg <- mkConfirmation aMessage
   sendConfirmation c sq msg
@@ -2138,7 +2138,7 @@ confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo
     mkConfirmation aMessage = withStore c $ \db -> runExceptT $ do
       void . liftIO $ updateSndIds db connId
       encConnInfo <- agentRatchetEncrypt db connId (smpEncode aMessage) e2eEncConnInfoLength
-      pure . smpEncode $ AgentConfirmation {agentVersion, e2eEncryption, encConnInfo}
+      pure . smpEncode $ AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
     mkAgentMessage :: Version -> m AgentMessage
     mkAgentMessage 1 = pure $ AgentConnInfo connInfo
     mkAgentMessage _ = do
@@ -2146,7 +2146,7 @@ confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo
       pure $ AgentConnInfoReply (qInfo :| []) connInfo
 
 enqueueConfirmation :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
-enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eEncryption = do
+enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eEncryption_ = do
   resumeMsgDelivery c cData sq
   msgId <- storeConfirmation
   queuePendingMsgs c sq [msgId]
@@ -2159,7 +2159,7 @@ enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eE
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
       encConnInfo <- agentRatchetEncrypt db connId agentMsgStr e2eEncConnInfoLength
-      let msgBody = smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption, encConnInfo}
+      let msgBody = smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData

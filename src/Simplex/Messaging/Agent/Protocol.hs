@@ -709,7 +709,7 @@ data SMPConfirmation = SMPConfirmation
 data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: Version,
-        e2eEncryption :: Maybe (E2ERatchetParams 'C.X448),
+        e2eEncryption_ :: Maybe (E2ERatchetParams 'C.X448),
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -721,28 +721,29 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
-  | AgentResynchronization
+  | AgentRatchetKey
       { agentVersion :: Version,
-        e2eEncryptionResync :: E2ERatchetParams 'C.X448
+        e2eEncryption :: E2ERatchetParams 'C.X448,
+        info :: ByteString
       }
   deriving (Show)
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
-    AgentConfirmation {agentVersion, e2eEncryption, encConnInfo} ->
-      smpEncode (agentVersion, 'C', e2eEncryption, Tail encConnInfo)
+    AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo} ->
+      smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
-    AgentResynchronization {agentVersion, e2eEncryptionResync} ->
-      smpEncode (agentVersion, 'R', e2eEncryptionResync)
+    AgentRatchetKey {agentVersion, e2eEncryption, info} ->
+      smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
     agentVersion <- smpP
     smpP >>= \case
       'C' -> do
-        (e2eEncryption, Tail encConnInfo) <- smpP
-        pure AgentConfirmation {agentVersion, e2eEncryption, encConnInfo}
+        (e2eEncryption_, Tail encConnInfo) <- smpP
+        pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
       'M' -> do
         Tail encAgentMessage <- smpP
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
@@ -751,8 +752,9 @@ instance Encoding AgentMsgEnvelope where
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
       'R' -> do
-        e2eEncryptionResync <- smpP
-        pure AgentResynchronization {agentVersion, e2eEncryptionResync}
+        e2eEncryption <- smpP
+        Tail info <- smpP
+        pure AgentRatchetKey {agentVersion, e2eEncryption, info}
       _ -> fail "bad AgentMsgEnvelope"
 
 -- SMP agent message formats (after double ratchet decryption,
