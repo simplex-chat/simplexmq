@@ -50,6 +50,8 @@ CREATE TABLE rcv_queues(
   replace_rcv_queue_id INTEGER NULL,
   delete_errors INTEGER DEFAULT 0 CHECK(delete_errors NOT NULL),
   server_key_hash BLOB,
+  switch_status TEXT,
+  deleted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -71,6 +73,7 @@ CREATE TABLE snd_queues(
   snd_primary INTEGER CHECK(snd_primary NOT NULL),
   replace_snd_queue_id INTEGER NULL,
   server_key_hash BLOB,
+  switch_status TEXT,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
