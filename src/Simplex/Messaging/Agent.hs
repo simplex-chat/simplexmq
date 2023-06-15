@@ -910,7 +910,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameQueue (srv, rId)) rqs of
               Just rq'@RcvQueue {server, sndId, status, dbReplaceQueueId = Just replaceQId} ->
-                case find (\RcvQueue {dbQueueId} -> dbQueueId == replaceQId) rqs of
+                case find ((replaceQId ==) . dbQId) rqs of
                   Just rq1 -> when (status == Confirmed) $ do
                     secureQueue c rq' senderKey
                     withStore' c $ \db -> setRcvQueueStatus db rq' Secured
@@ -1245,22 +1245,21 @@ stopConnectionSwitch' c connId =
   withConnLock c connId "stopConnectionSwitch" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
-        Just rq -> do
-          if canStopRcvSwitch rq
-            then do
-              -- multiple queues to which the connections switches were possible when repeating switch was allowed
-              let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
-              case L.nonEmpty keepRqs of
-                Just rqs' -> do
-                  rq' <- withStore' c $ \db -> do
-                    mapM_ (setRcvQueueDeleted db) delRqs
-                    setRcvSwitchStatus db rq Nothing
-                  forM_ delRqs $ \RcvQueue {server, rcvId} -> enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICDeleteRcvQueue rcvId
-                  let rqs'' = updatedQs rq' rqs'
-                      conn' = DuplexConnection cData rqs'' sqs
-                  pure $ connectionStats conn'
-                _ -> throwError $ INTERNAL "won't delete all rcv queues in connection"
-            else throwError $ CMD PROHIBITED
+        Just rq
+          | canStopRcvSwitch rq -> do
+            -- multiple queues to which the connections switches were possible when repeating switch was allowed
+            let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
+            case L.nonEmpty keepRqs of
+              Just rqs' -> do
+                rq' <- withStore' c $ \db -> do
+                  mapM_ (setRcvQueueDeleted db) delRqs
+                  setRcvSwitchStatus db rq Nothing
+                forM_ delRqs $ \RcvQueue {server, rcvId} -> enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICDeleteRcvQueue rcvId
+                let rqs'' = updatedQs rq' rqs'
+                    conn' = DuplexConnection cData rqs'' sqs
+                pure $ connectionStats conn'
+              _ -> throwError $ INTERNAL "won't delete all rcv queues in connection"
+          | otherwise -> throwError $ CMD PROHIBITED
         _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD PROHIBITED
 
@@ -2041,7 +2040,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
         qUseMsg ((addr, _primary) :| _) (DuplexConnection _ rqs sqs) =
           case findQ addr sqs of
             Just sq'@SndQueue {dbReplaceQueueId = Just replaceQId} -> do
-              case find (\SndQueue {dbQueueId} -> dbQueueId == replaceQId) sqs of
+              case find ((replaceQId ==) . dbQId) sqs of
                 Just sq1 -> do
                   checkSQSwchStatus sq1 SSSendingQKEY
                   logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
