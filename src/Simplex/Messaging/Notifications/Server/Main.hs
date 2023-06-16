@@ -22,6 +22,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientCo
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -116,7 +117,10 @@ ntfServerCLI cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log",
-              logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+              transportConfig =
+                defaultTransportServerConfig
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  }
             }
 
 data CliCommand

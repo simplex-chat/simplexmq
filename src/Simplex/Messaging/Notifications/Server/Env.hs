@@ -31,7 +31,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams, TransportServerConfig)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -57,7 +57,7 @@ data NtfServerConfig = NtfServerConfig
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
-    logTLSErrors :: Bool
+    transportConfig :: TransportServerConfig
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig

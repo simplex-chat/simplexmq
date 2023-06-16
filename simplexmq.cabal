@@ -162,7 +162,7 @@ library
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -226,7 +226,7 @@ executable ntf-server
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -291,7 +291,7 @@ executable smp-agent
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -356,7 +356,7 @@ executable smp-server
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -421,7 +421,7 @@ executable xftp
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -486,7 +486,7 @@ executable xftp-server
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -581,7 +581,7 @@ test-suite simplexmq-test
     , main-tester ==0.2.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network >=3.1.2.7 && <3.2
+    , network >=3.1.4.0 && <3.2
     , network-transport ==0.5.4
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
