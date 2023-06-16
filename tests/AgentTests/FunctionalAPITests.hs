@@ -610,11 +610,15 @@ testDecryptionError t = do
 
       8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
       get alice ##> ("", bobId, SENT 8)
-      get bob2 =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == aliceId; _ -> False
+      -- TODO ratchet re-sync
+      -- bob and alice should get RDESYNC RDResyncRequired, then test ratchet re-sync
+      -- get bob2 =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == aliceId; _ -> False
+      liftIO $ noMessages bob2 "bob can't decrypt alice's message after ratchet de-sync"
 
       6 <- sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
       get bob2 ##> ("", aliceId, SENT 6)
-      get alice =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == bobId; _ -> False
+      -- get alice =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == bobId; _ -> False
+      liftIO $ noMessages alice "alice can't decrypt bob's message after ratchet de-sync"
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
