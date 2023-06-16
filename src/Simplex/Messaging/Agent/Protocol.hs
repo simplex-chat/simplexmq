@@ -628,19 +628,23 @@ instance FromJSON RatchetResyncState where
 
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
-    rcvSwitchStatus :: Maybe RcvSwitchStatus
+    rcvSwitchStatus :: Maybe RcvSwitchStatus,
+    canAbortSwitch :: Bool
   }
   deriving (Eq, Show, Generic)
 
 instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding RcvQueueInfo where
-  strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus} =
-    "srv=" <> strEncode rcvServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) rcvSwitchStatus
+  strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch} =
+    "srv=" <> strEncode rcvServer
+      <> maybe "" (\switch -> ";switch=" <> strEncode switch) rcvSwitchStatus
+      <> (";can_abort_switch=" <> strEncode canAbortSwitch)
   strP = do
     rcvServer <- "srv=" *> strP
     rcvSwitchStatus <- optional $ ";switch=" *> strP
-    pure RcvQueueInfo {rcvServer, rcvSwitchStatus}
+    canAbortSwitch <- ";can_abort_switch=" *> strP
+    pure RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch}
 
 data SndQueueInfo = SndQueueInfo
   { sndServer :: SMPServer,

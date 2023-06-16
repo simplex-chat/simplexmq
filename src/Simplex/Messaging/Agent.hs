@@ -63,7 +63,7 @@ module Simplex.Messaging.Agent
     sendMessage,
     ackMessage,
     switchConnection,
-    stopConnectionSwitch,
+    abortConnectionSwitch,
     resyncConnectionRatchet,
     suspendConnection,
     deleteConnection,
@@ -270,9 +270,9 @@ ackMessage c = withAgentEnv c .: ackMessage' c
 switchConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection c = withAgentEnv c . switchConnection' c
 
--- | Stop switching connection to the new receive queue
-stopConnectionSwitch :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
-stopConnectionSwitch c = withAgentEnv c . stopConnectionSwitch' c
+-- | Abort switching connection to the new receive queue
+abortConnectionSwitch :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
+abortConnectionSwitch c = withAgentEnv c . abortConnectionSwitch' c
 
 -- | Re-synchronize connection ratchet keys
 resyncConnectionRatchet :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
@@ -1247,13 +1247,13 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   let rqs' = updatedQs rq1 rqs <> [rq']
   pure . connectionStats $ DuplexConnection cData rqs' sqs
 
-stopConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
-stopConnectionSwitch' c connId =
-  withConnLock c connId "stopConnectionSwitch" $
+abortConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
+abortConnectionSwitch' c connId =
+  withConnLock c connId "abortConnectionSwitch" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
         Just rq
-          | canStopRcvSwitch rq -> do
+          | canAbortRcvSwitch rq -> do
             -- multiple queues to which the connections switches were possible when repeating switch was allowed
             let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
             case L.nonEmpty keepRqs of
@@ -1269,18 +1269,6 @@ stopConnectionSwitch' c connId =
           | otherwise -> throwError $ CMD PROHIBITED
         _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD PROHIBITED
-
-canStopRcvSwitch :: RcvQueue -> Bool
-canStopRcvSwitch = maybe False canStop . rcvSwchStatus
-  where
-    canStop = \case
-      RSSwitchStarted -> True
-      RSSendingQADD -> True
-      -- if switch is in RSSendingQUSE, a race condition with sender deleting the original queue is possible
-      RSSendingQUSE -> False
-      -- if switch is in RSReceivedMessage status, stopping switch (deleting new queue)
-      -- will break the connection because the sender would have original queue deleted
-      RSReceivedMessage -> False
 
 resyncConnectionRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
 resyncConnectionRatchet' c connId _force = withConnLock c connId "resyncConnectionRatchet" $ do
