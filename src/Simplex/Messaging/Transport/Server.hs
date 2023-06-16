@@ -42,16 +42,14 @@ import UnliftIO.STM
 
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
-    recvTimeout :: Int, -- SO_RCVTIMEO: timeout in microseconds
-    sendTimeout :: Int -- SO_SNDTIMEO: timeout in microseconds
+    recvTimeout :: Int -- SO_RCVTIMEO: timeout in microseconds
   }
   deriving (Eq, Show)
 
 defaultTransportServerConfig :: TransportServerConfig
 defaultTransportServerConfig = TransportServerConfig
   { logTLSErrors = True,
-    recvTimeout = 40000000, -- 40 seconds
-    sendTimeout = 40000000 -- 40 seconds
+    recvTimeout = 20000000 -- 40 seconds
   }
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
@@ -88,7 +86,7 @@ closeServer started clients sock = do
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> TransportServerConfig -> IO Socket
-startTCPServer started port TransportServerConfig {recvTimeout, sendTimeout} = withSocketsDo $ resolve >>= open >>= setStarted
+startTCPServer started port TransportServerConfig {recvTimeout} = withSocketsDo $ resolve >>= open >>= setStarted
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
@@ -100,7 +98,6 @@ startTCPServer started port TransportServerConfig {recvTimeout, sendTimeout} = w
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
       setSocketOption sock RecvTimeOut recvTimeout
-      setSocketOption sock SendTimeOut sendTimeout
       withFdSocket sock setCloseOnExecIfNeeded
       logInfo $ "binding to " <> tshow (addrAddress addr)
       bind sock $ addrAddress addr
