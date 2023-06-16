@@ -62,6 +62,8 @@ module Simplex.Messaging.Agent.Protocol
     RcvSwitchStatus (..),
     SndSwitchStatus (..),
     QueueDirection (..),
+    RatchetDesyncState (..),
+    RatchetResyncState (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
@@ -98,6 +100,7 @@ module Simplex.Messaging.Agent.Protocol
     BrokerErrorType (..),
     SMPAgentError (..),
     AgentCryptoError (..),
+    cryptoErrToDesyncState,
     ATransmission,
     ATransmissionOrError,
     ARawTransmission,
@@ -324,7 +327,8 @@ data ACommand (p :: AParty) (e :: AEntity) where
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
-  RESYNC :: ACommand Agent AEConn
+  RDESYNC :: RatchetDesyncState -> ConnectionStats -> ACommand Agent AEConn
+  RRESYNC :: RatchetResyncState -> ConnectionStats -> ACommand Agent AEConn
   SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
@@ -383,7 +387,8 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   DOWN_ :: ACommandTag Agent AENone
   UP_ :: ACommandTag Agent AENone
   SWITCH_ :: ACommandTag Agent AEConn
-  RESYNC_ :: ACommandTag Agent AEConn
+  RDESYNC_ :: ACommandTag Agent AEConn
+  RRESYNC_ :: ACommandTag Agent AEConn
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
@@ -435,7 +440,8 @@ aCommandTag = \case
   DOWN {} -> DOWN_
   UP {} -> UP_
   SWITCH {} -> SWITCH_
-  RESYNC {} -> RESYNC_
+  RDESYNC {} -> RDESYNC_
+  RRESYNC {} -> RRESYNC_
   SEND {} -> SEND_
   MID _ -> MID_
   SENT _ -> SENT_
@@ -562,6 +568,64 @@ instance ToJSON SndSwitchStatus where
 instance FromJSON SndSwitchStatus where
   parseJSON = strParseJSON "SndSwitchStatus"
 
+data RatchetDesyncState
+  = RDResyncAllowed
+  | RDResyncRequired
+  | RDHealed
+  deriving (Eq, Show)
+
+instance StrEncoding RatchetDesyncState where
+  strEncode = \case
+    RDResyncAllowed -> "resync_allowed"
+    RDResyncRequired -> "resync_required"
+    RDHealed -> "healed"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "resync_allowed" -> pure RDResyncAllowed
+      "resync_required" -> pure RDResyncRequired
+      "healed" -> pure RDHealed
+      _ -> fail "bad RatchetDesyncState"
+
+instance ToField RatchetDesyncState where toField = toField . strEncode
+
+instance FromField RatchetDesyncState where fromField = blobFieldDecoder $ parseAll strP
+
+instance ToJSON RatchetDesyncState where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON RatchetDesyncState where
+  parseJSON = strParseJSON "RatchetDesyncState"
+
+data RatchetResyncState
+  = RRStarted
+  | RRAgreed
+  | RRComplete
+  deriving (Eq, Show)
+
+instance StrEncoding RatchetResyncState where
+  strEncode = \case
+    RRStarted -> "started"
+    RRAgreed -> "agreed"
+    RRComplete -> "complete"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "started" -> pure RRStarted
+      "agreed" -> pure RRAgreed
+      "complete" -> pure RRComplete
+      _ -> fail "bad RatchetResyncState"
+
+instance ToField RatchetResyncState where toField = toField . strEncode
+
+instance FromField RatchetResyncState where fromField = blobFieldDecoder $ parseAll strP
+
+instance ToJSON RatchetResyncState where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON RatchetResyncState where
+  parseJSON = strParseJSON "RatchetResyncState"
+
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
     rcvSwitchStatus :: Maybe RcvSwitchStatus
@@ -596,17 +660,24 @@ instance StrEncoding SndQueueInfo where
 
 data ConnectionStats = ConnectionStats
   { rcvQueuesInfo :: [RcvQueueInfo],
-    sndQueuesInfo :: [SndQueueInfo]
+    sndQueuesInfo :: [SndQueueInfo],
+    ratchetDesyncState :: Maybe RatchetDesyncState,
+    ratchetResyncState :: Maybe RatchetResyncState
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo} =
-    "rcv=" <> strEncodeList rcvQueuesInfo <> " snd=" <> strEncodeList sndQueuesInfo
+  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo, ratchetDesyncState, ratchetResyncState} =
+    "rcv=" <> strEncodeList rcvQueuesInfo
+      <> (" snd=" <> strEncodeList sndQueuesInfo)
+      <> maybe "" (\rdState -> " desync=" <> strEncode rdState) ratchetDesyncState
+      <> maybe "" (\rrState -> " resync=" <> strEncode rrState) ratchetResyncState
   strP = do
     rcvQueuesInfo <- "rcv=" *> strListP
     sndQueuesInfo <- " snd=" *> strListP
-    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo}
+    ratchetDesyncState <- optional $ " desync=" *> strP
+    ratchetResyncState <- optional $ " resync=" *> strP
+    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo, ratchetDesyncState, ratchetResyncState}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
@@ -790,6 +861,7 @@ data AgentMessageType
   | AM_QKEY_
   | AM_QUSE_
   | AM_QTEST_
+  | AM_EREADY_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -804,6 +876,7 @@ instance Encoding AgentMessageType where
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
+    AM_EREADY_ -> "E"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -819,6 +892,7 @@ instance Encoding AgentMessageType where
           'U' -> pure AM_QUSE_
           'T' -> pure AM_QTEST_
           _ -> fail "bad AgentMessageType"
+      'E' -> pure AM_EREADY_
       _ -> fail "bad AgentMessageType"
 
 agentMessageType :: AgentMessage -> AgentMessageType
@@ -839,6 +913,7 @@ agentMessageType = \case
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
     QTEST _ -> AM_QTEST_
+    EREADY _ -> AM_EREADY_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -862,6 +937,7 @@ data AMsgType
   | QKEY_
   | QUSE_
   | QTEST_
+  | EREADY_
   deriving (Eq)
 
 instance Encoding AMsgType where
@@ -874,6 +950,7 @@ instance Encoding AMsgType where
     QKEY_ -> "QK"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
+    EREADY_ -> "E"
   smpP =
     A.anyChar >>= \case
       'H' -> pure HELLO_
@@ -887,6 +964,7 @@ instance Encoding AMsgType where
           'U' -> pure QUSE_
           'T' -> pure QTEST_
           _ -> fail "bad AMsgType"
+      'E' -> pure EREADY_
       _ -> fail "bad AMsgType"
 
 -- | Messages sent between SMP agents once SMP queue is secured.
@@ -909,6 +987,8 @@ data AMessage
     QUSE (L.NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
     QTEST (L.NonEmpty SndQAddr)
+  | -- ratchet re-synchronization is complete, with last decrypted sender message id (recipient's `last_external_snd_msg_id`)
+    EREADY Int64
   deriving (Show)
 
 type SndQAddr = (SMPServer, SMP.SenderId)
@@ -923,6 +1003,7 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
+    EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
   smpP =
     smpP
       >>= \case
@@ -934,6 +1015,7 @@ instance Encoding AMessage where
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
+        EREADY_ -> EREADY <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
@@ -1425,6 +1507,14 @@ instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
 instance Arbitrary AgentCryptoError where arbitrary = genericArbitraryU
 
+cryptoErrToDesyncState :: AgentCryptoError -> RatchetDesyncState
+cryptoErrToDesyncState = \case
+  DECRYPT_AES -> RDResyncAllowed
+  DECRYPT_CB -> RDResyncAllowed
+  RATCHET_HEADER -> RDResyncRequired
+  RATCHET_EARLIER _ -> RDResyncAllowed
+  RATCHET_SKIPPED _ -> RDResyncRequired
+
 -- | SMP agent command and response parser for commands passed via network (only parses binary length)
 networkCommandP :: Parser ACmd
 networkCommandP = commandP A.takeByteString
@@ -1454,7 +1544,8 @@ instance StrEncoding ACmdTag where
       "DOWN" -> nt DOWN_
       "UP" -> nt UP_
       "SWITCH" -> ct SWITCH_
-      "RESYNC" -> ct RESYNC_
+      "RDESYNC" -> ct RDESYNC_
+      "RRESYNC" -> ct RRESYNC_
       "SEND" -> t SEND_
       "MID" -> ct MID_
       "SENT" -> ct SENT_
@@ -1508,7 +1599,8 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     DOWN_ -> "DOWN"
     UP_ -> "UP"
     SWITCH_ -> "SWITCH"
-    RESYNC_ -> "RESYNC"
+    RDESYNC_ -> "RDESYNC"
+    RRESYNC_ -> "RRESYNC"
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
@@ -1576,7 +1668,8 @@ commandP binaryP =
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
-          RESYNC_ -> pure RESYNC
+          RDESYNC_ -> s (RDESYNC <$> strP_ <*> strP)
+          RRESYNC_ -> s (RRESYNC <$> strP_ <*> strP)
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
@@ -1635,7 +1728,8 @@ serializeCommand = \case
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
-  RESYNC -> s RESYNC_
+  RDESYNC rdState cstats -> s (RDESYNC_, rdState, cstats)
+  RRESYNC rrState cstats -> s (RRESYNC_, rrState, cstats)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)

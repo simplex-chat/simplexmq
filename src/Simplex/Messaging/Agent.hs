@@ -64,6 +64,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     switchConnection,
     stopConnectionSwitch,
+    resyncConnectionRatchet,
     suspendConnection,
     deleteConnection,
     deleteConnections,
@@ -272,6 +273,10 @@ switchConnection c = withAgentEnv c . switchConnection' c
 -- | Stop switching connection to the new receive queue
 stopConnectionSwitch :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
 stopConnectionSwitch c = withAgentEnv c . stopConnectionSwitch' c
+
+-- | Re-synchronize connection ratchet keys
+resyncConnectionRatchet :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
+resyncConnectionRatchet c = withAgentEnv c .: resyncConnectionRatchet' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -1096,6 +1101,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   AM_QKEY_ -> qError msgId "QKEY: AUTH"
                   AM_QUSE_ -> qError msgId "QUSE: AUTH"
                   AM_QTEST_ -> qError msgId "QTEST: AUTH"
+                  AM_EREADY_ -> notifyDel msgId err
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -1176,6 +1182,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                             _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
                         _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
+                AM_EREADY_ -> pure ()
               delMsg msgId
   where
     delMsg :: InternalId -> m ()
@@ -1274,6 +1281,21 @@ canStopRcvSwitch = maybe False canStop . rcvSwchStatus
       -- if switch is in RSReceivedMessage status, stopping switch (deleting new queue)
       -- will break the connection because the sender would have original queue deleted
       RSReceivedMessage -> False
+
+resyncConnectionRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
+resyncConnectionRatchet' c connId _force = withConnLock c connId "resyncConnectionRatchet" $ do
+  -- TODO ratchet re-sync
+  -- db: getConn
+  -- if (ratchetResyncState /= Just RRStarted && (isJust ratchetDesyncState || force)):
+  --   generate new keys
+  --   db:
+  --     - set `ratchet_desync_state` to NULL
+  --     - set `ratchet_resync_state` to RRStarted
+  --     - delete and create `ratchets` record
+  --   send AgentRatchetKey with new ratchet keys
+  --   return ConnectionStats with ratchetDesyncState = Nothing, ratchetResyncState = Just RRStarted
+  -- else: prohibited
+  undefined
 
 ackQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> SMP.MsgId -> m ()
 ackQueueMessage c rq srvMsgId =
@@ -1410,6 +1432,8 @@ getConnectionRatchetAdHash' c connId = do
   CR.Ratchet {rcAD = Str rcAD} <- withStore c (`getRatchet` connId)
   pure $ C.sha256Hash rcAD
 
+-- TODO ratchet re-sync
+-- add ratchetDesyncState, ratchetResyncState to ConnData
 connectionStats :: Connection c -> ConnectionStats
 connectionStats = \case
   RcvConnection _ rq -> ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = []}
@@ -1772,17 +1796,26 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                     _ -> prohibited >> ack
                 (Just e2eDh, Nothing) -> do
                   decryptClientMessage e2eDh clientMsg >>= \case
-                    -- this message means that sending party initiates/confirms ratchet re-synchronization
                     (SMP.PHEmpty, AgentRatchetKey {e2eEncryption = _e2eEncryption}) -> do
-                      -- if own AgentRatchetKey was not already sent (check connection `ratchet_resync_state` in db):
-                      --   - generate keys for new ratchet, compute shared secret
-                      --   - db: delete and create `ratchets` record
-                      --   - reply with own AgentRatchetKey
-                      --   - notify RESYNC_COMPLETE
+                      -- TODO ratchet re-sync
+                      -- if (isNothing ratchetResyncState || ratchetResyncState == Just RRAgreed): // check for RRAgreed in case state wasn't reset?
+                      --   generate keys for new ratchet, initialize ratchet based on key hashes comparison
+                      --   db:
+                      --     - * set `ratchet_desync_state` to NULL (should be NULL already)
+                      --     - set `ratchet_resync_state` to RRAgreed
+                      --     - delete and create `ratchets` record
+                      --   reply with own AgentRatchetKey
+                      --   notify RRESYNC RRAgreed
+                      --   queue EREADY message
                       -- else:
-                      --   - compute shared secret
-                      --   - db: reset `ratchet_resync_state` to False; update `ratchets` record
-                      --   - notify RESYNC_COMPLETE
+                      --   compute shared secret, initializing ratchet based on key hashes comparison
+                      --   db: reset `ratchet_resync_state` to False; update `ratchets` record
+                      --   db:
+                      --     - * set `ratchet_desync_state` to NULL (should be NULL already)
+                      --     - set `ratchet_resync_state` to RRAgreed
+                      --     - update `ratchets` record
+                      --   notify RRESYNC RRAgreed
+                      --   queue EREADY message
                       pure ()
                     (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
                       -- primary queue is set as Active in helloMsg, below is to set additional queues Active
@@ -1800,20 +1833,35 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         _ -> pure ()
                       let encryptedMsgHash = C.sha256Hash encAgentMsg
                       tryError (agentClientMsg encryptedMsgHash) >>= \case
-                        Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
-                          HELLO -> helloMsg >> ackDel msgId
-                          REPLY cReq -> replyMsg cReq >> ackDel msgId
-                          -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
-                          A_MSG body -> do
-                            logServer "<--" c srv rId "MSG <MSG>"
-                            notify $ MSG msgMeta msgFlags body
-                          QCONT addr -> qDuplex "QCONT" $ continueSending addr
-                          QADD qs -> qDuplex "QADD" $ qAddMsg qs
-                          QKEY qs -> qDuplex "QKEY" $ qKeyMsg qs
-                          QUSE qs -> qDuplex "QUSE" $ qUseMsg qs
-                          -- no action needed for QTEST
-                          -- any message in the new queue will mark it active and trigger deletion of the old queue
-                          QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
+                        Right (Just (msgId, msgMeta, aMessage)) -> do
+                          -- TODO ratchet re-sync
+                          -- case (ratchetDesyncState, ratchetResyncState) of
+                          --   (Just _, Just _) -> do // shouldn't happen, but if it does we create only one event
+                          --     db:
+                          --       - set `ratchet_desync_state` to NULL
+                          --       - set `ratchet_resync_state` to NULL
+                          --     notify RRESYNC RRComplete
+                          --   (Just _, Nothing) -> do
+                          --     db: set `ratchet_desync_state` to NULL
+                          --     notify RDESYNC RDHealed
+                          --   (Nothing, Just _) -> do
+                          --     db: set `ratchet_resync_state` to NULL
+                          --     notify RRESYNC RRComplete
+                          case aMessage of
+                            HELLO -> helloMsg >> ackDel msgId
+                            REPLY cReq -> replyMsg cReq >> ackDel msgId
+                            -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
+                            A_MSG body -> do
+                              logServer "<--" c srv rId "MSG <MSG>"
+                              notify $ MSG msgMeta msgFlags body
+                            QCONT addr -> qDuplex "QCONT" $ continueSending addr
+                            QADD qs -> qDuplex "QADD" $ qAddMsg qs
+                            QKEY qs -> qDuplex "QKEY" $ qKeyMsg qs
+                            QUSE qs -> qDuplex "QUSE" $ qUseMsg qs
+                            -- no action needed for QTEST
+                            -- any message in the new queue will mark it active and trigger deletion of the old queue
+                            QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
+                            EREADY _ -> ackDel msgId
                           where
                             qDuplex :: String -> (Connection 'CDuplex -> m ()) -> m ()
                             qDuplex name a = case conn of
@@ -1831,14 +1879,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                     notify $ MSG msgMeta msgFlags body
                                   _ -> pure ()
                             _ -> checkDuplicateHash e encryptedMsgHash >> ack
-                        Left (AGENT (A_CRYPTO _)) -> do -- differentiate A_CRYPTO errors?
+                        Left (AGENT (A_CRYPTO _e)) -> do
                           unlessM
                             (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash)
                             ( do
-                                -- generate keys for new ratchet
-                                -- db: set `rachet_resync`, delete and create `ratchets` record
-                                -- send AgentRatchetKey with new ratchet keys
-                                -- notify RESYNC
+                                -- TODO ratchet re-sync
+                                -- if (isNothing ratchetDesyncState):
+                                --   ratchetDesyncState = cryptoErrToDesyncState e
+                                --   db: set `ratchet_desync_state`
+                                --   notify RDESYNC ratchetDesyncState
                                 pure ()
                             )
                           ack
