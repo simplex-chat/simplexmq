@@ -83,8 +83,20 @@ data RcvQueue = RcvQueue
   deriving (Eq, Show)
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
-rcvQueueInfo RcvQueue {server, rcvSwchStatus} =
-  RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus}
+rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
+  RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus, canAbortSwitch = canAbortRcvSwitch rq}
+
+canAbortRcvSwitch :: RcvQueue -> Bool
+canAbortRcvSwitch = maybe False canAbort . rcvSwchStatus
+  where
+    canAbort = \case
+      RSSwitchStarted -> True
+      RSSendingQADD -> True
+      -- if switch is in RSSendingQUSE, a race condition with sender deleting the original queue is possible
+      RSSendingQUSE -> False
+      -- if switch is in RSReceivedMessage status, aborting switch (deleting new queue)
+      -- will break the connection because the sender would have original queue deleted
+      RSReceivedMessage -> False
 
 data ClientNtfCreds = ClientNtfCreds
   { -- | key pair to be used by the notification server to sign transmissions
