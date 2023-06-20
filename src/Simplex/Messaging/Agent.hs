@@ -206,7 +206,7 @@ ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> Conn
 ackMessageAsync c = withAgentEnv c .:. ackMessageAsync' c
 
 -- | Switch connection to the new receive queue
-switchConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ()
+switchConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ConnectionStats
 switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 
 -- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
@@ -534,15 +534,17 @@ deleteConnectionsAsync_ onSuccess c connIds = case connIds of
         deleteConnQueues c True rqs >> onSuccess
 
 -- | Add connection to the new receive queue
-switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ()
+switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ConnectionStats
 switchConnectionAsync' c corrId connId =
   withConnLock c connId "switchConnectionAsync" $
     withStore c (`getConn` connId) >>= \case
-      SomeConn _ (DuplexConnection _ rqs@(rq :| _rqs) _)
+      SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          void $ withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
+          rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
+          let rqs' = updatedQs rq1 rqs
+          pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwError $ CMD PROHIBITED
 
 newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)

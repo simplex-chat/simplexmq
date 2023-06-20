@@ -992,7 +992,8 @@ testSwitchConnection servers = do
 
 testFullSwitch :: AgentClient -> ByteString -> AgentClient -> ByteString -> Int64 -> ExceptT AgentErrorType IO ()
 testFullSwitch a bId b aId msgId = do
-  switchConnectionAsync a "" bId
+  stats <- switchConnectionAsync a "" bId
+  liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
   switchComplete a bId b aId
   exchangeGreetingsMsgId msgId a bId b aId
 
@@ -1043,7 +1044,8 @@ testSwitchAsync servers = do
   let withA' = sessionSubscribe withA [bId]
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
-    switchConnectionAsync a "" bId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
@@ -1086,7 +1088,8 @@ testSwitchDelete servers = do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
     disconnectAgentClient b
-    switchConnectionAsync a "" bId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     deleteConnectionAsync a bId
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
@@ -1103,20 +1106,22 @@ testAbortSwitchStarted servers = do
   let withA' = sessionSubscribe withA [bId]
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
-    switchConnectionAsync a "" bId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     -- repeat switch is prohibited
     Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ switchConnectionAsync a "" bId
     -- abort current switch
-    stats <- abortConnectionSwitch a bId
-    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing]
+    stats' <- abortConnectionSwitch a bId
+    liftIO $ rcvSwchStatuses' stats' `shouldMatchList` [Nothing]
   withB' $ \b -> do
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
     phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
   withA' $ \a -> do
     get a ##> ("", bId, ERR (AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}))
     -- repeat switch
-    switchConnectionAsync a "" bId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
@@ -1151,13 +1156,15 @@ testAbortSwitchStartedReinitiate servers = do
   let withA' = sessionSubscribe withA [bId]
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
-    switchConnectionAsync a "" bId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     -- abort current switch
-    stats <- abortConnectionSwitch a bId
-    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing]
+    stats' <- abortConnectionSwitch a bId
+    liftIO $ rcvSwchStatuses' stats' `shouldMatchList` [Nothing]
     -- repeat switch
-    switchConnectionAsync a "" bId
+    stats'' <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats'' `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
@@ -1216,7 +1223,8 @@ testCannotAbortSwitchSecured servers = do
   let withA' = sessionSubscribe withA [bId]
       withB' = sessionSubscribe withB [aId]
   withA' $ \a -> do
-    switchConnectionAsync a "" bId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
@@ -1254,9 +1262,11 @@ testSwitch2Connections servers = do
     pure (aId1, bId1, aId2, bId2)
   withA $ \a -> runRight_ $ do
     void $ subscribeConnections a [bId1, bId2]
-    switchConnectionAsync a "" bId1
+    stats1 <- switchConnectionAsync a "" bId1
+    liftIO $ rcvSwchStatuses' stats1 `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId1 SPStarted [Just RSSendingQADD, Nothing]
-    switchConnectionAsync a "" bId2
+    stats2 <- switchConnectionAsync a "" bId2
+    liftIO $ rcvSwchStatuses' stats2 `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId2 SPStarted [Just RSSendingQADD, Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     void $ subscribeConnections a [bId1, bId2]
@@ -1310,13 +1320,15 @@ testSwitch2ConnectionsAbort1 servers = do
   let withA' = sessionSubscribe withA [bId1, bId2]
       withB' = sessionSubscribe withB [aId1, aId2]
   withA' $ \a -> do
-    switchConnectionAsync a "" bId1
+    stats1 <- switchConnectionAsync a "" bId1
+    liftIO $ rcvSwchStatuses' stats1 `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId1 SPStarted [Just RSSendingQADD, Nothing]
-    switchConnectionAsync a "" bId2
+    stats2 <- switchConnectionAsync a "" bId2
+    liftIO $ rcvSwchStatuses' stats2 `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId2 SPStarted [Just RSSendingQADD, Nothing]
     -- abort switch of second connection
-    stats <- abortConnectionSwitch a bId2
-    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing]
+    stats2' <- abortConnectionSwitch a bId2
+    liftIO $ rcvSwchStatuses' stats2' `shouldMatchList` [Nothing]
   withB' $ \b -> do
     liftIO . getInAnyOrder b $
       [ switchPhaseSndP aId1 SPStarted [Just SSSendingQKEY, Nothing],
