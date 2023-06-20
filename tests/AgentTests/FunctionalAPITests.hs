@@ -610,15 +610,20 @@ testDecryptionError t = do
 
       8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
       get alice ##> ("", bobId, SENT 8)
-      -- TODO ratchet re-sync
-      -- bob and alice should get RDESYNC RDResyncRequired, then test ratchet re-sync
-      -- get bob2 =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == aliceId; _ -> False
-      liftIO $ noMessages bob2 "bob can't decrypt alice's message after ratchet de-sync"
+      get bob2 =##> ratchetDesyncP aliceId RDResyncRequired
 
       6 <- sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
       get bob2 ##> ("", aliceId, SENT 6)
-      -- get alice =##> \case ("", c, ERR AGENT {agentErr = A_CRYPTO {cryptoErr = RATCHET_HEADER}}) -> c == bobId; _ -> False
-      liftIO $ noMessages alice "alice can't decrypt bob's message after ratchet de-sync"
+      get alice =##> ratchetDesyncP bobId RDResyncRequired
+
+      -- TODO ratchet re-sync: test ratchet re-sync
+      pure ()
+
+ratchetDesyncP :: ConnId -> RatchetDesyncState -> AEntityTransmission 'AEConn -> Bool
+ratchetDesyncP cId rds = \case
+  (_, cId', RDESYNC rds' ConnectionStats {ratchetDesyncState, ratchetResyncState}) ->
+    cId' == cId && rds' == rds && ratchetDesyncState == Just rds && isNothing ratchetResyncState
+  _ -> False
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
@@ -1260,43 +1265,44 @@ testSwitch2Connections servers = do
     (aId2, bId2) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId2 b aId2
     pure (aId1, bId1, aId2, bId2)
-  withA $ \a -> runRight_ $ do
-    void $ subscribeConnections a [bId1, bId2]
+  let withA' = sessionSubscribe withA [bId1, bId2]
+      withB' = sessionSubscribe withB [aId1, aId2]
+  withA' $ \a -> do
     stats1 <- switchConnectionAsync a "" bId1
     liftIO $ rcvSwchStatuses' stats1 `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId1 SPStarted [Just RSSendingQADD, Nothing]
     stats2 <- switchConnectionAsync a "" bId2
     liftIO $ rcvSwchStatuses' stats2 `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId2 SPStarted [Just RSSendingQADD, Nothing]
-  withA $ \a -> withB $ \b -> runRight_ $ do
-    void $ subscribeConnections a [bId1, bId2]
-    void $ subscribeConnections b [aId1, aId2]
-
+  withB' $ \b -> do
     liftIO . getInAnyOrder b $
       [ switchPhaseSndP aId1 SPStarted [Just SSSendingQKEY, Nothing],
         switchPhaseSndP aId1 SPConfirmed [Just SSSendingQKEY, Nothing],
         switchPhaseSndP aId2 SPStarted [Just SSSendingQKEY, Nothing],
         switchPhaseSndP aId2 SPConfirmed [Just SSSendingQKEY, Nothing]
       ]
-
+  withA' $ \a -> do
     liftIO . getInAnyOrder a $
       [ switchPhaseRcvP bId1 SPConfirmed [Just RSSendingQADD, Nothing],
         switchPhaseRcvP bId1 SPSecured [Just RSSendingQUSE, Nothing],
         switchPhaseRcvP bId2 SPConfirmed [Just RSSendingQADD, Nothing],
         switchPhaseRcvP bId2 SPSecured [Just RSSendingQUSE, Nothing]
       ]
-
+  withB' $ \b -> do
     liftIO . getInAnyOrder b $
       [ switchPhaseSndP aId1 SPSecured [Just SSSendingQTEST, Nothing],
         switchPhaseSndP aId1 SPCompleted [Nothing],
         switchPhaseSndP aId2 SPSecured [Just SSSendingQTEST, Nothing],
         switchPhaseSndP aId2 SPCompleted [Nothing]
       ]
-
+  withA' $ \a -> do
     liftIO . getInAnyOrder a $
       [ switchPhaseRcvP bId1 SPCompleted [Nothing],
         switchPhaseRcvP bId2 SPCompleted [Nothing]
       ]
+  withA $ \a -> withB $ \b -> runRight_ $ do
+    void $ subscribeConnections a [bId1, bId2]
+    void $ subscribeConnections b [aId1, aId2]
 
     exchangeGreetingsMsgId 10 a bId1 b aId1
     exchangeGreetingsMsgId 10 a bId2 b aId2

@@ -53,6 +53,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     getDeletedConnIds,
+    setConnRatchetDesync,
+    setConnRatchetResync,
     getRcvConn,
     getRcvQueueById,
     getSndQueueById,
@@ -107,7 +109,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Double ratchet persistence
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
+    createRatchetX3dhKeys',
+    getRatchetX3dhKeys',
     createRatchet,
+    deleteRatchet,
     getRatchet,
     getSkippedMsgKeys,
     updateRatchet,
@@ -1030,6 +1035,23 @@ getRatchetX3dhKeys db connId =
       Right (Just k1, Just k2) -> Right (k1, k2)
       _ -> Left SEX3dhKeysNotFound
 
+createRatchetX3dhKeys' :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> C.PublicKeyX448 -> C.PublicKeyX448 -> IO ()
+createRatchetX3dhKeys' db connId x3dhPrivKey1 x3dhPrivKey2 x3dhPubKey1 x3dhPubKey2 =
+  DB.execute
+    db
+    "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2, x3dh_pub_key_1, x3dh_pub_key_2) VALUES (?,?,?,?,?)"
+    (connId, x3dhPrivKey1, x3dhPrivKey2, x3dhPubKey1, x3dhPubKey2)
+
+getRatchetX3dhKeys' :: DB.Connection -> ConnId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448))
+getRatchetX3dhKeys' db connId =
+  fmap hasKeys $
+    firstRow id SEX3dhKeysNotFound $
+      DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2, x3dh_pub_key_1, x3dh_pub_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
+  where
+    hasKeys = \case
+      Right (Just pk1, Just pk2, Just k1, Just k2) -> Right (pk1, pk2, k1, k2)
+      _ -> Left SEX3dhKeysNotFound
+
 createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
 createRatchet db connId rc =
   DB.executeNamed
@@ -1043,6 +1065,10 @@ createRatchet db connId rc =
         x3dh_priv_key_2 = NULL
     |]
     [":conn_id" := connId, ":ratchet_state" := rc]
+
+deleteRatchet :: DB.Connection -> ConnId -> IO ()
+deleteRatchet db connId =
+  DB.execute db "DELETE FROM ratchets WHERE conn_id = ?" (Only connId)
 
 getRatchet :: DB.Connection -> ConnId -> IO (Either StoreError RatchetX448)
 getRatchet db connId =
@@ -1642,16 +1668,35 @@ getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAn
     handleDBError = pure . Left . SEInternal . bshow
 
 getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
-getConnData dbConn connId' =
-  maybeFirstRow cData $ DB.query dbConn "SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, deleted FROM connections WHERE conn_id = ?;" (Only connId')
+getConnData db connId' =
+  maybeFirstRow cData $
+    DB.query
+      db
+      [sql|
+        SELECT
+          user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, deleted,
+          ratchet_desync_state, ratchet_resync_state
+        FROM connections
+        WHERE conn_id = ?
+      |]
+      (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, deleted) = (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, deleted}, cMode)
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, deleted, ratchetDesyncState, ratchetResyncState) =
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, deleted, ratchetDesyncState, ratchetResyncState}, cMode)
 
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
+
+setConnRatchetDesync :: DB.Connection -> ConnId -> Maybe RatchetDesyncState -> IO ()
+setConnRatchetDesync db connId ratchetDesyncState =
+  DB.execute db "UPDATE connections SET ratchet_desync_state = ? WHERE conn_id = ?" (ratchetDesyncState, connId)
+
+setConnRatchetResync :: DB.Connection -> ConnId -> Maybe RatchetResyncState -> IO ()
+setConnRatchetResync db connId ratchetResyncState =
+  DB.execute db "UPDATE connections SET ratchet_resync_state = ? WHERE conn_id = ?" (ratchetResyncState, connId)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

@@ -25,7 +25,9 @@ CREATE TABLE connections(
   enable_ntfs INTEGER,
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
   user_id INTEGER CHECK(user_id NOT NULL)
-  REFERENCES users ON DELETE CASCADE
+  REFERENCES users ON DELETE CASCADE,
+  ratchet_desync_state TEXT,
+  ratchet_resync_state TEXT
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -154,6 +156,9 @@ CREATE TABLE ratchets(
   -- ratchet is initially empty on the receiving side(the side offering the connection)
   ratchet_state BLOB,
   e2e_version INTEGER NOT NULL DEFAULT 1
+  ,
+  x3dh_pub_key_1 BLOB,
+  x3dh_pub_key_2 BLOB
 ) WITHOUT ROWID;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,
