@@ -1062,7 +1062,9 @@ createRatchet db connId rc =
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = :ratchet_state,
         x3dh_priv_key_1 = NULL,
-        x3dh_priv_key_2 = NULL
+        x3dh_priv_key_2 = NULL,
+        x3dh_pub_key_1 = NULL,
+        x3dh_pub_key_2 = NULL
     |]
     [":conn_id" := connId, ":ratchet_state" := rc]
 
@@ -1674,15 +1676,15 @@ getConnData db connId' =
       db
       [sql|
         SELECT
-          user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, deleted,
-          ratchet_desync_state, ratchet_resync_state
+          user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake,
+          last_external_snd_msg_id, deleted, ratchet_desync_state, ratchet_resync_state
         FROM connections
         WHERE conn_id = ?
       |]
       (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, deleted, ratchetDesyncState, ratchetResyncState) =
-      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, deleted, ratchetDesyncState, ratchetResyncState}, cMode)
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetDesyncState, ratchetResyncState) =
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetDesyncState, ratchetResyncState}, cMode)
 
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
