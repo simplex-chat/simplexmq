@@ -1816,7 +1816,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                             then do
                               (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
                               rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
-                              let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Nothing} :: ConnData
+                              let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreed} :: ConnData
                                   conn' = DuplexConnection cData' rqs sqs
                               notify . RRESYNC RRAgreed $ connectionStats conn'
                               withStore' c $ \db -> do
@@ -1828,7 +1828,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                             else do
                               (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
                               rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
-                              let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Nothing} :: ConnData
+                              let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreed} :: ConnData
                                   conn' = DuplexConnection cData' rqs sqs
                               notify . RRESYNC RRAgreed $ connectionStats conn'
                               withStore' c $ \db -> do

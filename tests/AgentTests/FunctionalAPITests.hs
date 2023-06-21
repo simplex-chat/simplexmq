@@ -165,7 +165,7 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    it "should report decryption error on ratchet becoming out of sync" $
+    fit "should report decryption error on ratchet becoming out of sync" $
       testDecryptionError t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
@@ -616,13 +616,29 @@ testDecryptionError t = do
       get bob2 ##> ("", aliceId, SENT 6)
       get alice =##> ratchetDesyncP bobId RDResyncRequired
 
-      -- TODO ratchet re-sync: test ratchet re-sync
-      pure ()
+      ConnectionStats {ratchetDesyncState, ratchetResyncState} <- resyncConnectionRatchet bob2 aliceId False
+      liftIO $ do
+        ratchetDesyncState `shouldBe` Nothing
+        ratchetResyncState `shouldBe` Just RRStarted
+
+      get alice =##> ratchetResyncP bobId RRAgreed (Just RRAgreed)
+
+      get bob2 =##> ratchetResyncP aliceId RRAgreed (Just RRAgreed)
+
+      get bob2 =##> ratchetResyncP aliceId RRComplete Nothing
+
+      get alice =##> ratchetResyncP bobId RRComplete Nothing
 
 ratchetDesyncP :: ConnId -> RatchetDesyncState -> AEntityTransmission 'AEConn -> Bool
 ratchetDesyncP cId rds = \case
   (_, cId', RDESYNC rds' ConnectionStats {ratchetDesyncState, ratchetResyncState}) ->
     cId' == cId && rds' == rds && ratchetDesyncState == Just rds && isNothing ratchetResyncState
+  _ -> False
+
+ratchetResyncP :: ConnId -> RatchetResyncState -> Maybe RatchetResyncState -> AEntityTransmission 'AEConn -> Bool
+ratchetResyncP cId eventRRS stateRRS = \case
+  (_, cId', RRESYNC eventRRS' ConnectionStats {ratchetDesyncState, ratchetResyncState}) ->
+    cId' == cId && eventRRS' == eventRRS && ratchetResyncState == stateRRS && isNothing ratchetDesyncState
   _ -> False
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)

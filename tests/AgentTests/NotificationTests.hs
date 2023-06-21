@@ -496,7 +496,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
           get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
           ackMessage a bId msgId
     testMessage "hello"
-    switchConnectionAsync a "" bId
+    _ <- switchConnectionAsync a "" bId
     switchComplete a bId b aId
     liftIO $ threadDelay 500000
     testMessage "hello again"
