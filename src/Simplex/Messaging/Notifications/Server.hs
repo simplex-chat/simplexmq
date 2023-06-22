@@ -150,9 +150,8 @@ resubscribe NtfSubscriber {newSubQ} subs = do
   subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
   let ss = L.groupBy ((==) `on` ntfSubServer) subs'
   forM_ ss $ \serverSubs -> do
-    -- whenM (ntfShouldSubscribe <$> readTVarIO (subStatus sub)) $ do
-      atomically $ writeTBQueue newSubQ $ L.map NtfSub serverSubs
-      threadDelay d
+    atomically $ writeTBQueue newSubQ $ L.map NtfSub serverSubs
+    threadDelay d
   liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: NtfSubscriber -> M ()

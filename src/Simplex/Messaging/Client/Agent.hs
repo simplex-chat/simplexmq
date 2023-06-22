@@ -20,7 +20,7 @@ import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.List (partition)
+import Data.List (find, partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -43,6 +43,7 @@ import UnliftIO (async)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Data.Either (isLeft)
 
 type SMPClientVar = TMVar (Either SMPClientError SMPClient)
 
@@ -206,40 +207,46 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
 
     reconnectClient :: ExceptT SMPClientError IO ()
     reconnectClient = do
-      withSMP ca srv $ \smp -> liftIO $ do
-        notify $ CAReconnected srv
+      withSMP ca srv $ \smp -> do
+        liftIO . notify $ CAReconnected srv
         cs_ <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
         forM_ cs_ $ \cs -> do
-          let (nSubs, rSubs) = partition (\(sub, _) -> subType sub) $ M.assocs cs
-          subscribe_ smp SPNotifier nSubs
-          subscribe_ smp SPRecipient rSubs
+          let (nSubs, rSubs) = partition (isNotifier . fst . fst) $ M.assocs cs
+          nRs <- liftIO $ subscribe_ smp SPNotifier nSubs
+          rRs <- liftIO $ subscribe_ smp SPRecipient rSubs
+          case find isLeft $ nRs <> rRs of
+            Just (Left e) -> throwE e
+            _ -> pure ()
       where
-        subType (party, _) = case party of
+        isNotifier = \case
           SPNotifier -> True
           SPRecipient -> False
 
-        subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> IO ()
+        subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> IO [Either SMPClientError ()]
         subscribe_ smp party subs = do
           subs' <- filterM (atomically . hasSub (srvSubs ca) srv . fst) subs
           case L.nonEmpty subs' of
             Just subs'' -> do
               let subs3 = L.map (first snd) subs''
               rs <- L.zip subs3 <$> smpSubscribeQueues party ca smp srv subs3
-              forM_ rs $ \(sub, r) -> do
+              rs' <- forM rs $ \(sub, r) -> do
                 let sub' = first (party,) sub
                     s = fst sub'
                 case snd r of
                   Right () -> do
                     atomically $ addSubscription ca srv sub'
                     notify $ CAResubscribed srv s
+                    pure $ Right ()
                   Left e -> do
                     case e of
-                      PCEResponseTimeout -> pure ()
-                      PCENetworkError -> pure ()
+                      PCEResponseTimeout -> pure $ Left e
+                      PCENetworkError -> pure $ Left e
                       _ -> do
                         notify $ CASubError srv s e
                         atomically $ removePendingSubscription ca srv s
-            _ -> pure ()
+                        pure $ Right ()
+              pure $ L.toList rs'
+            _ -> pure []
 
     notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
