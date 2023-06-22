@@ -18,10 +18,14 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Function (on)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intercalate)
+import Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -55,6 +59,7 @@ import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId, threadDelay)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
+import Data.Bifunctor (second)
 
 runNtfServer :: NtfServerConfig -> IO ()
 runNtfServer cfg = do
@@ -142,9 +147,11 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do
   d <- asks $ resubscribeDelay . config
-  forM_ subs $ \sub@NtfSubData {} ->
-    whenM (ntfShouldSubscribe <$> readTVarIO (subStatus sub)) $ do
-      atomically $ writeTBQueue newSubQ $ NtfSub sub
+  subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
+  let ss = L.groupBy ((==) `on` ntfSubServer) subs'
+  forM_ ss $ \serverSubs -> do
+    -- whenM (ntfShouldSubscribe <$> readTVarIO (subStatus sub)) $ do
+      atomically $ writeTBQueue newSubQ $ L.map NtfSub serverSubs
       threadDelay d
   liftIO $ logInfo "SMP connections resubscribed"
 
@@ -154,11 +161,15 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
   where
     subscribe :: M ()
     subscribe =
-      forever $
-        atomically (readTBQueue newSubQ) >>= \case
-          sub@(NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer}}) -> do
-            SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber smpServer
-            atomically $ writeTQueue subscriberSubQ sub
+      forever $ do
+        subs <- atomically (readTBQueue newSubQ)
+        let ss = L.groupBy ((==) `on` server) subs
+        forM_ ss $ \serverSubs -> do
+          SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber $ server $ L.head serverSubs
+          atomically $ writeTQueue subscriberSubQ serverSubs
+
+    server :: NtfEntityRec 'Subscription -> SMPServer
+    server (NtfSub sub) = ntfSubServer sub
 
     getSMPSubscriber :: SMPServer -> M SMPSubscriber
     getSMPSubscriber smpServer =
@@ -173,21 +184,31 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     runSMPSubscriber :: SMPSubscriber -> M ()
     runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
-      forever $
-        atomically (peekTQueue subscriberSubQ)
-          >>= \(NtfSub NtfSubData {smpQueue, notifierKey}) -> do
-            updateSubStatus smpQueue NSPending
-            let SMPQueueNtf {smpServer, notifierId} = smpQueue
-            liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
-              Right _ -> do
-                updateSubStatus smpQueue NSActive
-                void . atomically $ readTQueue subscriberSubQ
-              Left err -> do
-                handleSubError smpQueue err
-                case err of
-                  PCEResponseTimeout -> pure ()
-                  PCENetworkError -> pure ()
-                  _ -> void . atomically $ readTQueue subscriberSubQ
+      forever $ do
+        subs <- atomically (peekTQueue subscriberSubQ)
+        let subs' = L.map (\(NtfSub sub) -> sub) subs
+        mapM_ (\NtfSubData {smpQueue} -> updateSubStatus smpQueue NSPending) subs'
+        rs <- liftIO $ subscribeQueues (server $ L.head subs) subs'
+        subs_ <- L.nonEmpty <$> foldM process [] rs
+        atomically $ do
+          void $ readTQueue subscriberSubQ
+          mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) subs_
+      where
+        process subs (sub@NtfSubData {smpQueue}, r) = case r of
+          Right _ -> updateSubStatus smpQueue NSActive $> subs
+          Left err -> do
+            handleSubError smpQueue err
+            pure $ case err of
+              PCEResponseTimeout -> sub : subs
+              PCENetworkError -> sub : subs
+              _ -> subs
+
+    -- | Subscribe to queues. The list of results can have a different order.
+    subscribeQueues :: SMPServer -> NonEmpty NtfSubData -> IO (NonEmpty (NtfSubData, Either SMPClientError ()))
+    subscribeQueues srv subs =
+      L.map (second snd) . L.zip subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
+      where
+        sub NtfSubData {smpQueue = SMPQueueNtf {notifierId}, notifierKey} = (notifierId, notifierKey)
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
@@ -504,7 +525,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         sub <- atomically $ mkNtfSubData subId newSub
         resp <-
           atomically (addNtfSubscription st subId sub) >>= \case
-            Just _ -> atomically (writeTBQueue newSubQ $ NtfSub sub) $> NRSubId subId
+            Just _ -> atomically (writeTBQueue newSubQ [NtfSub sub]) $> NRSubId subId
             _ -> pure $ NRErr AUTH
         withNtfLog (`logCreateSubscription` sub)
         incNtfStat subCreated
