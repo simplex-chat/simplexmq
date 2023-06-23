@@ -1850,7 +1850,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               resetRatchetDesync = do
                                 case (ratchetDesyncState, ratchetResyncState) of
                                   (Just _, Just _) ->
-                                    -- shouldn't happen, but if it does we correctly update and report state
                                     qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
                                       let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Nothing} :: ConnData
                                           conn' = DuplexConnection cData' rqs sqs
@@ -1886,6 +1885,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                           Left (AGENT (A_CRYPTO e)) -> do
                             unlessM
                               (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash)
+                              -- TODO ratchet re-sync: if ratchetDesyncState was RDResyncAllowed and new error implies RDResyncRequired, update and notify
                               (when (isNothing ratchetDesyncState && ratchetResyncState /= Just RRStarted) notifyRDESYNC)
                             ack
                             where

@@ -165,7 +165,7 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    it "should report ratchet de-synchronization, re-synchronize ratchets" $
+    fit "should report ratchet de-synchronization, re-synchronize ratchets" $
       testRatchetResync t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $

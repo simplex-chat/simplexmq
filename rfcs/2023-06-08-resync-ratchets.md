@@ -164,6 +164,146 @@ After agent receives `EREADY` (or any other message that successfully decrypts):
 - Notify client with `RRESYNC RRComplete`.
 - If ratchet was initialized as receiving, send reply `EREADY` message.
 
+### State transitions
+
+For initiating party:
+
+```
+   +-------------+
+   | Ratchet ok  |
+   +-------------+
+          |
+          | message received, decryption error
+          V
++--------------------+
+| Re-sync required / |------------------------+
+|  Re-sync allowed   |                        |
++--------------------+                        | alternative - message received,
+          |                                   | successfully decrypted
+          | re-sync started by client         |
+          V                                   V
+ +------------------+                  +-------------+
+ | Re-sync started  |                  | Ratchet ok  |
+ +------------------+                  +-------------+
+          |
+          | other party replied with new ratchet key
+          V
+  +----------------+
+  | Re-sync agreed |
+  |   snd / rcv    |
+  +----------------+
+          |
+          | message received, successfully decrypted
+          | (can be, but not necessarily, EREADY)
+          V
+    +------------+
+    | Ratchet ok |
+    +------------+
+```
+
+For replying party:
+
+```
+   +-------------+
+   | Ratchet ok  |
+   +-------------+
+          |
+          | other party sent new ratchet key
+          V
+  +----------------+
+  | Re-sync agreed |
+  |   snd / rcv    |
+  +----------------+
+          |
+          | message received, successfully decrypted
+          | (can be, but not necessarily, EREADY)
+          V
+   +-------------+
+   | Ratchet ok  |
+   +-------------+
+```
+
+### Ratchet state model
+
+Above we considered model with separate de-sync and re-sync state.
+
+| Desync \ Resync      | Nothing | RRStarted | RRAgreedSnd | RRAgreedRcv |
+| ---                  |  :---:  |   :---:   |    :---:    |    :---:    |
+| **Nothing**          | 1       | 3         | 4           | 4           |
+| **RDResyncAllowed**  | 2       |           | 5           | 5           |
+| **RDResyncRequired** | 2       |           | 5           | 5           |
+
+1: Ratchet is ok.
+
+2: Re-sync diagnosed, not in progress.
+
+3: Rs-sync started, diagnosing de-sync is prohibited.
+
+4: Re-sync agreed.
+
+5: Re-sync agreed, new de-sync is diagnosed.
+
+Combination 5 is possible in case de-sync was diagnosed before message that could be decrypted is received, for example if `EREADY` failed to deliver and no other message followed. We shouldn't prohibit diagnosing de-sync in this case, because agent may never exit "Agreed" state (if new decryptable message is never received). We also shouldn't overwrite/forget state of re-sync, even if we diagnose new possible de-sync, because if the decryptable `EREADY` is received and ratchet is in `RRAgreedRcv` state, it should respond with reply `EREADY`.
+
+Some combinations should be impossible:
+
+  - `RDResyncAllowed` with `RRStarted`.
+
+  - `RDResyncRequired` with `RRStarted`.
+
+`RDHealed` is equivalent to `Nothing` and only used for `RDESYNC` event, `Maybe RatchetDesyncState` can be replaced with `RatchetDesyncState`, with single new constructor `RDNoDesync` replacing `Nothing` and `RDHealed`.
+
+`RRComplete` is equivalent to `Nothing` and only used for `RRESYNC` event, `Maybe RatchetResyncState` can be replaced with `RatchetResyncState`, with single new constructor `RDNoResync` replacing `Nothing` and `RRComplete`.
+
+Another option is two have a single state variable describing ratchet.
+
+```haskell
+data RatchetState
+  = RSOk
+  | RSResyncAllowed
+  | RSResyncRequired
+  | RSResyncStarted
+  | RRResyncAgreedSnd
+  | RRResyncAgreedRcv
+
+-- When `resyncConnectionRatchet` is not prohibited. Can override with `force`.
+-- Currently we check:`(isJust ratchetDesyncState || force) && ratchetResyncState /= Just RRStarted`.
+resyncConnectionRatchetAllowed :: RatchetState -> Bool
+resyncConnectionRatchetAllowed = \case
+  RSOk -> False
+  RSResyncAllowed -> True
+  RSResyncRequired -> True
+  RSResyncStarted -> False -- `force` shouldn't override
+  RRResyncAgreedSnd -> False
+  RRResyncAgreedRcv -> False
+
+-- When we register and notify about ratchet de-synchronization.
+-- Currently we check: `(isNothing ratchetDesyncState && ratchetResyncState /= Just RRStarted)`.
+-- We should also allow to update from Allowed to Required.
+shouldNotifyRDESYNC :: RatchetState -> Bool
+shouldNotifyRDESYNC = \case
+  RSOk -> True
+  RSResyncAllowed -> False -- only if new error implies Required
+  RSResyncRequired -> False
+  RSResyncStarted -> False
+  RRResyncAgreedSnd -> True
+  RRResyncAgreedRcv -> True
+
+-- When we prohibit connection switch, for `checkRatchetDesync`.
+-- Currently we check: `(ratchetDesyncState == Just RDResyncRequired || ratchetResyncState == Just RRStarted)`
+-- Also use in `runSmpQueueMsgDelivery` to pause delivery?
+ratchetDesynced :: RatchetState -> Bool
+ratchetDesynced = \case
+  RSOk -> False
+  RSResyncAllowed -> False
+  RSResyncRequired -> True
+  RSResyncStarted -> True
+  RRResyncAgreedSnd -> False
+  RRResyncAgreedRcv -> False
+```
+
+Having a single state variable limits differentiation described for combination 5 in matrix. It also limits possible differentiations in client between events when ratchet is healed on its own, and when ratchet re-sync is completed after agents negotiation. Overall, since matrix is not very sparse and allows for more fine-grained decision-making, having separate state variables for de-sync and re-sync seems preferred.
+
 ### Skipped messages
 
 Options:
