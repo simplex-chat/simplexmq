@@ -211,7 +211,8 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
         liftIO . notify $ CAReconnected srv
         cs_ <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
         forM_ cs_ $ \cs -> do
-          let (nSubs, rSubs) = partition (isNotifier . fst . fst) $ M.assocs cs
+          subs' <- filterM (fmap not . atomically . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
+          let (nSubs, rSubs) = partition (isNotifier . fst . fst) subs'
           nRs <- liftIO $ subscribe_ smp SPNotifier nSubs
           rRs <- liftIO $ subscribe_ smp SPRecipient rSubs
           case find isLeft $ nRs <> rRs of
@@ -223,12 +224,11 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
           SPRecipient -> False
 
         subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> IO [Either SMPClientError ()]
-        subscribe_ smp party subs = do
-          subs' <- filterM (atomically . hasSub (srvSubs ca) srv . fst) subs
-          case L.nonEmpty subs' of
-            Just subs'' -> do
-              let subs3 = L.map (first snd) subs''
-              rs <- L.zip subs3 <$> smpSubscribeQueues party ca smp srv subs3
+        subscribe_ smp party subs =
+          case L.nonEmpty subs of
+            Just subs' -> do
+              let subs'' = L.map (first snd) subs'
+              rs <- L.zip subs'' <$> smpSubscribeQueues party ca smp srv subs''
               rs' <- forM rs $ \(sub, r) -> do
                 let sub' = first (party,) sub
                     s = fst sub'
@@ -246,7 +246,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
                         atomically $ removePendingSubscription ca srv s
                         pure $ Right ()
               pure $ L.toList rs'
-            _ -> pure []
+            Nothing -> pure []
 
     notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
