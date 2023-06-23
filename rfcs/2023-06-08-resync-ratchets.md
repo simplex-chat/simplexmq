@@ -66,7 +66,7 @@ Agent has both keys if:
 - It initiates with the first key, and then receives the second key;
 - It receives the first key and then generates its own in response.
 
-After agent has both keys, it initiates new ratchet depending on keys' hashes. The agent that sent the key with the lower hash should use `x3dhRcv` function, the agent that sent the key with the greater hash should use `x3dhSnd` (or vice versa - but they should deterministically choose different sides).
+After agent has both keys, it initiates new ratchet depending on keys ordering. The agent that sent the lower key should use `initRcvRatchet` function, the agent that sent the greater key should use `initSndRatchet` (or vice versa - but they should deterministically choose different sides).
 
 \*\*\*\*\*
 
@@ -98,7 +98,8 @@ New event - `RRESYNC :: RatchetResyncState -> ConnectionStats -> ACommand Agent 
 ```haskell
 data RatchetResyncState
   = RRStarted
-  | RRAgreed
+  | RRAgreedSnd
+  | RRAgreedRcv
   | RRComplete
 ```
 
@@ -115,7 +116,7 @@ When called, it should:
 - Return updated `ConnectionStats` to client.
 
 > On `RRESYNC` events chat should create chat item, and reset connection verification.
-> Parameterized `RRESYNC` allows to distinguish: start and end of re-synchronization for initiating party; chat item direction - `RRESYNC RRStarted` is snd, `RRESYNC RRAgreed` and `RRESYNC RRComplete` are rcv (`RRESYNC RRAgreed` chat item could be omitted).
+> Parameterized `RRESYNC` allows to distinguish: start and end of re-synchronization for initiating party; chat item direction - `RRESYNC RRStarted` is snd, `RRESYNC RRAgreedSnd/Rcv` and `RRESYNC RRComplete` are rcv (`RRESYNC RRAgreedSnd/Rcv` chat item could be omitted).
 
 AgentRatchetKey is a new message on the level of AgentMsgEnvelope - encrypted with queue level e2e encryption, but not with connection level e2e encryption (since ratchet de-synchronized).
 
@@ -131,13 +132,13 @@ data AgentMsgEnvelope
 
 On receiving `AgentRatchetKey`, if the receiving client hasn't started the ratchet re-synchronization itself (check `ratchet_resync_state`), it should:
 
-- Generate new keys and compute new shared secret, initializing ratchet based on key hashes comparison.
+- Generate new keys and compute new shared secret, initializing ratchet based on keys comparison.
 - Update database connection state.
-  - Set `ratchet_resync_state` to `RRAgreed`.
+  - Set `ratchet_resync_state` to `RRAgreedSnd/Rcv` (depending on whether ratchet was initialized as sending or receiving).
   - Delete old ratchet from `ratchets`, create new ratchet.
 - Reply with its own `AgentRatchetKey`.
-- Notify client with `RRESYNC RRAgreed`.
-- Send `EREADY` message, notifying other agent ratchet is re-synced.
+- Notify client with `RRESYNC RRAgreedSnd/Rcv`.
+- If ratchet was initialized as sending, send `EREADY` message, notifying other agent ratchet is re-synced.
 
 New agent message:
 
@@ -150,17 +151,18 @@ data AMessage
 
 On receiving `AgentRatchetKey`, if the receiving client started re-sync:
 
-- Compute new shared secret, initializing ratchet based on key hashes comparison.
+- Compute new shared secret, initializing ratchet based on keys comparison.
 - Update database connection state.
-  - Set `ratchet_resync_state` to `RRAgreed`.
+  - Set `ratchet_resync_state` to `RRAgreedSnd/Rcv` (depending on whether ratchet was initialized as sending or receiving).
   - Update ratchet.
-- Notify client with `RRESYNC RRAgreed`.
-- Send `EREADY` message.
+- Notify client with `RRESYNC RRAgreedSnd/Rcv`.
+- If ratchet was initialized as sending, send `EREADY` message.
 
 After agent receives `EREADY` (or any other message that successfully decrypts):
 
 - Reset `ratchet_resync_state` to NULL.
 - Notify client with `RRESYNC RRComplete`.
+- If ratchet was initialized as receiving, send reply `EREADY` message.
 
 ### Skipped messages
 

@@ -1058,7 +1058,7 @@ getPendingMsgQ c SndQueue {server, sndId} = do
       TM.insert qKey q $ smpQueueMsgQueues c
       pure q
 
--- TODO ratchet re-sync: pause delivery when ratchet is de-synchronized
+-- TODO ratchet re-sync: pause delivery when ratchet is de-synchronized, except for EREADY?
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq = do
   (mq, qLock) <- atomically $ getPendingMsgQ c sq
@@ -1781,7 +1781,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
     processSMP
       rq@RcvQueue {e2ePrivKey, e2eDhSecret, status}
       conn
-      cData@ConnData {userId, connId, duplexHandshake, ratchetDesyncState, ratchetResyncState} = withConnLock c connId "processSMP" $ do
+      cData@ConnData {userId, connId, duplexHandshake, ratchetDesyncState, ratchetResyncState, lastExternalSndId} = withConnLock c connId "processSMP" $ do
         case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             handleNotifyAck $
@@ -1808,49 +1808,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                       _ -> prohibited >> ack
                   (Just e2eDh, Nothing) -> do
                     decryptClientMessage e2eDh clientMsg >>= \case
-                      (SMP.PHEmpty, AgentRatchetKey {e2eEncryption = e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion _ _)}) ->
-                        qDuplex "AgentRatchetKey" $ \(DuplexConnection _ rqs sqs@(sq :| _sqs)) -> do
-                          AgentConfig {e2eEncryptVRange} <- asks config
-                          unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
-                          if ratchetResyncState == Just RRStarted
-                            then do
-                              (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
-                              rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
-                              let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreed} :: ConnData
-                                  conn' = DuplexConnection cData' rqs sqs
-                              notify . RRESYNC RRAgreed $ connectionStats conn'
-                              withStore' c $ \db -> do
-                                setConnRatchetDesync db connId Nothing
-                                setConnRatchetResync db connId (Just RRAgreed)
-                                createRatchet db connId rc
-                              let ConnData {lastExternalSndId} = cData'
-                              void . enqueueMessages c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
-                            else do
-                              (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
-                              rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
-                              let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreed} :: ConnData
-                                  conn' = DuplexConnection cData' rqs sqs
-                              notify . RRESYNC RRAgreed $ connectionStats conn'
-                              withStore' c $ \db -> do
-                                setConnRatchetDesync db connId Nothing
-                                setConnRatchetResync db connId (Just RRAgreed)
-                                deleteRatchet db connId
-                                createRatchet db connId rc
-                              let ConnData {connAgentVersion, lastExternalSndId} = cData'
-                                  msgBody' = smpEncode $ AgentRatchetKey {agentVersion = connAgentVersion, e2eEncryption = e2eParams, info = ""}
-                              -- TODO ratchet re-sync: 1) send via all snd queues? -> deduplicate on receiving 2) enqueue instead of send?
-                              sendAgentMessage c sq MsgFlags {notification = True} msgBody'
-                              void . enqueueMessages c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
-                        where
-                          -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
-                          -- to determine ratchet initilization ordering
-                          initRatchet :: VersionRange -> C.PublicKeyX448 -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> CR.E2ERatchetParams 'C.X448 -> m (CR.Ratchet 'C.X448)
-                          initRatchet e2eEncryptVRange k1 pk1 pk2 e2eParamsRcv@(CR.E2ERatchetParams _ k1Rcv k2Rcv) = do
-                            if C.pubKeyBytes k1 <= C.pubKeyBytes k1Rcv
-                              then pure $ CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eParamsRcv
-                              else do
-                                (_, rcDHRs) <- liftIO C.generateKeyPair'
-                                pure $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eParamsRcv
+                      (SMP.PHEmpty, AgentRatchetKey {e2eEncryption}) ->
+                        newRatchetKey e2eEncryption >> ack
                       (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
                         -- primary queue is set as Active in helloMsg, below is to set additional queues Active
                         let RcvQueue {primary, dbReplaceQueueId} = rq
@@ -1883,7 +1842,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
                               QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
-                              EREADY _ -> ackDel msgId
+                              EREADY _ -> qDuplex "EREADY" $ \(DuplexConnection cData' _ sqs) -> do
+                                when (ratchetResyncState == Just RRAgreedRcv) $
+                                  void . enqueueMessages c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
+                                ackDel msgId
                             where
                               resetRatchetDesync = do
                                 case (ratchetDesyncState, ratchetResyncState) of
@@ -1959,10 +1921,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               _ -> pure Nothing
                       _ -> prohibited >> ack
                   _ -> prohibited >> ack
-              qDuplex :: String -> (Connection 'CDuplex -> m ()) -> m ()
-              qDuplex name a = case conn of
-                DuplexConnection {} -> a conn
-                _ -> qError $ name <> ": message must be sent to duplex connection"
               ack :: m ()
               ack = enqueueCmd $ ICAck rId srvMsgId
               ackDel :: InternalId -> m ()
@@ -2188,6 +2146,63 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 let srvs = L.map qServer $ crSmpQueues crData
                 notify $ REQ invId srvs cInfo
               _ -> prohibited
+
+          qDuplex :: String -> (Connection 'CDuplex -> m ()) -> m ()
+          qDuplex name a = case conn of
+            DuplexConnection {} -> a conn
+            _ -> qError $ name <> ": message must be sent to duplex connection"
+
+          newRatchetKey :: CR.E2ERatchetParams 'C.X448 -> m ()
+          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion _ _) =
+            qDuplex "AgentRatchetKey" $ \duplexConn -> do
+              AgentConfig {e2eEncryptVRange} <- asks config
+              unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
+              if ratchetResyncState == Just RRStarted
+                then processReplyRatchetKey e2eEncryptVRange duplexConn
+                else processInitiatingRatchetKey e2eEncryptVRange duplexConn
+            where
+              processReplyRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
+              processReplyRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs@(sq :| _sqs)) = do
+                (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
+                (rc, rrsAgreed) <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
+                let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just rrsAgreed} :: ConnData
+                    conn' = DuplexConnection cData' rqs sqs
+                notify . RRESYNC rrsAgreed $ connectionStats conn'
+                withStore' c $ \db -> do
+                  setConnRatchetDesync db connId Nothing
+                  setConnRatchetResync db connId (Just rrsAgreed)
+                  createRatchet db connId rc
+                sendEREADY rrsAgreed cData' sqs
+              processInitiatingRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
+              processInitiatingRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs@(sq :| _sqs)) = do
+                (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
+                (rc, rrsAgreed) <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
+                let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just rrsAgreed} :: ConnData
+                    conn' = DuplexConnection cData' rqs sqs
+                notify . RRESYNC rrsAgreed $ connectionStats conn'
+                withStore' c $ \db -> do
+                  setConnRatchetDesync db connId Nothing
+                  setConnRatchetResync db connId (Just rrsAgreed)
+                  deleteRatchet db connId
+                  createRatchet db connId rc
+                let ConnData {connAgentVersion} = cData'
+                    msgBody' = smpEncode $ AgentRatchetKey {agentVersion = connAgentVersion, e2eEncryption = e2eParams, info = ""}
+                -- TODO ratchet re-sync: 1) send via all snd queues? -> deduplicate on receiving 2) enqueue instead of send?
+                sendAgentMessage c sq MsgFlags {notification = True} msgBody'
+                sendEREADY rrsAgreed cData' sqs
+              -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
+              -- to determine ratchet initilization ordering
+              initRatchet :: VersionRange -> C.PublicKeyX448 -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> CR.E2ERatchetParams 'C.X448 -> m (CR.Ratchet 'C.X448, RatchetResyncState)
+              initRatchet e2eEncryptVRange k1 pk1 pk2 e2eParamsRcv@(CR.E2ERatchetParams _ k1Rcv k2Rcv)
+                | C.pubKeyBytes k1 <= C.pubKeyBytes k1Rcv =
+                  pure (CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eParamsRcv, RRAgreedRcv)
+                | otherwise = do
+                  (_, rcDHRs) <- liftIO C.generateKeyPair'
+                  pure (CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eParamsRcv, RRAgreedSnd)
+              sendEREADY :: RatchetResyncState -> ConnData -> NonEmpty SndQueue -> m ()
+              sendEREADY rrs cd sqs =
+                when (rrs == RRAgreedSnd) $
+                  void . enqueueMessages c cd sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
           checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash receivedPrevMsgHash

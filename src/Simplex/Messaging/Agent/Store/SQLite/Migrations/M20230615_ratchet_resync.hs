@@ -6,9 +6,8 @@ import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
 -- Ratchet public keys are saved when ratchet re-synchronization is started - upon receiving other party's public keys,
--- key hashes are compared to determine ratchet initialization ordering for both parties.
+-- keys are compared to determine ratchet initialization ordering for both parties.
 -- This solves a possible race when both parties start ratchet re-synchronization at the same time.
--- Public keys are deleted after initializing ratchet.
 m20230615_ratchet_resync :: Query
 m20230615_ratchet_resync =
   [sql|

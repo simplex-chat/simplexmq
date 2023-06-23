@@ -599,19 +599,22 @@ instance FromJSON RatchetDesyncState where
 
 data RatchetResyncState
   = RRStarted
-  | RRAgreed
+  | RRAgreedSnd
+  | RRAgreedRcv
   | RRComplete
   deriving (Eq, Show)
 
 instance StrEncoding RatchetResyncState where
   strEncode = \case
     RRStarted -> "started"
-    RRAgreed -> "agreed"
+    RRAgreedSnd -> "agreed_snd"
+    RRAgreedRcv -> "agreed_rcv"
     RRComplete -> "complete"
   strP =
     A.takeTill (== ' ') >>= \case
       "started" -> pure RRStarted
-      "agreed" -> pure RRAgreed
+      "agreed_snd" -> pure RRAgreedSnd
+      "agreed_rcv" -> pure RRAgreedRcv
       "complete" -> pure RRComplete
       _ -> fail "bad RatchetResyncState"
 

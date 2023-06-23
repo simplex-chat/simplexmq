@@ -165,8 +165,8 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    fit "should report decryption error on ratchet becoming out of sync" $
-      testDecryptionError t
+    it "should report ratchet de-synchronization, re-synchronize ratchets" $
+      testRatchetResync t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -568,8 +568,8 @@ testSkippedMessages t = do
       get bob2 =##> \case ("", c, Msg "hello 6") -> c == aliceId; _ -> False
       ackMessage bob2 aliceId 6
 
-testDecryptionError :: HasCallStack => ATransport -> IO ()
-testDecryptionError t = do
+testRatchetResync :: HasCallStack => ATransport -> IO ()
+testRatchetResync t = do
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
@@ -621,13 +621,36 @@ testDecryptionError t = do
         ratchetDesyncState `shouldBe` Nothing
         ratchetResyncState `shouldBe` Just RRStarted
 
-      get alice =##> ratchetResyncP bobId RRAgreed (Just RRAgreed)
+      r <- get alice
+      let rrsAliceExpectedBob_ = case r of
+            (_, _, RRESYNC RRAgreedSnd ConnectionStats {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreedSnd}) -> Just (RRAgreedSnd, RRAgreedRcv)
+            (_, _, RRESYNC RRAgreedRcv ConnectionStats {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreedRcv}) -> Just (RRAgreedRcv, RRAgreedSnd)
+            _ -> Nothing
+      case rrsAliceExpectedBob_ of
+        Nothing -> error "expected RRESYNC RRAgreedSnd or RRESYNC RRAgreedRcv"
+        Just (_, rrsBob) -> do
+          get bob2 =##> ratchetResyncP aliceId rrsBob (Just rrsBob)
 
-      get bob2 =##> ratchetResyncP aliceId RRAgreed (Just RRAgreed)
+          get alice =##> ratchetResyncP bobId RRComplete Nothing
 
-      get bob2 =##> ratchetResyncP aliceId RRComplete Nothing
+          get bob2 =##> ratchetResyncP aliceId RRComplete Nothing
 
-      get alice =##> ratchetResyncP bobId RRComplete Nothing
+          exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 9
+  where
+    exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
+    exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
+      msgId1 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      liftIO $ msgId1 `shouldBe` aliceMsgId
+      get alice ##> ("", bobId, SENT aliceMsgId)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId bobMsgId
+      msgId2 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+      let aliceMsgId' = aliceMsgId + 1
+          bobMsgId' = bobMsgId + 1
+      liftIO $ msgId2 `shouldBe` bobMsgId'
+      get bob ##> ("", aliceId, SENT bobMsgId')
+      get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+      ackMessage alice bobId aliceMsgId'
 
 ratchetDesyncP :: ConnId -> RatchetDesyncState -> AEntityTransmission 'AEConn -> Bool
 ratchetDesyncP cId rds = \case
