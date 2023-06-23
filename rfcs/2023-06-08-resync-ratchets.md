@@ -243,7 +243,7 @@ Above we considered model with separate de-sync and re-sync state.
 
 5: Re-sync agreed, new de-sync is diagnosed.
 
-Combination 5 is possible in case de-sync was diagnosed before message that could be decrypted is received, for example if `EREADY` failed to deliver and no other message followed. We shouldn't prohibit diagnosing de-sync in this case, because agent may never exit "Agreed" state (if new decryptable message is never received). We also shouldn't overwrite/forget state of re-sync, even if we diagnose new possible de-sync, because if the decryptable `EREADY` is received and ratchet is in `RRAgreedRcv` state, it should respond with reply `EREADY`.
+Combination 5 is possible in case de-sync was diagnosed before message that could be decrypted is received, for example if `EREADY` failed to deliver and no other decryptable message followed. We shouldn't prohibit diagnosing de-sync in this case, because agent may never exit "Agreed" state (if new decryptable message is never received). We also shouldn't overwrite/forget state of re-sync, even if we diagnose new possible de-sync, because if the decryptable `EREADY` is received and ratchet is in `RRAgreedRcv` state, it should respond with reply `EREADY`.
 
 Some combinations should be impossible:
 
