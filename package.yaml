@@ -49,7 +49,7 @@ dependencies:
   - iso8601-time == 0.1.*
   - memory == 0.15.*
   - mtl == 2.2.*
-  - network >= 3.1.4.0 && < 3.2
+  - network >= 3.1.2.7 && < 3.2
   - network-transport == 0.5.4
   - optparse-applicative >= 0.15 && < 0.17
   - QuickCheck == 2.14.*
