@@ -87,7 +87,7 @@ notificationTests t =
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNotificationsSMPRestart t apns
     describe "Notifications after SMP server restart" $
-      fit "should resume batched subscriptions after SMP server is restarted" $ \_ ->
+      it "should resume batched subscriptions after SMP server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNotificationsSMPRestartBatch 200 t apns
     describe "should switch notifications to the new queue" $
