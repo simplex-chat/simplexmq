@@ -42,35 +42,42 @@ import UnliftIO.STM
 
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
-    recvTimeout :: Int -- SO_RCVTIMEO: timeout in microseconds
+    recvTimeout :: Int,
+    sendTimeout :: Int
   }
   deriving (Eq, Show)
 
 defaultTransportServerConfig :: TransportServerConfig
 defaultTransportServerConfig = TransportServerConfig
   { logTLSErrors = True,
-    recvTimeout = 20000000 -- 40 seconds
+    recvTimeout = 40000000,
+    sendTimeout = 40000000
   }
+
+serverTransportConfig :: TransportServerConfig -> TransportConfig
+serverTransportConfig TransportServerConfig {logTLSErrors, recvTimeout, sendTimeout} =
+  TransportConfig {logTLSErrors, recvTimeout = Just recvTimeout, sendTimeout = Just sendTimeout}
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
 runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
-runTransportServer started port serverParams cfg@TransportServerConfig {logTLSErrors} server = do
+runTransportServer started port serverParams cfg server = do
   u <- askUnliftIO
-  liftIO . runTCPServer started port cfg $ \conn ->
+  let tCfg = serverTransportConfig cfg
+  liftIO . runTCPServer started port $ \conn ->
     E.bracket
-      (connectTLS Nothing logTLSErrors serverParams conn >>= getServerConnection)
+      (connectTLS Nothing tCfg serverParams conn >>= getServerConnection tCfg)
       closeConnection
       (unliftIO u . server)
 
 -- | Run TCP server without TLS
-runTCPServer :: TMVar Bool -> ServiceName -> TransportServerConfig -> (Socket -> IO ()) -> IO ()
-runTCPServer started port cfg server = do
+runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
+runTCPServer started port server = do
   clients <- atomically TM.empty
   clientId <- newTVarIO 0
   E.bracket
-    (startTCPServer started port cfg)
+    (startTCPServer started port)
     (closeServer started clients)
     $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       -- catchAll_ is needed here in case the connection was closed earlier
@@ -85,8 +92,8 @@ closeServer started clients sock = do
   close sock
   void . atomically $ tryPutTMVar started False
 
-startTCPServer :: TMVar Bool -> ServiceName -> TransportServerConfig -> IO Socket
-startTCPServer started port TransportServerConfig {recvTimeout} = withSocketsDo $ resolve >>= open >>= setStarted
+startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
+startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
@@ -97,7 +104,6 @@ startTCPServer started port TransportServerConfig {recvTimeout} = withSocketsDo 
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
-      setSocketOption sock RecvTimeOut recvTimeout
       withFdSocket sock setCloseOnExecIfNeeded
       logInfo $ "binding to " <> tshow (addrAddress addr)
       bind sock $ addrAddress addr

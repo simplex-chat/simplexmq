@@ -29,6 +29,7 @@ module Simplex.Messaging.Transport
     supportedSMPServerVRange,
     simplexMQVersion,
     smpBlockSize,
+    TransportConfig (..),
 
     -- * Transport connection class
     Transport (..),
@@ -86,6 +87,7 @@ import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
+import System.Timeout (timeout)
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
@@ -104,6 +106,12 @@ simplexMQVersion = showVersion SMQ.version
 
 -- * Transport connection class
 
+data TransportConfig = TransportConfig
+  { logTLSErrors :: Bool,
+    recvTimeout :: Maybe Int,
+    sendTimeout :: Maybe Int
+  }
+
 class Transport c where
   transport :: ATransport
   transport = ATransport (TProxy @c)
@@ -112,11 +120,13 @@ class Transport c where
 
   transportPeer :: c -> TransportPeer
 
+  transportConfig :: c -> TransportConfig
+
   -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: T.Context -> IO c
+  getServerConnection :: TransportConfig -> T.Context -> IO c
 
   -- | Upgrade client TLS context to connection (used in the client)
-  getClientConnection :: T.Context -> IO c
+  getClientConnection :: TransportConfig -> T.Context -> IO c
 
   -- | tls-unique channel binding per RFC5929
   tlsUnique :: c -> SessionId
@@ -150,24 +160,25 @@ data TLS = TLS
   { tlsContext :: T.Context,
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
-    tlsBuffer :: TBuffer
+    tlsBuffer :: TBuffer,
+    tlsTransportConfig :: TransportConfig
   }
 
-connectTLS :: T.TLSParams p => Maybe HostName -> Bool -> p -> Socket -> IO T.Context
-connectTLS host_ logErrors params sock =
+connectTLS :: T.TLSParams p => Maybe HostName -> TransportConfig -> p -> Socket -> IO T.Context
+connectTLS host_ TransportConfig {logTLSErrors} params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx ->
     logHandshakeErrors (T.handshake ctx) $> ctx
   where
-    logHandshakeErrors = if logErrors then (`catchAll` logThrow) else id
+    logHandshakeErrors = if logTLSErrors then (`catchAll` logThrow) else id
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: TransportPeer -> T.Context -> IO TLS
-getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
+getTLS :: TransportPeer -> TransportConfig -> T.Context -> IO TLS
+getTLS tlsPeer cfg cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
-      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -199,6 +210,7 @@ supportedParameters =
 instance Transport TLS where
   transportName _ = "TLS"
   transportPeer = tlsPeer
+  transportConfig = tlsTransportConfig
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
   tlsUnique = tlsUniq
@@ -207,10 +219,13 @@ instance Transport TLS where
   -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
   -- this function may return less than requested number of bytes
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, tlsBuffer} n = getBuffered tlsBuffer n (T.recvData tlsContext)
-
+  cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {recvTimeout = t_}} n =
+    getBuffered tlsBuffer n t_ (T.recvData tlsContext)
+      
   cPut :: TLS -> ByteString -> IO ()
-  cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
+  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {recvTimeout = Just t}} s =
+    timeout t (sendData tlsContext s) >>= maybe timeoutErr pure
+  cPut TLS {tlsContext} s = sendData tlsContext s
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
@@ -219,6 +234,9 @@ instance Transport TLS where
       handleEOF = \case
         T.Error_EOF -> E.throwIO TEBadBlock
         e -> E.throwIO e
+
+sendData :: T.Context -> ByteString -> IO ()
+sendData ctx = T.sendData ctx . BL.fromStrict
 
 -- * SMP transport
 

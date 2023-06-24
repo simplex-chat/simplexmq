@@ -8,6 +8,8 @@ import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import System.Timeout (timeout)
+import GHC.IO.Exception (ioException, IOException (..), IOErrorType (..))
 
 data TBuffer = TBuffer
   { buffer :: TVar ByteString,
@@ -26,22 +28,31 @@ withBufferLock TBuffer {getLock} =
     (atomically $ takeTMVar getLock)
     (atomically $ putTMVar getLock ())
 
-getBuffered :: TBuffer -> Int -> IO ByteString -> IO ByteString
-getBuffered tb@TBuffer {buffer} n getChunk = withBufferLock tb $ do
-  b <- readChunks =<< readTVarIO buffer
+getBuffered :: TBuffer -> Int -> Maybe Int -> IO ByteString -> IO ByteString
+getBuffered tb@TBuffer {buffer} n t_ getChunk = withBufferLock tb $ do
+  b <- readChunks True =<< readTVarIO buffer
   let (s, b') = B.splitAt n b
   atomically $ writeTVar buffer $! b'
   -- This would prevent the need to pad auth tag in HTTP2
   -- threadDelay 150
   pure s
   where
-    readChunks :: ByteString -> IO ByteString
-    readChunks b
+    readChunks :: Bool -> ByteString -> IO ByteString
+    readChunks firstChunk b
       | B.length b >= n = pure b
       | otherwise =
-        getChunk >>= \case
+        get >>= \case
           "" -> pure b
-          s -> readChunks $ b <> s
+          s -> readChunks False $ b <> s
+      where
+        get
+          | firstChunk = getChunk
+          | otherwise = case t_ of
+              Nothing -> getChunk
+              Just t -> timeout t getChunk >>= maybe timeoutErr pure
+  
+timeoutErr :: IO a
+timeoutErr = ioException (IOError Nothing TimeExpired "" "get timeout" Nothing Nothing)
 
 -- This function is only used in test and needs to be improved before it can be used in production,
 -- it will never complete if TLS connection is closed before there is newline.

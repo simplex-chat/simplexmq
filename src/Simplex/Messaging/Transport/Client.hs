@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -114,12 +115,16 @@ data TransportClientConfig = TransportClientConfig
 defaultTransportClientConfig :: TransportClientConfig
 defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True
 
+clientTransportConfig :: TransportClientConfig -> TransportConfig
+clientTransportConfig TransportClientConfig {logTLSErrors} =
+  TransportConfig {logTLSErrors, recvTimeout = Nothing, sendTimeout = Nothing}
+
 -- | Connect to passed TCP host:port and pass handle to the client.
 runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors} proxyUsername host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive} proxyUsername host port keyHash client = do
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash
       connectTCP = case socksProxy of
@@ -128,7 +133,8 @@ runTLSTransportClient tlsParams caStore_ TransportClientConfig {socksProxy, tcpK
   c <- liftIO $ do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive
-    connectTLS (Just hostName) logTLSErrors clientParams sock >>= getClientConnection
+    let tCfg = clientTransportConfig cfg
+    connectTLS (Just hostName) tCfg clientParams sock >>= getClientConnection tCfg
   client c `E.finally` liftIO (closeConnection c)
   where
     hostAddr = \case

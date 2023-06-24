@@ -17,6 +17,7 @@ import Simplex.Messaging.Transport
     Transport (..),
     TransportError (..),
     TransportPeer (..),
+    TransportConfig (..),
     closeTLS,
     smpBlockSize,
     withTlsUnique,
@@ -27,7 +28,8 @@ data WS = WS
   { wsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     wsStream :: Stream,
-    wsConnection :: Connection
+    wsConnection :: Connection,
+    wsTransportConfig :: TransportConfig
   }
 
 websocketsOpts :: ConnectionOptions
@@ -45,10 +47,13 @@ instance Transport WS where
   transportPeer :: WS -> TransportPeer
   transportPeer = wsPeer
 
-  getServerConnection :: T.Context -> IO WS
+  transportConfig :: WS -> TransportConfig
+  transportConfig = wsTransportConfig
+
+  getServerConnection :: TransportConfig -> T.Context -> IO WS
   getServerConnection = getWS TServer
 
-  getClientConnection :: T.Context -> IO WS
+  getClientConnection :: TransportConfig -> T.Context -> IO WS
   getClientConnection = getWS TClient
 
   tlsUnique :: WS -> ByteString
@@ -74,13 +79,13 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-getWS :: TransportPeer -> T.Context -> IO WS
-getWS wsPeer cxt = withTlsUnique wsPeer cxt connectWS
+getWS :: TransportPeer -> TransportConfig -> T.Context -> IO WS
+getWS wsPeer cfg cxt = withTlsUnique wsPeer cxt connectWS
   where
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer wsPeer s
-      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection}
+      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection, wsTransportConfig = cfg}
     connectPeer :: TransportPeer -> Stream -> IO Connection
     connectPeer TServer = acceptClientRequest
     connectPeer TClient = sendClientRequest
