@@ -146,12 +146,8 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
 
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do
-  d <- asks $ resubscribeDelay . config
-  subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
-  let ss = L.groupBy ((==) `on` ntfSubServer) subs'
-  forM_ ss $ \serverSubs -> do
-    atomically $ writeTBQueue newSubQ $ L.map NtfSub serverSubs
-    threadDelay d
+  subs' <- atomically $ filterM (fmap ntfShouldSubscribe . readTVar . subStatus) $ M.elems subs
+  mapM_ (atomically . writeTBQueue newSubQ . L.map NtfSub) $ L.nonEmpty subs'
   liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: NtfSubscriber -> M ()
@@ -159,13 +155,15 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
   raceAny_ [subscribe, receiveSMP, receiveAgent]
   where
     subscribe :: M ()
-    subscribe =
+    subscribe = do
+      d <- asks $ resubscribeDelay . config
       forever $ do
         subs <- atomically (readTBQueue newSubQ)
         let ss = L.groupBy ((==) `on` server) subs
         forM_ ss $ \serverSubs -> do
           SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber $ server $ L.head serverSubs
           atomically $ writeTQueue subscriberSubQ serverSubs
+          when (length serverSubs > 10) $ threadDelay d
 
     server :: NtfEntityRec 'Subscription -> SMPServer
     server (NtfSub sub) = ntfSubServer sub

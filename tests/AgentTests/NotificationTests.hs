@@ -19,8 +19,8 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
-import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
-import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn, xit')
+import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, xit')
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
@@ -31,6 +31,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfToken (..))
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
 import System.Directory (doesFileExist, removeFile)
@@ -85,6 +86,10 @@ notificationTests t =
       it "should resume subscriptions after SMP server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNotificationsSMPRestart t apns
+    describe "Notifications after SMP server restart" $
+      fit "should resume batched subscriptions after SMP server is restarted" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testNotificationsSMPRestartBatch 200 t apns
     describe "should switch notifications to the new queue" $
       testServerMatrix2 t $ \servers ->
         withAPNSMockServer $ \apns ->
@@ -479,6 +484,52 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
     _ <- messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
     liftIO $ killThread threadId
+
+testNotificationsSMPRestartBatch :: Int -> ATransport -> APNSMockServer -> IO ()
+testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
+  a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
+  b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
+  conns <- runServers $ do
+    conns <- forM [1 .. n :: Int] . const $ makeConnection a b
+    _ <- registerTestToken a "abcd" NMInstant apnsQ
+    liftIO $ threadDelay 1500000
+    forM_ conns $ \(aliceId, bobId) -> do
+      msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello"
+      get b ##> ("", aliceId, SENT msgId)
+      void $ messageNotification apnsQ
+      get a =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+      ackMessage a bobId msgId
+    pure conns
+
+  runRight_ @AgentErrorType $ do
+    ("", "", DOWN _ bcs1) <- nGet a
+    ("", "", DOWN _ bcs2) <- nGet a
+    liftIO $ length (bcs1 <> bcs2) `shouldBe` length conns
+    ("", "", DOWN _ acs1) <- nGet b
+    ("", "", DOWN _ acs2) <- nGet b
+    liftIO $ length (acs1 <> acs2) `shouldBe` length conns
+
+  runServers $ do
+    ("", "", UP _ bcs1) <- nGet a
+    ("", "", UP _ bcs2) <- nGet a
+    liftIO $ length (bcs1 <> bcs2) `shouldBe` length conns
+    ("", "", UP _ acs1) <- nGet b
+    ("", "", UP _ acs2) <- nGet b
+    liftIO $ length (acs1 <> acs2) `shouldBe` length conns
+    liftIO $ threadDelay 1500000
+    forM_ conns $ \(aliceId, bobId) -> do
+      msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello again"
+      get b ##> ("", aliceId, SENT msgId)
+      _ <- messageNotificationData a apnsQ
+      get a =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+  where
+    runServers :: ExceptT AgentErrorType IO a -> IO a
+    runServers a = do
+      withSmpServerStoreLogOn t testPort $ \t1 -> do
+        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
+          runRight a `finally` killThread t2
+        killThread t1
+        pure res
 
 testSwitchNotifications :: InitialAgentServers -> APNSMockServer -> IO ()
 testSwitchNotifications servers APNSMockServer {apnsQ} = do
