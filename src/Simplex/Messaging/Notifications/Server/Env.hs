@@ -48,7 +48,6 @@ data NtfServerConfig = NtfServerConfig
     apnsConfig :: APNSPushClientConfig,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     storeLogFile :: Maybe FilePath,
-    resubscribeDelay :: Int, -- microseconds
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
