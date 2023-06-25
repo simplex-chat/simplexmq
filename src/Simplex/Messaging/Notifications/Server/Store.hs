@@ -20,7 +20,7 @@ import qualified Data.Set as S
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (NtfPrivateSignKey)
+import Simplex.Messaging.Protocol (NtfPrivateSignKey, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
@@ -67,6 +67,9 @@ data NtfSubData = NtfSubData
     tokenId :: NtfTokenId,
     subStatus :: TVar NtfSubStatus
   }
+
+ntfSubServer :: NtfSubData -> SMPServer
+ntfSubServer NtfSubData {smpQueue = SMPQueueNtf {smpServer}} = smpServer
 
 data NtfEntityRec (e :: NtfEntity) where
   NtfTkn :: NtfTknData -> NtfEntityRec 'Token

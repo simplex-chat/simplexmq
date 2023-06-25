@@ -16,7 +16,7 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
-import Data.Time (NominalDiffTime, nominalDiffTimeToSeconds)
+import Data.Time (NominalDiffTime)
 import UnliftIO.Async
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
