@@ -32,7 +32,7 @@ ntfServerVersion :: String
 ntfServerVersion = "1.4.1"
 
 defaultSMPBatchDelay :: Int
-defaultSMPBatchDelay = 20000
+defaultSMPBatchDelay = 10000
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
