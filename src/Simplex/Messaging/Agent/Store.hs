@@ -295,8 +295,7 @@ data ConnData = ConnData
     duplexHandshake :: Maybe Bool, -- added in agent protocol v2
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
-    ratchetDesyncState :: Maybe RatchetDesyncState,
-    ratchetResyncState :: Maybe RatchetResyncState
+    ratchetSyncState :: RatchetSyncState
   }
   deriving (Eq, Show)
 

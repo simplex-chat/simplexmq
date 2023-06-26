@@ -158,15 +158,15 @@ functionalAPITests t = do
       withSmpServer t testAsyncBothOffline
     it "should connect on the second attempt if server was offline" $
       testAsyncServerOffline t
-    it "should notify after HELLO timeout" $
+    it "should notify after HELLO timeout" $  
       withSmpServer t testAsyncHelloTimeout
   describe "Message delivery" $ do
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    fit "should report ratchet de-synchronization, re-synchronize ratchets" $
-      testRatchetResync t
+    it "should report ratchet de-synchronization, synchronize ratchets" $
+      testRatchetSync t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -568,8 +568,8 @@ testSkippedMessages t = do
       get bob2 =##> \case ("", c, Msg "hello 6") -> c == aliceId; _ -> False
       ackMessage bob2 aliceId 6
 
-testRatchetResync :: HasCallStack => ATransport -> IO ()
-testRatchetResync t = do
+testRatchetSync :: HasCallStack => ATransport -> IO ()
+testRatchetSync t = do
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
@@ -610,24 +610,22 @@ testRatchetResync t = do
 
       8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
       get alice ##> ("", bobId, SENT 8)
-      get bob2 =##> ratchetDesyncP aliceId RDResyncRequired
+      get bob2 =##> ratchetSyncP aliceId RSRequired
 
       6 <- sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
       get bob2 ##> ("", aliceId, SENT 6)
-      get alice =##> ratchetDesyncP bobId RDResyncRequired
+      get alice =##> ratchetSyncP bobId RSRequired
 
-      ConnectionStats {ratchetDesyncState, ratchetResyncState} <- resyncConnectionRatchet bob2 aliceId False
-      liftIO $ do
-        ratchetDesyncState `shouldBe` Nothing
-        ratchetResyncState `shouldBe` Just RRStarted
+      ConnectionStats {ratchetSyncState} <- synchronizeConnectionRatchet bob2 aliceId False
+      liftIO $ ratchetSyncState `shouldBe` RSStarted
 
-      get alice =##> ratchetResyncP bobId RRAgreed (Just RRAgreed)
+      get alice =##> ratchetSyncP bobId RSAgreed
 
-      get bob2 =##> ratchetResyncP aliceId RRAgreed (Just RRAgreed)
+      get bob2 =##> ratchetSyncP aliceId RSAgreed
 
-      get alice =##> ratchetResyncP bobId RRComplete Nothing
+      get alice =##> ratchetSyncP bobId RSOk
 
-      get bob2 =##> ratchetResyncP aliceId RRComplete Nothing
+      get bob2 =##> ratchetSyncP aliceId RSOk
 
       exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 9
   where
@@ -646,16 +644,10 @@ testRatchetResync t = do
       get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
       ackMessage alice bobId aliceMsgId'
 
-ratchetDesyncP :: ConnId -> RatchetDesyncState -> AEntityTransmission 'AEConn -> Bool
-ratchetDesyncP cId rds = \case
-  (_, cId', RDESYNC rds' ConnectionStats {ratchetDesyncState, ratchetResyncState}) ->
-    cId' == cId && rds' == rds && ratchetDesyncState == Just rds && isNothing ratchetResyncState
-  _ -> False
-
-ratchetResyncP :: ConnId -> RatchetResyncState -> Maybe RatchetResyncState -> AEntityTransmission 'AEConn -> Bool
-ratchetResyncP cId eventRRS stateRRS = \case
-  (_, cId', RRESYNC eventRRS' ConnectionStats {ratchetDesyncState, ratchetResyncState}) ->
-    cId' == cId && eventRRS' == eventRRS && ratchetResyncState == stateRRS && isNothing ratchetDesyncState
+ratchetSyncP :: ConnId -> RatchetSyncState -> AEntityTransmission 'AEConn -> Bool
+ratchetSyncP cId rrs = \case
+  (_, cId', RSYNC rrs' ConnectionStats {ratchetSyncState}) ->
+    cId' == cId && rrs' == rrs && ratchetSyncState == rrs
   _ -> False
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)

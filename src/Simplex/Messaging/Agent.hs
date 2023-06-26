@@ -64,7 +64,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     switchConnection,
     abortConnectionSwitch,
-    resyncConnectionRatchet,
+    synchronizeConnectionRatchet,
     suspendConnection,
     deleteConnection,
     deleteConnections,
@@ -275,8 +275,8 @@ abortConnectionSwitch :: AgentErrorMonad m => AgentClient -> ConnId -> m Connect
 abortConnectionSwitch c = withAgentEnv c . abortConnectionSwitch' c
 
 -- | Re-synchronize connection ratchet keys
-resyncConnectionRatchet :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
-resyncConnectionRatchet c = withAgentEnv c .: resyncConnectionRatchet' c
+synchronizeConnectionRatchet :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
+synchronizeConnectionRatchet c = withAgentEnv c .: synchronizeConnectionRatchet' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -467,7 +467,7 @@ newConnNoQueues c userId connId enableNtfs cMode = do
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   -- connection mode is determined by the accepting agent
-  let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetDesyncState = Nothing, ratchetResyncState = Nothing}
+  let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
   withStore c $ \db -> createNewConn db g cData cMode
 
 joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
@@ -477,7 +477,7 @@ joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData
     Just (Compatible connAgentVersion) -> do
       g <- asks idsDrg
       let duplexHS = connAgentVersion /= 1
-          cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetDesyncState = Nothing, ratchetResyncState = Nothing}
+          cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
       connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
       enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
       pure connId
@@ -542,16 +542,17 @@ switchConnectionAsync' c corrId connId =
       SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          checkRatchetDesync cData
+          checkRatchetSync cData
           rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
           let rqs' = updatedQs rq1 rqs
           pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwError $ CMD PROHIBITED
 
-checkRatchetDesync :: AgentMonad m => ConnData -> m ()
-checkRatchetDesync ConnData {ratchetDesyncState, ratchetResyncState} =
-  when (ratchetDesyncState == Just RDResyncRequired || ratchetResyncState == Just RRStarted) $ throwError $ CMD PROHIBITED
+checkRatchetSync :: AgentMonad m => ConnData -> m ()
+checkRatchetSync ConnData {ratchetSyncState} =
+  when (ratchetSyncState `elem` ([RSRequired, RSStarted, RSAgreed] :: [RatchetSyncState])) $
+    throwError $ CMD PROHIBITED
 
 newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
 newConn c userId connId enableNtfs cMode clientData =
@@ -600,7 +601,7 @@ joinConnSrv c userId connId asyncMode enableNtfs (CRInvitationUri ConnReqUriData
       let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
       q <- newSndQueue userId "" qInfo
       let duplexHS = connAgentVersion /= 1
-          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetDesyncState = Nothing, ratchetResyncState = Nothing}
+          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
       connId' <- setUpConn asyncMode cData q rc
       let sq = (q :: SndQueue) {connId = connId'}
           cData' = (cData :: ConnData) {connId = connId'}
@@ -1236,7 +1237,7 @@ switchConnection' c connId =
       SomeConn _ conn@(DuplexConnection cData rqs@(rq :| _rqs) _)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          checkRatchetDesync cData
+          checkRatchetSync cData
           rq' <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           switchDuplexConnection c conn rq'
       _ -> throwError $ CMD PROHIBITED
@@ -1264,7 +1265,7 @@ abortConnectionSwitch' c connId =
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
         Just rq
           | canAbortRcvSwitch rq -> do
-            checkRatchetDesync cData
+            checkRatchetSync cData
             -- multiple queues to which the connections switches were possible when repeating switch was allowed
             let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
             case L.nonEmpty keepRqs of
@@ -1281,11 +1282,11 @@ abortConnectionSwitch' c connId =
         _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD PROHIBITED
 
-resyncConnectionRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
-resyncConnectionRatchet' c connId force = withConnLock c connId "resyncConnectionRatchet" $ do
+synchronizeConnectionRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
+synchronizeConnectionRatchet' c connId force = withConnLock c connId "synchronizeConnectionRatchet" $ do
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData@ConnData {connAgentVersion, ratchetDesyncState, ratchetResyncState} rqs sqs@(sq :| _sqs))
-      | (isJust ratchetDesyncState || force) && ratchetResyncState /= Just RRStarted -> do
+    SomeConn _ (DuplexConnection cData@ConnData {connAgentVersion, ratchetSyncState} rqs sqs@(sq :| _sqs))
+      | ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]) || force -> do
         -- check queues are not switching?
         AgentConfig {e2eEncryptVRange} <- asks config
         (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ maxVersion e2eEncryptVRange
@@ -1293,11 +1294,10 @@ resyncConnectionRatchet' c connId force = withConnLock c connId "resyncConnectio
         -- TODO ratchet re-sync: 1) send via all snd queues? -> deduplicate on receiving 2) enqueue instead of send?
         sendAgentMessage c sq MsgFlags {notification = True} msgBody
         withStore' c $ \db -> do
-          setConnRatchetDesync db connId Nothing
-          setConnRatchetResync db connId $ Just RRStarted
+          setConnRatchetSync db connId RSStarted
           deleteRatchet db connId
           createRatchetX3dhKeys' db connId pk1 pk2 k1 k2
-        let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRStarted} :: ConnData
+        let cData' = cData {ratchetSyncState = RSStarted} :: ConnData
             conn' = DuplexConnection cData' rqs sqs
         pure $ connectionStats conn'
       | otherwise -> throwError $ CMD PROHIBITED
@@ -1440,16 +1440,16 @@ getConnectionRatchetAdHash' c connId = do
 
 connectionStats :: Connection c -> ConnectionStats
 connectionStats = \case
-  RcvConnection ConnData {ratchetDesyncState, ratchetResyncState} rq ->
-    ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = [], ratchetDesyncState, ratchetResyncState}
-  SndConnection ConnData {ratchetDesyncState, ratchetResyncState} sq ->
-    ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [sndQueueInfo sq], ratchetDesyncState, ratchetResyncState}
-  DuplexConnection ConnData {ratchetDesyncState, ratchetResyncState} rqs sqs ->
-    ConnectionStats {rcvQueuesInfo = map rcvQueueInfo $ L.toList rqs, sndQueuesInfo = map sndQueueInfo $ L.toList sqs, ratchetDesyncState, ratchetResyncState}
-  ContactConnection ConnData {ratchetDesyncState, ratchetResyncState} rq ->
-    ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = [], ratchetDesyncState, ratchetResyncState}
-  NewConnection ConnData {ratchetDesyncState, ratchetResyncState} ->
-    ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [], ratchetDesyncState, ratchetResyncState}
+  RcvConnection ConnData {ratchetSyncState} rq ->
+    ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = [], ratchetSyncState}
+  SndConnection ConnData {ratchetSyncState} sq ->
+    ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [sndQueueInfo sq], ratchetSyncState}
+  DuplexConnection ConnData {ratchetSyncState} rqs sqs ->
+    ConnectionStats {rcvQueuesInfo = map rcvQueueInfo $ L.toList rqs, sndQueuesInfo = map sndQueueInfo $ L.toList sqs, ratchetSyncState}
+  ContactConnection ConnData {ratchetSyncState} rq ->
+    ConnectionStats {rcvQueuesInfo = [rcvQueueInfo rq], sndQueuesInfo = [], ratchetSyncState}
+  NewConnection ConnData {ratchetSyncState} ->
+    ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [], ratchetSyncState}
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setProtocolServers' :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> m ()
@@ -1781,7 +1781,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
     processSMP
       rq@RcvQueue {e2ePrivKey, e2eDhSecret, status}
       conn
-      cData@ConnData {userId, connId, duplexHandshake, ratchetDesyncState, ratchetResyncState, lastExternalSndId} = withConnLock c connId "processSMP" $ do
+      cData@ConnData {userId, connId, duplexHandshake, ratchetSyncState, lastExternalSndId} = withConnLock c connId "processSMP" $ do
         case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             handleNotifyAck $
@@ -1827,7 +1827,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         let encryptedMsgHash = C.sha256Hash encAgentMsg
                         tryError (agentClientMsg encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
-                            resetRatchetDesync
+                            resetRatchetSync
                             case aMessage of
                               HELLO -> helloMsg >> ackDel msgId
                               REPLY cReq -> replyMsg cReq >> ackDel msgId
@@ -1849,29 +1849,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                   void . enqueueMessages c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
                                 ackDel msgId
                             where
-                              resetRatchetDesync = do
-                                case (ratchetDesyncState, ratchetResyncState) of
-                                  (Just _, Just _) ->
-                                    qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
-                                      let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Nothing} :: ConnData
-                                          conn' = DuplexConnection cData' rqs sqs
-                                      notify . RRESYNC RRComplete $ connectionStats conn'
-                                      withStore' c $ \db -> do
-                                        setConnRatchetDesync db connId Nothing
-                                        setConnRatchetResync db connId Nothing
-                                  (Just _, Nothing) -> do
-                                    qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
-                                      let cData' = cData {ratchetDesyncState = Nothing} :: ConnData
-                                          conn' = DuplexConnection cData' rqs sqs
-                                      notify . RDESYNC RDHealed $ connectionStats conn'
-                                      withStore' c $ \db -> setConnRatchetDesync db connId Nothing
-                                  (Nothing, Just _) -> do
-                                    qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
-                                      let cData' = cData {ratchetResyncState = Nothing} :: ConnData
-                                          conn' = DuplexConnection cData' rqs sqs
-                                      notify . RRESYNC RRComplete $ connectionStats conn'
-                                      withStore' c $ \db -> setConnRatchetResync db connId Nothing
-                                  _ -> pure ()
+                              resetRatchetSync = when (ratchetSyncState /= RSOk) $
+                                qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
+                                  let cData' = cData {ratchetSyncState = RSOk} :: ConnData
+                                      conn' = DuplexConnection cData' rqs sqs
+                                  notify . RSYNC RSOk $ connectionStats conn'
+                                  withStore' c $ \db -> setConnRatchetSync db connId RSOk
                           Right _ -> prohibited >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
@@ -1887,17 +1870,17 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                           Left (AGENT (A_CRYPTO e)) -> do
                             unlessM
                               (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash)
-                              -- TODO ratchet re-sync: if ratchetDesyncState was RDResyncAllowed and new error implies RDResyncRequired, update and notify
-                              (when (isNothing ratchetDesyncState && ratchetResyncState /= Just RRStarted) notifyRDESYNC)
+                              -- TODO ratchet re-sync: allow RSAllowed -> RSRequired transition
+                              (when (ratchetSyncState == RSOk) notifySync)
                             ack
                             where
-                              notifyRDESYNC :: m ()
-                              notifyRDESYNC = qDuplex "AGENT A_CRYPTO error" $ \(DuplexConnection _ rqs sqs) -> do
-                                let rDesyncState = cryptoErrToDesyncState e
-                                    cData' = cData {ratchetDesyncState = Just rDesyncState} :: ConnData
+                              notifySync :: m ()
+                              notifySync = qDuplex "AGENT A_CRYPTO error" $ \(DuplexConnection _ rqs sqs) -> do
+                                let rSyncState = cryptoErrToSyncState e
+                                    cData' = cData {ratchetSyncState = rSyncState} :: ConnData
                                     conn' = DuplexConnection cData' rqs sqs
-                                notify . RDESYNC rDesyncState $ connectionStats conn'
-                                withStore' c $ \db -> setConnRatchetDesync db connId $ Just rDesyncState
+                                notify . RSYNC rSyncState $ connectionStats conn'
+                                withStore' c $ \db -> setConnRatchetSync db connId rSyncState
                           Left e -> checkDuplicateHash e encryptedMsgHash >> ack
                         where
                           checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
@@ -2160,7 +2143,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             qDuplex "AgentRatchetKey" $ \duplexConn -> do
               AgentConfig {e2eEncryptVRange} <- asks config
               unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
-              if ratchetResyncState == Just RRStarted
+              if ratchetSyncState == RSStarted
                 then processReplyRatchetKey e2eEncryptVRange duplexConn
                 else processInitiatingRatchetKey e2eEncryptVRange duplexConn
             where
@@ -2168,24 +2151,22 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               processReplyRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs) = do
                 (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
                 rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
-                let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreed} :: ConnData
+                let cData' = cData {ratchetSyncState = RSAgreed} :: ConnData
                     conn' = DuplexConnection cData' rqs sqs
-                notify . RRESYNC RRAgreed $ connectionStats conn'
+                notify . RSYNC RSAgreed $ connectionStats conn'
                 withStore' c $ \db -> do
-                  setConnRatchetDesync db connId Nothing
-                  setConnRatchetResync db connId (Just RRAgreed)
+                  setConnRatchetSync db connId RSAgreed
                   createRatchet db connId rc
                 sendEREADY rc cData' sqs
               processInitiatingRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
               processInitiatingRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs@(sq :| _sqs)) = do
                 (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
                 rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
-                let cData' = cData {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreed} :: ConnData
+                let cData' = cData {ratchetSyncState = RSAgreed} :: ConnData
                     conn' = DuplexConnection cData' rqs sqs
-                notify . RRESYNC RRAgreed $ connectionStats conn'
+                notify . RSYNC RSAgreed $ connectionStats conn'
                 withStore' c $ \db -> do
-                  setConnRatchetDesync db connId Nothing
-                  setConnRatchetResync db connId (Just RRAgreed)
+                  setConnRatchetSync db connId RSAgreed
                   deleteRatchet db connId
                   createRatchet db connId rc
                 let ConnData {connAgentVersion} = cData'

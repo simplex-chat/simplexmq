@@ -53,8 +53,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     getDeletedConnIds,
-    setConnRatchetDesync,
-    setConnRatchetResync,
+    setConnRatchetSync,
     getRcvConn,
     getRcvQueueById,
     getSndQueueById,
@@ -1677,14 +1676,14 @@ getConnData db connId' =
       [sql|
         SELECT
           user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake,
-          last_external_snd_msg_id, deleted, ratchet_desync_state, ratchet_resync_state
+          last_external_snd_msg_id, deleted, ratchet_sync_state
         FROM connections
         WHERE conn_id = ?
       |]
       (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetDesyncState, ratchetResyncState) =
-      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetDesyncState, ratchetResyncState}, cMode)
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetSyncState) =
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetSyncState}, cMode)
 
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
@@ -1692,13 +1691,9 @@ setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHE
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
 
-setConnRatchetDesync :: DB.Connection -> ConnId -> Maybe RatchetDesyncState -> IO ()
-setConnRatchetDesync db connId ratchetDesyncState =
-  DB.execute db "UPDATE connections SET ratchet_desync_state = ? WHERE conn_id = ?" (ratchetDesyncState, connId)
-
-setConnRatchetResync :: DB.Connection -> ConnId -> Maybe RatchetResyncState -> IO ()
-setConnRatchetResync db connId ratchetResyncState =
-  DB.execute db "UPDATE connections SET ratchet_resync_state = ? WHERE conn_id = ?" (ratchetResyncState, connId)
+setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
+setConnRatchetSync db connId ratchetSyncState =
+  DB.execute db "UPDATE connections SET ratchet_sync_state = ? WHERE conn_id = ?" (ratchetSyncState, connId)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

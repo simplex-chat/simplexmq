@@ -228,6 +228,8 @@ For replying party:
 
 ### Ratchet state model
 
+#### 2 state variables
+
 Above we considered model with separate de-sync and re-sync state.
 
 | Desync \ Resync      | Nothing | RRStarted | RRAgreedSnd | RRAgreedRcv |
@@ -257,6 +259,8 @@ Some combinations should be impossible:
 `RDHealed` is equivalent to `Nothing` and only used for `RDESYNC` event, `Maybe RatchetDesyncState` can be replaced with `RatchetDesyncState`, with single new constructor `RDNoDesync` replacing `Nothing` and `RDHealed`.
 
 `RRComplete` is equivalent to `Nothing` and only used for `RRESYNC` event, `Maybe RatchetResyncState` can be replaced with `RatchetResyncState`, with single new constructor `RDNoResync` replacing `Nothing` and `RRComplete`.
+
+#### Single state variable
 
 Another option is two have a single state variable describing ratchet.
 
@@ -306,6 +310,36 @@ ratchetDesynced = \case
 ```
 
 Having a single state variable limits differentiation described for combination 5 in matrix. It also limits possible differentiations in client between events when ratchet is healed on its own, and when ratchet re-sync is completed after agents negotiation. Overall, since matrix is not very sparse and allows for more fine-grained decision-making, having separate state variables for de-sync and re-sync seems preferred.
+
+#### Single state variable simplified (final version)
+
+```haskell
+data RatchetSyncState
+  = RSOk
+  | RSAllowed
+  | RSRequired
+  | RSStarted
+  | RSAgreed
+
+-- event
+RSYNC :: RatchetSyncState -> ConnectionStats -> ACommand Agent AEConn`
+
+-- ConnectionStats field
+ratchetSyncState :: RatchetSyncState
+```
+
+Updated design decisions:
+
+1. Single constructor for "Agreed" state. Differentiating `RRResyncAgreedSnd` and `RRResyncAgreedRcv` allowed for easier processing of `EREADY` by helping to determine whether reply `EREADY` has to be sent. However, it duplicated information already present in ratchet's state, and can be instead worked around by remembering and analyzing ratchet state pre decryption.
+
+2. Prohibit transition from "Agreed" state to "Desync" states. This would make possible edge-cases that leave ratchet in de-synchronized state without ability to progress (e.g. failed delivery of `AgentRatchetKey`), but would simplify state machine by removing dedicated "Desync" variable. Besides, there's still a recovery way with a `force` option.
+
+3. Treat "Agreed" as unfinished state - prohibit new messages to be enqueued, etc. Reception of any decryptable message transitions ratchet to "Ok" state.
+
+Possible improvements:
+
+- Repeatedly triggering re-synchronization while in "Started"/"Agreed" state re-sends same keys and EREADY.
+- Cooldown period, during which repeat re-synchronization is prohibited.
 
 ### Skipped messages
 
