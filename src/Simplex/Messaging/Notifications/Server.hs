@@ -157,10 +157,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe :: M ()
     subscribe = forever $ do
       subs <- atomically (readTBQueue newSubQ)
+      logInfo $ "received new subs (" <> tshow (length subs) <> " subscriptions)"
       let ss = L.groupAllWith server $ L.toList subs
       forM_ ss $ \serverSubs -> do
-        SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber $ server $ L.head serverSubs
+        let srv = server $ L.head serverSubs
+        logSubStatus srv "queuing new subs to SMPSubscriber " $ length serverSubs
+        SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber srv
         atomically $ writeTQueue subscriberSubQ serverSubs
+        logSubStatus srv "queued new subs to SMPSubscriber " $ length serverSubs
 
     server :: NtfEntityRec 'Subscription -> SMPServer
     server (NtfSub sub) = ntfSubServer sub
@@ -181,10 +185,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       forever $ do
         subs <- atomically (peekTQueue subscriberSubQ)
         let subs' = L.map (\(NtfSub sub) -> sub) subs
+            srv = server $ L.head subs
+        logSubStatus srv "subscribing" $ length subs
         mapM_ (\NtfSubData {smpQueue} -> updateSubStatus smpQueue NSPending) subs'
-        let srv = server $ L.head subs
+        logSubStatus srv "after updateSubStatus" $ length subs
         rs <- liftIO $ subscribeQueues srv subs'
+        logSubStatus srv "after subscribeQueues" $ length subs
         (subs, oks, errs) <- foldM process ([], 0, []) rs
+        logSubStatus srv "after foldM process" $ length subs
         atomically $ do
           void $ readTQueue subscriberSubQ
           mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) $ L.nonEmpty subs
