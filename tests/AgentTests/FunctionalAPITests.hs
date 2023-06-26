@@ -621,21 +621,15 @@ testRatchetResync t = do
         ratchetDesyncState `shouldBe` Nothing
         ratchetResyncState `shouldBe` Just RRStarted
 
-      r <- get alice
-      let rrsAliceExpectedBob_ = case r of
-            (_, _, RRESYNC RRAgreedSnd ConnectionStats {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreedSnd}) -> Just (RRAgreedSnd, RRAgreedRcv)
-            (_, _, RRESYNC RRAgreedRcv ConnectionStats {ratchetDesyncState = Nothing, ratchetResyncState = Just RRAgreedRcv}) -> Just (RRAgreedRcv, RRAgreedSnd)
-            _ -> Nothing
-      case rrsAliceExpectedBob_ of
-        Nothing -> error "expected RRESYNC RRAgreedSnd or RRESYNC RRAgreedRcv"
-        Just (_, rrsBob) -> do
-          get bob2 =##> ratchetResyncP aliceId rrsBob (Just rrsBob)
+      get alice =##> ratchetResyncP bobId RRAgreed (Just RRAgreed)
 
-          get alice =##> ratchetResyncP bobId RRComplete Nothing
+      get bob2 =##> ratchetResyncP aliceId RRAgreed (Just RRAgreed)
 
-          get bob2 =##> ratchetResyncP aliceId RRComplete Nothing
+      get alice =##> ratchetResyncP bobId RRComplete Nothing
 
-          exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 9
+      get bob2 =##> ratchetResyncP aliceId RRComplete Nothing
+
+      exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 9
   where
     exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
     exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
