@@ -41,6 +41,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueues,
     getSMPMessage,
     subscribeSMPQueueNotifications,
+    subscribeSMPQueuesNtfs,
     secureSMPQueue,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
@@ -486,6 +487,16 @@ getSMPMessage c rpKey rId =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateSignKey -> NotifierId -> ExceptT SMPClientError IO ()
 subscribeSMPQueueNotifications = okSMPCommand NSUB
+
+-- | Subscribe to multiple SMP queues notifications batching commands if supported.
+subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateSignKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
+subscribeSMPQueuesNtfs c qs = sendProtocolCommands c cs >>= mapM response
+  where
+    cs = L.map (\(npKey, nId) -> (Just npKey, nId, Cmd SNotifier NSUB)) qs
+    response r = pure $ case r of
+      Right OK -> Right ()
+      Right r' -> Left . PCEUnexpectedResponse $ bshow r'
+      Left e -> Left e
 
 -- | Secure the SMP queue by adding a sender public key.
 --
