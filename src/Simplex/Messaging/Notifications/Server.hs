@@ -184,10 +184,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         mapM_ (\NtfSubData {smpQueue} -> updateSubStatus smpQueue NSPending) subs'
         let srv = server $ L.head subs
         rs <- liftIO $ subscribeQueues srv subs'
-        (subs_, oks, errs) <- foldM process ([], 0, []) rs
+        (subs, oks, errs) <- foldM process ([], 0, []) rs
         atomically $ do
           void $ readTQueue subscriberSubQ
-          mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) $ L.nonEmpty subs_
+          mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) $ L.nonEmpty subs
+        logSubStatus srv "retrying" $ length subs
         logSubStatus srv "subscribed" oks
         logSubErrors srv errs
       where
