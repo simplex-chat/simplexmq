@@ -159,7 +159,7 @@ import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
@@ -522,9 +522,9 @@ instance StrEncoding RcvSwitchStatus where
       "received_message" -> pure RSReceivedMessage
       _ -> fail "bad RcvSwitchStatus"
 
-instance ToField RcvSwitchStatus where toField = toField . strEncode
+instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode
 
-instance FromField RcvSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+instance FromField RcvSwitchStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToJSON RcvSwitchStatus where
   toEncoding = strToJEncoding
@@ -548,9 +548,9 @@ instance StrEncoding SndSwitchStatus where
       "sending_qtest" -> pure SSSendingQTEST
       _ -> fail "bad SndSwitchStatus"
 
-instance ToField SndSwitchStatus where toField = toField . strEncode
+instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode
 
-instance FromField SndSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+instance FromField SndSwitchStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToJSON SndSwitchStatus where
   toEncoding = strToJEncoding
