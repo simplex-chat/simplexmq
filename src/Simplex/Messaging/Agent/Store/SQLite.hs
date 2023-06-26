@@ -1091,6 +1091,8 @@ insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
 getPendingCommands :: DB.Connection -> ConnId -> IO [(Maybe SMPServer, [AsyncCmdId])]
 getPendingCommands db connId = do
+  -- `groupOn` is used instead of `groupAllOn` to avoid extra sorting by `server + cmdId`, as the query already sorts by them.
+  -- TODO review whether this can break if, e.g., the server has another key hash.
   map (\ids -> (fst $ head ids, map snd ids)) . groupOn fst . map srvCmdId
     <$> DB.query
       db
