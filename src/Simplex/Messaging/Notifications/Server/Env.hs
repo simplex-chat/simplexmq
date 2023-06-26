@@ -12,6 +12,7 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
@@ -93,7 +94,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (NtfEntityRec 'Subscription),
+    newSubQ :: TBQueue (NonEmpty (NtfEntityRec 'Subscription)),
     smpAgent :: SMPClientAgent
   }
 
@@ -105,7 +106,7 @@ newNtfSubscriber qSize smpAgentCfg = do
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
 data SMPSubscriber = SMPSubscriber
-  { newSubQ :: TQueue (NtfEntityRec 'Subscription),
+  { newSubQ :: TQueue (NonEmpty (NtfEntityRec 'Subscription)),
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 
