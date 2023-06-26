@@ -169,28 +169,31 @@ After agent receives `EREADY` (or any other message that successfully decrypts):
 For initiating party:
 
 ```
-   +-------------+
-   | Ratchet ok  |
-   +-------------+
+    +------------+
+    | Ratchet ok |
+    +------------+
           |
           | message received, decryption error
-          V
-+--------------------+
-| Re-sync required / |------------------------+
-|  Re-sync allowed   |                        |
-+--------------------+                        | alternative - message received,
-          |                                   | successfully decrypted
-          | re-sync started by client         |
+   * ---->|-----------------------------------+
+          |                                   |
+          V          new (clarifying)         V
+  +-----------------+     error      +------------------+
+  | Re-sync allowed |--------------->| Re-sync required |
+  +-----------------+                +------------------+
+          |                                   |
+          |-----------------------------------|
+          |                                   | alternative - message received,
+          | re-sync started by client         | successfully decrypted
           V                                   V
- +------------------+                  +-------------+
- | Re-sync started  |                  | Ratchet ok  |
- +------------------+                  +-------------+
+  +-----------------+                   +------------+
+  | Re-sync started |                   | Ratchet ok |
+  +-----------------+                   +------------+
           |
           | other party replied with new ratchet key
           V
   +----------------+
-  | Re-sync agreed |
-  |   snd / rcv    |
+  | Re-sync agreed |----> * message received, decryption error
+  |   snd / rcv    |        (should remember agreed state for reply EREADY?)
   +----------------+
           |
           | message received, successfully decrypted
@@ -204,9 +207,9 @@ For initiating party:
 For replying party:
 
 ```
-   +-------------+
-   | Ratchet ok  |
-   +-------------+
+    +------------+
+    | Ratchet ok |
+    +------------+
           |
           | other party sent new ratchet key
           V
@@ -218,9 +221,9 @@ For replying party:
           | message received, successfully decrypted
           | (can be, but not necessarily, EREADY)
           V
-   +-------------+
-   | Ratchet ok  |
-   +-------------+
+    +------------+
+    | Ratchet ok |
+    +------------+
 ```
 
 ### Ratchet state model
