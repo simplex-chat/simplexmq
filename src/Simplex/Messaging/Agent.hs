@@ -1781,7 +1781,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
     processSMP
       rq@RcvQueue {e2ePrivKey, e2eDhSecret, status}
       conn
-      cData@ConnData {userId, connId, duplexHandshake, ratchetSyncState, lastExternalSndId} = withConnLock c connId "processSMP" $ do
+      cData@ConnData {userId, connId, duplexHandshake, ratchetSyncState = rss, lastExternalSndId} = withConnLock c connId "processSMP" $ do
         case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             handleNotifyAck $
@@ -1849,7 +1849,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                   void . enqueueMessages c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
                                 ackDel msgId
                             where
-                              resetRatchetSync = when (ratchetSyncState /= RSOk) $
+                              resetRatchetSync = when (rss /= RSOk) $
                                 qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
                                   let cData' = cData {ratchetSyncState = RSOk} :: ConnData
                                       conn' = DuplexConnection cData' rqs sqs
@@ -1868,19 +1868,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                     _ -> pure ()
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
-                            unlessM
-                              (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash)
-                              -- TODO ratchet re-sync: allow RSAllowed -> RSRequired transition
-                              (when (ratchetSyncState == RSOk) notifySync)
+                            unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) notifySync
                             ack
                             where
-                              notifySync :: m ()
                               notifySync = qDuplex "AGENT A_CRYPTO error" $ \(DuplexConnection _ rqs sqs) -> do
-                                let rSyncState = cryptoErrToSyncState e
-                                    cData' = cData {ratchetSyncState = rSyncState} :: ConnData
-                                    conn' = DuplexConnection cData' rqs sqs
-                                notify . RSYNC rSyncState $ connectionStats conn'
-                                withStore' c $ \db -> setConnRatchetSync db connId rSyncState
+                                let rss' = cryptoErrToSyncState e
+                                when (rss == RSOk || (rss == RSAllowed && rss' == RSRequired)) $ do
+                                  let cData' = cData {ratchetSyncState = rss'} :: ConnData
+                                      conn' = DuplexConnection cData' rqs sqs
+                                  notify . RSYNC rss' $ connectionStats conn'
+                                  withStore' c $ \db -> setConnRatchetSync db connId rss'
                           Left e -> checkDuplicateHash e encryptedMsgHash >> ack
                         where
                           checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
@@ -2143,7 +2140,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             qDuplex "AgentRatchetKey" $ \duplexConn -> do
               AgentConfig {e2eEncryptVRange} <- asks config
               unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
-              if ratchetSyncState == RSStarted
+              if rss == RSStarted
                 then processReplyRatchetKey e2eEncryptVRange duplexConn
                 else processInitiatingRatchetKey e2eEncryptVRange duplexConn
             where
