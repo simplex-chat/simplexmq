@@ -93,7 +93,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (NonEmpty (NtfEntityRec 'Subscription)),
+    newSubQ :: TBQueue [NtfEntityRec 'Subscription],
     smpAgent :: SMPClientAgent
   }
 

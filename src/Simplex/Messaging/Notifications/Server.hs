@@ -147,8 +147,8 @@ ntfServer cfg@NtfServerConfig {transports, logTLSErrors} started = do
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do
   subs' <- atomically $ filterM (fmap ntfShouldSubscribe . readTVar . subStatus) $ M.elems subs
-  mapM_ (atomically . writeTBQueue newSubQ . L.map NtfSub) $ L.nonEmpty subs'
-  liftIO $ logInfo "SMP connections resubscribed"
+  atomically . writeTBQueue newSubQ $ map NtfSub subs'
+  liftIO $ logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -158,13 +158,20 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe = forever $ do
       subs <- atomically (readTBQueue newSubQ)
       logInfo $ "received new subs (" <> tshow (length subs) <> " subscriptions)"
-      let ss = L.groupAllWith server $ L.toList subs
+      let ss = L.groupAllWith server subs
       forM_ ss $ \serverSubs -> do
         let srv = server $ L.head serverSubs
-        logSubStatus srv "queuing new subs to SMPSubscriber " $ length serverSubs
+            batches = toChunks 900 $ L.toList serverSubs
+        logSubStatus srv "queueing new subs to SMPSubscriber " $ length serverSubs
         SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber srv
-        atomically $ writeTQueue subscriberSubQ serverSubs
+        mapM_ (atomically . writeTQueue subscriberSubQ) batches
         logSubStatus srv "queued new subs to SMPSubscriber " $ length serverSubs
+
+    toChunks :: Int -> [a] -> [NonEmpty a]
+    toChunks _ [] = []
+    toChunks n xs =
+      let (ys, xs') = splitAt n xs
+      in maybe id (:) (L.nonEmpty ys) (toChunks n xs')
 
     server :: NtfEntityRec 'Subscription -> SMPServer
     server (NtfSub sub) = ntfSubServer sub
@@ -191,12 +198,12 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         logSubStatus srv "after updateSubStatus" $ length subs
         rs <- liftIO $ subscribeQueues srv subs'
         logSubStatus srv "after subscribeQueues" $ length subs
-        (subs, oks, errs) <- foldM process ([], 0, []) rs
-        logSubStatus srv "after foldM process" $ length subs
+        (subs'', oks, errs) <- foldM process ([], 0, []) rs
+        logSubStatus srv "after foldM process" $ length subs''
         atomically $ do
           void $ readTQueue subscriberSubQ
-          mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) $ L.nonEmpty subs
-        logSubStatus srv "retrying" $ length subs
+          mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) $ L.nonEmpty subs''
+        logSubStatus srv "retrying" $ length subs''
         logSubStatus srv "subscribed" oks
         logSubErrors srv errs
       where
