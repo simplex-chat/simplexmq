@@ -48,7 +48,6 @@ data NtfServerConfig = NtfServerConfig
     apnsConfig :: APNSPushClientConfig,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     storeLogFile :: Maybe FilePath,
-    resubscribeDelay :: Int, -- microseconds
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -94,7 +93,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (NonEmpty (NtfEntityRec 'Subscription)),
+    newSubQ :: TBQueue [NtfEntityRec 'Subscription],
     smpAgent :: SMPClientAgent
   }
 

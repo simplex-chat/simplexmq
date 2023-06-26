@@ -208,11 +208,10 @@ import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
-import Data.Function (on)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
-import Data.List (foldl', groupBy, intercalate, sortBy)
+import Data.List (foldl', intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -250,7 +249,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, diffToMilliseconds, eitherToMaybe, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, diffToMilliseconds, eitherToMaybe, groupOn, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -1092,7 +1091,9 @@ insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
 getPendingCommands :: DB.Connection -> ConnId -> IO [(Maybe SMPServer, [AsyncCmdId])]
 getPendingCommands db connId = do
-  map (\ids -> (fst $ head ids, map snd ids)) . groupBy ((==) `on` fst) . map srvCmdId
+  -- `groupOn` is used instead of `groupAllOn` to avoid extra sorting by `server + cmdId`, as the query already sorts by them.
+  -- TODO review whether this can break if, e.g., the server has another key hash.
+  map (\ids -> (fst $ head ids, map snd ids)) . groupOn fst . map srvCmdId
     <$> DB.query
       db
       [sql|

@@ -42,9 +42,8 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Function (on)
 import Data.Int (Int64)
-import Data.List (foldl', groupBy, sortOn)
+import Data.List (foldl', sortOn)
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
@@ -59,7 +58,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, groupAllOn, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
   { party :: SFileParty p,
@@ -258,9 +257,7 @@ instance (ToField a) => ToField (FileSize a) where toField (FileSize s) = toFiel
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
 groupReplicasByServer defChunkSize =
-  groupBy ((==) `on` replicaServer)
-    . sortOn replicaServer
-    . unfoldChunksToReplicas defChunkSize
+  groupAllOn replicaServer . unfoldChunksToReplicas defChunkSize
 
 encodeFileReplicas :: FileSize Word32 -> [FileChunk] -> [YAMLServerReplicas]
 encodeFileReplicas defChunkSize =
@@ -268,7 +265,7 @@ encodeFileReplicas defChunkSize =
   where
     encodeServerReplicas fs =
       YAMLServerReplicas
-        { server = replicaServer $ head fs, -- groupBy guarantees that fs is not empty
+        { server = replicaServer $ head fs, -- groupAllOn guarantees that fs is not empty
           chunks = map (B.unpack . encodeServerReplica) fs
         }
 

@@ -164,7 +164,7 @@ smpServerCLI cfgPath logPath =
         serverConfig =
           ServerConfig
             { transports = iniTransports ini,
-              tbqSize = 32,
+              tbqSize = 64,
               serverTbqSize = 1024,
               msgQueueQuota = 128,
               queueIdBytes = 24,

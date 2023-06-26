@@ -105,7 +105,7 @@ pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 smpCfgV1 :: ProtocolClientConfig
-smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = vr11}
+smpCfgV1 = (smpCfg agentCfg) {serverVRange = vr11}
 
 agentCfgV1 :: AgentConfig
 agentCfgV1 = agentCfg {smpAgentVRange = vr11, smpClientVRange = vr11, e2eEncryptVRange = vr11, smpCfg = smpCfgV1}
@@ -1381,7 +1381,7 @@ testCreateQueueAuth clnt1 clnt2 = do
   where
     getClient (clntAuth, clntVersion) =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
-          smpCfg = (defaultClientConfig :: ProtocolClientConfig) {smpServerVRange = mkVersionRange 4 clntVersion}
+          smpCfg = (defaultClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
        in getSMPAgentClient' agentCfg {smpCfg} servers testDB
 
 testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
