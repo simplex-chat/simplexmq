@@ -287,6 +287,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
     tOrder :: Transmission BrokerMsg -> Int
     tOrder (_, _, cmd) = case cmd of
       MSG {} -> 0
+      NMSG {} -> 0
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
