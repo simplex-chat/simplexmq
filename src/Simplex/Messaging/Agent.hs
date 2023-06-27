@@ -818,7 +818,9 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
     _ -> throwError $ CONN SIMPLEX
   where
     enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
-    enqueueMsgs cData sqs = enqueueMessages c cData sqs msgFlags $ A_MSG msg
+    enqueueMsgs cData sqs = do
+      checkRatchetSync cData $ CMD PROHIBITED
+      enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
 -- / async command processing v v v
 
@@ -993,7 +995,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
 enqueueMessages c cData sqs msgFlags aMessage = do
-  checkRatchetSync cData $ CMD PROHIBITED
+  checkRatchetSync cData $ INTERNAL "enqueueMessages: ratchet is not synchronized"
   enqueueMessages' c cData sqs msgFlags aMessage
 
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
