@@ -804,11 +804,13 @@ instance Encoding AgentMsgEnvelope where
 
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
+-- AgentRKey is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It makes REPLY message unnecessary.
     AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
+  | AgentRKey ByteString
   | AgentMessage APrivHeader AMessage
   deriving (Show)
 
@@ -816,17 +818,20 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
+    AgentRKey info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
+      'R' -> AgentRKey . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
 data AgentMessageType
   = AM_CONN_INFO
   | AM_CONN_INFO_REPLY
+  | AM_CONN_RATCHET_KEY
   | AM_HELLO_
   | AM_REPLY_
   | AM_A_MSG_
@@ -842,6 +847,7 @@ instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
     AM_CONN_INFO_REPLY -> "D"
+    AM_CONN_RATCHET_KEY -> "K"
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
@@ -855,6 +861,7 @@ instance Encoding AgentMessageType where
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
       'D' -> pure AM_CONN_INFO_REPLY
+      'K' -> pure AM_CONN_RATCHET_KEY
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
@@ -873,6 +880,7 @@ agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
+  AgentRKey _ -> AM_CONN_RATCHET_KEY
   AgentMessage _ aMsg -> case aMsg of
     -- HELLO is used both in v1 and in v2, but differently.
     -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,

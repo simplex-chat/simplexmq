@@ -625,7 +625,7 @@ testRatchetSync t = do
 
       get bob2 =##> ratchetSyncP aliceId RSOk
 
-      exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 8
+      exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
   where
     exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
     exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
