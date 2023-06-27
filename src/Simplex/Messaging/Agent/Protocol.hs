@@ -804,13 +804,13 @@ instance Encoding AgentMsgEnvelope where
 
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
--- AgentRKey is not encrypted with double ratchet, but with per-queue E2E encryption
+-- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It makes REPLY message unnecessary.
     AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
-  | AgentRKey ByteString
+  | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
   deriving (Show)
 
@@ -818,13 +818,13 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
-    AgentRKey info -> smpEncode ('R', Tail info)
+    AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
-      'R' -> AgentRKey . unTail <$> smpP
+      'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
@@ -880,7 +880,7 @@ agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
-  AgentRKey _ -> AM_CONN_RATCHET_KEY
+  AgentRatchetInfo _ -> AM_CONN_RATCHET_KEY
   AgentMessage _ aMsg -> case aMsg of
     -- HELLO is used both in v1 and in v2, but differently.
     -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,

@@ -2288,7 +2288,7 @@ enqueueRatchetKey c cData@ConnData {connId, connAgentVersion} sq e2eEncryption =
     storeRatchetKey = withStore c $ \db -> runExceptT $ do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
-      let agentMsg = AgentRKey ""
+      let agentMsg = AgentRatchetInfo ""
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
       let msgBody = smpEncode $ AgentRatchetKey {agentVersion = connAgentVersion, e2eEncryption, info = ""}
