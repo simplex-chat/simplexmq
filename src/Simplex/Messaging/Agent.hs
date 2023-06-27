@@ -1098,7 +1098,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  AM_CONN_RATCHET_KEY -> connError msgId NOT_AVAILABLE
+                  AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
                   AM_HELLO_
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
@@ -1142,7 +1142,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     when (isJust rq_) $ removeConfirmations db connId
                   unless (duplexHandshake == Just True) . void $ enqueueMessage c cData sq SMP.noMsgFlags HELLO
                 AM_CONN_INFO_REPLY -> pure ()
-                AM_CONN_RATCHET_KEY -> pure ()
+                AM_RATCHET_INFO -> pure ()
                 AM_REPLY_ -> pure ()
                 AM_HELLO_ -> do
                   withStore' c $ \db -> setSndQueueStatus db sq Active

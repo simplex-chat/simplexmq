@@ -831,7 +831,7 @@ instance Encoding AgentMessage where
 data AgentMessageType
   = AM_CONN_INFO
   | AM_CONN_INFO_REPLY
-  | AM_CONN_RATCHET_KEY
+  | AM_RATCHET_INFO
   | AM_HELLO_
   | AM_REPLY_
   | AM_A_MSG_
@@ -847,7 +847,7 @@ instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
     AM_CONN_INFO_REPLY -> "D"
-    AM_CONN_RATCHET_KEY -> "K"
+    AM_RATCHET_INFO -> "S"
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
@@ -861,7 +861,7 @@ instance Encoding AgentMessageType where
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
       'D' -> pure AM_CONN_INFO_REPLY
-      'K' -> pure AM_CONN_RATCHET_KEY
+      'S' -> pure AM_RATCHET_INFO
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
@@ -880,7 +880,7 @@ agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
-  AgentRatchetInfo _ -> AM_CONN_RATCHET_KEY
+  AgentRatchetInfo _ -> AM_RATCHET_INFO
   AgentMessage _ aMsg -> case aMsg of
     -- HELLO is used both in v1 and in v2, but differently.
     -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
