@@ -542,17 +542,17 @@ switchConnectionAsync' c corrId connId =
       SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          checkRatchetSync cData
+          checkRatchetSync cData $ CMD PROHIBITED
           rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
           let rqs' = updatedQs rq1 rqs
           pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwError $ CMD PROHIBITED
 
-checkRatchetSync :: AgentMonad m => ConnData -> m ()
-checkRatchetSync ConnData {ratchetSyncState} =
+checkRatchetSync :: AgentMonad m => ConnData -> AgentErrorType -> m ()
+checkRatchetSync ConnData {ratchetSyncState} err =
   when (ratchetSyncState `elem` ([RSRequired, RSStarted, RSAgreed] :: [RatchetSyncState])) $
-    throwError $ CMD PROHIBITED
+    throwError err
 
 newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
 newConn c userId connId enableNtfs cMode clientData =
@@ -992,7 +992,12 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessages c cData (sq :| sqs) msgFlags aMessage = do
+enqueueMessages c cData sqs msgFlags aMessage = do
+  checkRatchetSync cData $ CMD PROHIBITED
+  enqueueMessages' c cData sqs msgFlags aMessage
+
+enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
+enqueueMessages' c cData (sq :| sqs) msgFlags aMessage = do
   msgId <- enqueueMessage c cData sq msgFlags aMessage
   mapM_ (enqueueSavedMessage c cData msgId) $
     filter (\SndQueue {status} -> status == Secured || status == Active) sqs
@@ -1059,7 +1064,6 @@ getPendingMsgQ c SndQueue {server, sndId} = do
       TM.insert qKey q $ smpQueueMsgQueues c
       pure q
 
--- TODO ratchet re-sync: prohibit enqueue
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq = do
   (mq, qLock) <- atomically $ getPendingMsgQ c sq
@@ -1237,7 +1241,7 @@ switchConnection' c connId =
       SomeConn _ conn@(DuplexConnection cData rqs@(rq :| _rqs) _)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          checkRatchetSync cData
+          checkRatchetSync cData $ CMD PROHIBITED
           rq' <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           switchDuplexConnection c conn rq'
       _ -> throwError $ CMD PROHIBITED
@@ -1265,7 +1269,7 @@ abortConnectionSwitch' c connId =
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
         Just rq
           | canAbortRcvSwitch rq -> do
-            checkRatchetSync cData
+            checkRatchetSync cData $ CMD PROHIBITED
             -- multiple queues to which the connections switches were possible when repeating switch was allowed
             let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
             case L.nonEmpty keepRqs of
@@ -1846,7 +1850,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                 let CR.Ratchet {rcSnd} = rcPrev
                                 -- if ratchet was initialized as receiving, it means EREADY wasn't sent on key negotiation
                                 when (isNothing rcSnd) $
-                                  void . enqueueMessages c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
+                                  void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
                                 ackDel msgId
                             where
                               resetRatchetSync = when (rss /= RSOk) $
@@ -2045,6 +2049,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()
           qAddMsg ((_, Nothing) :| _) _ = qError "adding queue without switching is not supported"
           qAddMsg ((qUri, Just addr) :| _) (DuplexConnection _ rqs sqs) = do
+            checkRatchetSync cData $ AGENT (A_QUEUE "ratchet is not synchronized")
             clientVRange <- asks $ smpClientVRange . config
             case qUri `compatibleVersion` clientVRange of
               Just qInfo@(Compatible sqInfo@SMPQueueInfo {queueAddress}) ->
@@ -2077,6 +2082,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           -- processed by queue recipient
           qKeyMsg :: NonEmpty (SMPQueueInfo, SndPublicVerifyKey) -> Connection 'CDuplex -> m ()
           qKeyMsg ((qInfo, senderKey) :| _) (DuplexConnection _ rqs _) = do
+            checkRatchetSync cData $ AGENT (A_QUEUE "ratchet is not synchronized")
             clientVRange <- asks $ smpClientVRange . config
             unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
             case findRQ (smpServer, senderId) rqs of
@@ -2097,7 +2103,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           -- mark queue as Secured and to start sending messages to it
           qUseMsg :: NonEmpty ((SMPServer, SMP.SenderId), Bool) -> Connection 'CDuplex -> m ()
           -- NOTE: does not yet support the change of the primary status during the rotation
-          qUseMsg ((addr, _primary) :| _) (DuplexConnection _ rqs sqs) =
+          qUseMsg ((addr, _primary) :| _) (DuplexConnection _ rqs sqs) = do
+            checkRatchetSync cData $ AGENT (A_QUEUE "ratchet is not synchronized")
             case findQ addr sqs of
               Just sq'@SndQueue {dbReplaceQueueId = Just replaceQId} -> do
                 case find ((replaceQId ==) . dbQId) sqs of
@@ -2183,7 +2190,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               sendEREADY :: CR.RatchetX448 -> ConnData -> NonEmpty SndQueue -> m ()
               sendEREADY CR.Ratchet {rcSnd} cd sqs =
                 when (isJust rcSnd) $
-                  void . enqueueMessages c cd sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
+                  void . enqueueMessages' c cd sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
           checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash receivedPrevMsgHash

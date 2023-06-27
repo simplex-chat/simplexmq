@@ -158,7 +158,7 @@ functionalAPITests t = do
       withSmpServer t testAsyncBothOffline
     it "should connect on the second attempt if server was offline" $
       testAsyncServerOffline t
-    it "should notify after HELLO timeout" $  
+    it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
   describe "Message delivery" $ do
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
@@ -612,9 +612,7 @@ testRatchetSync t = do
       get alice ##> ("", bobId, SENT 8)
       get bob2 =##> ratchetSyncP aliceId RSRequired
 
-      6 <- sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
-      get bob2 ##> ("", aliceId, SENT 6)
-      get alice =##> ratchetSyncP bobId RSRequired
+      Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
 
       ConnectionStats {ratchetSyncState} <- synchronizeConnectionRatchet bob2 aliceId False
       liftIO $ ratchetSyncState `shouldBe` RSStarted
@@ -627,7 +625,7 @@ testRatchetSync t = do
 
       get bob2 =##> ratchetSyncP aliceId RSOk
 
-      exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 9
+      exchangeGreetingsMsgIds alice bobId 11 bob2 aliceId 8
   where
     exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
     exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
