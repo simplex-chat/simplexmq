@@ -903,7 +903,7 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs =
       where
         batch mode m q =
           let tSess = mkSMPTSession (toRQ q) mode
-            in M.alter (Just . maybe [q] (q <|)) tSess m
+           in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> m (BatchResponses AgentErrorType r)
     sendClientBatch (tSess@(userId, srv, _), qs') =
       tryError (getSMPServerClient c tSess) >>= \case
