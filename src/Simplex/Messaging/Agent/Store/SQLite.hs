@@ -54,6 +54,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     setConnDeleted,
     getDeletedConnIds,
     setConnRatchetSync,
+    addProcessedRatchetKeyHash,
+    checkProcessedRatchetKeyHashExists,
+    deleteProcessedRatchetKeyHashesExpired,
     getRcvConn,
     getRcvQueueById,
     getSndQueueById,
@@ -1694,6 +1697,26 @@ getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connect
 setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
 setConnRatchetSync db connId ratchetSyncState =
   DB.execute db "UPDATE connections SET ratchet_sync_state = ? WHERE conn_id = ?" (ratchetSyncState, connId)
+
+addProcessedRatchetKeyHash :: DB.Connection -> ConnId -> ByteString -> IO ()
+addProcessedRatchetKeyHash db connId hash =
+  DB.execute db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?)" (connId, hash)
+
+checkProcessedRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
+checkProcessedRatchetKeyHashExists db connId hash = do
+  fromMaybe False
+    <$> maybeFirstRow
+      fromOnly
+      ( DB.query
+          db
+          "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
+          (connId, hash)
+      )
+
+deleteProcessedRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
+deleteProcessedRatchetKeyHashesExpired db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  DB.execute db "DELETE FROM processed_ratchet_key_hashes WHERE created_at < ?" (Only cutoffTs)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

@@ -15,11 +15,25 @@ ALTER TABLE connections ADD COLUMN ratchet_sync_state TEXT NOT NULL DEFAULT 'ok'
 
 ALTER TABLE ratchets ADD COLUMN x3dh_pub_key_1 BLOB;
 ALTER TABLE ratchets ADD COLUMN x3dh_pub_key_2 BLOB;
+
+CREATE TABLE processed_ratchet_key_hashes(
+  processed_ratchet_key_hash_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  hash BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(conn_id, hash);
 |]
 
 down_m20230615_ratchet_sync :: Query
 down_m20230615_ratchet_sync =
   [sql|
+DROP INDEX idx_processed_ratchet_key_hashes_hash;
+
+DROP TABLE processed_ratchet_key_hashes;
+
 ALTER TABLE ratchets DROP COLUMN x3dh_pub_key_2;
 ALTER TABLE ratchets DROP COLUMN x3dh_pub_key_1;
 

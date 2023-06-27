@@ -1291,13 +1291,12 @@ abortConnectionSwitch' c connId =
 synchronizeConnectionRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
 synchronizeConnectionRatchet' c connId force = withConnLock c connId "synchronizeConnectionRatchet" $ do
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData@ConnData {ratchetSyncState} rqs sqs@(sq :| _sqs))
+    SomeConn _ (DuplexConnection cData@ConnData {ratchetSyncState} rqs sqs)
       | ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]) || force -> do
         -- check queues are not switching?
         AgentConfig {e2eEncryptVRange} <- asks config
         (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ maxVersion e2eEncryptVRange
-        -- TODO ratchet re-sync: 1) send via all snd queues? -> deduplicate on receiving
-        enqueueRatchetKey c cData sq e2eParams
+        void $ enqueueRatchetKeyMsgs c cData sqs e2eParams
         withStore' c $ \db -> do
           setConnRatchetSync db connId RSStarted
           deleteRatchet db connId
@@ -1721,6 +1720,7 @@ cleanupManager c@AgentClient {subQ} = do
     void . runExceptT $ do
       deleteConns `catchError` (notify "" . ERR)
       deleteRcvMsgHashes `catchError` (notify "" . ERR)
+      deleteProcessedRatchetKeyHashes `catchError` (notify "" . ERR)
       deleteRcvFilesExpired `catchError` (notify "" . RFERR)
       deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
       deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
@@ -1737,6 +1737,9 @@ cleanupManager c@AgentClient {subQ} = do
     deleteRcvMsgHashes = do
       rcvMsgHashesTTL <- asks $ rcvMsgHashesTTL . config
       withStore' c (`deleteRcvMsgHashesExpired` rcvMsgHashesTTL)
+    deleteProcessedRatchetKeyHashes = do
+      rkHashesTTL <- asks $ processedRatchetKeyHashesTTL . config
+      withStore' c (`deleteProcessedRatchetKeyHashesExpired` rkHashesTTL)
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
@@ -2144,18 +2147,21 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             _ -> qError $ name <> ": message must be sent to duplex connection"
 
           newRatchetKey :: CR.E2ERatchetParams 'C.X448 -> m ()
-          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion _ _) =
+          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv) =
             qDuplex "AgentRatchetKey" $ \duplexConn -> do
-              AgentConfig {e2eEncryptVRange} <- asks config
-              unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
-              if rss == RSStarted
-                then processReplyRatchetKey e2eEncryptVRange duplexConn
-                else processInitiatingRatchetKey e2eEncryptVRange duplexConn
+              let rkHash = C.sha256Hash $ C.pubKeyBytes k1Rcv <> C.pubKeyBytes k2Rcv
+              unlessM (withStore' c $ \db -> checkProcessedRatchetKeyHashExists db connId rkHash) $ do
+                withStore' c $ \db -> addProcessedRatchetKeyHash db connId rkHash
+                AgentConfig {e2eEncryptVRange} <- asks config
+                unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
+                if rss == RSStarted
+                  then processReplyRatchetKey e2eEncryptVRange duplexConn
+                  else processInitiatingRatchetKey e2eEncryptVRange duplexConn
             where
               processReplyRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
               processReplyRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs) = do
                 (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
-                rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
+                rc <- initRatchet e2eEncryptVRange k1 pk1 pk2
                 let cData' = cData {ratchetSyncState = RSAgreed} :: ConnData
                     conn' = DuplexConnection cData' rqs sqs
                 notify . RSYNC RSAgreed $ connectionStats conn'
@@ -2164,9 +2170,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   createRatchet db connId rc
                 enqueueEREADY rc cData' sqs
               processInitiatingRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
-              processInitiatingRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs@(sq :| _sqs)) = do
+              processInitiatingRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs) = do
                 (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
-                rc <- initRatchet e2eEncryptVRange k1 pk1 pk2 e2eOtherPartyParams
+                rc <- initRatchet e2eEncryptVRange k1 pk1 pk2
                 let cData' = cData {ratchetSyncState = RSAgreed} :: ConnData
                     conn' = DuplexConnection cData' rqs sqs
                 notify . RSYNC RSAgreed $ connectionStats conn'
@@ -2174,18 +2180,17 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   setConnRatchetSync db connId RSAgreed
                   deleteRatchet db connId
                   createRatchet db connId rc
-                -- TODO ratchet re-sync: 1) send via all snd queues? -> deduplicate on receiving
-                enqueueRatchetKey c cData' sq e2eParams
+                void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
                 enqueueEREADY rc cData' sqs
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: VersionRange -> C.PublicKeyX448 -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> CR.E2ERatchetParams 'C.X448 -> m (CR.Ratchet 'C.X448)
-              initRatchet e2eEncryptVRange k1 pk1 pk2 e2eParamsRcv@(CR.E2ERatchetParams _ k1Rcv k2Rcv)
+              initRatchet :: VersionRange -> C.PublicKeyX448 -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m (CR.Ratchet 'C.X448)
+              initRatchet e2eEncryptVRange k1 pk1 pk2
                 | C.pubKeyBytes k1 <= C.pubKeyBytes k1Rcv =
-                  pure $ CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eParamsRcv
+                  pure $ CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eOtherPartyParams
                 | otherwise = do
                   (_, rcDHRs) <- liftIO C.generateKeyPair'
-                  pure $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eParamsRcv
+                  pure $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eOtherPartyParams
               enqueueEREADY :: CR.RatchetX448 -> ConnData -> NonEmpty SndQueue -> m ()
               enqueueEREADY CR.Ratchet {rcSnd} cd sqs =
                 when (isJust rcSnd) $
@@ -2263,11 +2268,19 @@ enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eE
       liftIO $ createSndMsg db connId msgData
       pure internalId
 
-enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.E2ERatchetParams 'C.X448 -> m ()
+enqueueRatchetKeyMsgs :: forall m. AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
+enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
+  msgId <- enqueueRatchetKey c cData sq e2eEncryption
+  mapM_ (enqueueSavedMessage c cData msgId) $
+    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
+  pure msgId
+
+enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
 enqueueRatchetKey c cData@ConnData {connId, connAgentVersion} sq e2eEncryption = do
   resumeMsgDelivery c cData sq
   msgId <- storeRatchetKey
   queuePendingMsgs c sq [msgId]
+  pure $ unId msgId
   where
     storeRatchetKey :: m InternalId
     storeRatchetKey = withStore c $ \db -> runExceptT $ do
