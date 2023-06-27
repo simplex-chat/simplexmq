@@ -167,6 +167,8 @@ functionalAPITests t = do
       testSkippedMessages t
     it "should report ratchet de-synchronization, synchronize ratchets" $
       testRatchetSync t
+    it "should report ratchet de-synchronization, synchronize ratchets, with server offline" $
+      testRatchetSyncServerOffline t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -626,21 +628,76 @@ testRatchetSync t = do
       get bob2 =##> ratchetSyncP aliceId RSOk
 
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
-  where
-    exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
-    exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
-      msgId1 <- sendMessage alice bobId SMP.noMsgFlags "hello"
-      liftIO $ msgId1 `shouldBe` aliceMsgId
-      get alice ##> ("", bobId, SENT aliceMsgId)
+
+testRatchetSyncServerOffline :: HasCallStack => ATransport -> IO ()
+testRatchetSyncServerOffline t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 4)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-      ackMessage bob aliceId bobMsgId
-      msgId2 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
-      let aliceMsgId' = aliceMsgId + 1
-          bobMsgId' = bobMsgId + 1
-      liftIO $ msgId2 `shouldBe` bobMsgId'
-      get bob ##> ("", aliceId, SENT bobMsgId')
-      get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-      ackMessage alice bobId aliceMsgId'
+      ackMessage bob aliceId 4
+
+      5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
+      get bob ##> ("", aliceId, SENT 5)
+      get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
+      ackMessage alice bobId 5
+
+      liftIO $ copyFile testDB2 (testDB2 <> ".bak")
+
+      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
+      get alice ##> ("", bobId, SENT 6)
+      get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 6
+
+      7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
+      get bob ##> ("", aliceId, SENT 7)
+      get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
+      ackMessage alice bobId 7
+
+    disconnectAgentClient bob
+
+    -- importing database backup after progressing ratchet de-synchronizes ratchet,
+    -- this will be fixed by ratchet re-negotiation
+    liftIO $ renameFile (testDB2 <> ".bak") testDB2
+
+    bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+
+      8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
+      get alice ##> ("", bobId, SENT 8)
+      get bob2 =##> ratchetSyncP aliceId RSRequired
+
+      Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
+      pure ()
+
+    pure (aliceId, bobId, bob2)
+
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeConnectionRatchet bob2 aliceId False
+  liftIO $ ratchetSyncState `shouldBe` RSStarted
+
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    runRight_ $ do
+      ("", "", UP _ _) <- nGet alice
+      ("", "", UP _ _) <- nGet bob2
+
+      get alice =##> ratchetSyncP bobId RSAgreed
+
+      get bob2 =##> ratchetSyncP aliceId RSAgreed
+
+      get alice =##> ratchetSyncP bobId RSOk
+
+      get bob2 =##> ratchetSyncP aliceId RSOk
+
+      exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
 
 ratchetSyncP :: ConnId -> RatchetSyncState -> AEntityTransmission 'AEConn -> Bool
 ratchetSyncP cId rrs = \case
@@ -1556,3 +1613,18 @@ exchangeGreetingsMsgId msgId alice bobId bob aliceId = do
   get bob ##> ("", aliceId, SENT msgId')
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId msgId'
+
+exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
+exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
+  msgId1 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+  liftIO $ msgId1 `shouldBe` aliceMsgId
+  get alice ##> ("", bobId, SENT aliceMsgId)
+  get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+  ackMessage bob aliceId bobMsgId
+  msgId2 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+  let aliceMsgId' = aliceMsgId + 1
+      bobMsgId' = bobMsgId + 1
+  liftIO $ msgId2 `shouldBe` bobMsgId'
+  get bob ##> ("", aliceId, SENT bobMsgId')
+  get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+  ackMessage alice bobId aliceMsgId'
