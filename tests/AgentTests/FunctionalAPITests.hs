@@ -584,48 +584,8 @@ testRatchetSync t = do
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
-    (aliceId, bobId) <- runRight $ makeConnection alice bob
-    runRight_ $ do
-      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
-      get alice ##> ("", bobId, SENT 4)
-      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-      ackMessage bob aliceId 4
-
-      5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
-      get bob ##> ("", aliceId, SENT 5)
-      get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
-      ackMessage alice bobId 5
-
-      liftIO $ copyFile testDB2 (testDB2 <> ".bak")
-
-      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
-      get alice ##> ("", bobId, SENT 6)
-      get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
-      ackMessage bob aliceId 6
-
-      7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
-      get bob ##> ("", aliceId, SENT 7)
-      get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
-      ackMessage alice bobId 7
-
-    disconnectAgentClient bob
-
-    -- importing database backup after progressing ratchet de-synchronizes ratchet
-    liftIO $ renameFile (testDB2 <> ".bak") testDB2
-
-    bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
-
-    runRight_ $ do
-      subscribeConnection bob2 aliceId
-
-      Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId False
-
-      8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
-      get alice ##> ("", bobId, SENT 8)
-      get bob2 =##> ratchetSyncP aliceId RSRequired
-
-      Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
-
+    (aliceId, bobId, bob2) <- setupDesynchronizedRatchet alice bob
+    runRight $ do
       ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId False
       liftIO $ ratchetSyncState `shouldBe` RSStarted
 
@@ -638,6 +598,53 @@ testRatchetSync t = do
       get bob2 =##> ratchetSyncP aliceId RSOk
 
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
+
+setupDesynchronizedRatchet :: HasCallStack => AgentClient -> AgentClient -> IO (ConnId, ConnId, AgentClient)
+setupDesynchronizedRatchet alice bob = do
+  (aliceId, bobId) <- runRight $ makeConnection alice bob
+  runRight_ $ do
+    4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT 4)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 4
+
+    5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
+    get bob ##> ("", aliceId, SENT 5)
+    get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
+    ackMessage alice bobId 5
+
+    liftIO $ copyFile testDB2 (testDB2 <> ".bak")
+
+    6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
+    get alice ##> ("", bobId, SENT 6)
+    get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 6
+
+    7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
+    get bob ##> ("", aliceId, SENT 7)
+    get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
+    ackMessage alice bobId 7
+
+  disconnectAgentClient bob
+
+  -- importing database backup after progressing ratchet de-synchronizes ratchet
+  liftIO $ renameFile (testDB2 <> ".bak") testDB2
+
+  bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+  runRight_ $ do
+    subscribeConnection bob2 aliceId
+
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId False
+
+    8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
+    get alice ##> ("", bobId, SENT 8)
+    get bob2 =##> ratchetSyncP aliceId RSRequired
+
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
+    pure ()
+
+  pure (aliceId, bobId, bob2)
 
 ratchetSyncP :: ConnId -> RatchetSyncState -> AEntityTransmission 'AEConn -> Bool
 ratchetSyncP cId rrs = \case
@@ -655,49 +662,8 @@ testRatchetSyncServerOffline :: HasCallStack => ATransport -> IO ()
 testRatchetSyncServerOffline t = do
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
-  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ -> do
-    (aliceId, bobId) <- runRight $ makeConnection alice bob
-    runRight_ $ do
-      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
-      get alice ##> ("", bobId, SENT 4)
-      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-      ackMessage bob aliceId 4
-
-      5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
-      get bob ##> ("", aliceId, SENT 5)
-      get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
-      ackMessage alice bobId 5
-
-      liftIO $ copyFile testDB2 (testDB2 <> ".bak")
-
-      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
-      get alice ##> ("", bobId, SENT 6)
-      get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
-      ackMessage bob aliceId 6
-
-      7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
-      get bob ##> ("", aliceId, SENT 7)
-      get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
-      ackMessage alice bobId 7
-
-    disconnectAgentClient bob
-
-    -- importing database backup after progressing ratchet de-synchronizes ratchet
-    liftIO $ renameFile (testDB2 <> ".bak") testDB2
-
-    bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
-
-    runRight_ $ do
-      subscribeConnection bob2 aliceId
-
-      8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
-      get alice ##> ("", bobId, SENT 8)
-      get bob2 =##> ratchetSyncP aliceId RSRequired
-
-      Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
-      pure ()
-
-    pure (aliceId, bobId, bob2)
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
 
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
@@ -732,49 +698,8 @@ testRatchetSyncSimultaneous :: HasCallStack => ATransport -> IO ()
 testRatchetSyncSimultaneous t = do
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
-  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ -> do
-    (aliceId, bobId) <- runRight $ makeConnection alice bob
-    runRight_ $ do
-      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
-      get alice ##> ("", bobId, SENT 4)
-      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-      ackMessage bob aliceId 4
-
-      5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
-      get bob ##> ("", aliceId, SENT 5)
-      get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
-      ackMessage alice bobId 5
-
-      liftIO $ copyFile testDB2 (testDB2 <> ".bak")
-
-      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
-      get alice ##> ("", bobId, SENT 6)
-      get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
-      ackMessage bob aliceId 6
-
-      7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
-      get bob ##> ("", aliceId, SENT 7)
-      get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
-      ackMessage alice bobId 7
-
-    disconnectAgentClient bob
-
-    -- importing database backup after progressing ratchet de-synchronizes ratchet
-    liftIO $ renameFile (testDB2 <> ".bak") testDB2
-
-    bob2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
-
-    runRight_ $ do
-      subscribeConnection bob2 aliceId
-
-      8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
-      get alice ##> ("", bobId, SENT 8)
-      get bob2 =##> ratchetSyncP aliceId RSRequired
-
-      Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
-      pure ()
-
-    pure (aliceId, bobId, bob2)
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
 
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
