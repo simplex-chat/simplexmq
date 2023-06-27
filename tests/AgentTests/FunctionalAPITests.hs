@@ -616,7 +616,7 @@ testRatchetSync t = do
 
       Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
 
-      ConnectionStats {ratchetSyncState} <- synchronizeConnectionRatchet bob2 aliceId False
+      ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId False
       liftIO $ ratchetSyncState `shouldBe` RSStarted
 
       get alice =##> ratchetSyncP bobId RSAgreed
@@ -681,7 +681,7 @@ testRatchetSyncServerOffline t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeConnectionRatchet bob2 aliceId False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do

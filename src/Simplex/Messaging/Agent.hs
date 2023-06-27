@@ -64,7 +64,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     switchConnection,
     abortConnectionSwitch,
-    synchronizeConnectionRatchet,
+    synchronizeRatchet,
     suspendConnection,
     deleteConnection,
     deleteConnections,
@@ -275,8 +275,8 @@ abortConnectionSwitch :: AgentErrorMonad m => AgentClient -> ConnId -> m Connect
 abortConnectionSwitch c = withAgentEnv c . abortConnectionSwitch' c
 
 -- | Re-synchronize connection ratchet keys
-synchronizeConnectionRatchet :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
-synchronizeConnectionRatchet c = withAgentEnv c .: synchronizeConnectionRatchet' c
+synchronizeRatchet :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
+synchronizeRatchet c = withAgentEnv c .: synchronizeRatchet' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -1290,8 +1290,8 @@ abortConnectionSwitch' c connId =
         _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD PROHIBITED
 
-synchronizeConnectionRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
-synchronizeConnectionRatchet' c connId force = withConnLock c connId "synchronizeConnectionRatchet" $ do
+synchronizeRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m ConnectionStats
+synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" $ do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData@ConnData {ratchetSyncState} rqs sqs)
       | ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]) || force -> do
