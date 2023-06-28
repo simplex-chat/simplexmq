@@ -1063,9 +1063,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
       Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, msgRetryState, internalTs}) -> do
-        atomically $ endAgentOperation c AOSndNetwork
-        atomically $ throwWhenInactive c
-        atomically $ beginAgentOperation c AOSndNetwork
         let ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
           resp <- tryError $ case msgType of
