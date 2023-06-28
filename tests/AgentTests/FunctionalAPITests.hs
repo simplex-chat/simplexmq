@@ -160,6 +160,8 @@ functionalAPITests t = do
       testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
+    it "should restore confirmation after client restart" $
+      testAllowConnectionClientRestart t
   describe "Message delivery" $ do
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage t
@@ -472,6 +474,44 @@ testAsyncHelloTimeout = do
     disconnectAgentClient alice
     aliceId <- joinConnection bob 1 True cReq "bob's connInfo"
     get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
+
+testAllowConnectionClientRestart :: HasCallStack => ATransport -> IO ()
+testAllowConnectionClientRestart t = do
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2]}
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServersSrv2 testDB2
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    (aliceId, bobId, confId) <-
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+        runRight $ do
+          (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing
+          aliceId <- joinConnection bob 1 True qInfo "bob's connInfo"
+          ("", _, CONF confId _ "bob's connInfo") <- get alice
+          pure (aliceId, bobId, confId)
+
+    ("", "", DOWN _ _) <- nGet bob
+
+    runRight_ $ do
+      allowConnectionAsync alice "1" bobId confId "alice's connInfo"
+      ("1", _, OK) <- get alice
+      pure ()
+
+    threadDelay 100000 -- give time to enqueue confirmation (enqueueConfirmation)
+    disconnectAgentClient alice
+
+    alice2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+
+    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+      runRight $ do
+        ("", "", UP _ _) <- nGet bob
+
+        subscribeConnection alice2 bobId
+
+        get alice2 ##> ("", bobId, CON)
+        get bob ##> ("", aliceId, INFO "alice's connInfo")
+        get bob ##> ("", aliceId, CON)
+
+        exchangeGreetingsMsgId 4 alice2 bobId bob aliceId
 
 testDuplicateMessage :: HasCallStack => ATransport -> IO ()
 testDuplicateMessage t = do
