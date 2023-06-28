@@ -2295,6 +2295,7 @@ enqueueRatchetKey c cData@ConnData {connId, connAgentVersion} sq e2eEncryption =
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
+      liftIO $ createSndMsgDelivery db connId sq internalId
       pure internalId
 
 -- encoded AgentMessage -> encoded EncAgentMessage

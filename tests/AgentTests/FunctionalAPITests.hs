@@ -172,12 +172,17 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    it "should report ratchet de-synchronization, synchronize ratchets" $
-      testRatchetSync t
-    it "should synchronize ratchets with server offline" $
-      testRatchetSyncServerOffline t
-    it "should synchronize ratchets when clients start synchronization simultaneously" $
-      testRatchetSyncSimultaneous t
+    describe "Ratchet synchronization" $ do
+      it "should report ratchet de-synchronization, synchronize ratchets" $
+        testRatchetSync t
+      it "should synchronize ratchets after server being offline" $
+        testRatchetSyncServerOffline t
+      it "should synchronize ratchets after client restart" $
+        testRatchetSyncClientRestart t
+      it "should synchronize ratchets after suspend/foreground" $
+        testRatchetSyncSuspendActivate t
+      it "should synchronize ratchets when clients start synchronization simultaneously" $
+        testRatchetSyncSimultaneous t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -693,6 +698,74 @@ serverUpP :: ATransmission 'Agent -> Bool
 serverUpP = \case
   ("", "", APC SAENone (UP _ _)) -> True
   _ -> False
+
+testRatchetSyncClientRestart :: HasCallStack => ATransport -> IO ()
+testRatchetSyncClientRestart t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId False
+  liftIO $ ratchetSyncState `shouldBe` RSStarted
+
+  disconnectAgentClient bob2
+
+  bob3 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    runRight_ $ do
+      ("", "", UP _ _) <- nGet alice
+
+      subscribeConnection bob3 aliceId
+
+      get alice =##> ratchetSyncP bobId RSAgreed
+
+      get bob3 =##> ratchetSyncP aliceId RSAgreed
+
+      get alice =##> ratchetSyncP bobId RSOk
+
+      get bob3 =##> ratchetSyncP aliceId RSOk
+
+      exchangeGreetingsMsgIds alice bobId 12 bob3 aliceId 9
+
+testRatchetSyncSuspendActivate :: HasCallStack => ATransport -> IO ()
+testRatchetSyncSuspendActivate t = do
+  alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId False
+  liftIO $ ratchetSyncState `shouldBe` RSStarted
+
+  suspendAgent bob2 0
+  threadDelay 100000
+  foregroundAgent bob2
+
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    runRight_ $ do
+      liftIO . getInAnyOrder alice $
+        [ ratchetSyncP' bobId RSAgreed,
+          serverUpP
+        ]
+
+      liftIO . getInAnyOrder bob2 $
+        [ ratchetSyncP' aliceId RSAgreed,
+          serverUpP
+        ]
+
+      get alice =##> ratchetSyncP bobId RSOk
+
+      get bob2 =##> ratchetSyncP aliceId RSOk
+
+      exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
 
 testRatchetSyncSimultaneous :: HasCallStack => ATransport -> IO ()
 testRatchetSyncSimultaneous t = do
