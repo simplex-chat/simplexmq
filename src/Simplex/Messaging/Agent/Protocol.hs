@@ -1271,6 +1271,8 @@ data AgentErrorType
     AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
+  | -- | agent inactive
+    INACTIVE
   deriving (Eq, Generic, Show, Exception)
 
 instance ToJSON AgentErrorType where
@@ -1385,6 +1387,7 @@ instance StrEncoding AgentErrorType where
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
+      <|> "INACTIVE" *> pure INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
@@ -1400,6 +1403,7 @@ instance StrEncoding AgentErrorType where
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
+    INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
 

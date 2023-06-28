@@ -400,7 +400,7 @@ instance ProtocolServerClient XFTPErrorType FileResponse where
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
-  unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
+  unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getClientVar tSess smpClients)
     >>= either
       (newProtocolClient c tSess smpClients connectClient reconnectSMPClient)
@@ -468,7 +468,7 @@ reconnectSMPClient c tSess@(_, srv, _) =
 
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfTransportSession -> m NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = do
-  unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
+  unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getClientVar tSess ntfClients)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient $ \_ _ -> pure ())
@@ -488,7 +488,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 
 getXFTPServerClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@(userId, srv, _) = do
-  unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
+  unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getClientVar tSess xftpClients)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient $ \_ _ -> pure ())
@@ -861,6 +861,7 @@ temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ NETWORK -> True
   BROKER _ TIMEOUT -> True
+  INACTIVE -> True
   _ -> False
 
 temporaryOrHostError :: AgentErrorType -> Bool
