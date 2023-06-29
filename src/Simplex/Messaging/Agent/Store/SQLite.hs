@@ -113,6 +113,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getRatchetX3dhKeys,
     createRatchetX3dhKeys',
     getRatchetX3dhKeys',
+    setRatchetX3dhKeys,
     createRatchet,
     deleteRatchet,
     getRatchet,
@@ -1052,6 +1053,18 @@ getRatchetX3dhKeys' db connId =
     hasKeys = \case
       Right (Just pk1, Just pk2, Just k1, Just k2) -> Right (pk1, pk2, k1, k2)
       _ -> Left SEX3dhKeysNotFound
+
+-- used to remember new keys when starting ratchet re-synchronization
+setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> C.PublicKeyX448 -> C.PublicKeyX448 -> IO ()
+setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 x3dhPubKey1 x3dhPubKey2 =
+  DB.execute
+    db
+    [sql|
+      UPDATE ratchets
+      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?
+      WHERE conn_id = ?
+    |]
+    (x3dhPrivKey1, x3dhPrivKey2, x3dhPubKey1, x3dhPubKey2, connId)
 
 createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
 createRatchet db connId rc =

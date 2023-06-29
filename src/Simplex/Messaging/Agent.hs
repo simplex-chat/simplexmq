@@ -1301,8 +1301,7 @@ synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" 
         void $ enqueueRatchetKeyMsgs c cData sqs e2eParams
         withStore' c $ \db -> do
           setConnRatchetSync db connId RSStarted
-          deleteRatchet db connId
-          createRatchetX3dhKeys' db connId pk1 pk2 k1 k2
+          setRatchetX3dhKeys db connId pk1 pk2 k1 k2
         let cData' = cData {ratchetSyncState = RSStarted} :: ConnData
             conn' = DuplexConnection cData' rqs sqs
         pure $ connectionStats conn'
@@ -1857,7 +1856,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               qDuplexAckDel :: String -> (Connection 'CDuplex -> m ()) -> m ()
                               qDuplexAckDel name a = qDuplex name a >> ackDel msgId
                               resetRatchetSync :: m ()
-                              resetRatchetSync = when (rss /= RSOk) $
+                              resetRatchetSync = when (rss `notElem` ([RSOk, RSStarted] :: [RatchetSyncState])) $
                                 qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
                                   let cData' = cData {ratchetSyncState = RSOk} :: ConnData
                                       conn' = DuplexConnection cData' rqs sqs
@@ -2167,20 +2166,19 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   else processInitiatingRatchetKey e2eEncryptVRange duplexConn
             where
               processReplyRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
-              processReplyRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs) = do
+              processReplyRatchetKey e2eEncryptVRange conn'@(DuplexConnection cData' _ sqs) = do
                 (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
-                rc <- initRatchet e2eEncryptVRange k1 pk1 pk2
-                let cData' = cData {ratchetSyncState = RSAgreed} :: ConnData
-                    conn' = DuplexConnection cData' rqs sqs
-                notify . RSYNC RSAgreed $ connectionStats conn'
-                withStore' c $ \db -> do
-                  setConnRatchetSync db connId RSAgreed
-                  createRatchet db connId rc
+                rc <- recreateRatchet e2eEncryptVRange conn' k1 pk1 pk2
                 enqueueEREADY rc cData' sqs
               processInitiatingRatchetKey :: VersionRange -> Connection 'CDuplex -> m ()
-              processInitiatingRatchetKey e2eEncryptVRange (DuplexConnection _ rqs sqs) = do
+              processInitiatingRatchetKey e2eEncryptVRange conn'@(DuplexConnection cData' _ sqs) = do
                 (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
-                rc <- initRatchet e2eEncryptVRange k1 pk1 pk2
+                rc <- recreateRatchet e2eEncryptVRange conn' k1 pk1 pk2
+                void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
+                enqueueEREADY rc cData' sqs
+              recreateRatchet :: VersionRange -> Connection 'CDuplex -> C.PublicKeyX448 -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m (CR.Ratchet 'C.X448)
+              recreateRatchet e2eEncryptVRange (DuplexConnection _ rqs sqs) k1 pk1 pk2 = do
+                rc <- initRatchet
                 let cData' = cData {ratchetSyncState = RSAgreed} :: ConnData
                     conn' = DuplexConnection cData' rqs sqs
                 notify . RSYNC RSAgreed $ connectionStats conn'
@@ -2188,17 +2186,17 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   setConnRatchetSync db connId RSAgreed
                   deleteRatchet db connId
                   createRatchet db connId rc
-                void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
-                enqueueEREADY rc cData' sqs
-              -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
-              -- to determine ratchet initilization ordering
-              initRatchet :: VersionRange -> C.PublicKeyX448 -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m (CR.Ratchet 'C.X448)
-              initRatchet e2eEncryptVRange k1 pk1 pk2
-                | C.pubKeyBytes k1 <= C.pubKeyBytes k1Rcv =
-                  pure $ CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eOtherPartyParams
-                | otherwise = do
-                  (_, rcDHRs) <- liftIO C.generateKeyPair'
-                  pure $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eOtherPartyParams
+                pure rc
+                where
+                  -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
+                  -- to determine ratchet initilization ordering
+                  initRatchet :: m (CR.Ratchet 'C.X448)
+                  initRatchet
+                    | C.pubKeyBytes k1 <= C.pubKeyBytes k1Rcv =
+                      pure $ CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eOtherPartyParams
+                    | otherwise = do
+                      (_, rcDHRs) <- liftIO C.generateKeyPair'
+                      pure $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eOtherPartyParams
               enqueueEREADY :: CR.RatchetX448 -> ConnData -> NonEmpty SndQueue -> m ()
               enqueueEREADY CR.Ratchet {rcSnd} cd sqs =
                 when (isJust rcSnd) $
