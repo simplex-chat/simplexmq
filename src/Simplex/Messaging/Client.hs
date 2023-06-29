@@ -219,8 +219,10 @@ data ProtocolClientConfig = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport),
     -- | network configuration
     networkConfig :: NetworkConfig,
-    -- | SMP client-server protocol version range
-    smpServerVRange :: VersionRange
+    -- | client-server protocol version range
+    serverVRange :: VersionRange,
+    -- | delay between sending batches of commands (microseconds)
+    batchDelay :: Maybe Int
   }
 
 -- | Default protocol client configuration.
@@ -230,7 +232,8 @@ defaultClientConfig =
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
-      smpServerVRange = supportedSMPServerVRange
+      serverVRange = supportedSMPServerVRange,
+      batchDelay = Nothing
     }
 
 data Request err msg = Request
@@ -276,7 +279,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall err msg. Protocol err msg => TransportSession msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient err msg))
-getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected = do
+getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, batchDelay} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
@@ -329,7 +332,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
 
     client :: forall c. Transport c => TProxy c -> PClient err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient err msg)) -> c -> IO ()
     client _ c cVar h =
-      runExceptT (protocolClientHandshake @err @msg h (keyHash srv) smpServerVRange) >>= \case
+      runExceptT (protocolClientHandshake @err @msg h (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {sessionId, thVersion} -> do
           sessionTs <- getCurrentTime
@@ -341,7 +344,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPut h batchDelay
 
     receive :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
@@ -490,13 +493,7 @@ subscribeSMPQueueNotifications = okSMPCommand NSUB
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
 subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateSignKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
-subscribeSMPQueuesNtfs c qs = sendProtocolCommands c cs >>= mapM response
-  where
-    cs = L.map (\(npKey, nId) -> (Just npKey, nId, Cmd SNotifier NSUB)) qs
-    response r = pure $ case r of
-      Right OK -> Right ()
-      Right r' -> Left . PCEUnexpectedResponse $ bshow r'
-      Left e -> Left e
+subscribeSMPQueuesNtfs = okSMPCommands NSUB
 
 -- | Secure the SMP queue by adding a sender public key.
 --

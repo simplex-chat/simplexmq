@@ -88,7 +88,7 @@ signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
-  [r] <- tPut h [t]
+  [r] <- tPut h Nothing [t]
   pure r
 
 tGet1 :: (ProtocolEncoding err cmd, Transport c, MonadIO m, MonadFail m) => THandle c -> m (SignedTransmission err cmd)

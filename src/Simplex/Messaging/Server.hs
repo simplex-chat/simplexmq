@@ -281,12 +281,13 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-  void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+  void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
   atomically . writeTVar activeAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
     tOrder (_, _, cmd) = case cmd of
       MSG {} -> 0
+      NMSG {} -> 0
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
