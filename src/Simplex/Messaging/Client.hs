@@ -606,7 +606,7 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}, bat
   let h' :: Either (ProtocolClientError err) (PCTransmission err msg, Int) = (,bt) <$> h
       batchSz = if batch then either (const 0) tSize h else 0
       ts' :: NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)) =
-        L.reverse . fst3 $ foldl' sizeBatches ([h'], bt, batchSz) ts
+        L.reverse . fst3 $ foldl' batchTimeouts ([h'], bt, batchSz) ts
       ts_ :: (Maybe (NonEmpty SentRawTransmission)) =
         L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
   mapM_ (atomically . writeTBQueue sndQ) ts_
@@ -617,8 +617,8 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}, bat
     fst3 (x, _, _) = x
     tSize :: PCTransmission err msg -> Int
     tSize ((sig, t), _) = maybe 0 C.signatureSize sig + B.length t + 3 -- 1 byte for signature size + 2 bytes for transmission size
-    sizeBatches :: (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
-    sizeBatches (ts, bts, batchSz) = \case
+    batchTimeouts :: (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
+    batchTimeouts (ts, bts, batchSz) = \case
       Left e -> (Left e <| ts, bts, batchSz)
       Right t
         | batch && (batchSz' + 1 <= blockSize) ->
