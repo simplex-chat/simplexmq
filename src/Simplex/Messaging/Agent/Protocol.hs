@@ -159,7 +159,7 @@ import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
@@ -522,9 +522,9 @@ instance StrEncoding RcvSwitchStatus where
       "received_message" -> pure RSReceivedMessage
       _ -> fail "bad RcvSwitchStatus"
 
-instance ToField RcvSwitchStatus where toField = toField . strEncode
+instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode
 
-instance FromField RcvSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+instance FromField RcvSwitchStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToJSON RcvSwitchStatus where
   toEncoding = strToJEncoding
@@ -548,9 +548,9 @@ instance StrEncoding SndSwitchStatus where
       "sending_qtest" -> pure SSSendingQTEST
       _ -> fail "bad SndSwitchStatus"
 
-instance ToField SndSwitchStatus where toField = toField . strEncode
+instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode
 
-instance FromField SndSwitchStatus where fromField = blobFieldDecoder $ parseAll strP
+instance FromField SndSwitchStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToJSON SndSwitchStatus where
   toEncoding = strToJEncoding
@@ -1271,6 +1271,8 @@ data AgentErrorType
     AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
+  | -- | agent inactive
+    INACTIVE
   deriving (Eq, Generic, Show, Exception)
 
 instance ToJSON AgentErrorType where
@@ -1385,6 +1387,7 @@ instance StrEncoding AgentErrorType where
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
+      <|> "INACTIVE" *> pure INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
@@ -1400,6 +1403,7 @@ instance StrEncoding AgentErrorType where
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
+    INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
 

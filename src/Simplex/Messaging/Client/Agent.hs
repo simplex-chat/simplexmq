@@ -17,14 +17,16 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, bimap)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.List (find, partition)
+import Data.Either (partitionEithers)
+import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Tuple (swap)
@@ -43,7 +45,6 @@ import UnliftIO (async)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Data.Either (isLeft)
 
 type SMPClientVar = TMVar (Either SMPClientError SMPClient)
 
@@ -51,8 +52,8 @@ data SMPClientAgentEvent
   = CAConnected SMPServer
   | CADisconnected SMPServer (Set SMPSub)
   | CAReconnected SMPServer
-  | CAResubscribed SMPServer SMPSub
-  | CASubError SMPServer SMPSub SMPClientError
+  | CAResubscribed SMPServer (NonEmpty SMPSub)
+  | CASubError SMPServer (NonEmpty (SMPSub, SMPClientError))
 
 data SMPSubParty = SPRecipient | SPNotifier
   deriving (Eq, Ord, Show)
@@ -208,45 +209,36 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
     reconnectClient :: ExceptT SMPClientError IO ()
     reconnectClient = do
       withSMP ca srv $ \smp -> do
-        liftIO . notify $ CAReconnected srv
+        liftIO $ notify $ CAReconnected srv
         cs_ <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
         forM_ cs_ $ \cs -> do
           subs' <- filterM (fmap not . atomically . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
           let (nSubs, rSubs) = partition (isNotifier . fst . fst) subs'
-          nRs <- liftIO $ subscribe_ smp SPNotifier nSubs
-          rRs <- liftIO $ subscribe_ smp SPRecipient rSubs
-          case find isLeft $ nRs <> rRs of
-            Just (Left e) -> throwE e
-            _ -> pure ()
+          subscribe_ smp SPNotifier nSubs
+          subscribe_ smp SPRecipient rSubs
       where
         isNotifier = \case
           SPNotifier -> True
           SPRecipient -> False
 
-        subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> IO [Either SMPClientError ()]
+        subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> ExceptT SMPClientError IO ()
         subscribe_ smp party subs =
           case L.nonEmpty subs of
             Just subs' -> do
-              let subs'' = L.map (first snd) subs'
-              rs <- L.zip subs'' <$> smpSubscribeQueues party ca smp srv subs''
-              rs' <- forM rs $ \(sub, r) -> do
-                let sub' = first (party,) sub
-                    s = fst sub'
-                case snd r of
-                  Right () -> do
-                    atomically $ addSubscription ca srv sub'
-                    notify $ CAResubscribed srv s
-                    pure $ Right ()
-                  Left e -> do
-                    case e of
-                      PCEResponseTimeout -> pure $ Left e
-                      PCENetworkError -> pure $ Left e
-                      _ -> do
-                        notify $ CASubError srv s e
-                        atomically $ removePendingSubscription ca srv s
-                        pure $ Right ()
-              pure $ L.toList rs'
-            Nothing -> pure []
+              let subs'' :: (NonEmpty (QueueId, C.APrivateSignKey)) = L.map (first snd) subs'
+              rs <- liftIO $ smpSubscribeQueues party ca smp srv subs''
+              let rs' :: (NonEmpty ((SMPSub, C.APrivateSignKey), Either SMPClientError ())) =
+                    L.zipWith (first . const) subs' rs
+                  rs'' :: [Either (SMPSub, SMPClientError) (SMPSub, C.APrivateSignKey)] =
+                    map (\(sub, r) -> bimap (fst sub,) (const sub) r) $ L.toList rs'
+                  (errs, oks) = partitionEithers rs''
+                  (tempErrs, finalErrs) = partition (temporaryClientError . snd) errs
+              mapM_ (atomically . addSubscription ca srv) oks
+              mapM_ (liftIO . notify . CAResubscribed srv) $ L.nonEmpty $ map fst oks
+              mapM_ (atomically . removePendingSubscription ca srv . fst) finalErrs 
+              mapM_ (liftIO . notify . CASubError srv) $ L.nonEmpty finalErrs
+              mapM_ (throwE . snd) $ listToMaybe tempErrs
+            Nothing -> pure ()
 
     notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt

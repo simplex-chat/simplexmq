@@ -160,7 +160,7 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' h (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
-      [Right ()] <- tPut h [(sig, t')]
+      [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
