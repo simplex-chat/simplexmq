@@ -163,6 +163,8 @@ functionalAPITests t = do
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart t
   describe "Message delivery" $ do
+    it "should increase connection agent version according to received messages" $
+      testIncreaseConnAgentVersion t
     it "should deliver message after client restart" $
       testDeliverClientRestart t
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
@@ -523,6 +525,41 @@ testAllowConnectionClientRestart t = do
         get bob ##> ("", aliceId, CON)
 
         exchangeGreetingsMsgId 4 alice2 bobId bob aliceId
+
+testIncreaseConnAgentVersion :: HasCallStack => ATransport -> IO ()
+testIncreaseConnAgentVersion t = do
+  alice <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      checkVersion alice bobId 2
+      checkVersion bob aliceId 2
+      pure (aliceId, bobId)
+
+    disconnectAgentClient alice
+    alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+
+    runRight_ $ do
+      subscribeConnection alice2 bobId
+      exchangeGreetingsMsgId 6 alice2 bobId bob aliceId
+      checkVersion alice2 bobId 2
+      checkVersion bob aliceId 2
+
+    disconnectAgentClient bob
+    bob2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+      exchangeGreetingsMsgId 8 alice2 bobId bob2 aliceId
+      checkVersion alice2 bobId 3
+      checkVersion bob2 aliceId 3
+  where
+    checkVersion :: AgentClient -> ConnId -> Version -> ExceptT AgentErrorType IO ()
+    checkVersion c connId v = do
+      ConnectionStats {connAgentVersion} <- getConnectionServers c connId
+      liftIO $ connAgentVersion `shouldBe` v
 
 testDeliverClientRestart :: HasCallStack => ATransport -> IO ()
 testDeliverClientRestart t = do
