@@ -1856,7 +1856,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               qDuplexAckDel :: String -> (Connection 'CDuplex -> m ()) -> m ()
                               qDuplexAckDel name a = qDuplex name a >> ackDel msgId
                               resetRatchetSync :: m ()
-                              resetRatchetSync = when (rss `notElem` ([RSOk, RSStarted] :: [RatchetSyncState])) $
+                              resetRatchetSync = unless (rss `elem` ([RSOk, RSStarted] :: [RatchetSyncState])) $
                                 qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
                                   let cData' = cData {ratchetSyncState = RSOk} :: ConnData
                                       conn' = DuplexConnection cData' rqs sqs
