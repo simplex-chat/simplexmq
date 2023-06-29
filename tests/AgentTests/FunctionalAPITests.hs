@@ -538,6 +538,8 @@ testIncreaseConnAgentVersion t = do
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
 
+    -- version doesn't increase if incompatible
+
     disconnectAgentClient alice
     alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
 
@@ -547,6 +549,8 @@ testIncreaseConnAgentVersion t = do
       checkVersion alice2 bobId 2
       checkVersion bob aliceId 2
 
+    -- version increases if compatible
+
     disconnectAgentClient bob
     bob2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
 
@@ -555,6 +559,26 @@ testIncreaseConnAgentVersion t = do
       exchangeGreetingsMsgId 8 alice2 bobId bob2 aliceId
       checkVersion alice2 bobId 3
       checkVersion bob2 aliceId 3
+
+    -- version doesn't decrease, even if incompatible
+
+    disconnectAgentClient alice2
+    alice3 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 2 2} initAgentServers testDB
+
+    runRight_ $ do
+      subscribeConnection alice3 bobId
+      exchangeGreetingsMsgId 10 alice3 bobId bob2 aliceId
+      checkVersion alice3 bobId 3
+      checkVersion bob2 aliceId 3
+
+    disconnectAgentClient bob2
+    bob3 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 1} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection bob3 aliceId
+      exchangeGreetingsMsgId 12 alice3 bobId bob3 aliceId
+      checkVersion alice3 bobId 3
+      checkVersion bob3 aliceId 3
   where
     checkVersion :: AgentClient -> ConnId -> Version -> ExceptT AgentErrorType IO ()
     checkVersion c connId v = do
