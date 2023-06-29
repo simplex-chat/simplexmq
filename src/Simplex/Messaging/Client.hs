@@ -597,31 +597,32 @@ sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 type PCTransmission err msg =  (SentRawTransmission, TMVar (Response err msg))
 
 -- | Send multiple commands with batching and collect responses
+-- It will result in Int overflow on 32 bit platform for a large number of blocks (~13.4k blocks / ~1.2m subscriptions)
+-- TODO switch to timeout or TimeManager that supports Int64
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either (ProtocolClientError err) msg))
 sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeoutPerKb}, blockSize, batch} cs = do
-  ts <- mapM (runExceptT . mkTransmission c) cs
-  let (h :| ts') = ts
-      -- This will result in Int overflow on 32 bit platform for a very large number of blocks (~13.4k blocks / ~1.2m subscriptions)
-      -- TODO switch to timeout or TimeManager that supports Int64
-      bt = blockSize * tcpTimeoutPerKb `div` 1024
+  (h :| ts) <- mapM (runExceptT . mkTransmission c) cs
+  let bt = blockSize * tcpTimeoutPerKb `div` 1024
       h' = [(,bt) <$> h]
-      ts''
-        | batch = fst3 $ foldl' (sizeBatches bt) (h', bt, 0) ts'
-        | otherwise = fst $ foldl' (sizeTransactions bt) (h', bt) ts'
-  mapM_ (atomically . writeTBQueue sndQ . L.map (fst . fst)) $ L.nonEmpty $ rights $ L.toList $ L.reverse ts''
-  forConcurrently ts'' $ \case
+      batchSz = either (const 0) tSize h
+      ts'
+        | batch = L.reverse . fst3 $ foldl' (sizeBatches bt) (h', bt, batchSz) ts
+        | otherwise = L.reverse . fst $ foldl' (sizeTransactions bt) (h', bt) ts
+      ts_ = L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
+  mapM_ (atomically . writeTBQueue sndQ) ts_
+  forConcurrently ts' $ \case
     Right ((_t, r), bts) -> withBkTimeout c bts $ atomically $ takeTMVar r
     Left e -> pure $ Left e
   where
     fst3 (x, _, _) = x
     tSize :: PCTransmission err msg -> Int
-    tSize ((sig, t), _) = maybe 0 C.signatureSize sig + B.length t + 1 -- 1 byte for signature size
+    tSize ((sig, t), _) = maybe 0 C.signatureSize sig + B.length t + 3 -- 1 byte for signature size + 2 bytes for transmission size
     sizeBatches :: Int -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
     sizeBatches bt (ts, bts, batchSz) = \case
       Left e -> (Left e <| ts, bts, batchSz)
       Right t ->
         let tSz = tSize t
-            batchSz' = batchSz + tSz + 2 -- 2 bytes for transmission length
+            batchSz' = batchSz + tSz
          in if batchSz' + 1 <= blockSize -- 1 byte for the number of transmissions in the batch
               then (Right (t, bts) <| ts, bts, batchSz')
               else (Right (t, bts + bt) <| ts, bts + bt, tSz)
