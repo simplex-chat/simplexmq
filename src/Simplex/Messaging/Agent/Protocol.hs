@@ -211,7 +211,7 @@ import Text.Read
 import UnliftIO.Exception (Exception)
 
 currentSMPAgentVersion :: Version
-currentSMPAgentVersion = 2
+currentSMPAgentVersion = 3
 
 supportedSMPAgentVRange :: VersionRange
 supportedSMPAgentVRange = mkVersionRange 1 currentSMPAgentVersion
@@ -636,22 +636,31 @@ instance StrEncoding SndQueueInfo where
     pure SndQueueInfo {sndServer, sndSwitchStatus}
 
 data ConnectionStats = ConnectionStats
-  { rcvQueuesInfo :: [RcvQueueInfo],
+  { connAgentVersion :: Version,
+    rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
-    ratchetSyncState :: RatchetSyncState
+    ratchetSyncState :: RatchetSyncState,
+    ratchetSyncAllowed :: Bool,
+    ratchetSyncSupported :: Bool
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo, ratchetSyncState} =
-    "rcv=" <> strEncodeList rcvQueuesInfo
+  strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncAllowed, ratchetSyncSupported} =
+    "agent_version=" <> strEncode connAgentVersion
+      <> (" rcv=" <> strEncodeList rcvQueuesInfo)
       <> (" snd=" <> strEncodeList sndQueuesInfo)
       <> (" sync=" <> strEncode ratchetSyncState)
+      <> (" sync_allowed=" <> strEncode ratchetSyncAllowed)
+      <> (" sync_supported=" <> strEncode ratchetSyncSupported)
   strP = do
-    rcvQueuesInfo <- "rcv=" *> strListP
+    connAgentVersion <- "agent_version=" *> strP
+    rcvQueuesInfo <- " rcv=" *> strListP
     sndQueuesInfo <- " snd=" *> strListP
     ratchetSyncState <- " sync=" *> strP
-    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo, ratchetSyncState}
+    ratchetSyncAllowed <- " sync_allowed=" *> strP
+    ratchetSyncSupported <- " sync_supported=" *> strP
+    pure ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncAllowed, ratchetSyncSupported}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 

@@ -655,16 +655,18 @@ testRatchetSync t = do
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId, bob2) <- setupDesynchronizedRatchet alice bob
     runRight $ do
-      ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId False
-      liftIO $ ratchetSyncState `shouldBe` RSStarted
+      ConnectionStats {ratchetSyncState, ratchetSyncAllowed} <- synchronizeRatchet bob2 aliceId False
+      liftIO $ do
+        ratchetSyncState `shouldBe` RSStarted
+        ratchetSyncAllowed `shouldBe` False
 
-      get alice =##> ratchetSyncP bobId RSAgreed
+      get alice =##> ratchetSyncP bobId RSAgreed False
 
-      get bob2 =##> ratchetSyncP aliceId RSAgreed
+      get bob2 =##> ratchetSyncP aliceId RSAgreed False
 
-      get alice =##> ratchetSyncP bobId RSOk
+      get alice =##> ratchetSyncP bobId RSOk False
 
-      get bob2 =##> ratchetSyncP aliceId RSOk
+      get bob2 =##> ratchetSyncP aliceId RSOk False
 
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
 
@@ -708,23 +710,23 @@ setupDesynchronizedRatchet alice bob = do
 
     8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
     get alice ##> ("", bobId, SENT 8)
-    get bob2 =##> ratchetSyncP aliceId RSRequired
+    get bob2 =##> ratchetSyncP aliceId RSRequired True
 
     Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
     pure ()
 
   pure (aliceId, bobId, bob2)
 
-ratchetSyncP :: ConnId -> RatchetSyncState -> AEntityTransmission 'AEConn -> Bool
-ratchetSyncP cId rrs = \case
-  (_, cId', RSYNC rrs' ConnectionStats {ratchetSyncState}) ->
-    cId' == cId && rrs' == rrs && ratchetSyncState == rrs
+ratchetSyncP :: ConnId -> RatchetSyncState -> Bool -> AEntityTransmission 'AEConn -> Bool
+ratchetSyncP cId rss rsAllowed = \case
+  (_, cId', RSYNC rss' ConnectionStats {ratchetSyncState, ratchetSyncAllowed}) ->
+    cId' == cId && rss' == rss && ratchetSyncState == rss && ratchetSyncAllowed == rsAllowed
   _ -> False
 
-ratchetSyncP' :: ConnId -> RatchetSyncState -> ATransmission 'Agent -> Bool
-ratchetSyncP' cId rrs = \case
-  (_, cId', APC SAEConn (RSYNC rrs' ConnectionStats {ratchetSyncState})) ->
-    cId' == cId && rrs' == rrs && ratchetSyncState == rrs
+ratchetSyncP' :: ConnId -> RatchetSyncState -> Bool -> ATransmission 'Agent -> Bool
+ratchetSyncP' cId rss rsAllowed = \case
+  (_, cId', APC SAEConn (RSYNC rss' ConnectionStats {ratchetSyncState, ratchetSyncAllowed})) ->
+    cId' == cId && rss' == rss && ratchetSyncState == rss && ratchetSyncAllowed == rsAllowed
   _ -> False
 
 testRatchetSyncServerOffline :: HasCallStack => ATransport -> IO ()
@@ -737,24 +739,26 @@ testRatchetSyncServerOffline t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId False
-  liftIO $ ratchetSyncState `shouldBe` RSStarted
+  ConnectionStats {ratchetSyncState, ratchetSyncAllowed} <- runRight $ synchronizeRatchet bob2 aliceId False
+  liftIO $ do
+    ratchetSyncState `shouldBe` RSStarted
+    ratchetSyncAllowed `shouldBe` False
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
       liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
+        [ ratchetSyncP' bobId RSAgreed False,
           serverUpP
         ]
 
       liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
+        [ ratchetSyncP' aliceId RSAgreed False,
           serverUpP
         ]
 
-      get alice =##> ratchetSyncP bobId RSOk
+      get alice =##> ratchetSyncP bobId RSOk False
 
-      get bob2 =##> ratchetSyncP aliceId RSOk
+      get bob2 =##> ratchetSyncP aliceId RSOk False
 
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
 
@@ -773,8 +777,10 @@ testRatchetSyncClientRestart t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId False
-  liftIO $ ratchetSyncState `shouldBe` RSStarted
+  ConnectionStats {ratchetSyncState, ratchetSyncAllowed} <- runRight $ synchronizeRatchet bob2 aliceId False
+  liftIO $ do
+    ratchetSyncState `shouldBe` RSStarted
+    ratchetSyncAllowed `shouldBe` False
 
   disconnectAgentClient bob2
 
@@ -786,13 +792,13 @@ testRatchetSyncClientRestart t = do
 
       subscribeConnection bob3 aliceId
 
-      get alice =##> ratchetSyncP bobId RSAgreed
+      get alice =##> ratchetSyncP bobId RSAgreed False
 
-      get bob3 =##> ratchetSyncP aliceId RSAgreed
+      get bob3 =##> ratchetSyncP aliceId RSAgreed False
 
-      get alice =##> ratchetSyncP bobId RSOk
+      get alice =##> ratchetSyncP bobId RSOk False
 
-      get bob3 =##> ratchetSyncP aliceId RSOk
+      get bob3 =##> ratchetSyncP aliceId RSOk False
 
       exchangeGreetingsMsgIds alice bobId 12 bob3 aliceId 9
 
@@ -806,8 +812,10 @@ testRatchetSyncSuspendForeground t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId False
-  liftIO $ ratchetSyncState `shouldBe` RSStarted
+  ConnectionStats {ratchetSyncState, ratchetSyncAllowed} <- runRight $ synchronizeRatchet bob2 aliceId False
+  liftIO $ do
+    ratchetSyncState `shouldBe` RSStarted
+    ratchetSyncAllowed `shouldBe` False
 
   suspendAgent bob2 0
   threadDelay 100000
@@ -816,18 +824,18 @@ testRatchetSyncSuspendForeground t = do
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
       liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
+        [ ratchetSyncP' bobId RSAgreed False,
           serverUpP
         ]
 
       liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
+        [ ratchetSyncP' aliceId RSAgreed False,
           serverUpP
         ]
 
-      get alice =##> ratchetSyncP bobId RSOk
+      get alice =##> ratchetSyncP bobId RSOk False
 
-      get bob2 =##> ratchetSyncP aliceId RSOk
+      get bob2 =##> ratchetSyncP aliceId RSOk False
 
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
 
@@ -841,27 +849,31 @@ testRatchetSyncSimultaneous t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState = bRSS} <- runRight $ synchronizeRatchet bob2 aliceId False
-  liftIO $ bRSS `shouldBe` RSStarted
+  ConnectionStats {ratchetSyncState = bRSS, ratchetSyncAllowed = bRSSAllowed} <- runRight $ synchronizeRatchet bob2 aliceId False
+  liftIO $ do
+    bRSS `shouldBe` RSStarted
+    bRSSAllowed `shouldBe` False
 
-  ConnectionStats {ratchetSyncState = aRSS} <- runRight $ synchronizeRatchet alice bobId True
-  liftIO $ aRSS `shouldBe` RSStarted
+  ConnectionStats {ratchetSyncState = aRSS, ratchetSyncAllowed = aRSSAllowed} <- runRight $ synchronizeRatchet alice bobId True
+  liftIO $ do
+    aRSS `shouldBe` RSStarted
+    aRSSAllowed `shouldBe` False
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
       liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
+        [ ratchetSyncP' bobId RSAgreed False,
           serverUpP
         ]
 
       liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
+        [ ratchetSyncP' aliceId RSAgreed False,
           serverUpP
         ]
 
-      get alice =##> ratchetSyncP bobId RSOk
+      get alice =##> ratchetSyncP bobId RSOk False
 
-      get bob2 =##> ratchetSyncP aliceId RSOk
+      get bob2 =##> ratchetSyncP aliceId RSOk False
 
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
 
