@@ -600,7 +600,7 @@ type PCTransmission err msg =  (SentRawTransmission, TMVar (Response err msg))
 -- It will result in Int overflow on 32 bit platform for a large number of blocks (~13.4k blocks / ~1.2m subscriptions)
 -- TODO switch to timeout or TimeManager that supports Int64
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either (ProtocolClientError err) msg))
-sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeoutPerKb}, blockSize, batch} cs = do
+sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, tcpTimeoutPerKb}, blockSize, batch} cs = do
   (h :| ts) <- mapM (runExceptT . mkTransmission c) cs
   let bt = blockSize * tcpTimeoutPerKb `div` 1024
       h' = [(,bt) <$> h]
@@ -611,7 +611,7 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeoutPerKb}
       ts_ = L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
   mapM_ (atomically . writeTBQueue sndQ) ts_
   forConcurrently ts' $ \case
-    Right ((_t, r), bts) -> withBkTimeout c bts $ atomically $ takeTMVar r
+    Right ((_t, r), bts) -> withTimeout c (tcpTimeout + bts) (atomically $ takeTMVar r)
     Left e -> pure $ Left e
   where
     fst3 (x, _, _) = x
@@ -633,23 +633,17 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeoutPerKb}
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}} pKey qId cmd = do
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}} pKey qId cmd = do
   (t, r) <- mkTransmission c (pKey, qId, cmd)
   ExceptT $ sendRecv t r
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> TMVar (Response err msg) -> IO (Response err msg)
-    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout c (atomically $ takeTMVar r)
+    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout c tcpTimeout (atomically $ takeTMVar r)
 
-withTimeout :: ProtocolClient err msg -> IO (Either (ProtocolClientError err) msg) -> IO (Either (ProtocolClientError err) msg)
-withTimeout ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} a =
-  timeout tcpTimeout a >>= \case
-    Just r -> atomically (writeTVar pingErrorCount 0) >> pure r
-    _ -> pure $ Left PCEResponseTimeout
-
-withBkTimeout :: ProtocolClient err msg -> Int -> IO (Either (ProtocolClientError err) msg) -> IO (Either (ProtocolClientError err) msg)
-withBkTimeout ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} bt a = do
-  timeout (tcpTimeout + bt) a >>= \case
+withTimeout :: ProtocolClient err msg -> Int -> IO (Either (ProtocolClientError err) msg) -> IO (Either (ProtocolClientError err) msg)
+withTimeout ProtocolClient {client_ = PClient {pingErrorCount}} t a = do
+  timeout t a >>= \case
     Just r -> atomically (writeTVar pingErrorCount 0) >> pure r
     _ -> pure $ Left PCEResponseTimeout
 
