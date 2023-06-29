@@ -184,7 +184,7 @@ functionalAPITests t = do
       it "should synchronize ratchets after client restart" $
         testRatchetSyncClientRestart t
       it "should synchronize ratchets after suspend/foreground" $
-        testRatchetSyncSuspendActivate t
+        testRatchetSyncSuspendForeground t
       it "should synchronize ratchets when clients start synchronization simultaneously" $
         testRatchetSyncSimultaneous t
   describe "Inactive client disconnection" $ do
@@ -803,8 +803,8 @@ testRatchetSyncClientRestart t = do
 
       exchangeGreetingsMsgIds alice bobId 12 bob3 aliceId 9
 
-testRatchetSyncSuspendActivate :: HasCallStack => ATransport -> IO ()
-testRatchetSyncSuspendActivate t = do
+testRatchetSyncSuspendForeground :: HasCallStack => ATransport -> IO ()
+testRatchetSyncSuspendForeground t = do
   alice <- getSMPAgentClient' agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg initAgentServers testDB2
   (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn t testPort $ \_ ->
