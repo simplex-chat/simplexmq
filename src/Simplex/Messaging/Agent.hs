@@ -1791,8 +1791,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
     processSMP
       rq@RcvQueue {e2ePrivKey, e2eDhSecret, status}
       conn
-      cData@ConnData {userId, connId, duplexHandshake, ratchetSyncState = rss, lastExternalSndId} = withConnLock c connId "processSMP" $ do
-        case cmd of
+      cData@ConnData {userId, connId, duplexHandshake, ratchetSyncState = rss, lastExternalSndId} =
+        withConnLock c connId "processSMP" $ case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             handleNotifyAck $
               decryptSMPMessage v rq msg >>= \case
