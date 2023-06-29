@@ -2292,7 +2292,7 @@ enqueueRatchetKey c cData@ConnData {connId, connAgentVersion} sq e2eEncryption =
       let agentMsg = AgentRatchetInfo ""
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
-      let msgBody = smpEncode $ AgentRatchetKey {agentVersion = connAgentVersion, e2eEncryption, info = ""}
+      let msgBody = smpEncode $ AgentRatchetKey {agentVersion = connAgentVersion, e2eEncryption, info = agentMsgStr}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
