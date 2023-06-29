@@ -243,13 +243,21 @@ deriving instance Eq (Connection d)
 
 deriving instance Show (Connection d)
 
-connData :: Connection d -> ConnData
-connData = \case
+toConnData :: Connection d -> ConnData
+toConnData = \case
   NewConnection cData -> cData
   RcvConnection cData _ -> cData
   SndConnection cData _ -> cData
   DuplexConnection cData _ _ -> cData
   ContactConnection cData _ -> cData
+
+toConn :: ConnData -> Connection d -> Connection d
+toConn cData = \case
+  NewConnection _ -> NewConnection cData
+  RcvConnection _ rq -> RcvConnection cData rq
+  SndConnection _ sq -> SndConnection cData sq
+  DuplexConnection _ rqs sqs -> DuplexConnection cData rqs sqs
+  ContactConnection _ rq -> ContactConnection cData rq
 
 data SConnType :: ConnType -> Type where
   SCNew :: SConnType CNew

@@ -52,6 +52,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeletedConns,
     getConnData,
     setConnDeleted,
+    setConnAgentVersion,
     getDeletedConnIds,
     getRcvConn,
     getRcvQueueById,
@@ -1650,6 +1651,10 @@ getConnData dbConn connId' =
 
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+
+setConnAgentVersion :: DB.Connection -> ConnId -> Version -> IO ()
+setConnAgentVersion db connId aVersion =
+  DB.execute db "UPDATE connections SET smp_agent_version = ? WHERE conn_id = ?" (aVersion, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
