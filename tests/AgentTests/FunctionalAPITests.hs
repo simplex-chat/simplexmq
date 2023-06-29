@@ -93,13 +93,6 @@ get' c = do
     Just Refl -> pure (corrId, connId, cmd)
     _ -> error $ "unexpected command " <> show cmd
 
--- get'' :: forall m. (MonadIO m) => AgentClient -> m (ATransmission 'Agent)
--- get'' c = do
---   (corrId, connId, APC e cmd) <- pGet c
---   case testEquality e (sAEntity @e) of
---     Just Refl -> pure (corrId, connId, cmd)
---     _ -> error $ "unexpected command " <> show cmd
-
 pGet :: forall m. MonadIO m => AgentClient -> m (ATransmission 'Agent)
 pGet c = do
   t@(_, _, APC _ cmd) <- atomically (readTBQueue $ subQ c)

@@ -1845,20 +1845,18 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               A_MSG body -> do
                                 logServer "<--" c srv rId "MSG <MSG>"
                                 notify $ MSG msgMeta msgFlags body
-                              QCONT addr -> qDuplex "QCONT" $ \conn' -> continueSending addr conn' >> ackDel msgId
-                              QADD qs -> qDuplex "QADD" $ \conn' -> qAddMsg qs conn' >> ackDel msgId
-                              QKEY qs -> qDuplex "QKEY" $ \conn' -> qKeyMsg qs conn' >> ackDel msgId
-                              QUSE qs -> qDuplex "QUSE" $ \conn' -> qUseMsg qs conn' >> ackDel msgId
+                              QCONT addr -> qDuplexAckDel "QCONT" $ continueSending addr
+                              QADD qs -> qDuplexAckDel "QADD" $ qAddMsg qs
+                              QKEY qs -> qDuplexAckDel "QKEY" $ qKeyMsg qs
+                              QUSE qs -> qDuplexAckDel "QUSE" $ qUseMsg qs
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
                               QTEST _ -> logServer "<--" c srv rId "MSG <QTEST>" >> ackDel msgId
-                              EREADY _ -> qDuplex "EREADY" $ \(DuplexConnection cData' _ sqs) -> do
-                                let CR.Ratchet {rcSnd} = rcPrev
-                                -- if ratchet was initialized as receiving, it means EREADY wasn't sent on key negotiation
-                                when (isNothing rcSnd) $
-                                  void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
-                                ackDel msgId
+                              EREADY _ -> qDuplexAckDel "EREADY" $ ereadyMsg rcPrev
                             where
+                              qDuplexAckDel :: String -> (Connection 'CDuplex -> m ()) -> m ()
+                              qDuplexAckDel name a = qDuplex name a >> ackDel msgId
+                              resetRatchetSync :: m ()
                               resetRatchetSync = when (rss /= RSOk) $
                                 qDuplex "ratchet de-sync reset" $ \(DuplexConnection _ rqs sqs) -> do
                                   let cData' = cData {ratchetSyncState = RSOk} :: ConnData
@@ -1881,6 +1879,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                             unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) notifySync
                             ack
                             where
+                              notifySync :: m ()
                               notifySync = qDuplex "AGENT A_CRYPTO error" $ \(DuplexConnection _ rqs sqs) -> do
                                 let rss' = cryptoErrToSyncState e
                                 when (rss == RSOk || (rss == RSAllowed && rss' == RSRequired)) $ do
@@ -2130,6 +2129,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
 
           qError :: String -> m ()
           qError = throwError . AGENT . A_QUEUE
+
+          ereadyMsg :: CR.RatchetX448 -> Connection 'CDuplex -> m ()
+          ereadyMsg rcPrev (DuplexConnection cData' _ sqs) = do
+            let CR.Ratchet {rcSnd} = rcPrev
+            -- if ratchet was initialized as receiving, it means EREADY wasn't sent on key negotiation
+            when (isNothing rcSnd) $
+              void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
           smpInvitation connReq@(CRInvitationUri crData _) cInfo = do
