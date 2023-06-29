@@ -603,12 +603,13 @@ sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) 
 sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, tcpTimeoutPerKb}, blockSize, batch} cs = do
   (h :| ts) <- mapM (runExceptT . mkTransmission c) cs
   let bt = blockSize * tcpTimeoutPerKb `div` 1024
-      h' = [(,bt) <$> h]
-      batchSz = either (const 0) tSize h
-      ts'
-        | batch = L.reverse . fst3 $ foldl' (sizeBatches bt) (h', bt, batchSz) ts
-        | otherwise = L.reverse . fst $ foldl' (sizeTransactions bt) (h', bt) ts
-      ts_ = L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
+      h' :: Either (ProtocolClientError err) (PCTransmission err msg, Int) =
+        (,bt) <$> h
+      batchSz = if batch then either (const 0) tSize h else 0
+      ts' :: NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)) =
+        L.reverse . fst3 $ foldl' (sizeBatches bt) ([h'], bt, batchSz) ts
+      ts_ :: (Maybe (NonEmpty SentRawTransmission)) =
+        L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
   mapM_ (atomically . writeTBQueue sndQ) ts_
   forConcurrently ts' $ \case
     Right ((_t, r), bts) -> withTimeout c (tcpTimeout + bts) (atomically $ takeTMVar r)
@@ -620,16 +621,15 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, tcpT
     sizeBatches :: Int -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
     sizeBatches bt (ts, bts, batchSz) = \case
       Left e -> (Left e <| ts, bts, batchSz)
-      Right t ->
-        let tSz = tSize t
-            batchSz' = batchSz + tSz
-         in if batchSz' + 1 <= blockSize -- 1 byte for the number of transmissions in the batch
-              then (Right (t, bts) <| ts, bts, batchSz')
-              else (Right (t, bts + bt) <| ts, bts + bt, tSz)
-    sizeTransactions :: Int -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int)
-    sizeTransactions bt (ts, bts) = \case
-      Left e -> (Left e <| ts, bts)
-      Right t -> (Right (t, bts + bt) <| ts, bts + bt)
+      Right t
+        | batch && (batchSz' + 1 <= blockSize) ->
+          (Right (t, bts) <| ts, bts, batchSz') -- 1 byte for the number of transmissions in the batch
+        | otherwise ->
+          (Right (t, bts') <| ts, bts', tSz)
+        where
+          batchSz' = batchSz + tSz
+          bts' = bts + bt
+          tSz = tSize t
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
