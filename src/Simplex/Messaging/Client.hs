@@ -127,6 +127,7 @@ data PClient err msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
+    batchDelay :: Maybe Int,
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
@@ -309,6 +310,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
             transportSession,
             transportHost,
             tcpTimeout,
+            batchDelay,
             pingErrorCount,
             clientCorrId,
             sentCommands,
@@ -344,7 +346,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {sessionId, thVersion, blockSize, batch} -> do
           sessionTs <- getCurrentTime
-          let timeoutPerBlock = blockSize * tcpTimeoutPerKb `div` 1024
+          let timeoutPerBlock = (blockSize * tcpTimeoutPerKb) `div` 1024
               c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, sessionTs, timeoutPerBlock, blockSize, batch}
           atomically $ do
             writeTVar (connected c) True
@@ -601,33 +603,34 @@ type PCTransmission err msg =  (SentRawTransmission, TMVar (Response err msg))
 -- It will result in Int overflow on 32 bit platform for a large number of blocks (~13.4k blocks / ~1.2m subscriptions)
 -- TODO switch to timeout or TimeManager that supports Int64
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either (ProtocolClientError err) msg))
-sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}, batch, blockSize, timeoutPerBlock = bt} cs = do
+sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, batchDelay}, batch, blockSize, timeoutPerBlock} cs = do
   (h :| ts) <- mapM (runExceptT . mkTransmission c) cs
-  let h' :: Either (ProtocolClientError err) (PCTransmission err msg, Int) = (,bt) <$> h
+  let h' :: Either (ProtocolClientError err) (PCTransmission err msg, Int) = (,timeoutPerBlock) <$> h
       batchSz = if batch then either (const 0) tSize h else 0
       ts' :: NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)) =
-        L.reverse . fst3 $ foldl' batchTimeouts ([h'], bt, batchSz) ts
+        L.reverse . fst3 $ foldl' batchTimeouts ([h'], timeoutPerBlock, batchSz) ts
       ts_ :: (Maybe (NonEmpty SentRawTransmission)) =
         L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
   mapM_ (atomically . writeTBQueue sndQ) ts_
   forConcurrently ts' $ \case
-    Right ((_t, r), bts) -> withTimeout c (tcpTimeout + bts) (atomically $ takeTMVar r)
+    Right ((_t, r), bt) -> withTimeout c (tcpTimeout + bt) (atomically $ takeTMVar r)
     Left e -> pure $ Left e
   where
     fst3 (x, _, _) = x
+    -- tSize calculation matches the batching logic in tPut that does actual breaking of transmissions into blocks
     tSize :: PCTransmission err msg -> Int
     tSize ((sig, t), _) = maybe 0 C.signatureSize sig + B.length t + 3 -- 1 byte for signature size + 2 bytes for transmission size
     batchTimeouts :: (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
-    batchTimeouts (ts, bts, batchSz) = \case
-      Left e -> (Left e <| ts, bts, batchSz)
+    batchTimeouts (ts, bt, batchSz) = \case
+      Left e -> (Left e <| ts, bt, batchSz)
       Right t
         | batch && (batchSz' + 1 <= blockSize) ->
-          (Right (t, bts) <| ts, bts, batchSz') -- 1 byte for the number of transmissions in the batch
+          (Right (t, bt) <| ts, bt, batchSz') -- 1 byte for the number of transmissions in the batch
         | otherwise ->
-          (Right (t, bts') <| ts, bts', tSz)
+          (Right (t, bt') <| ts, bt', tSz)
         where
           batchSz' = batchSz + tSz
-          bts' = bts + bt
+          bt' = bt + timeoutPerBlock + fromMaybe 0 batchDelay
           tSz = tSize t
 
 -- | Send Protocol command
