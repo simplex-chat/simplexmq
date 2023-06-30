@@ -55,7 +55,9 @@ serverTests t@(ATransport t') = do
     describe "Exceeding queue quota" $ testExceedQueueQuota t'
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
-  describe "Restore messages (old / v2)" $ testRestoreMessagesV2 t
+  describe "Restore messages (old / v2)" $ do
+    testRestoreMessagesV2 t
+    testRestoreExpireMessages t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -86,7 +88,7 @@ signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
-  [r] <- tPut h [t]
+  [r] <- tPut h Nothing [t]
   pure r
 
 tGet1 :: (ProtocolEncoding err cmd, Transport c, MonadIO m, MonadFail m) => THandle c -> m (SignedTransmission err cmd)
@@ -770,6 +772,62 @@ testRestoreMessagesV2 at@(ATransport t) =
 
     removeFile testStoreLogFile
     removeFile testStoreMsgsFile
+  where
+    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
+    runTest _ test' server = do
+      testSMPClient test' `shouldReturn` ()
+      killThread server
+
+    runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+    runClient _ test' = testSMPClient test' `shouldReturn` ()
+
+testRestoreExpireMessages :: ATransport -> Spec
+testRestoreExpireMessages at@(ATransport t) =
+  it "should store messages on exit and restore on start" $ do
+    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+    recipientId <- newTVarIO ""
+    recipientKey <- newTVarIO Nothing
+    dhShared <- newTVarIO Nothing
+    senderId <- newTVarIO ""
+
+    withSmpServerStoreMsgLogOnV2 at testPort . runTest t $ \h -> do
+      runClient t $ \h1 -> do
+        (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
+        atomically $ do
+          writeTVar recipientId rId
+          writeTVar recipientKey $ Just rKey
+          writeTVar dhShared $ Just dh
+          writeTVar senderId sId
+      sId <- readTVarIO senderId
+      Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello 1")
+      Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+      threadDelay 3000000
+      Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
+      Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
+      pure ()
+
+    logSize testStoreLogFile `shouldReturn` 2
+    msgs <- B.readFile testStoreMsgsFile
+    length (B.lines msgs) `shouldBe` 4
+
+    let expCfg1 = Just ExpirationConfig {ttl = 86400, checkInterval = 43200}
+        cfg1 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg1}
+    withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
+
+    logSize testStoreLogFile `shouldReturn` 1
+    msgs' <- B.readFile testStoreMsgsFile
+    msgs' `shouldBe` msgs
+
+    let expCfg2 = Just ExpirationConfig {ttl = 2, checkInterval = 43200}
+        cfg2 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg2}
+    withSmpServerConfigOn at cfg2 testPort . runTest t $ \_ -> pure ()
+
+    logSize testStoreLogFile `shouldReturn` 1
+    -- two messages expired
+    msgs'' <- B.readFile testStoreMsgsFile
+    length (B.lines msgs'') `shouldBe` 2
+    B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
+
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do

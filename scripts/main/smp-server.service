@@ -1,0 +1,15 @@
+[Unit]
+Description=SMP server
+
+[Service]
+User=smp
+Group=smp
+Type=simple
+ExecStart=/usr/local/bin/smp-server start +RTS -N -RTS 
+ExecStopPost=/usr/local/bin/simplex-servers-stopscript smp-server
+LimitNOFILE=65535
+KillSignal=SIGINT
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target

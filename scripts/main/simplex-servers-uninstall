@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+
+GRN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+if [ "$(id -u)" -ne 0 ]; then
+  printf "This script is intended to be run with root privileges. Please re-run script using sudo."
+  exit 1
+fi
+
+printf "${RED}This action will permanently remove all configs, directories, binaries from Installation Script. Please backup any relevant configs if they are needed.${NC}\n\nPress ${GRN}ENTER${NC} to continue or ${RED}Ctrl+C${NC} to cancel installation"
+read ans
+
+systemctl stop smp-server
+systemctl stop xftp-server
+
+rm -rf /var/opt/simplex /etc/opt/simplex /var/opt/simplex-xftp /etc/opt/simplex-xftp /srv/xftp /etc/systemd/system/smp-server.service /etc/systemd/system/xftp-server.service /usr/local/bin/smp-server /usr/local/bin/xftp-server /usr/local/bin/simplex-servers-update /usr/local/bin/simplex-servers-uninstall
+
+userdel smp && userdel xftp
+
+printf "Uninstallation is complete! Thanks for trying out SimpleX!\n"

@@ -140,7 +140,7 @@ testForeignKeysEnabled =
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 cData1 :: ConnData
-cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, deleted = False}
+cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
 
 testPrivateSignKey :: C.APrivateSignKey
 testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
@@ -167,6 +167,7 @@ rcvQueue1 =
       dbQueueId = 1,
       primary = True,
       dbReplaceQueueId = Nothing,
+      rcvSwchStatus = Nothing,
       smpClientVersion = 1,
       clientNtfCreds = Nothing,
       deleteErrors = 0
@@ -187,6 +188,7 @@ sndQueue1 =
       dbQueueId = 1,
       primary = True,
       dbReplaceQueueId = Nothing,
+      sndSwchStatus = Nothing,
       smpClientVersion = 1
     }
 
@@ -324,6 +326,7 @@ testUpgradeRcvConnToDuplex =
               e2eDhSecret = testDhSecret,
               status = New,
               dbQueueId = 1,
+              sndSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
               smpClientVersion = 1
@@ -352,6 +355,7 @@ testUpgradeSndConnToDuplex =
               sndId = "4567",
               status = New,
               dbQueueId = 1,
+              rcvSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
               smpClientVersion = 1,
@@ -428,7 +432,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
       internalHash,
-      externalPrevSndHash = "hash_from_sender"
+      externalPrevSndHash = "hash_from_sender",
+      encryptedMsgHash = "encrypted_msg_hash"
     }
 
 testCreateRcvMsg_ :: DB.Connection -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvQueue -> RcvMsgData -> Expectation

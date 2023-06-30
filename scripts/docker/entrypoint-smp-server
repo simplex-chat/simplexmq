@@ -1,0 +1,48 @@
+#!/usr/bin/env sh
+confd='/etc/opt/simplex'
+logd='/var/opt/simplex/'
+
+# Check if server has been initialized
+if [ ! -f "${confd}/smp-server.ini" ]; then
+  # If not, determine ip or domain
+  case "${ADDR}" in
+    '') printf 'Please specify $ADDR environment variable.\n'; exit 1 ;;
+    *[a-zA-Z]*)
+      case "${ADDR}" in
+        *:*) set -- --ip "${ADDR}" ;;
+        *) set -- -n "${ADDR}" ;;
+      esac
+      ;;
+    *) set -- --ip "${ADDR}" ;;
+  esac
+
+  # Optionally, set password
+  case "${PASS}" in
+    '') set -- "$@" --no-password ;;
+    *) set -- "$@" --password "${PASS}" ;;
+  esac
+
+  # And init certificates and configs
+  smp-server init -y -l "$@"
+fi
+
+# Backup store log just in case
+#
+# Uses the UTC (universal) time zone and this
+# format: YYYY-mm-dd'T'HH:MM:SS
+# year, month, day, letter T, hour, minute, second
+#
+# This is the ISO 8601 format without the time zone at the end.
+#
+_file="${logd}/smp-server-store.log"
+if [ -f "${_file}" ]; then
+  _backup_extension="$(date -u '+%Y-%m-%dT%H:%M:%S')"
+  cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
+  unset -v _backup_extension
+fi
+unset -v _file
+
+# Finally, run smp-sever. Notice that "exec" here is important:
+# smp-server replaces our helper script, so that it can catch INT signal
+exec smp-server start +RTS -N -RTS
+

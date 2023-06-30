@@ -25,7 +25,8 @@ CREATE TABLE connections(
   enable_ntfs INTEGER,
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
   user_id INTEGER CHECK(user_id NOT NULL)
-  REFERENCES users ON DELETE CASCADE
+  REFERENCES users ON DELETE CASCADE,
+  ratchet_sync_state TEXT NOT NULL DEFAULT 'ok'
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -50,6 +51,8 @@ CREATE TABLE rcv_queues(
   replace_rcv_queue_id INTEGER NULL,
   delete_errors INTEGER DEFAULT 0 CHECK(delete_errors NOT NULL),
   server_key_hash BLOB,
+  switch_status TEXT,
+  deleted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -71,6 +74,7 @@ CREATE TABLE snd_queues(
   snd_primary INTEGER CHECK(snd_primary NOT NULL),
   replace_snd_queue_id INTEGER NULL,
   server_key_hash BLOB,
+  switch_status TEXT,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -151,6 +155,9 @@ CREATE TABLE ratchets(
   -- ratchet is initially empty on the receiving side(the side offering the connection)
   ratchet_state BLOB,
   e2e_version INTEGER NOT NULL DEFAULT 1
+  ,
+  x3dh_pub_key_1 BLOB,
+  x3dh_pub_key_2 BLOB
 ) WITHOUT ROWID;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,
@@ -346,6 +353,20 @@ CREATE TABLE deleted_snd_chunk_replicas(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
+CREATE TABLE encrypted_rcv_message_hashes(
+  encrypted_rcv_message_hash_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  hash BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE TABLE processed_ratchet_key_hashes(
+  processed_ratchet_key_hash_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  hash BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -431,4 +452,12 @@ CREATE INDEX idx_snd_file_chunk_replicas_pending ON snd_file_chunk_replicas(
 );
 CREATE INDEX idx_deleted_snd_chunk_replicas_pending ON deleted_snd_chunk_replicas(
   created_at
+);
+CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hashes(
+  conn_id,
+  hash
+);
+CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
+  conn_id,
+  hash
 );

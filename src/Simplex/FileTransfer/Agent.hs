@@ -415,7 +415,7 @@ runXFTPSndPrepareWorker c doWork = do
         createChunk :: Int -> SndFileChunk -> m ()
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
-          (replica, ProtoServerWithAuth srv _) <- agentOperationBracket c AOSndNetwork throwWhenInactive tryCreate
+          (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
           addXFTPSndWorker c $ Just srv
           where
@@ -445,7 +445,7 @@ runXFTPSndWorker c srv doWork = do
   forever $ do
     void . atomically $ readTMVar doWork
     atomically $ assertAgentForeground c
-    agentOperationBracket c AOSndNetwork throwWhenInactive runXFTPOperation
+    runXFTPOperation
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     runXFTPOperation :: m ()

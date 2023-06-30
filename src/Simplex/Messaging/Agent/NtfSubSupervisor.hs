@@ -26,6 +26,7 @@ import Data.Bifunctor (first)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
+import Data.Time.Clock (diffUTCTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ACommand (..), APartyCmd (..), AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..), SAEntity (..))
@@ -39,7 +40,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, ProtocolServer, SMPServer, sameSrvAddr)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (diffInMicros, threadDelay', tshow, unlessM)
+import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO, threadDelay)
@@ -291,7 +292,7 @@ rescheduleAction doWork ts actionTs
   | otherwise = do
     void . atomically $ tryTakeTMVar doWork
     void . forkIO $ do
-      liftIO $ threadDelay' $ diffInMicros actionTs ts
+      liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
       void . atomically $ tryPutTMVar doWork ()
     pure True
 

@@ -90,11 +90,11 @@ You can either run your own SMP server locally or deploy using [Linode StackScri
 
 It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
 
-## Deploy SMP server on Linux
+## Deploy SMP/XFTP servers on Linux
 
-You can run your SMP server as a Linux process, optionally using a service manager for booting and restarts.
+You can run your SMP/XFTP server as a Linux process, optionally using a service manager for booting and restarts.
 
-Notice that `smp-server` requires `openssl` as run-time dependency (it is used to generate server certificates during initialization). Install it with your packet manager:
+Notice that `smp-server` and `xftp-server` requires `openssl` as run-time dependency (it is used to generate server certificates during initialization). Install it with your packet manager:
 
 ```sh
 # For Ubuntu
@@ -105,28 +105,53 @@ apt update && apt install openssl
 
 #### Using Docker
 
-On Linux, you can deploy smp server using Docker. This will download image from [Docker Hub](https://hub.docker.com/r/simplexchat/smp-server).
+On Linux, you can deploy smp and xftp server using Docker. This will download image from [Docker Hub](https://hub.docker.com/r/simplexchat).
 
-1. Create `config` and `logs` directories:
+1. Create directories for persistent Docker configuration:
 
    ```sh
-   mkdir -p ~/simplex/{config,logs}
+   mkdir -p $HOME/simplex/{xftp,smp}/{config,logs} && mkdir -p $HOME/simplex/xftp/files
    ```
 
-2. Run your Docker container. You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
-   ```sh
-   docker run -d \
-       -e "addr=your_ip_or_domain" \
-       -e "pass=password" \
-       -p 5223:5223 \
-       -v $HOME/simplex/config:/etc/opt/simplex:z \
-       -v $HOME/simplex/logs:/var/opt/simplex:z \
-       simplexchat/smp-server:latest
-   ```
+2. Run your Docker container.
 
-#### Ubuntu
+   - `smp-server`
+   
+     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+     ```sh
+     docker run -d \
+         -e "ADDR=your_ip_or_domain" \
+         -e "PASS=password" \
+         -p 5223:5223 \
+         -v $HOME/simplex/smp/config:/etc/opt/simplex:z \
+         -v $HOME/simplex/smp/logs:/var/opt/simplex:z \
+         simplexchat/smp-server:latest
+     ```
 
-For Ubuntu you can download a binary from [the latest release](https://github.com/simplex-chat/simplexmq/releases).
+   - `xftp-server`
+   
+     You must change **your_ip_or_domain** and **maximum_storage**.
+     ```sh
+     docker run -d \
+         -e "ADDR=your_ip_or_domain" \
+         -e "QUOTA=maximum_storage" \
+         -p 443:443 \
+         -v $HOME/simplex/xftp/config:/etc/opt/simplex-xftp:z \
+         -v $HOME/simplex/xftp/logs:/var/opt/simplex-xftp:z \
+         -v $HOME/simplex/xftp/files:/srv/xftp:z \
+         simplexchat/xftp-server:latest
+     ```
+
+#### Using installation script
+
+**Please note** that currently, only Ubuntu distribution is supported.
+
+You can install and setup servers automatically using our script:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/install.sh -o simplex-server-install.sh \
+&& if echo 'b8cf2be103f21f9461d9a500bcd3db06ab7d01d68871b07f4bd245195cbead1d simplex-server-install.sh' | sha256sum -c; then chmod +x ./simplex-server-install.sh && ./simplex-server-install.sh; rm ./simplex-server-install.sh; else echo "SHA-256 checksum is incorrect!" && rm ./simplex-server-install.sh; fi
+```
 
 ### Build from source
 
@@ -136,31 +161,50 @@ For Ubuntu you can download a binary from [the latest release](https://github.co
 
 On Linux, you can build smp server using Docker.
 
-1. Build your `smp-server` image:
+1. Build your images:
 
    ```sh
    git clone https://github.com/simplex-chat/simplexmq
    cd simplexmq
    git checkout stable
-   DOCKER_BUILDKIT=1 docker build -t smp-server -f ./build.Dockerfile .
+   DOCKER_BUILDKIT=1 docker build -t local/smp-server --build-arg APP="smp-server" --build-arg APP_PORT="5223" . # For xmp-server
+   DOCKER_BUILDKIT=1 docker build -t local/xftp-server --build-arg APP="xftp-server" --build-arg APP_PORT="443" . # For xftp-server
    ```
 
-2. Create `config` and `logs` directories:
+2. Create directories for persistent Docker configuration:
 
    ```sh
-   mkdir -p ~/simplex/{config,logs}
+   mkdir -p $HOME/simplex/{xftp,smp}/{config,logs} && mkdir -p $HOME/simplex/xftp/files
    ```
 
-3. Run your Docker container. You must change **your_ip_or_domain**. `-e pass="password"` is optional variable to password-protect your `smp` server::
-   ```sh
-   docker run -d \
-       -e "addr=your_ip_or_domain" \
-       -e "pass=password" \
-       -p 5223:5223 \
-       -v $HOME/simplex/config:/etc/opt/simplex:z \
-       -v $HOME/simplex/logs:/var/opt/simplex:z \
-       smp-server
-   ```
+3. Run your Docker container.
+
+   - `smp-server`
+   
+     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+     ```sh
+     docker run -d \
+         -e "ADDR=your_ip_or_domain" \
+         -e "PASS=password" \
+         -p 5223:5223 \
+         -v $HOME/simplex/smp/config:/etc/opt/simplex:z \
+         -v $HOME/simplex/smp/logs:/var/opt/simplex:z \
+         simplexchat/smp-server:latest
+     ```
+
+   - `xftp-server`
+   
+     You must change **your_ip_or_domain** and **maximum_storage**.
+     ```sh
+     docker run -d \
+         -e "ADDR=your_ip_or_domain" \
+         -e "QUOTA=maximum_storage" \
+         -p 443:443 \
+         -v $HOME/simplex/xftp/config:/etc/opt/simplex-xftp:z \
+         -v $HOME/simplex/xftp/logs:/var/opt/simplex-xftp:z \
+         -v $HOME/simplex/xftp/files:/srv/xftp:z \
+         simplexchat/xftp-server:latest
+     ```
 
 #### Using your distribution
 

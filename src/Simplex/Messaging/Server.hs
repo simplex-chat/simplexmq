@@ -103,7 +103,7 @@ runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started 
 type M a = ReaderT Env IO a
 
 smpServer :: TMVar Bool -> ServerConfig -> M ()
-smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
+smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
   restoreServerMessages
   restoreServerStats
@@ -117,7 +117,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams logTLSErrors (runClient t)
+      runTransportServer started tcpPort serverParams tCfg (runClient t)
 
     serverThread ::
       forall s.
@@ -281,12 +281,13 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-  void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+  void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
   atomically . writeTVar activeAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
     tOrder (_, _, cmd) = case cmd of
       MSG {} -> 0
+      NMSG {} -> 0
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
@@ -741,7 +742,8 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
       st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota) . B.lines) >>= \case
+      old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
+      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota old_) . B.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -749,7 +751,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
           renameFile f $ f <> ".bak"
           logInfo "messages restored"
       where
-        restoreMsg st ms quota s = do
+        restoreMsg st ms quota old_ s = do
           r <- liftEither . first (msgErr "parsing") $ strDecode s
           case r of
             MLRv3 rId msg -> addToMsgQueue rId msg
@@ -759,13 +761,14 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
               addToMsgQueue rId msg'
           where
             addToMsgQueue rId msg = do
-              full <- atomically $ do
+              logFull <- atomically $ do
                 q <- getMsgQueue ms rId quota
-                isNothing <$> writeMsg q msg
-              case msg of
-                Message {} ->
-                  when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
-                MessageQuota {} -> pure ()
+                case msg of
+                  Message {msgTs}
+                    | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
+                    | otherwise -> pure False
+                  MessageQuota {} -> writeMsg q msg $> False
+              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body

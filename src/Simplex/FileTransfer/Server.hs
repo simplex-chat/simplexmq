@@ -70,7 +70,7 @@ runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> IO ()
 runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
 
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
-xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
+xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig} started = do
   restoreServerStats
   raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg) `finally` stopServer
   where
@@ -79,7 +79,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, logTLSErrors} started = do
       serverParams <- asks tlsServerParams
       env <- ask
       liftIO $
-        runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams logTLSErrors $ \sessionId r sendResponse -> do
+        runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig $ \sessionId r sendResponse -> do
           reqBody <- getHTTP2Body r xftpBlockSize
           processRequest HTTP2Request {sessionId, request = r, reqBody, sendResponse} `runReaderT` env
 

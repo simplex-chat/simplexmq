@@ -24,6 +24,7 @@ import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Info (os)
@@ -99,7 +100,7 @@ cfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange,
-      logTLSErrors = True
+      transportConfig = defaultTransportServerConfig
     }
 
 withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
@@ -159,7 +160,7 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' h (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
-      [Right ()] <- tPut h [(sig, t')]
+      [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
