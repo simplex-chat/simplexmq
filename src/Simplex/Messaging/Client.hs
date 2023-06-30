@@ -624,10 +624,12 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, batc
     batchTimeouts (ts, bt, batchSz) = \case
       Left e -> (Left e <| ts, bt, batchSz)
       Right t
-        | batch && (batchSz' + 1 <= blockSize) ->
-          (Right (t, bt) <| ts, bt, batchSz') -- 1 byte for the number of transmissions in the batch
-        | otherwise ->
+        | not batch ->
+          (Right (t, bt') <| ts, bt', 0)
+        | batchSz' + 1 > blockSize ->
           (Right (t, bt') <| ts, bt', tSz)
+        | otherwise -> -- same block in the batch
+          (Right (t, bt) <| ts, bt, batchSz') -- 1 byte for the number of transmissions in the batch
         where
           batchSz' = batchSz + tSz
           bt' = bt + timeoutPerBlock + fromMaybe 0 batchDelay
