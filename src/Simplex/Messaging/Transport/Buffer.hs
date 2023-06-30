@@ -45,14 +45,14 @@ getBuffered tb@TBuffer {buffer} n t_ getChunk = withBufferLock tb $ do
           "" -> pure b
           s -> readChunks False $ b <> s
       where
-        get
-          | firstChunk = getChunk
-          | otherwise = case t_ of
-              Nothing -> getChunk
-              Just t -> timeout t getChunk >>= maybe timeoutErr pure
-  
-timeoutErr :: IO a
-timeoutErr = ioException (IOError Nothing TimeExpired "" "get timeout" Nothing Nothing)
+        get = case (firstChunk, t_) of
+          (False, Just t) -> withTimedErr t getChunk
+          _ -> getChunk
+
+withTimedErr :: Int -> IO a -> IO a
+withTimedErr t a = timeout t a >>= maybe err pure
+  where
+    err = ioException (IOError Nothing TimeExpired "" "get timeout" Nothing Nothing)
 
 -- This function is only used in test and needs to be improved before it can be used in production,
 -- it will never complete if TLS connection is closed before there is newline.

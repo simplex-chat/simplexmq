@@ -87,7 +87,6 @@ import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
-import System.Timeout (timeout)
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
@@ -222,9 +221,8 @@ instance Transport TLS where
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
       
   cPut :: TLS -> ByteString -> IO ()
-  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = Just t}} s =
-    timeout t (sendData tlsContext s) >>= maybe timeoutErr pure
-  cPut TLS {tlsContext} s = sendData tlsContext s
+  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
+    maybe id withTimedErr t_ $ T.sendData tlsContext $ BL.fromStrict s
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
@@ -233,9 +231,6 @@ instance Transport TLS where
       handleEOF = \case
         T.Error_EOF -> E.throwIO TEBadBlock
         e -> E.throwIO e
-
-sendData :: T.Context -> ByteString -> IO ()
-sendData ctx = T.sendData ctx . BL.fromStrict
 
 -- * SMP transport
 
