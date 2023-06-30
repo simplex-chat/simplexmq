@@ -14,7 +14,7 @@ import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Transport (SessionId)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport.Server (loadSupportedTLSServerParams, runTransportServer)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
 
 type HTTP2ServerFunc = SessionId -> Request -> (Response -> IO ()) -> IO ()
 
@@ -27,7 +27,7 @@ data HTTP2ServerConfig = HTTP2ServerConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    logTLSErrors :: Bool
+    transportConfig :: TransportServerConfig
   }
   deriving (Show)
 
@@ -45,12 +45,12 @@ data HTTP2Server = HTTP2Server
 
 -- This server is for testing only, it processes all requests in a single queue.
 getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
-getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, caCertificateFile, certificateFile, privateKeyFile, logTLSErrors} = do
+getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
   tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize tlsServerParams logTLSErrors $ \sessionId r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize tlsServerParams transportConfig $ \sessionId r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
@@ -59,8 +59,8 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.ServerParams -> Bool -> HTTP2ServerFunc -> IO ()
-runHTTP2Server started port bufferSize serverParams logTLSErrors http2Server =
-  runTransportServer started port serverParams logTLSErrors $ withHTTP2 bufferSize run
+runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.ServerParams -> TransportServerConfig -> HTTP2ServerFunc -> IO ()
+runHTTP2Server started port bufferSize serverParams transportConfig http2Server =
+  runTransportServer started port serverParams transportConfig $ withHTTP2 bufferSize run
   where
     run cfg sessId = H.run cfg $ \req _aux sendResp -> http2Server sessId req (`sendResp` [])

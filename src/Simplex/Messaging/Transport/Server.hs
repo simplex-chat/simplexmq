@@ -7,6 +7,8 @@
 module Simplex.Messaging.Transport.Server
   ( runTransportServer,
     runTCPServer,
+    TransportServerConfig (..),
+    defaultTransportServerConfig,
     loadSupportedTLSServerParams,
     loadTLSServerParams,
     loadFingerprint,
@@ -38,15 +40,32 @@ import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
+data TransportServerConfig = TransportServerConfig
+  { logTLSErrors :: Bool,
+    transportTimeout :: Int
+  }
+  deriving (Eq, Show)
+
+defaultTransportServerConfig :: TransportServerConfig
+defaultTransportServerConfig = TransportServerConfig
+  { logTLSErrors = True,
+    transportTimeout = 40000000
+  }
+
+serverTransportConfig :: TransportServerConfig -> TransportConfig
+serverTransportConfig TransportServerConfig {logTLSErrors, transportTimeout} =
+  TransportConfig {logTLSErrors, transportTimeout = Just transportTimeout}
+
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> Bool -> (c -> m ()) -> m ()
-runTransportServer started port serverParams logTLSErrors server = do
+runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
+runTransportServer started port serverParams cfg server = do
   u <- askUnliftIO
+  let tCfg = serverTransportConfig cfg
   liftIO . runTCPServer started port $ \conn ->
     E.bracket
-      (connectTLS Nothing logTLSErrors serverParams conn >>= getServerConnection)
+      (connectTLS Nothing tCfg serverParams conn >>= getServerConnection tCfg)
       closeConnection
       (unliftIO u . server)
 

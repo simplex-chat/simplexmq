@@ -14,6 +14,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Transport.Server
 import Test.Hspec
 
 xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
@@ -111,7 +112,7 @@ testXFTPServerConfig =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      logTLSErrors = True
+      transportConfig = defaultTransportServerConfig
     }
 
 testXFTPClientConfig :: XFTPClientConfig

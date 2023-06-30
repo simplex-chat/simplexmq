@@ -24,6 +24,7 @@ import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Info (os)
@@ -99,7 +100,7 @@ cfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange,
-      logTLSErrors = True
+      transportConfig = defaultTransportServerConfig
     }
 
 withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

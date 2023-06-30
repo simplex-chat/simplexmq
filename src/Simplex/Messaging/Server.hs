@@ -103,7 +103,7 @@ runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started 
 type M a = ReaderT Env IO a
 
 smpServer :: TMVar Bool -> ServerConfig -> M ()
-smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
+smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
   restoreServerMessages
   restoreServerStats
@@ -117,7 +117,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams logTLSErrors (runClient t)
+      runTransportServer started tcpPort serverParams tCfg (runClient t)
 
     serverThread ::
       forall s.
