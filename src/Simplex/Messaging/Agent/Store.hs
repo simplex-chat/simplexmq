@@ -293,7 +293,9 @@ data ConnData = ConnData
     connAgentVersion :: Version,
     enableNtfs :: Bool,
     duplexHandshake :: Maybe Bool, -- added in agent protocol v2
-    deleted :: Bool
+    lastExternalSndId :: PrevExternalSndId,
+    deleted :: Bool,
+    ratchetSyncState :: RatchetSyncState
   }
   deriving (Eq, Show)
 
