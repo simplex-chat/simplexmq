@@ -243,13 +243,21 @@ deriving instance Eq (Connection d)
 
 deriving instance Show (Connection d)
 
-connData :: Connection d -> ConnData
-connData = \case
+toConnData :: Connection d -> ConnData
+toConnData = \case
   NewConnection cData -> cData
   RcvConnection cData _ -> cData
   SndConnection cData _ -> cData
   DuplexConnection cData _ _ -> cData
   ContactConnection cData _ -> cData
+
+updateConnection :: ConnData -> Connection d -> Connection d
+updateConnection cData = \case
+  NewConnection _ -> NewConnection cData
+  RcvConnection _ rq -> RcvConnection cData rq
+  SndConnection _ sq -> SndConnection cData sq
+  DuplexConnection _ rqs sqs -> DuplexConnection cData rqs sqs
+  ContactConnection _ rq -> ContactConnection cData rq
 
 data SConnType :: ConnType -> Type where
   SCNew :: SConnType CNew
@@ -298,6 +306,19 @@ data ConnData = ConnData
     ratchetSyncState :: RatchetSyncState
   }
   deriving (Eq, Show)
+
+-- this function should be mirrored in the clients
+ratchetSyncAllowed :: ConnData -> Bool
+ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
+  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
+
+ratchetSyncSupported' :: ConnData -> Bool
+ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
+
+-- this function should be mirrored in the clients
+ratchetSyncSendProhibited :: ConnData -> Bool
+ratchetSyncSendProhibited ConnData {ratchetSyncState} =
+  ratchetSyncState `elem` ([RSRequired, RSStarted, RSAgreed] :: [RatchetSyncState])
 
 data PendingCommand = PendingCommand
   { corrId :: ACorrId,

@@ -104,17 +104,31 @@ pGet c = do
 pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
-smpCfgV1 :: ProtocolClientConfig
-smpCfgV1 = (smpCfg agentCfg) {serverVRange = vr11}
+smpCfgVPrev :: ProtocolClientConfig
+smpCfgVPrev = (smpCfg agentCfg) {serverVRange = serverVRangePrev}
+  where
+    serverVRangePrev = prevRange $ serverVRange $ smpCfg agentCfg
 
-agentCfgV1 :: AgentConfig
-agentCfgV1 = agentCfg {smpAgentVRange = vr11, smpClientVRange = vr11, e2eEncryptVRange = vr11, smpCfg = smpCfgV1}
+agentCfgVPrev :: AgentConfig
+agentCfgVPrev =
+  agentCfg
+    { smpAgentVRange = smpAgentVRangePrev,
+      smpClientVRange = smpClientVRangePrev,
+      e2eEncryptVRange = e2eEncryptVRangePrev,
+      smpCfg = smpCfgVPrev
+    }
+  where
+    smpAgentVRangePrev = prevRange $ smpAgentVRange agentCfg
+    smpClientVRangePrev = prevRange $ smpClientVRange agentCfg
+    e2eEncryptVRangePrev = prevRange $ e2eEncryptVRange agentCfg
 
-agentCfgRatchetV1 :: AgentConfig
-agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = vr11}
+agentCfgRatchetVPrev :: AgentConfig
+agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = e2eEncryptVRangePrev}
+  where
+    e2eEncryptVRangePrev = prevRange $ e2eEncryptVRange agentCfg
 
-vr11 :: VersionRange
-vr11 = mkVersionRange 1 1
+prevRange :: VersionRange -> VersionRange
+prevRange vr = vr {maxVersion = maxVersion vr - 1}
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
@@ -163,6 +177,13 @@ functionalAPITests t = do
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart t
   describe "Message delivery" $ do
+    describe "update connection agent version on received messages" $ do
+      it "should increase if compatible, shouldn't decrease" $
+        testIncreaseConnAgentVersion t
+      it "should increase to max compatible version" $
+        testIncreaseConnAgentVersionMaxCompatible t
+      it "should increase when connection was negotiated on different versions" $
+        testIncreaseConnAgentVersionStartDifferentVersion t
     it "should deliver message after client restart" $
       testDeliverClientRestart t
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
@@ -292,17 +313,17 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  it "v2" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
-  it "v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
-  it "v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
+  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
+  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
+  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
 
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
-  it "ratchet v2" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  it "ratchet v1" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfgRatchetV1 3 runTest
-  it "ratchets v1 to v2" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfg 3 runTest
-  it "ratchets v2 to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetV1 3 runTest
+  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
+  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
+  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
 
 testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -478,6 +499,9 @@ testAsyncServerOffline t = do
 testAsyncHelloTimeout :: HasCallStack => IO ()
 testAsyncHelloTimeout = do
   -- this test would only work if any of the agent is v1, there is no HELLO timeout in v2
+  let vr11 = mkVersionRange 1 1
+      smpCfgV1 = (smpCfg agentCfg) {serverVRange = vr11}
+      agentCfgV1 = agentCfg {smpAgentVRange = vr11, smpClientVRange = vr11, e2eEncryptVRange = vr11, smpCfg = smpCfgV1}
   alice <- getSMPAgentClient' agentCfgV1 initAgentServers testDB
   bob <- getSMPAgentClient' agentCfg {helloTimeout = 1} initAgentServers testDB2
   runRight_ $ do
@@ -523,6 +547,114 @@ testAllowConnectionClientRestart t = do
         get bob ##> ("", aliceId, CON)
 
         exchangeGreetingsMsgId 4 alice2 bobId bob aliceId
+
+testIncreaseConnAgentVersion :: HasCallStack => ATransport -> IO ()
+testIncreaseConnAgentVersion t = do
+  alice <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      checkVersion alice bobId 2
+      checkVersion bob aliceId 2
+      pure (aliceId, bobId)
+
+    -- version doesn't increase if incompatible
+
+    disconnectAgentClient alice
+    alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+
+    runRight_ $ do
+      subscribeConnection alice2 bobId
+      exchangeGreetingsMsgId 6 alice2 bobId bob aliceId
+      checkVersion alice2 bobId 2
+      checkVersion bob aliceId 2
+
+    -- version increases if compatible
+
+    disconnectAgentClient bob
+    bob2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+      exchangeGreetingsMsgId 8 alice2 bobId bob2 aliceId
+      checkVersion alice2 bobId 3
+      checkVersion bob2 aliceId 3
+
+    -- version doesn't decrease, even if incompatible
+
+    disconnectAgentClient alice2
+    alice3 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 2 2} initAgentServers testDB
+
+    runRight_ $ do
+      subscribeConnection alice3 bobId
+      exchangeGreetingsMsgId 10 alice3 bobId bob2 aliceId
+      checkVersion alice3 bobId 3
+      checkVersion bob2 aliceId 3
+
+    disconnectAgentClient bob2
+    bob3 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 1} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection bob3 aliceId
+      exchangeGreetingsMsgId 12 alice3 bobId bob3 aliceId
+      checkVersion alice3 bobId 3
+      checkVersion bob3 aliceId 3
+
+checkVersion :: AgentClient -> ConnId -> Version -> ExceptT AgentErrorType IO ()
+checkVersion c connId v = do
+  ConnectionStats {connAgentVersion} <- getConnectionServers c connId
+  liftIO $ connAgentVersion `shouldBe` v
+
+testIncreaseConnAgentVersionMaxCompatible :: HasCallStack => ATransport -> IO ()
+testIncreaseConnAgentVersionMaxCompatible t = do
+  alice <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      checkVersion alice bobId 2
+      checkVersion bob aliceId 2
+      pure (aliceId, bobId)
+
+    -- version increases to max compatible
+
+    disconnectAgentClient alice
+    alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+    disconnectAgentClient bob
+    bob2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection alice2 bobId
+      subscribeConnection bob2 aliceId
+      exchangeGreetingsMsgId 6 alice2 bobId bob2 aliceId
+      checkVersion alice2 bobId 3
+      checkVersion bob2 aliceId 3
+
+testIncreaseConnAgentVersionStartDifferentVersion :: HasCallStack => ATransport -> IO ()
+testIncreaseConnAgentVersionStartDifferentVersion t = do
+  alice <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      checkVersion alice bobId 2
+      checkVersion bob aliceId 2
+      pure (aliceId, bobId)
+
+    -- version increases to max compatible
+
+    disconnectAgentClient alice
+    alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+
+    runRight_ $ do
+      subscribeConnection alice2 bobId
+      exchangeGreetingsMsgId 6 alice2 bobId bob aliceId
+      checkVersion alice2 bobId 3
+      checkVersion bob aliceId 3
 
 testDeliverClientRestart :: HasCallStack => ATransport -> IO ()
 testDeliverClientRestart t = do
@@ -716,15 +848,15 @@ setupDesynchronizedRatchet alice bob = do
   pure (aliceId, bobId, bob2)
 
 ratchetSyncP :: ConnId -> RatchetSyncState -> AEntityTransmission 'AEConn -> Bool
-ratchetSyncP cId rrs = \case
-  (_, cId', RSYNC rrs' ConnectionStats {ratchetSyncState}) ->
-    cId' == cId && rrs' == rrs && ratchetSyncState == rrs
+ratchetSyncP cId rss = \case
+  (_, cId', RSYNC rss' ConnectionStats {ratchetSyncState}) ->
+    cId' == cId && rss' == rss && ratchetSyncState == rss
   _ -> False
 
 ratchetSyncP' :: ConnId -> RatchetSyncState -> ATransmission 'Agent -> Bool
-ratchetSyncP' cId rrs = \case
-  (_, cId', APC SAEConn (RSYNC rrs' ConnectionStats {ratchetSyncState})) ->
-    cId' == cId && rrs' == rrs && ratchetSyncState == rrs
+ratchetSyncP' cId rss = \case
+  (_, cId', APC SAEConn (RSYNC rss' ConnectionStats {ratchetSyncState})) ->
+    cId' == cId && rss' == rss && ratchetSyncState == rss
   _ -> False
 
 testRatchetSyncServerOffline :: HasCallStack => ATransport -> IO ()
