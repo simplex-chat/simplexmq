@@ -597,7 +597,7 @@ okSMPCommands cmd c qs = L.map response <$> sendProtocolCommands c cs
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
-type PCTransmission err msg =  (SentRawTransmission, TMVar (Response err msg))
+type PCTransmission err msg = (SentRawTransmission, TMVar (Response err msg))
 
 -- | Send multiple commands with batching and collect responses
 -- It will result in Int overflow on 32 bit platform for a large number of blocks (~13.4k blocks / ~1.2m subscriptions)
