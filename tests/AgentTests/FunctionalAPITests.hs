@@ -619,7 +619,7 @@ testIncreaseConnAgentVersionMaxCompatible t = do
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
 
-    -- version increases to max incompatible
+    -- version increases to max compatible
 
     disconnectAgentClient alice
     alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
@@ -645,7 +645,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
 
-    -- version increases to max incompatible
+    -- version increases to max compatible
 
     disconnectAgentClient alice
     alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
