@@ -116,7 +116,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -1925,8 +1925,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   _ -> prohibited >> ack
               updateConnVersion :: Connection c -> ConnData -> Version -> m (Connection c, ConnData)
               updateConnVersion conn' cData' msgAgentVersion = do
-                aVRange@VRange {minVersion} <- asks $ smpAgentVRange . config
-                case VRange minVersion msgAgentVersion `compatibleVersion` aVRange of
+                aVRange <- asks $ smpAgentVRange . config
+                let msgAVRange = fromMaybe (versionToRange msgAgentVersion) $ safeVersionRange (minVersion aVRange) msgAgentVersion
+                case msgAVRange `compatibleVersion` aVRange of
                   Just (Compatible av)
                     | av > connAgentVersion -> do
                       withStore' c $ \db -> setConnAgentVersion db connId av

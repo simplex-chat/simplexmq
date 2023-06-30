@@ -7,7 +7,7 @@
 
 module Simplex.Messaging.Version
   ( Version,
-    VersionRange (..),
+    VersionRange (minVersion, maxVersion),
     pattern VersionRange,
     VersionI (..),
     VersionRangeI (..),
