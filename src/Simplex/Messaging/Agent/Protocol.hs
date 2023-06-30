@@ -62,6 +62,7 @@ module Simplex.Messaging.Agent.Protocol
     RcvSwitchStatus (..),
     SndSwitchStatus (..),
     QueueDirection (..),
+    RatchetSyncState (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
@@ -98,6 +99,7 @@ module Simplex.Messaging.Agent.Protocol
     BrokerErrorType (..),
     SMPAgentError (..),
     AgentCryptoError (..),
+    cryptoErrToSyncState,
     ATransmission,
     ATransmissionOrError,
     ARawTransmission,
@@ -324,6 +326,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
+  RSYNC :: RatchetSyncState -> ConnectionStats -> ACommand Agent AEConn
   SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
@@ -382,6 +385,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   DOWN_ :: ACommandTag Agent AENone
   UP_ :: ACommandTag Agent AENone
   SWITCH_ :: ACommandTag Agent AEConn
+  RSYNC_ :: ACommandTag Agent AEConn
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
@@ -433,6 +437,7 @@ aCommandTag = \case
   DOWN {} -> DOWN_
   UP {} -> UP_
   SWITCH {} -> SWITCH_
+  RSYNC {} -> RSYNC_
   SEND {} -> SEND_
   MID _ -> MID_
   SENT _ -> SENT_
@@ -559,6 +564,41 @@ instance ToJSON SndSwitchStatus where
 instance FromJSON SndSwitchStatus where
   parseJSON = strParseJSON "SndSwitchStatus"
 
+data RatchetSyncState
+  = RSOk
+  | RSAllowed
+  | RSRequired
+  | RSStarted
+  | RSAgreed
+  deriving (Eq, Show)
+
+instance StrEncoding RatchetSyncState where
+  strEncode = \case
+    RSOk -> "ok"
+    RSAllowed -> "allowed"
+    RSRequired -> "required"
+    RSStarted -> "started"
+    RSAgreed -> "agreed"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "ok" -> pure RSOk
+      "allowed" -> pure RSAllowed
+      "required" -> pure RSRequired
+      "started" -> pure RSStarted
+      "agreed" -> pure RSAgreed
+      _ -> fail "bad RatchetSyncState"
+
+instance FromField RatchetSyncState where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+
+instance ToField RatchetSyncState where toField = toField . decodeLatin1 . strEncode
+
+instance ToJSON RatchetSyncState where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON RatchetSyncState where
+  parseJSON = strParseJSON "RatchetSyncState"
+
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
     rcvSwitchStatus :: Maybe RcvSwitchStatus,
@@ -597,17 +637,21 @@ instance StrEncoding SndQueueInfo where
 
 data ConnectionStats = ConnectionStats
   { rcvQueuesInfo :: [RcvQueueInfo],
-    sndQueuesInfo :: [SndQueueInfo]
+    sndQueuesInfo :: [SndQueueInfo],
+    ratchetSyncState :: RatchetSyncState
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo} =
-    "rcv=" <> strEncodeList rcvQueuesInfo <> " snd=" <> strEncodeList sndQueuesInfo
+  strEncode ConnectionStats {rcvQueuesInfo, sndQueuesInfo, ratchetSyncState} =
+    "rcv=" <> strEncodeList rcvQueuesInfo
+      <> (" snd=" <> strEncodeList sndQueuesInfo)
+      <> (" sync=" <> strEncode ratchetSyncState)
   strP = do
     rcvQueuesInfo <- "rcv=" *> strListP
     sndQueuesInfo <- " snd=" *> strListP
-    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo}
+    ratchetSyncState <- " sync=" *> strP
+    pure ConnectionStats {rcvQueuesInfo, sndQueuesInfo, ratchetSyncState}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
@@ -710,7 +754,7 @@ data SMPConfirmation = SMPConfirmation
 data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: Version,
-        e2eEncryption :: Maybe (E2ERatchetParams 'C.X448),
+        e2eEncryption_ :: Maybe (E2ERatchetParams 'C.X448),
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -722,22 +766,29 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
+  | AgentRatchetKey
+      { agentVersion :: Version,
+        e2eEncryption :: E2ERatchetParams 'C.X448,
+        info :: ByteString
+      }
   deriving (Show)
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
-    AgentConfirmation {agentVersion, e2eEncryption, encConnInfo} ->
-      smpEncode (agentVersion, 'C', e2eEncryption, Tail encConnInfo)
+    AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo} ->
+      smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
+    AgentRatchetKey {agentVersion, e2eEncryption, info} ->
+      smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
     agentVersion <- smpP
     smpP >>= \case
       'C' -> do
-        (e2eEncryption, Tail encConnInfo) <- smpP
-        pure AgentConfirmation {agentVersion, e2eEncryption, encConnInfo}
+        (e2eEncryption_, Tail encConnInfo) <- smpP
+        pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
       'M' -> do
         Tail encAgentMessage <- smpP
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
@@ -745,15 +796,21 @@ instance Encoding AgentMsgEnvelope where
         connReq <- strDecode . unLarge <$?> smpP
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
+      'R' -> do
+        e2eEncryption <- smpP
+        Tail info <- smpP
+        pure AgentRatchetKey {agentVersion, e2eEncryption, info}
       _ -> fail "bad AgentMsgEnvelope"
 
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
+-- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It makes REPLY message unnecessary.
     AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
+  | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
   deriving (Show)
 
@@ -761,17 +818,20 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
+    AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
+      'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
 data AgentMessageType
   = AM_CONN_INFO
   | AM_CONN_INFO_REPLY
+  | AM_RATCHET_INFO
   | AM_HELLO_
   | AM_REPLY_
   | AM_A_MSG_
@@ -780,12 +840,14 @@ data AgentMessageType
   | AM_QKEY_
   | AM_QUSE_
   | AM_QTEST_
+  | AM_EREADY_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
     AM_CONN_INFO_REPLY -> "D"
+    AM_RATCHET_INFO -> "S"
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
@@ -794,10 +856,12 @@ instance Encoding AgentMessageType where
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
+    AM_EREADY_ -> "E"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
       'D' -> pure AM_CONN_INFO_REPLY
+      'S' -> pure AM_RATCHET_INFO
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
@@ -809,12 +873,14 @@ instance Encoding AgentMessageType where
           'U' -> pure AM_QUSE_
           'T' -> pure AM_QTEST_
           _ -> fail "bad AgentMessageType"
+      'E' -> pure AM_EREADY_
       _ -> fail "bad AgentMessageType"
 
 agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
+  AgentRatchetInfo _ -> AM_RATCHET_INFO
   AgentMessage _ aMsg -> case aMsg of
     -- HELLO is used both in v1 and in v2, but differently.
     -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
@@ -829,6 +895,7 @@ agentMessageType = \case
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
     QTEST _ -> AM_QTEST_
+    EREADY _ -> AM_EREADY_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -852,6 +919,7 @@ data AMsgType
   | QKEY_
   | QUSE_
   | QTEST_
+  | EREADY_
   deriving (Eq)
 
 instance Encoding AMsgType where
@@ -864,6 +932,7 @@ instance Encoding AMsgType where
     QKEY_ -> "QK"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
+    EREADY_ -> "E"
   smpP =
     A.anyChar >>= \case
       'H' -> pure HELLO_
@@ -877,6 +946,7 @@ instance Encoding AMsgType where
           'U' -> pure QUSE_
           'T' -> pure QTEST_
           _ -> fail "bad AMsgType"
+      'E' -> pure EREADY_
       _ -> fail "bad AMsgType"
 
 -- | Messages sent between SMP agents once SMP queue is secured.
@@ -899,6 +969,8 @@ data AMessage
     QUSE (L.NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
     QTEST (L.NonEmpty SndQAddr)
+  | -- ratchet re-synchronization is complete, with last decrypted sender message id (recipient's `last_external_snd_msg_id`)
+    EREADY Int64
   deriving (Show)
 
 type SndQAddr = (SMPServer, SMP.SenderId)
@@ -913,6 +985,7 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
+    EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
   smpP =
     smpP
       >>= \case
@@ -924,6 +997,7 @@ instance Encoding AMessage where
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
+        EREADY_ -> EREADY <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
@@ -1419,6 +1493,14 @@ instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
 instance Arbitrary AgentCryptoError where arbitrary = genericArbitraryU
 
+cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
+cryptoErrToSyncState = \case
+  DECRYPT_AES -> RSAllowed
+  DECRYPT_CB -> RSAllowed
+  RATCHET_HEADER -> RSRequired
+  RATCHET_EARLIER _ -> RSAllowed
+  RATCHET_SKIPPED _ -> RSRequired
+
 -- | SMP agent command and response parser for commands passed via network (only parses binary length)
 networkCommandP :: Parser ACmd
 networkCommandP = commandP A.takeByteString
@@ -1448,6 +1530,7 @@ instance StrEncoding ACmdTag where
       "DOWN" -> nt DOWN_
       "UP" -> nt UP_
       "SWITCH" -> ct SWITCH_
+      "RSYNC" -> ct RSYNC_
       "SEND" -> t SEND_
       "MID" -> ct MID_
       "SENT" -> ct SENT_
@@ -1501,6 +1584,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     DOWN_ -> "DOWN"
     UP_ -> "UP"
     SWITCH_ -> "SWITCH"
+    RSYNC_ -> "RSYNC"
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
@@ -1568,6 +1652,7 @@ commandP binaryP =
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
+          RSYNC_ -> s (RSYNC <$> strP_ <*> strP)
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
@@ -1626,6 +1711,7 @@ serializeCommand = \case
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
+  RSYNC rrState cstats -> s (RSYNC_, rrState, cstats)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)
