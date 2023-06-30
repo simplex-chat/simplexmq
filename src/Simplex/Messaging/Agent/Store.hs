@@ -307,6 +307,19 @@ data ConnData = ConnData
   }
   deriving (Eq, Show)
 
+-- this function should be mirrored in the clients
+ratchetSyncAllowed :: ConnData -> Bool
+ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
+  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
+
+ratchetSyncSupported' :: ConnData -> Bool
+ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
+
+-- this function should be mirrored in the clients
+ratchetSyncSendProhibited :: ConnData -> Bool
+ratchetSyncSendProhibited ConnData {ratchetSyncState} =
+  ratchetSyncState `elem` ([RSRequired, RSStarted, RSAgreed] :: [RatchetSyncState])
+
 data PendingCommand = PendingCommand
   { corrId :: ACorrId,
     userId :: UserId,

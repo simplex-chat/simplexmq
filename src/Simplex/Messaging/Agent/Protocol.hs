@@ -640,27 +640,24 @@ data ConnectionStats = ConnectionStats
     rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
-    ratchetSyncAllowed :: Bool,
     ratchetSyncSupported :: Bool
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncAllowed, ratchetSyncSupported} =
+  strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
     "agent_version=" <> strEncode connAgentVersion
       <> (" rcv=" <> strEncodeList rcvQueuesInfo)
       <> (" snd=" <> strEncodeList sndQueuesInfo)
       <> (" sync=" <> strEncode ratchetSyncState)
-      <> (" sync_allowed=" <> strEncode ratchetSyncAllowed)
       <> (" sync_supported=" <> strEncode ratchetSyncSupported)
   strP = do
     connAgentVersion <- "agent_version=" *> strP
     rcvQueuesInfo <- " rcv=" *> strListP
     sndQueuesInfo <- " snd=" *> strListP
     ratchetSyncState <- " sync=" *> strP
-    ratchetSyncAllowed <- " sync_allowed=" *> strP
     ratchetSyncSupported <- " sync_supported=" *> strP
-    pure ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncAllowed, ratchetSyncSupported}
+    pure ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 

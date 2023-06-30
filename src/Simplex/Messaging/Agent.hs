@@ -542,17 +542,12 @@ switchConnectionAsync' c corrId connId =
       SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          checkRatchetSync cData $ CMD PROHIBITED
+          when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
           rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
           let rqs' = updatedQs rq1 rqs
           pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwError $ CMD PROHIBITED
-
-checkRatchetSync :: AgentMonad m => ConnData -> AgentErrorType -> m ()
-checkRatchetSync ConnData {ratchetSyncState} err =
-  when (ratchetSyncState `elem` ([RSRequired, RSStarted, RSAgreed] :: [RatchetSyncState])) $
-    throwError err
 
 newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
 newConn c userId connId enableNtfs cMode clientData =
@@ -819,7 +814,7 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
   where
     enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
     enqueueMsgs cData sqs = do
-      checkRatchetSync cData $ CMD PROHIBITED
+      when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
       enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
 -- / async command processing v v v
@@ -995,7 +990,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
 enqueueMessages c cData sqs msgFlags aMessage = do
-  checkRatchetSync cData $ INTERNAL "enqueueMessages: ratchet is not synchronized"
+  when (ratchetSyncSendProhibited cData) $ throwError $ INTERNAL "enqueueMessages: ratchet is not synchronized"
   enqueueMessages' c cData sqs msgFlags aMessage
 
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
@@ -1246,7 +1241,7 @@ switchConnection' c connId =
       SomeConn _ conn@(DuplexConnection cData rqs@(rq :| _rqs) _)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
         | otherwise -> do
-          checkRatchetSync cData $ CMD PROHIBITED
+          when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
           rq' <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
           switchDuplexConnection c conn rq'
       _ -> throwError $ CMD PROHIBITED
@@ -1274,7 +1269,7 @@ abortConnectionSwitch' c connId =
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
         Just rq
           | canAbortRcvSwitch rq -> do
-            checkRatchetSync cData $ CMD PROHIBITED
+            when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
             -- multiple queues to which the connections switches were possible when repeating switch was allowed
             let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
             case L.nonEmpty keepRqs of
@@ -1295,7 +1290,7 @@ synchronizeRatchet' :: AgentMonad m => AgentClient -> ConnId -> Bool -> m Connec
 synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" $ do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData rqs sqs)
-      | ratchetSyncAllowed' cData || force -> do
+      | ratchetSyncAllowed cData || force -> do
         -- check queues are not switching?
         AgentConfig {e2eEncryptVRange} <- asks config
         (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ maxVersion e2eEncryptVRange
@@ -1308,13 +1303,6 @@ synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" 
         pure $ connectionStats conn'
       | otherwise -> throwError $ CMD PROHIBITED
     _ -> throwError $ CMD PROHIBITED
-
-ratchetSyncAllowed' :: ConnData -> Bool
-ratchetSyncAllowed' cData@ConnData {ratchetSyncState} =
-  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
-
-ratchetSyncSupported' :: ConnData -> Bool
-ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
 
 ackQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> SMP.MsgId -> m ()
 ackQueueMessage c rq srvMsgId =
@@ -1470,7 +1458,6 @@ connectionStats = \case
           rcvQueuesInfo = [],
           sndQueuesInfo = [],
           ratchetSyncState,
-          ratchetSyncAllowed = ratchetSyncAllowed' cData,
           ratchetSyncSupported = ratchetSyncSupported' cData
         }
 
@@ -2090,7 +2077,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()
           qAddMsg ((_, Nothing) :| _) _ = qError "adding queue without switching is not supported"
           qAddMsg ((qUri, Just addr) :| _) (DuplexConnection cData' rqs sqs) = do
-            checkRatchetSync cData' $ AGENT (A_QUEUE "ratchet is not synchronized")
+            when (ratchetSyncSendProhibited cData') $ throwError $ AGENT (A_QUEUE "ratchet is not synchronized")
             clientVRange <- asks $ smpClientVRange . config
             case qUri `compatibleVersion` clientVRange of
               Just qInfo@(Compatible sqInfo@SMPQueueInfo {queueAddress}) ->
@@ -2123,7 +2110,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           -- processed by queue recipient
           qKeyMsg :: NonEmpty (SMPQueueInfo, SndPublicVerifyKey) -> Connection 'CDuplex -> m ()
           qKeyMsg ((qInfo, senderKey) :| _) conn'@(DuplexConnection cData' rqs _) = do
-            checkRatchetSync cData' $ AGENT (A_QUEUE "ratchet is not synchronized")
+            when (ratchetSyncSendProhibited cData') $ throwError $ AGENT (A_QUEUE "ratchet is not synchronized")
             clientVRange <- asks $ smpClientVRange . config
             unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
             case findRQ (smpServer, senderId) rqs of
@@ -2145,7 +2132,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           qUseMsg :: NonEmpty ((SMPServer, SMP.SenderId), Bool) -> Connection 'CDuplex -> m ()
           -- NOTE: does not yet support the change of the primary status during the rotation
           qUseMsg ((addr, _primary) :| _) (DuplexConnection cData' rqs sqs) = do
-            checkRatchetSync cData' $ AGENT (A_QUEUE "ratchet is not synchronized")
+            when (ratchetSyncSendProhibited cData') $ throwError $ AGENT (A_QUEUE "ratchet is not synchronized")
             case findQ addr sqs of
               Just sq'@SndQueue {dbReplaceQueueId = Just replaceQId} -> do
                 case find ((replaceQId ==) . dbQId) sqs of
