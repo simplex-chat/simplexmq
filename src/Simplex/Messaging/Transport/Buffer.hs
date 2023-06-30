@@ -45,12 +45,14 @@ getBuffered tb@TBuffer {buffer} n t_ getChunk = withBufferLock tb $ do
           "" -> pure b
           s -> readChunks False $ b <> s
       where
-        get = case (firstChunk, t_) of
-          (False, Just t) -> withTimedErr t getChunk
-          _ -> getChunk
+        get
+          | firstChunk = getChunk
+          | otherwise = withTimedErr t_ getChunk
 
-withTimedErr :: Int -> IO a -> IO a
-withTimedErr t a = timeout t a >>= maybe err pure
+withTimedErr :: Maybe Int -> IO a -> IO a
+withTimedErr t_ a = case t_ of
+  Just t -> timeout t a >>= maybe err pure
+  Nothing -> a
   where
     err = ioException (IOError Nothing TimeExpired "" "get timeout" Nothing Nothing)
 

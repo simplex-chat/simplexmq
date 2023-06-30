@@ -222,7 +222,7 @@ instance Transport TLS where
       
   cPut :: TLS -> ByteString -> IO ()
   cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
-    maybe id withTimedErr t_ $ T.sendData tlsContext $ BL.fromStrict s
+    withTimedErr t_ . T.sendData tlsContext $ BL.fromStrict s
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
