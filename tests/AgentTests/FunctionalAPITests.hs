@@ -165,6 +165,8 @@ functionalAPITests t = do
   describe "Message delivery" $ do
     it "should increase connection agent version according to received messages" $
       testIncreaseConnAgentVersion t
+    it "should increase connection agent version according to received messages to max compatible version" $
+      testIncreaseConnAgentVersionMaxCompatible t
     it "should deliver message after client restart" $
       testDeliverClientRestart t
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
@@ -579,11 +581,37 @@ testIncreaseConnAgentVersion t = do
       exchangeGreetingsMsgId 12 alice3 bobId bob3 aliceId
       checkVersion alice3 bobId 3
       checkVersion bob3 aliceId 3
-  where
-    checkVersion :: AgentClient -> ConnId -> Version -> ExceptT AgentErrorType IO ()
-    checkVersion c connId v = do
-      ConnectionStats {connAgentVersion} <- getConnectionServers c connId
-      liftIO $ connAgentVersion `shouldBe` v
+
+checkVersion :: AgentClient -> ConnId -> Version -> ExceptT AgentErrorType IO ()
+checkVersion c connId v = do
+  ConnectionStats {connAgentVersion} <- getConnectionServers c connId
+  liftIO $ connAgentVersion `shouldBe` v
+
+testIncreaseConnAgentVersionMaxCompatible :: HasCallStack => ATransport -> IO ()
+testIncreaseConnAgentVersionMaxCompatible t = do
+  alice <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      checkVersion alice bobId 2
+      checkVersion bob aliceId 2
+      pure (aliceId, bobId)
+
+    -- version increases to max incompatible
+
+    disconnectAgentClient alice
+    alice2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+    disconnectAgentClient bob
+    bob2 <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection alice2 bobId
+      subscribeConnection bob2 aliceId
+      exchangeGreetingsMsgId 6 alice2 bobId bob2 aliceId
+      checkVersion alice2 bobId 3
+      checkVersion bob2 aliceId 3
 
 testDeliverClientRestart :: HasCallStack => ATransport -> IO ()
 testDeliverClientRestart t = do
