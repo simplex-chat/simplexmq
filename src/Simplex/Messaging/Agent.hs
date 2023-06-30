@@ -1823,11 +1823,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   (Just e2eDh, Nothing) -> do
                     decryptClientMessage e2eDh clientMsg >>= \case
                       (SMP.PHEmpty, AgentRatchetKey {agentVersion, e2eEncryption}) -> do
-                        (conn', _) <- updateConnVersion conn cData agentVersion
+                        conn' <- updateConnVersion conn cData agentVersion
                         qDuplex conn' "AgentRatchetKey" $ newRatchetKey e2eEncryption
                         ack
                       (SMP.PHEmpty, AgentMsgEnvelope {agentVersion, encAgentMessage}) -> do
-                        (conn', cData') <- updateConnVersion conn cData agentVersion
+                        conn' <- updateConnVersion conn cData agentVersion
                         -- primary queue is set as Active in helloMsg, below is to set additional queues Active
                         let RcvQueue {primary, dbReplaceQueueId} = rq
                         unless (status == Active) . withStore' c $ \db -> setRcvQueueStatus db rq Active
@@ -1844,10 +1844,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         let encryptedMsgHash = C.sha256Hash encAgentMessage
                         tryError (agentClientMsg encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
-                            (conn'', cData'') <- resetRatchetSync
+                            conn'' <- resetRatchetSync
                             case aMessage of
-                              HELLO -> helloMsg conn'' cData'' >> ackDel msgId
-                              REPLY cReq -> replyMsg conn' cData'' cReq >> ackDel msgId
+                              HELLO -> helloMsg conn'' >> ackDel msgId
+                              REPLY cReq -> replyMsg conn'' cReq >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
                                 logServer "<--" c srv rId "MSG <MSG>"
@@ -1863,15 +1863,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                             where
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> m ()) -> m ()
                               qDuplexAckDel conn'' name a = qDuplex conn'' name a >> ackDel msgId
-                              resetRatchetSync :: m (Connection c, ConnData)
+                              resetRatchetSync :: m (Connection c)
                               resetRatchetSync
                                 | rss `notElem` ([RSOk, RSStarted] :: [RatchetSyncState]) = do
-                                  let cData'' = cData' {ratchetSyncState = RSOk} :: ConnData
+                                  let cData'' = (toConnData conn') {ratchetSyncState = RSOk} :: ConnData
                                       conn'' = updateConnection cData'' conn'
                                   notify . RSYNC RSOk $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId RSOk
-                                  pure (conn'', cData'')
-                                | otherwise = pure (conn', cData')
+                                  pure conn''
+                                | otherwise = pure conn'
                           Right _ -> prohibited >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
@@ -1893,7 +1893,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               notifySync = qDuplex conn' "AGENT A_CRYPTO error" $ \connDuplex -> do
                                 let rss' = cryptoErrToSyncState e
                                 when (rss == RSOk || (rss == RSAllowed && rss' == RSRequired)) $ do
-                                  let cData'' = cData' {ratchetSyncState = rss'} :: ConnData
+                                  let cData'' = (toConnData conn') {ratchetSyncState = rss'} :: ConnData
                                       conn'' = updateConnection cData'' connDuplex
                                   notify . RSYNC rss' $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId rss'
@@ -1923,7 +1923,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               _ -> pure Nothing
                       _ -> prohibited >> ack
                   _ -> prohibited >> ack
-              updateConnVersion :: Connection c -> ConnData -> Version -> m (Connection c, ConnData)
+              updateConnVersion :: Connection c -> ConnData -> Version -> m (Connection c)
               updateConnVersion conn' cData' msgAgentVersion = do
                 aVRange <- asks $ smpAgentVRange . config
                 let msgAVRange = fromMaybe (versionToRange msgAgentVersion) $ safeVersionRange (minVersion aVRange) msgAgentVersion
@@ -1932,10 +1932,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                     | av > connAgentVersion -> do
                       withStore' c $ \db -> setConnAgentVersion db connId av
                       let cData'' = cData' {connAgentVersion = av} :: ConnData
-                          conn'' = updateConnection cData' conn'
-                      pure (conn'', cData'')
-                    | otherwise -> pure (conn', cData')
-                  Nothing -> pure (conn', cData')
+                          conn'' = updateConnection cData'' conn'
+                      pure conn''
+                    | otherwise -> pure conn'
+                  Nothing -> pure conn'
               ack :: m ()
               ack = enqueueCmd $ ICAck rId srvMsgId
               ackDel :: InternalId -> m ()
@@ -2032,8 +2032,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 _ -> prohibited
               _ -> prohibited
 
-          helloMsg :: Connection c -> ConnData -> m ()
-          helloMsg conn' cData' = do
+          helloMsg :: Connection c -> m ()
+          helloMsg conn' = do
             logServer "<--" c srv rId "MSG <HELLO>"
             case status of
               Active -> prohibited
@@ -2050,16 +2050,19 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   _ -> pure ()
             where
               enqueueDuplexHello :: SndQueue -> m ()
-              enqueueDuplexHello sq = void $ enqueueMessage c cData' sq SMP.MsgFlags {notification = True} HELLO
+              enqueueDuplexHello sq = do
+                let cData' = toConnData conn'
+                void $ enqueueMessage c cData' sq SMP.MsgFlags {notification = True} HELLO
 
-          replyMsg :: Connection c -> ConnData -> NonEmpty SMPQueueInfo -> m ()
-          replyMsg conn' cData' smpQueues = do
+          replyMsg :: Connection c -> NonEmpty SMPQueueInfo -> m ()
+          replyMsg conn' smpQueues = do
             logServer "<--" c srv rId "MSG <REPLY>"
             case duplexHandshake of
               Just True -> prohibited
               _ -> case conn' of
                 RcvConnection {} -> do
                   AcceptedConfirmation {ownConnInfo} <- withStore c (`getAcceptedConfirmation` connId)
+                  let cData' = toConnData conn'
                   connectReplyQueues c cData' ownConnInfo smpQueues `catchError` (notify . ERR)
                 _ -> prohibited
 
