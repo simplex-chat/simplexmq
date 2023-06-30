@@ -2160,23 +2160,23 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               AgentConfig {e2eEncryptVRange} <- asks config
               unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
               keys <- getSendRatchetKeys
-              notifyAgreed
               initRatchet e2eEncryptVRange keys
+              notifyAgreed
             where
+              rkHashRcv = rkHash k1Rcv k2Rcv
+              rkHash k1 k2 = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2
               ratchetExists :: m Bool
               ratchetExists = withStore' c $ \db -> do
-                let rkHash = C.sha256Hash $ C.pubKeyBytes k1Rcv <> C.pubKeyBytes k2Rcv
-                exists <- checkProcessedRatchetKeyHashExists db connId rkHash
-                unless exists $ addProcessedRatchetKeyHash db connId rkHash
+                exists <- checkProcessedRatchetKeyHashExists db connId rkHashRcv
+                unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
-              getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, Maybe (m ()))
+              getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)
               getSendRatchetKeys
-                | rss == RSStarted = do
-                  (pk1, pk2, k1, _) <- withStore c (`getRatchetX3dhKeys'` connId)
-                  pure (pk1, pk2, k1, Nothing)
+                | rss == RSStarted = withStore c (`getRatchetX3dhKeys'` connId)
                 | otherwise = do
-                  (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 _)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
-                  pure (pk1, pk2, k1, Just . void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams)
+                  (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
+                  void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
+                  pure (pk1, pk2, k1, k2)
               notifyAgreed :: m ()
               notifyAgreed = do
                 let cData'' = cData' {ratchetSyncState = RSAgreed} :: ConnData
@@ -2189,15 +2189,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 createRatchet db connId rc
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, Maybe (m ())) -> m ()
-              initRatchet e2eEncryptVRange (pk1, pk2, k1, sendKeys_)
-                | C.pubKeyBytes k1 <= C.pubKeyBytes k1Rcv = do
+              initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448) -> m ()
+              initRatchet e2eEncryptVRange (pk1, pk2, k1, k2)
+                | rkHash k1 k2 <= rkHashRcv = do
                   recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 $ CR.x3dhRcv pk1 pk2 e2eOtherPartyParams
-                  sequence_ sendKeys_
                 | otherwise = do
                   (_, rcDHRs) <- liftIO C.generateKeyPair'
                   recreateRatchet $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs $ CR.x3dhSnd pk1 pk2 e2eOtherPartyParams
-                  sequence_ sendKeys_
                   void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
