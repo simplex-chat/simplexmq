@@ -108,8 +108,7 @@ simplexMQVersion = showVersion SMQ.version
 
 data TransportConfig = TransportConfig
   { logTLSErrors :: Bool,
-    recvTimeout :: Maybe Int,
-    sendTimeout :: Maybe Int
+    transportTimeout :: Maybe Int
   }
 
 class Transport c where
@@ -219,11 +218,11 @@ instance Transport TLS where
   -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
   -- this function may return less than requested number of bytes
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {recvTimeout = t_}} n =
+  cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
       
   cPut :: TLS -> ByteString -> IO ()
-  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {recvTimeout = Just t}} s =
+  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = Just t}} s =
     timeout t (sendData tlsContext s) >>= maybe timeoutErr pure
   cPut TLS {tlsContext} s = sendData tlsContext s
 

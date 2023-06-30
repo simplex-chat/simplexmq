@@ -117,7 +117,7 @@ defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAl
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
-  TransportConfig {logTLSErrors, recvTimeout = Nothing, sendTimeout = Nothing}
+  TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Connect to passed TCP host:port and pass handle to the client.
 runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a

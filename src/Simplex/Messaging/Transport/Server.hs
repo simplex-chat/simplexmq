@@ -42,21 +42,19 @@ import UnliftIO.STM
 
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
-    recvTimeout :: Int,
-    sendTimeout :: Int
+    transportTimeout :: Int
   }
   deriving (Eq, Show)
 
 defaultTransportServerConfig :: TransportServerConfig
 defaultTransportServerConfig = TransportServerConfig
   { logTLSErrors = True,
-    recvTimeout = 40000000,
-    sendTimeout = 40000000
+    transportTimeout = 40000000
   }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
-serverTransportConfig TransportServerConfig {logTLSErrors, recvTimeout, sendTimeout} =
-  TransportConfig {logTLSErrors, recvTimeout = Just recvTimeout, sendTimeout = Just sendTimeout}
+serverTransportConfig TransportServerConfig {logTLSErrors, transportTimeout} =
+  TransportConfig {logTLSErrors, transportTimeout = Just transportTimeout}
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
