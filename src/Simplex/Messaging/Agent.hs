@@ -1941,10 +1941,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               updateConnVersion conn' cData' agentVersion = do
                 aVRange <- asks $ smpAgentVRange . config
                 case versionToRange agentVersion `compatibleVersion` aVRange of
-                  Just _
-                    | agentVersion > connAgentVersion -> do
-                      withStore' c $ \db -> setConnAgentVersion db connId agentVersion
-                      let cData'' = cData' {connAgentVersion = agentVersion} :: ConnData
+                  Just (Compatible av)
+                    | av > connAgentVersion -> do
+                      withStore' c $ \db -> setConnAgentVersion db connId av
+                      let cData'' = cData' {connAgentVersion = av} :: ConnData
                           conn'' = updateConnection cData' conn'
                       pure (conn'', cData'')
                     | otherwise -> pure (conn', cData')
