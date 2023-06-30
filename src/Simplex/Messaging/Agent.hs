@@ -1932,8 +1932,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                     | av > connAgentVersion -> do
                       withStore' c $ \db -> setConnAgentVersion db connId av
                       let cData'' = cData' {connAgentVersion = av} :: ConnData
-                          conn'' = updateConnection cData'' conn'
-                      pure conn''
+                      pure $ updateConnection cData'' conn'
                     | otherwise -> pure conn'
                   Nothing -> pure conn'
               ack :: m ()
