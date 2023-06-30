@@ -1864,15 +1864,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> m ()) -> m ()
                               qDuplexAckDel conn'' name a = qDuplex conn'' name a >> ackDel msgId
                               resetRatchetSync :: m (Connection c, ConnData)
-                              resetRatchetSync =
-                                if rss `notElem` ([RSOk, RSStarted] :: [RatchetSyncState])
-                                  then do
-                                    let cData'' = cData' {ratchetSyncState = RSOk} :: ConnData
-                                        conn'' = updateConnection cData'' conn'
-                                    notify . RSYNC RSOk $ connectionStats conn''
-                                    withStore' c $ \db -> setConnRatchetSync db connId RSOk
-                                    pure (conn'', cData'')
-                                  else pure (conn', cData')
+                              resetRatchetSync
+                                | rss `notElem` ([RSOk, RSStarted] :: [RatchetSyncState]) = do
+                                  let cData'' = cData' {ratchetSyncState = RSOk} :: ConnData
+                                      conn'' = updateConnection cData'' conn'
+                                  notify . RSYNC RSOk $ connectionStats conn''
+                                  withStore' c $ \db -> setConnRatchetSync db connId RSOk
+                                  pure (conn'', cData'')
+                                | otherwise = pure (conn', cData')
                           Right _ -> prohibited >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
