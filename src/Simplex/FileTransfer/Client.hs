@@ -108,7 +108,8 @@ xftpClientServer = B.unpack . strEncode . snd3 . transportSession
     snd3 (_, s, _) = s
 
 xftpTransportHost :: XFTPClient -> TransportHost
-xftpTransportHost = (host :: HClient -> TransportHost) . client_ . http2Client
+xftpTransportHost c = case (client_ . http2Client $ c) of
+  HClient{host} -> host
 
 xftpSessionTs :: XFTPClient -> UTCTime
 xftpSessionTs = sessionTs . http2Client

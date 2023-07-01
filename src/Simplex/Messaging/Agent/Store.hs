@@ -9,6 +9,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
@@ -194,27 +195,27 @@ class SMPQueue q => SMPQueueRec q where
   dbReplaceQId :: q -> Maybe Int64
 
 instance SMPQueueRec RcvQueue where
-  qUserId = userId
+  qUserId q = q.userId
   {-# INLINE qUserId #-}
-  qConnId = connId
+  qConnId q = q.connId
   {-# INLINE qConnId #-}
-  queueId = rcvId
+  queueId q = q.rcvId
   {-# INLINE queueId #-}
-  dbQId = dbQueueId
+  dbQId q = q.dbQueueId
   {-# INLINE dbQId #-}
-  dbReplaceQId = dbReplaceQueueId
+  dbReplaceQId q = q.dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
 instance SMPQueueRec SndQueue where
-  qUserId = userId
+  qUserId q = q.userId
   {-# INLINE qUserId #-}
-  qConnId = connId
+  qConnId q = q.connId
   {-# INLINE qConnId #-}
-  queueId = sndId
+  queueId q = q.sndId
   {-# INLINE queueId #-}
-  dbQId = dbQueueId
+  dbQId q = q.dbQueueId
   {-# INLINE dbQId #-}
-  dbReplaceQId = dbReplaceQueueId
+  dbReplaceQId q = q.dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
 -- * Connection types

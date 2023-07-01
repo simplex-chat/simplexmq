@@ -542,7 +542,9 @@ runXFTPSndWorker c srv doWork = do
             rcvChunks :: [[FileChunk]]
             rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
             sortChunks :: [FileChunk] -> [FileChunk]
-            sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
+            getChunkNo :: FileChunk -> Int
+            getChunkNo FileChunk{chunkNo} = chunkNo
+            sortChunks = map reverseReplicas . sortOn getChunkNo
             reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
             addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
             addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =

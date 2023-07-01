@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Simplex.Messaging.Notifications.Server.Stats where
 
@@ -56,7 +57,7 @@ newNtfServerStats ts = do
 
 getNtfServerStatsData :: NtfServerStats -> STM NtfServerStatsData
 getNtfServerStatsData s = do
-  _fromTime <- readTVar $ fromTime (s :: NtfServerStats)
+  _fromTime <- readTVar $ s.fromTime
   _tknCreated <- readTVar $ tknCreated s
   _tknVerified <- readTVar $ tknVerified s
   _tknDeleted <- readTVar $ tknDeleted s
@@ -70,7 +71,7 @@ getNtfServerStatsData s = do
 
 setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> STM ()
 setNtfServerStats s d = do
-  writeTVar (fromTime (s :: NtfServerStats)) $! _fromTime (d :: NtfServerStatsData)
+  writeTVar (s.fromTime) $! d._fromTime
   writeTVar (tknCreated s) $! _tknCreated d
   writeTVar (tknVerified s) $! _tknVerified d
   writeTVar (tknDeleted s) $! _tknDeleted d

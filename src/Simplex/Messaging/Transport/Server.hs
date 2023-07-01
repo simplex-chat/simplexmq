@@ -17,7 +17,6 @@ module Simplex.Messaging.Transport.Server
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift

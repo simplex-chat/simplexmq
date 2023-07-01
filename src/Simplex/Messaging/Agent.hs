@@ -714,9 +714,9 @@ subscribeConnections' c connIds = do
       ContactConnection _ rq -> Right [rq]
       NewConnection _ -> Left (Right ())
     sndSubResult :: SndQueue -> Either AgentErrorType ()
-    sndSubResult sq = case status (sq :: SndQueue) of
-      Confirmed -> Right ()
-      Active -> Left $ CONN SIMPLEX
+    sndSubResult sq = case sq of
+      SndQueue{status = Confirmed} -> Right ()
+      SndQueue{status = Active} -> Left $ CONN SIMPLEX
       _ -> Left $ INTERNAL "unexpected queue status"
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
     connResults = M.map snd . foldl' addResult M.empty

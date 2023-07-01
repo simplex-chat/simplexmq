@@ -18,6 +18,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
@@ -1909,7 +1910,7 @@ updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
       WHERE conn_id = :conn_id
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
-    [ ":last_external_snd_msg_id" := sndMsgId (msgMeta :: MsgMeta),
+    [ ":last_external_snd_msg_id" := msgMeta.sndMsgId,
       ":last_rcv_msg_hash" := internalHash,
       ":conn_id" := connId,
       ":last_internal_rcv_msg_id" := internalRcvId

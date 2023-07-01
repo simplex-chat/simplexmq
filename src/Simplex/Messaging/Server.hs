@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -63,12 +64,12 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding (Encoding (smpEncode))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.QueueStore.STM as QS
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -109,7 +110,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   restoreServerStats
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
-      serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
+      serverThread s ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg
     )
     `finally` (withLog closeStoreLog >> saveServerMessages >> saveServerStats)
@@ -665,11 +666,11 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             encrypt msgFlags body =
               let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
                in RcvMessage msgId' msgTs' msgFlags encBody
-            msgId' = msgId (msg :: Message)
-            msgTs' = msgTs (msg :: Message)
+            msgId' = msg.msgId
+            msgTs' = msg.msgTs
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) $ msgId (msg :: Message)
+        setDelivered s msg = tryPutTMVar (delivered s) $ msg.msgId
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
@@ -768,7 +769,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
                     | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
                     | otherwise -> pure False
                   MessageQuota {} -> writeMsg q msg $> False
-              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode msg.msgId
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
