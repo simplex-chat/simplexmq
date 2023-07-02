@@ -129,3 +129,13 @@ data ACommand (p :: AParty) (e :: AEntity) where
 ```
 
 On the balance of things, implementing on the level of Agent Client protocol seems better, as the additional complexity is marginal, but it allows for wider range of applications, and also allows for additional delivery integrity validation. The format for payload still requires chat protocol message encoding once we want to add it, but initially it could be just an empty string.
+
+## Implementation plan
+
+Currently, we delete sent messages once delivered to the server. It would be helpful if we could keep the records in snd_messages table, and then use them to process delivery receipts, although it may be insufficient (we could add fields). Probably it is not possible to keep them as there is a foreign key constraint with `on delete cascade`.
+
+The new table will be used to track sent message hashes to correlate their IDs with delivery receipts (that will also be stored in messages/rcv_messages). Receipts need to be processed in chat in the same way as normal messages, so they would be sent to chat with MsgMeta, and the chat will need to ack them once processed.
+
+Agent ackMessage function will be also used to automatically schedule sending delivery receipts if they are enabled for connection, only for normal messages - no sending receipts to receipts.
+
+There can be receipt re-delivery to the chat in the same cases as when normal message can be re-delivered (in case of AGENT A_DUPLICATE when it was not ack'd by the user).

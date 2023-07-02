@@ -1109,6 +1109,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId err
                   AM_A_MSG_ -> notifyDel msgId err
+                  AM_A_RCVD_ -> notifyDel msgId err
                   AM_QCONT_ -> notifyDel msgId err
                   AM_QADD_ -> qError msgId "QADD: AUTH"
                   AM_QKEY_ -> qError msgId "QKEY: AUTH"
@@ -1163,6 +1164,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                       qInfo <- createReplyQueue c cData sq srv
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
                 AM_A_MSG_ -> notify $ SENT mId
+                AM_A_RCVD_ -> pure ()
                 AM_QCONT_ -> pure ()
                 AM_QADD_ -> pure ()
                 AM_QKEY_ -> do
@@ -1852,6 +1854,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               A_MSG body -> do
                                 logServer "<--" c srv rId "MSG <MSG>"
                                 notify $ MSG msgMeta msgFlags body
+                              A_RCVD {} -> ackDel msgId
                               QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending addr
                               QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg qs
                               QKEY qs -> qDuplexAckDel conn'' "QKEY" $ qKeyMsg qs

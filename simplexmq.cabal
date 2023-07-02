@@ -84,6 +84,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_snd_msg_hashes
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
