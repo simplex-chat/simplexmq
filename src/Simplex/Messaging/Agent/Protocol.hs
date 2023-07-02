@@ -1021,7 +1021,7 @@ data AMessageReceipt = AMessageReceipt
 
 data MsgReceipt = MsgReceipt
   { agentMsgId :: AgentMsgId,
-    rcptIntegrity :: MsgIntegrity
+    msgHashOk :: Bool
   }
   deriving (Eq, Show)
 
@@ -1063,11 +1063,11 @@ instance Encoding AMessageReceipt where
     pure AMessageReceipt {agentMsgId, msgHash, rcptInfo}
 
 instance StrEncoding MsgReceipt where
-  strEncode MsgReceipt {agentMsgId, rcptIntegrity} =
-    B.unwords [strEncode agentMsgId, strEncode rcptIntegrity]
+  strEncode MsgReceipt {agentMsgId, msgHashOk} =
+    B.unwords [strEncode agentMsgId, strEncode msgHashOk]
   strP = do
-    (agentMsgId, rcptIntegrity) <- strP
-    pure MsgReceipt {agentMsgId, rcptIntegrity}
+    (agentMsgId, msgHashOk) <- strP
+    pure MsgReceipt {agentMsgId, msgHashOk}
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
