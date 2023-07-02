@@ -71,6 +71,7 @@ module Simplex.Messaging.Agent.Protocol
     AMessage (..),
     MsgReceipt (..),
     MsgReceiptInfo,
+    MsgReceiptStatus (..),
     SndQAddr,
     SMPServer,
     pattern SMPServer,
@@ -1031,12 +1032,16 @@ data MsgReceiptStatus = MROk | MRBadMsgHash
 instance StrEncoding MsgReceiptStatus where
   strEncode = \case
     MROk -> "ok"
-    MRBadMsgHash -> "bad_hash"
+    MRBadMsgHash -> "badMsgHash"
   strP =
     A.takeWhile1 (/= ' ') >>= \ case
       "ok" -> pure MROk
-      "bad_msg_hash" -> pure MRBadMsgHash
+      "badMsgHash" -> pure MRBadMsgHash
       _ -> fail "bad MsgReceiptStatus"
+
+instance ToJSON MsgReceiptStatus where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 type MsgReceiptInfo = ByteString
 
