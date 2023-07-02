@@ -1,13 +1,15 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_snd_msg_hashes where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20230701_snd_msg_hashes :: Query
-m20230701_snd_msg_hashes =
+m20230701_delivery_receipts :: Query
+m20230701_delivery_receipts =
   [sql|
+ALTER TABLE connections ADD COLUMN enable_delivery_receipts INTEGER NOT NULL DEFAULT 0;
+
 CREATE TABLE snd_msg_hashes(
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   internal_snd_id INTEGER NOT NULL,
@@ -29,8 +31,8 @@ CREATE INDEX idx_snd_msg_hashes_receipt_internal_rcv_id ON snd_msg_hashes(conn_i
 CREATE INDEX idx_snd_msg_hashes_receipt_internal_id ON snd_msg_hashes(conn_id, rcpt_internal_id);
 |]
 
-down_m20230701_snd_msg_hashes :: Query
-down_m20230701_snd_msg_hashes =
+down_m20230701_delivery_receipts :: Query
+down_m20230701_delivery_receipts =
   [sql|
 DROP INDEX idx_snd_msg_hashes_conn_id;
 DROP INDEX idx_snd_msg_hashes_hash;
@@ -38,4 +40,6 @@ DROP INDEX idx_snd_msg_hashes_receipt_internal_rcv_id;
 DROP INDEX idx_snd_msg_hashes_receipt_internal_id;
 
 DROP TABLE snd_msg_hashes;
+
+ALTER TABLE connections DROP COLUMN enable_delivery_receipts;
 |]

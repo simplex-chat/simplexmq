@@ -374,7 +374,7 @@ CREATE TABLE snd_msg_hashes(
   hash BLOB NOT NULL,
   rcpt_internal_rcv_id INTEGER, -- internal rcv ID of receipt message
   rcpt_internal_id INTEGER, -- internal ID of receipt message
-  rcpt_integrity BLOB, -- integrity of receipt message
+  rcpt_msg_hash_ok INTEGER NOT NULL DEFAULT 0, -- integrity of receipt message
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   PRIMARY KEY(conn_id, internal_snd_id),
