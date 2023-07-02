@@ -1021,9 +1021,22 @@ data AMessageReceipt = AMessageReceipt
 
 data MsgReceipt = MsgReceipt
   { agentMsgId :: AgentMsgId,
-    msgHashOk :: Bool
+    msgRcptStatus :: MsgReceiptStatus
   }
   deriving (Eq, Show)
+
+data MsgReceiptStatus = MROk | MRBadMsgHash
+  deriving (Eq, Show)
+
+instance StrEncoding MsgReceiptStatus where
+  strEncode = \case
+    MROk -> "ok"
+    MRBadMsgHash -> "bad_hash"
+  strP =
+    A.takeWhile1 (/= ' ') >>= \ case
+      "ok" -> pure MROk
+      "bad_msg_hash" -> pure MRBadMsgHash
+      _ -> fail "bad MsgReceiptStatus"
 
 type MsgReceiptInfo = ByteString
 
@@ -1063,11 +1076,11 @@ instance Encoding AMessageReceipt where
     pure AMessageReceipt {agentMsgId, msgHash, rcptInfo}
 
 instance StrEncoding MsgReceipt where
-  strEncode MsgReceipt {agentMsgId, msgHashOk} =
-    B.unwords [strEncode agentMsgId, strEncode msgHashOk]
+  strEncode MsgReceipt {agentMsgId, msgRcptStatus} =
+    B.unwords [strEncode agentMsgId, strEncode msgRcptStatus]
   strP = do
-    (agentMsgId, msgHashOk) <- strP
-    pure MsgReceipt {agentMsgId, msgHashOk}
+    (agentMsgId, msgRcptStatus) <- strP
+    pure MsgReceipt {agentMsgId, msgRcptStatus}
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
