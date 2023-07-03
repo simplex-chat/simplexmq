@@ -997,7 +997,7 @@ data AMessage
     REPLY (NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- | a
+  | -- | agent envelope for delivery receipt 
     A_RCVD (NonEmpty AMessageReceipt)
   | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
     QCONT SndQAddr
