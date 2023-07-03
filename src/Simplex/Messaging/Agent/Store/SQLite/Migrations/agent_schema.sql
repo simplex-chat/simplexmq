@@ -26,8 +26,7 @@ CREATE TABLE connections(
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
   user_id INTEGER CHECK(user_id NOT NULL)
   REFERENCES users ON DELETE CASCADE,
-  ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
-  enable_delivery_receipts INTEGER NOT NULL DEFAULT 0
+  ratchet_sync_state TEXT NOT NULL DEFAULT 'ok'
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -120,6 +119,10 @@ CREATE TABLE snd_messages(
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
   retry_int_slow INTEGER,
   retry_int_fast INTEGER,
+  hash BLOB NOT NULL DEFAULT x'',
+  rcpt_internal_rcv_id INTEGER,
+  rcpt_internal_id INTEGER,
+  rcpt_status TEXT,
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -368,20 +371,6 @@ CREATE TABLE processed_ratchet_key_hashes(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
-CREATE TABLE snd_msg_hashes(
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  internal_snd_id INTEGER NOT NULL,
-  internal_id INTEGER NOT NULL,
-  hash BLOB NOT NULL,
-  rcpt_internal_rcv_id INTEGER, -- internal rcv ID of receipt message
-  rcpt_internal_id INTEGER, -- internal ID of receipt message
-  rcpt_msg_hash_ok INTEGER NOT NULL DEFAULT 0, -- integrity of receipt message
-  created_at TEXT NOT NULL DEFAULT(datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
-  PRIMARY KEY(conn_id, internal_snd_id),
-  FOREIGN KEY(conn_id, rcpt_internal_rcv_id) REFERENCES rcv_messages(conn_id, internal_rcv_id) ON DELETE CASCADE,
-  FOREIGN KEY(conn_id, rcpt_internal_id) REFERENCES messages(conn_id, internal_id) ON DELETE CASCADE
-);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -475,14 +464,4 @@ CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hash
 CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
   conn_id,
   hash
-);
-CREATE INDEX idx_snd_msg_hashes_conn_id ON snd_msg_hashes(conn_id);
-CREATE INDEX idx_snd_msg_hashes_hash ON snd_msg_hashes(conn_id, hash);
-CREATE INDEX idx_snd_msg_hashes_receipt_internal_rcv_id ON snd_msg_hashes(
-  conn_id,
-  rcpt_internal_rcv_id
-);
-CREATE INDEX idx_snd_msg_hashes_receipt_internal_id ON snd_msg_hashes(
-  conn_id,
-  rcpt_internal_id
 );

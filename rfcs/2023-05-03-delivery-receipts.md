@@ -139,3 +139,32 @@ The new table will be used to track sent message hashes to correlate their IDs w
 Agent ackMessage function will be also used to automatically schedule sending delivery receipts if they are enabled for connection, only for normal messages - no sending receipts to receipts.
 
 There can be receipt re-delivery to the chat in the same cases as when normal message can be re-delivered (in case of AGENT A_DUPLICATE when it was not ack'd by the user).
+
+## Other considerations
+
+### How clients decide whether to send delivery receipts
+
+Two options are possible - local settings per conversation or chat preferences framework, that allows to have mutual on/off. The latter seems preferable as without knowing whether the other party is sending receipts, it is not possible to uderstand what the absense of the receipt means - network malfunction or receipts disabled.
+
+Groups are a special case, as while some groups may enable sending the delivery receipts, the group members should be able to disable it locally. This should probably be done via a separate conversation setting in the same way as enabling notifications or favourites. In this case the receipt would only be sent to the group if it is enabled in the group and not disabled by the member. The toggle may be located in the same page as chat preferences, but it should be a separate setting. We might want though to communicate somehow whether a given member sends delivery receipts so that other members know whether to expect them or not.
+
+### How this functionality is released
+
+5.2:
+- support for sending and receiving delivery receipts preference, both in direct messages and in groups (for forward compatibility).
+- support for sending and receiving delivery receipts in direct chats only, but disable sending them
+
+5.3:
+- show receipt preferences in the UI
+- enable sending receipts in direct chats where they are enabled
+
+A separate question is how to enable this functionality for the existing contacts. Possible options are:
+
+1. Enable (as per default) for all contacts, show notification to the user when they open the app for update that delivery notifications are now sent by default to all contacts. Pro: no extra logic to implement. Con: may be perceived as a privacy violation, as to some contacts the delivery receipts will be sent before the user had chance to disable them.
+2. Ask the user when the new version first runs whether they want to use delivery receipts and offer these options:
+  1) keep enabled for all profiles (and for all contacts)
+  2) enable for all profiles in ~12 or in ~24 hours giving users the chance to review all contacts / profiles and disable some of them. The problem here is also in possibility of the correlation in case they all start sending receipts at the same time. Possibly the option could be to set a random time in 12-15 or 24-30 hours range to avoid the possibility of such correlation.
+  3) disable for all profiles – it will require sending profile updates to all contacts, so the delivery receipts should be kept disabled and profile updates should be sent after random intervals, one by one (not scheduled all at once, as the time may pass while the app is off).
+3. Offer an option to enable globally later - we could keep it as a one-off option, available only to existing users, and visible on the top level of the Settings - once enabled, the option will disappear and it won't be possible to disable again. The downside here is that the new contacts would be receiving the profile with enabled notifications but they still won't be delivered...
+4. Another option is to have all new contacts decided based on a global user default (that can be set in the settings and in the dialog on first start), but for the existing contacts keep in unset state that is not interpreted as either on or off, but interpreted as unknown until the user makes a choice... That might be an optimal solution for the users but it would probably require changing the preferences framework or some ad-hoc hacks. That still keeps the question open how to avoid correlation between profiles.
+5. That might be the case for version agreement too - the availability of the option per contact will depend on the version. It doesn't answer the question what to do with global defaults though...

@@ -8,38 +8,17 @@ import Database.SQLite.Simple.QQ (sql)
 m20230701_delivery_receipts :: Query
 m20230701_delivery_receipts =
   [sql|
-ALTER TABLE connections ADD COLUMN enable_delivery_receipts INTEGER NOT NULL DEFAULT 0;
-
-CREATE TABLE snd_msg_hashes(
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  internal_snd_id INTEGER NOT NULL,
-  internal_id INTEGER NOT NULL,
-  hash BLOB NOT NULL,
-  rcpt_internal_rcv_id INTEGER, -- internal rcv ID of receipt message
-  rcpt_internal_id INTEGER, -- internal ID of receipt message
-  rcpt_msg_hash_ok INTEGER NOT NULL DEFAULT 0, -- integrity of receipt message
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(conn_id, internal_snd_id),
-  FOREIGN KEY(conn_id, rcpt_internal_rcv_id) REFERENCES rcv_messages(conn_id, internal_rcv_id) ON DELETE CASCADE,
-  FOREIGN KEY(conn_id, rcpt_internal_id) REFERENCES messages(conn_id, internal_id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_snd_msg_hashes_conn_id ON snd_msg_hashes(conn_id);
-CREATE INDEX idx_snd_msg_hashes_hash ON snd_msg_hashes(conn_id, hash);
-CREATE INDEX idx_snd_msg_hashes_receipt_internal_rcv_id ON snd_msg_hashes(conn_id, rcpt_internal_rcv_id);
-CREATE INDEX idx_snd_msg_hashes_receipt_internal_id ON snd_msg_hashes(conn_id, rcpt_internal_id);
+ALTER TABLE snd_messages ADD COLUMN hash BLOB NOT NULL DEFAULT x'';
+ALTER TABLE snd_messages ADD COLUMN rcpt_internal_rcv_id INTEGER; -- internal rcv ID of receipt message
+ALTER TABLE snd_messages ADD COLUMN rcpt_internal_id INTEGER; -- internal rcv ID of receipt message
+ALTER TABLE snd_messages ADD COLUMN rcpt_status TEXT;
 |]
 
 down_m20230701_delivery_receipts :: Query
 down_m20230701_delivery_receipts =
   [sql|
-DROP INDEX idx_snd_msg_hashes_conn_id;
-DROP INDEX idx_snd_msg_hashes_hash;
-DROP INDEX idx_snd_msg_hashes_receipt_internal_rcv_id;
-DROP INDEX idx_snd_msg_hashes_receipt_internal_id;
-
-DROP TABLE snd_msg_hashes;
-
-ALTER TABLE connections DROP COLUMN enable_delivery_receipts;
+ALTER TABLE snd_messages DROP COLUMN hash;
+ALTER TABLE snd_messages DROP COLUMN rcpt_internal_rcv_id;
+ALTER TABLE snd_messages DROP COLUMN rcpt_internal_id;
+ALTER TABLE snd_messages DROP COLUMN rcpt_status;
 |]
