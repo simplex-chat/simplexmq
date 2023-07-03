@@ -1467,7 +1467,7 @@ instance StrEncoding AgentErrorType where
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-      <|> "INACTIVE" *> pure INACTIVE
+      <|> "INACTIVE" $> INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
