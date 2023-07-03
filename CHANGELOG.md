@@ -1,3 +1,47 @@
+# 5.2.0 (NTF server 1.5.0)
+
+Agent:
+- treat agent INACTIVE error as temporary - fixes failed message delivery in some race conditions.
+- restore connection confirmations after client restart - fixes failed connections.
+- ratchet resynchronization protocol and API.
+- increase connection version to mutually supported by both peers on each received message.
+
+Client:
+- make timeout for batched functions dependent on the number of batches - fixes expiry on large batches.
+
+Servers:
+- add timeout in case of sending TCP traffic and in case of partial delivery of requested blocks to avoid resource leaks.
+
+# 5.1.2, 5.1.3 (NTF server 1.4.1, 1.4.2)
+
+Agent:
+- ACK message on decryption error (fixes stuck message delivery bug)
+- more robust connection switching logic, API to abort switching the address
+
+Notification server:
+- batch subscriptions to SMP servers
+
+# 5.1.1 (NTF server 1.4.0)
+
+Agent:
+- store and check hashes of previous encrypted messages to differentiate between duplicates and decryption errors
+
+Server:
+- larger processing queues
+- expire messages when restoring them
+
+# 5.1.0
+
+XFTP client:
+- check encrypted file exists when uploading
+- remove user ID from deletion API
+
+Agent:
+- vacuum database on migrations
+
+SMP server:
+- configure message expiration time in INI file
+
 # 5.0.0
 
 SimpleX File Transfer Protocol (XFTP):
