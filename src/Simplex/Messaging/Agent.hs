@@ -75,6 +75,7 @@ module Simplex.Messaging.Agent
     setNtfServers,
     setNetworkConfig,
     getNetworkConfig,
+    reconnectAllServers,
     registerNtfToken,
     verifyNtfToken,
     checkNtfToken,
@@ -316,12 +317,15 @@ setNetworkConfig :: MonadUnliftIO m => AgentClient -> NetworkConfig -> m ()
 setNetworkConfig c cfg' = do
   cfg <- atomically $ do
     swapTVar (useNetworkConfig c) cfg'
-  liftIO . when (cfg /= cfg') $ do
-    closeProtocolServerClients c smpClients
-    closeProtocolServerClients c ntfClients
+  when (cfg /= cfg') $ reconnectAllServers c
 
 getNetworkConfig :: AgentErrorMonad m => AgentClient -> m NetworkConfig
 getNetworkConfig = readTVarIO . useNetworkConfig
+
+reconnectAllServers :: MonadUnliftIO m => AgentClient -> m ()
+reconnectAllServers c = liftIO $ do
+  closeProtocolServerClients c smpClients
+  closeProtocolServerClients c ntfClients
 
 -- | Register device notifications token
 registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
