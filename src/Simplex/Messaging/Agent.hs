@@ -203,8 +203,8 @@ acceptContactAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> Bool -> Con
 acceptContactAsync c corrId enableNtfs = withAgentEnv c .: acceptContactAsync' c corrId enableNtfs
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
-ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
-ackMessageAsync c = withAgentEnv c .:. ackMessageAsync' c
+ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
+ackMessageAsync c = withAgentEnv c .:: ackMessageAsync' c
 
 -- | Switch connection to the new receive queue
 switchConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> m ConnectionStats
@@ -264,8 +264,8 @@ resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c = withAgentEnv c .:. sendMessage' c
 
-ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
-ackMessage c = withAgentEnv c .: ackMessage' c
+ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
+ackMessage c = withAgentEnv c .:. ackMessage' c
 
 -- | Switch connection to the new receive queue
 switchConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
@@ -432,7 +432,7 @@ processCommand c (connId, APC e cmd) =
     RJCT invId -> rejectContact' c connId invId $> (connId, OK)
     SUB -> subscribeConnection' c connId $> (connId, OK)
     SEND msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId msgFlags msgBody
-    ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
+    ACK msgId rcptInfo_ -> ackMessage' c connId msgId rcptInfo_ $> (connId, OK)
     SWCH -> switchConnection' c connId $> (connId, OK)
     OFF -> suspendConnection' c connId $> (connId, OK)
     DEL -> deleteConnection' c connId $> (connId, OK)
@@ -507,8 +507,8 @@ acceptContactAsync' c corrId enableNtfs invId ownConnInfo = do
         throwError err
     _ -> throwError $ CMD PROHIBITED
 
-ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> m ()
-ackMessageAsync' c corrId connId msgId = do
+ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
+ackMessageAsync' c corrId connId msgId rcptInfo_ = do
   SomeConn cType _ <- withStore c (`getConn` connId)
   case cType of
     SCDuplex -> enqueueAck
@@ -519,8 +519,9 @@ ackMessageAsync' c corrId connId msgId = do
   where
     enqueueAck :: m ()
     enqueueAck = do
+      -- TODO if rcptInfo_ is passed, check that that the message is A_MSG (and not A_RCVD), otherwise return PROHIBITED
       (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
-      enqueueCommand c corrId connId (Just server) . AClientCommand $ APC SAEConn $ ACK msgId
+      enqueueCommand c corrId connId (Just server) . AClientCommand $ APC SAEConn $ ACK msgId rcptInfo_
 
 deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 deleteConnectionAsync' c connId = deleteConnectionsAsync' c [connId]
@@ -891,7 +892,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
             void $ joinConnSrv c userId connId True enableNtfs cReq connInfo srv
             notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
-        ACK msgId -> withServer' . tryCommand $ ackMessage' c connId msgId >> notify OK
+        ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
           noServer . tryCommand . withConnLock c connId "switchConnection" $
             withStore c (`getConn` connId) >>= \case
@@ -1223,8 +1224,8 @@ retrySndOp c loop = do
   atomically $ beginAgentOperation c AOSndNetwork
   loop
 
-ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
-ackMessage' c connId msgId = withConnLock c connId "ackMessage" $ do
+ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
+ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
     DuplexConnection {} -> ack
@@ -1236,9 +1237,20 @@ ackMessage' c connId msgId = withConnLock c connId "ackMessage" $ do
     ack :: m ()
     ack = do
       let mId = InternalId msgId
-      (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
-      ackQueueMessage c rq srvMsgId
-      withStore' c $ \db -> deleteMsg db connId mId
+      -- TODO get message from store (delivery receipt needs external snd ID, for normal message we still need to know if ack'd message is delivery receipt)
+      case rcptInfo_ of
+        Just rcptInfo_ -> do
+          -- TODO check that the message is A_MSG (and not A_RCVD), otherwise return PROHIBITED
+          (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
+          ackQueueMessage c rq srvMsgId
+          -- TODO enqueue delivery receipt
+          withStore' c $ \db -> deleteMsg db connId mId
+        Nothing -> do
+          -- TODO get message from store (we need to check if the message is delivery receipt)
+          (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
+          ackQueueMessage c rq srvMsgId
+          withStore' c $ \db -> deleteMsg db connId mId
+          -- TODO if ackMessage is called for received delivery receipt, fully remove sent message after sending ACK
 
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection' c connId =
@@ -1858,7 +1870,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               A_MSG body -> do
                                 logServer "<--" c srv rId "MSG <MSG>"
                                 notify $ MSG msgMeta msgFlags body
-                              A_RCVD {} -> ackDel msgId
+                              A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts
                               QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending addr
                               QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg qs
                               QKEY qs -> qDuplexAckDel conn'' "QKEY" $ qKeyMsg qs
@@ -2081,6 +2093,18 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   (_, qLock) <- getPendingMsgQ c sq
                   void $ tryPutTMVar qLock ()
               Nothing -> qError "QCONT: queue address not found"
+
+          messagesRcvd :: NonEmpty AMessageReceipt -> Connection 'CDuplex -> m ()
+          messagesRcvd rcpts conn = forM_ rcpts $ \AMessageReceipt {agentMsgId, msgHash, rcptInfo} -> handleError $ do
+            -- TODO get sent message, if not found - send error to chat and ACK it here
+            -- otherwise
+            -- TODO compare message hash
+            -- TODO store message receipt as message, update sent message with receipt information
+            -- TODO send delivery receipt to chat
+            pure ()
+            where
+              handleError :: m () -> m ()
+              handleError = id
 
           -- processed by queue sender
           qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()

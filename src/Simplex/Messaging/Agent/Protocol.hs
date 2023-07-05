@@ -69,6 +69,7 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
+    AMessageReceipt (..),
     MsgReceipt (..),
     MsgReceiptInfo,
     MsgReceiptStatus (..),
@@ -335,7 +336,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SENT :: AgentMsgId -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
-  ACK :: AgentMsgId -> ACommand Client AEConn
+  ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
   RCVD :: MsgMeta -> MsgReceipt -> ACommand Agent AEConn 
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
@@ -448,7 +449,7 @@ aCommandTag = \case
   SENT _ -> SENT_
   MERR {} -> MERR_
   MSG {} -> MSG_
-  ACK _ -> ACK_
+  ACK {} -> ACK_
   RCVD {} -> RCVD_
   SWCH -> SWCH_
   OFF -> OFF_
@@ -1724,7 +1725,7 @@ commandP binaryP =
           RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
-          ACK_ -> s (ACK <$> A.decimal)
+          ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
           SWCH_ -> pure SWCH
           OFF_ -> pure OFF
           DEL_ -> pure DEL
@@ -1801,7 +1802,7 @@ serializeCommand = \case
   SENT mId -> s (SENT_, Str $ bshow mId)
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
-  ACK mId -> s (ACK_, Str $ bshow mId)
+  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   RCVD msgMeta msgRcpt -> s (RCVD_, msgMeta, msgRcpt)
   SWCH -> s SWCH_
   OFF -> s OFF_

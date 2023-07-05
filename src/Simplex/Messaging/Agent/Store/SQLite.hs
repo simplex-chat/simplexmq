@@ -1010,6 +1010,10 @@ deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =
   DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
 
+deleteMsgContent :: DB.Connection -> ConnId -> InternalId -> IO ()
+deleteMsgContent db connId msgId =
+  DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
+
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO ()
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId = do
   DB.execute
@@ -1017,7 +1021,7 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId = do
     "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
     (connId, dbQueueId, msgId)
   (Only (cnt :: Int) : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
-  when (cnt == 0) $ deleteMsg db connId msgId
+  when (cnt == 0) $ deleteMsgContent db connId msgId
 
 deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRcvMsgHashesExpired db ttl = do
