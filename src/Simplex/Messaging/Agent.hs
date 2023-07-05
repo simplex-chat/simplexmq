@@ -1872,7 +1872,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                 | rss `notElem` ([RSOk, RSStarted] :: [RatchetSyncState]) = do
                                   let cData'' = (toConnData conn') {ratchetSyncState = RSOk} :: ConnData
                                       conn'' = updateConnection cData'' conn'
-                                  notify . RSYNC RSOk $ connectionStats conn''
+                                  notify . RSYNC RSOk Nothing $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId RSOk
                                   pure conn''
                                 | otherwise = pure conn'
@@ -1896,10 +1896,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               notifySync :: m ()
                               notifySync = qDuplex conn' "AGENT A_CRYPTO error" $ \connDuplex -> do
                                 let rss' = cryptoErrToSyncState e
-                                when (rss == RSOk || (rss == RSAllowed && rss' == RSRequired)) $ do
+                                when (rss `elem` ([RSOk, RSAllowed, RSRequired] :: [RatchetSyncState])) $ do
                                   let cData'' = (toConnData conn') {ratchetSyncState = rss'} :: ConnData
                                       conn'' = updateConnection cData'' connDuplex
-                                  notify . RSYNC rss' $ connectionStats conn''
+                                  notify . RSYNC rss' (Just e) $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId rss'
                           Left e -> checkDuplicateHash e encryptedMsgHash >> ack
                         where
@@ -2210,7 +2210,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               notifyAgreed = do
                 let cData'' = cData' {ratchetSyncState = RSAgreed} :: ConnData
                     conn'' = updateConnection cData'' conn'
-                notify . RSYNC RSAgreed $ connectionStats conn''
+                notify . RSYNC RSAgreed Nothing $ connectionStats conn''
               recreateRatchet :: CR.Ratchet 'C.X448 -> m ()
               recreateRatchet rc = withStore' c $ \db -> do
                 setConnRatchetSync db connId RSAgreed
