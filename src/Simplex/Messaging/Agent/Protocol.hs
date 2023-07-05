@@ -326,7 +326,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
-  RSYNC :: RatchetSyncState -> ConnectionStats -> ACommand Agent AEConn
+  RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
@@ -1449,6 +1449,20 @@ instance ToJSON AgentCryptoError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance StrEncoding AgentCryptoError where
+  strP =
+    "DECRYPT_AES" $> DECRYPT_AES
+      <|> "DECRYPT_CB" $> DECRYPT_CB
+      <|> "RATCHET_HEADER" $> RATCHET_HEADER
+      <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
+      <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
+  strEncode = \case
+    DECRYPT_AES -> "DECRYPT_AES"
+    DECRYPT_CB -> "DECRYPT_CB"
+    RATCHET_HEADER -> "RATCHET_HEADER"
+    RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
+    RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
+
 instance ToJSON SMPAgentError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
@@ -1658,7 +1672,7 @@ commandP binaryP =
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
-          RSYNC_ -> s (RSYNC <$> strP_ <*> strP)
+          RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
@@ -1717,7 +1731,7 @@ serializeCommand = \case
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
-  RSYNC rrState cstats -> s (RSYNC_, rrState, cstats)
+  RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)
