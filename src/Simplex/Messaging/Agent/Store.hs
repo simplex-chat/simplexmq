@@ -509,7 +509,7 @@ data RcvMsg = RcvMsg
     msgType :: AgentMessageType,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
-    rcptMsgId :: Maybe AgentMsgId,
+    msgReceipt :: Maybe MsgReceipt, -- if this message is a delivery receipt
     userAck :: Bool
   }
 

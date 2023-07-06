@@ -56,8 +56,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeletedConnIds,
     setConnRatchetSync,
     addProcessedRatchetKeyHash,
-    checkProcessedRatchetKeyHashExists,
-    deleteProcessedRatchetKeyHashesExpired,
+    checkRatchetKeyHashExists,
+    deleteRatchetKeyHashesExpired,
     getRcvConn,
     getRcvQueueById,
     getSndQueueById,
@@ -110,8 +110,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     getLastMsg,
     checkRcvMsgHashExists,
     deleteMsg,
+    deleteDeliveredSndMsg,
     deleteSndMsgDelivery,
     deleteRcvMsgHashesExpired,
+    deleteSndMsgsExpired,
     -- Double ratchet persistence
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
@@ -949,12 +951,16 @@ getSndMsgViaRcpt db connId sndMsgId =
       (connId, sndMsgId)
   where
     toSndMsg :: (InternalId, AgentMessageType, MsgHash, Maybe AgentMsgId, Maybe MsgReceiptStatus) -> SndMsg
-    toSndMsg (internalId, msgType, internalHash, rcptInternalId, rcptStatus) =
-      let msgReceipt = MsgReceipt <$> rcptInternalId <*> rcptStatus
+    toSndMsg (internalId, msgType, internalHash, rcptInternalId_, rcptStatus_) =
+      let msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
        in SndMsg {internalId, internalSndId = sndMsgId, msgType, internalHash, msgReceipt}
 
 updateSndMsgRcpt :: DB.Connection -> ConnId -> InternalSndId -> MsgReceipt -> IO ()
-updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} = undefined
+updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
+  DB.execute
+    db
+    "UPDATE snd_messages SET rcpt_internal_id = ?, rcpt_status = ? WHERE conn_id = ? AND internal_snd_id = ?"
+    (agentMsgId, msgRcptStatus, connId, sndMsgId)
 
 getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
 getPendingMsgData db connId msgId = do
@@ -1007,7 +1013,7 @@ getRcvMsg db connId agentMsgId =
       [sql|
         SELECT
           r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity, r.internal_hash,
-          m.msg_type, m.msg_body, s.rcpt_internal_id, r.user_ack
+          m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.internal_id = m.internal_id
         LEFT JOIN snd_messages s ON s.rcpt_internal_id = r.internal_id
@@ -1023,7 +1029,7 @@ getLastMsg db connId msgId =
       [sql|
         SELECT
           r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity, r.internal_hash,
-          m.msg_type, m.msg_body, s.rcpt_internal_id, r.user_ack
+          m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.internal_id = m.internal_id
         JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
@@ -1032,10 +1038,11 @@ getLastMsg db connId msgId =
       |]
       (connId, msgId)
 
-toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, Maybe AgentMsgId, Bool) -> RcvMsg    
-toRcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, internalHash, msgType, msgBody, rcptMsgId, userAck) =
+toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg    
+toRcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, internalHash, msgType, msgBody, rcptInternalId_, rcptStatus_, userAck) =
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
-    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, rcptMsgId, userAck}
+      msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
+    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash = do
@@ -1056,20 +1063,50 @@ deleteMsgContent :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsgContent db connId msgId =
   DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
 
+deleteDeliveredSndMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
+deleteDeliveredSndMsg db connId msgId = do
+  cnt <- countPendingSndDeliveries_ db connId msgId
+  when (cnt == 0) $ deleteMsg db connId msgId
+
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> AgentMessageType -> IO ()
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId msgType = do
   DB.execute
     db
     "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
     (connId, dbQueueId, msgId)
-  (Only (cnt :: Int) : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
-  let del = if msgType == AM_A_MSG_ then deleteMsgContent else deleteMsg
-  when (cnt == 0) $ del db connId msgId
+  cnt <- countPendingSndDeliveries_ db connId msgId
+  when (cnt == 0) $ do
+    del <-
+      maybeFirstRow id (DB.query db "SELECT rcpt_internal_id, rcpt_status FROM snd_messages WHERE conn_id = ? AND internal_id = ?" (connId, msgId)) >>= \case
+        Just (Just (_ :: Int64), Just MROk) -> pure deleteMsg
+        _ -> pure $ if msgType == AM_A_MSG_ then deleteMsgContent else deleteMsg
+    del db connId msgId
+
+countPendingSndDeliveries_ :: DB.Connection -> ConnId -> InternalId -> IO Int
+countPendingSndDeliveries_ db connId msgId = do
+  (Only cnt : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+  pure cnt
 
 deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRcvMsgHashesExpired db ttl = do
   cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM encrypted_rcv_message_hashes WHERE created_at < ?" (Only cutoffTs)
+
+deleteSndMsgsExpired :: DB.Connection -> NominalDiffTime -> IO ()
+deleteSndMsgsExpired db ttl = do
+  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  DB.execute
+    db
+    [sql|
+      DELETE FROM messages
+      WHERE internal_id IN (
+        SELECT s.internal_id
+        FROM snd_messages s
+        JOIN messages m USING (internal_id)
+        WHERE m.internal_ts < ?
+      )
+    |]
+    (Only cutoffTs)
 
 createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
 createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
@@ -1772,8 +1809,8 @@ addProcessedRatchetKeyHash :: DB.Connection -> ConnId -> ByteString -> IO ()
 addProcessedRatchetKeyHash db connId hash =
   DB.execute db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?)" (connId, hash)
 
-checkProcessedRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
-checkProcessedRatchetKeyHashExists db connId hash = do
+checkRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
+checkRatchetKeyHashExists db connId hash = do
   fromMaybe False
     <$> maybeFirstRow
       fromOnly
@@ -1783,8 +1820,8 @@ checkProcessedRatchetKeyHashExists db connId hash = do
           (connId, hash)
       )
 
-deleteProcessedRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
-deleteProcessedRatchetKeyHashesExpired db ttl = do
+deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
+deleteRatchetKeyHashesExpired db ttl = do
   cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM processed_ratchet_key_hashes WHERE created_at < ?" (Only cutoffTs)
 

@@ -1383,7 +1383,7 @@ instance StrEncoding MsgIntegrity where
   strP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> strP)
   strEncode = \case
     MsgOk -> "OK"
-    MsgError e -> "ERR" <> strEncode e
+    MsgError e -> "ERR " <> strEncode e
 
 instance ToJSON MsgIntegrity where
   toJSON = J.genericToJSON $ sumTypeJSON fstToLower

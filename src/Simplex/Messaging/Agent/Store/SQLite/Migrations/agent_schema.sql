@@ -465,5 +465,6 @@ CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hash
   hash
 );
 CREATE INDEX idx_snd_messages_rcpt_internal_id ON snd_messages(
+  conn_id,
   rcpt_internal_id
 );

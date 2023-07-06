@@ -1231,40 +1231,32 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
     DuplexConnection cData _ sqs -> ackDuplex cData sqs
-    RcvConnection {} -> ack >> delete msgId
+    RcvConnection {} -> ack >> del
     SndConnection {} -> throwError $ CONN SIMPLEX
     ContactConnection {} -> throwError $ CMD PROHIBITED
     NewConnection _ -> throwError $ CMD PROHIBITED
   where
     ackDuplex :: ConnData -> NonEmpty SndQueue -> m ()
     ackDuplex cData sqs = do
-      msg@RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
+      ack
+      msg@RcvMsg {msgType, msgReceipt} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
       case rcptInfo_ of
-        Just rcptInfo -> do
-          unless (msgType == AM_A_MSG_) $ throwError $ CMD PROHIBITED
-          ack
+        Just rcptInfo -> when (msgType == AM_A_MSG_) $ do
           let RcvMsg {msgMeta = MsgMeta {sndMsgId}, internalHash} = msg
               rcpt = A_RCVD [AMessageReceipt {agentMsgId = sndMsgId, msgHash = internalHash, rcptInfo}]
           void $ enqueueMessages c cData sqs SMP.MsgFlags {notification = False} rcpt
-          delete msgId
-        Nothing -> do
-          ack
-          let RcvMsg {rcptMsgId} = msg
-          case (msgType, rcptMsgId) of
-            -- TODO possibly check if the message hash matches
-            -- this would prevent pending redundant delivery of this message and send MERR to the app when trying to get PendingMsgData
-            -- so we could:
-            -- 1) do this check in the delivery loop by adding some flag to PendingMsgData that it's delivery receipt is acknowledged - it would prevent sending it
-            -- 2) track cancelled deliveries to avoid sending MERR
-            (AM_A_RCVD_, Just rcptMsgId') -> delete rcptMsgId'
-            _ -> pure ()
-          delete msgId
+        Nothing -> case (msgType, msgReceipt) of
+          (AM_A_RCVD_, Just MsgReceipt {agentMsgId = sndMsgId, msgRcptStatus = MROk}) ->
+            withStore' c $ \db -> deleteDeliveredSndMsg db connId $ InternalId sndMsgId
+          _ -> pure ()
+      del
     ack :: m ()
     ack = do
+      -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
       ackQueueMessage c rq srvMsgId
-    delete :: AgentMsgId -> m ()
-    delete msgId' = withStore' c $ \db -> deleteMsg db connId $ InternalId msgId'
+    del :: m ()
+    del = withStore' c $ \db -> deleteMsg db connId $ InternalId msgId
 
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection' c connId =
@@ -1754,30 +1746,30 @@ cleanupManager c@AgentClient {subQ} = do
   delay <- asks (initialCleanupDelay . config)
   liftIO $ threadDelay' delay
   int <- asks (cleanupInterval . config)
+  ttl <- asks $ storedMsgDataTTL . config
   forever $ do
-    void . runExceptT $ do
-      deleteConns `catchError` (notify "" . ERR)
-      deleteRcvMsgHashes `catchError` (notify "" . ERR)
-      deleteProcessedRatchetKeyHashes `catchError` (notify "" . ERR)
-      deleteRcvFilesExpired `catchError` (notify "" . RFERR)
-      deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
-      deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
-      deleteSndFilesExpired `catchError` (notify "" . SFERR)
-      deleteSndFilesDeleted `catchError` (notify "" . SFERR)
-      deleteSndFilesPrefixPaths `catchError` (notify "" . SFERR)
-      deleteExpiredReplicasForDeletion `catchError` (notify "" . SFERR)
+    run ERR deleteConns
+    run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
+    run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
+    run ERR $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
+    run RFERR deleteRcvFilesExpired
+    run RFERR deleteRcvFilesDeleted
+    run RFERR deleteRcvFilesTmpPaths
+    run SFERR deleteSndFilesExpired
+    run SFERR deleteSndFilesDeleted
+    run SFERR deleteSndFilesPrefixPaths
+    run SFERR deleteExpiredReplicasForDeletion
     liftIO $ threadDelay' int
   where
+    run :: forall e. AEntityI e => (AgentErrorType -> ACommand 'Agent e) -> ExceptT AgentErrorType m () -> m ()
+    run err a = do
+      void . runExceptT $ a `catchError` (notify "" . err)
+      step <- asks $ cleanupStepInterval . config
+      liftIO $ threadDelay step
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
-    deleteRcvMsgHashes = do
-      rcvMsgHashesTTL <- asks $ rcvMsgHashesTTL . config
-      withStore' c (`deleteRcvMsgHashesExpired` rcvMsgHashesTTL)
-    deleteProcessedRatchetKeyHashes = do
-      rkHashesTTL <- asks $ processedRatchetKeyHashesTTL . config
-      withStore' c (`deleteProcessedRatchetKeyHashesExpired` rkHashesTTL)
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
@@ -2108,9 +2100,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   void $ tryPutTMVar qLock ()
               Nothing -> qError "QCONT: queue address not found"
 
-          -- TODOs:
-          -- 1) clean up sent messages after 2 weeks (possibly in the same thread that cleans up received message hashes)
-          -- 2) store sent message hash to snd_messages table
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> m ()
           messagesRcvd rcpts msgMeta _ = do
             logServer "<--" c srv rId "MSG <RCPT>"
@@ -2118,20 +2107,24 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               forM rcpts $ \AMessageReceipt {agentMsgId, msgHash} -> handleError $ do
                 let sndMsgId = InternalSndId agentMsgId
                 SndMsg {internalId = InternalId msgId, msgType, internalHash, msgReceipt} <- withStore c $ \db -> getSndMsgViaRcpt db connId sndMsgId
-                if msgType == AM_A_MSG_ 
-                  then do -- ignore other receipts, they should not be sent
-                    let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
-                        rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
-                    case msgReceipt of
-                      Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing
-                      _ -> withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId rcpt $> Just rcpt
+                if msgType == AM_A_MSG_  -- ignore receipts to other messages, they should not be sent
+                  then case msgReceipt of
+                    Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing
+                    _ -> do
+                      let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
+                          rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
+                      withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId rcpt
+                      pure $ Just rcpt
                   else pure Nothing
-            let rs_ = L.nonEmpty . catMaybes $ L.toList rs
-            mapM_ (notify . RCVD msgMeta) rs_
+            case L.nonEmpty . catMaybes $ L.toList rs of
+              Just rs' -> notify $ RCVD msgMeta rs'
+              Nothing ->
+                let MsgMeta {broker = (srvMsgId, _)} = msgMeta
+                 in enqueueCmd $ ICAck rId srvMsgId
             where
-              -- TODO if sent message not found - send error to chat and ACK it here
-              handleError :: m a -> m a
-              handleError = id
+              handleError :: m (Maybe a) -> m (Maybe a)
+              handleError a = a `catchError` \case
+                e -> notify (ERR e) $> Nothing
   
           -- processed by queue sender
           qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()
@@ -2250,7 +2243,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               rkHash k1 k2 = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2
               ratchetExists :: m Bool
               ratchetExists = withStore' c $ \db -> do
-                exists <- checkProcessedRatchetKeyHashExists db connId rkHashRcv
+                exists <- checkRatchetKeyHashExists db connId rkHashRcv
                 unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
               getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)

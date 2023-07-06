@@ -82,8 +82,8 @@ data AgentConfig = AgentConfig
     helloTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
-    rcvMsgHashesTTL :: NominalDiffTime,
-    processedRatchetKeyHashesTTL :: NominalDiffTime,
+    cleanupStepInterval :: Int,
+    storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
     xftpNotifyErrsOnRetry :: Bool,
@@ -147,8 +147,8 @@ defaultAgentConfig =
       helloTimeout = 2 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
-      rcvMsgHashesTTL = 30 * nominalDay,
-      processedRatchetKeyHashesTTL = 30 * nominalDay,
+      cleanupStepInterval = 200000, -- 200ms second
+      storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
       xftpNotifyErrsOnRetry = True,
