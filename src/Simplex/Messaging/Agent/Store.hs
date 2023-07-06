@@ -506,7 +506,10 @@ data RcvMsgData = RcvMsgData
 data RcvMsg = RcvMsg
   { internalId :: InternalId,
     msgMeta :: MsgMeta,
+    msgType :: AgentMessageType,
     msgBody :: MsgBody,
+    internalHash :: MsgHash,
+    rcptMsgId :: Maybe AgentMsgId,
     userAck :: Bool
   }
 
@@ -519,6 +522,14 @@ data SndMsgData = SndMsgData
     msgBody :: MsgBody,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
+  }
+
+data SndMsg = SndMsg
+  { internalId :: InternalId,
+    internalSndId :: InternalSndId,
+    msgType :: AgentMessageType,
+    internalHash :: MsgHash,
+    msgReceipt :: Maybe MsgReceipt
   }
 
 data PendingMsgData = PendingMsgData

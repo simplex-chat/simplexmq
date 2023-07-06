@@ -337,7 +337,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
-  RCVD :: MsgMeta -> MsgReceipt -> ACommand Agent AEConn 
+  RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn 
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
   DEL :: ACommand Client AEConn
@@ -1014,15 +1014,18 @@ data AMessage
     EREADY AgentMsgId
   deriving (Show)
 
+-- | this type is used to send as part of the protocol between different clients
+-- TODO possibly, rename fields and types referring to external and internal IDs to make them different
 data AMessageReceipt = AMessageReceipt
-  { agentMsgId :: AgentMsgId,
+  { agentMsgId :: AgentMsgId, -- this is an external snd message ID referenced by the message recipient
     msgHash :: MsgHash,
     rcptInfo :: MsgReceiptInfo
   }
   deriving (Show)
 
+-- | this type is used as part of agent protocol to communicate with the user application
 data MsgReceipt = MsgReceipt
-  { agentMsgId :: AgentMsgId,
+  { agentMsgId :: AgentMsgId, -- this is an internal agent message ID of received message
     msgRcptStatus :: MsgReceiptStatus
   }
   deriving (Eq, Show)
@@ -1083,9 +1086,10 @@ instance Encoding AMessageReceipt where
 
 instance StrEncoding MsgReceipt where
   strEncode MsgReceipt {agentMsgId, msgRcptStatus} =
-    B.unwords [strEncode agentMsgId, strEncode msgRcptStatus]
+    strEncode agentMsgId <> ":" <> strEncode msgRcptStatus
   strP = do
-    (agentMsgId, msgRcptStatus) <- strP
+    agentMsgId <- strP <* A.char ':'
+    msgRcptStatus <- strP
     pure MsgReceipt {agentMsgId, msgRcptStatus}
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
@@ -1803,7 +1807,7 @@ serializeCommand = \case
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
-  RCVD msgMeta msgRcpt -> s (RCVD_, msgMeta, msgRcpt)
+  RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_

@@ -119,8 +119,7 @@ CREATE TABLE snd_messages(
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
   retry_int_slow INTEGER,
   retry_int_fast INTEGER,
-  hash BLOB NOT NULL DEFAULT x'',
-  rcpt_internal_rcv_id INTEGER,
+  msg_hash BLOB NOT NULL DEFAULT x'',
   rcpt_internal_id INTEGER,
   rcpt_status TEXT,
   PRIMARY KEY(conn_id, internal_snd_id),
@@ -464,4 +463,7 @@ CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hash
 CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
   conn_id,
   hash
+);
+CREATE INDEX idx_snd_messages_rcpt_internal_id ON snd_messages(
+  rcpt_internal_id
 );

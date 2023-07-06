@@ -117,7 +117,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing, catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -519,8 +519,10 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
   where
     enqueueAck :: m ()
     enqueueAck = do
-      -- TODO if rcptInfo_ is passed, check that that the message is A_MSG (and not A_RCVD), otherwise return PROHIBITED
-      (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
+      let mId = InternalId msgId
+      RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId mId
+      unless (msgType == AM_A_MSG_ || isNothing rcptInfo_) $ throwError $ CMD PROHIBITED
+      (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId mId
       enqueueCommand c corrId connId (Just server) . AClientCommand $ APC SAEConn $ ACK msgId rcptInfo_
 
 deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
@@ -1093,13 +1095,13 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
               case e of
                 SMP SMP.QUOTA -> case msgType of
-                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                  AM_CONN_INFO -> connError msgId msgType NOT_AVAILABLE
+                  AM_CONN_INFO_REPLY -> connError msgId msgType NOT_AVAILABLE
                   _ -> retrySndMsg RISlow
                 SMP SMP.AUTH -> case msgType of
-                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
+                  AM_CONN_INFO -> connError msgId msgType NOT_AVAILABLE
+                  AM_CONN_INFO_REPLY -> connError msgId msgType NOT_AVAILABLE
+                  AM_RATCHET_INFO -> connError msgId msgType NOT_AVAILABLE
                   AM_HELLO_
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
@@ -1109,25 +1111,25 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     where
                       connErr = case rq_ of
                         -- party initiating connection
-                        Just _ -> connError msgId NOT_AVAILABLE
+                        Just _ -> connError msgId msgType NOT_AVAILABLE
                         -- party joining connection
-                        _ -> connError msgId NOT_ACCEPTED
-                  AM_REPLY_ -> notifyDel msgId err
-                  AM_A_MSG_ -> notifyDel msgId err
-                  AM_A_RCVD_ -> notifyDel msgId err
-                  AM_QCONT_ -> notifyDel msgId err
-                  AM_QADD_ -> qError msgId "QADD: AUTH"
-                  AM_QKEY_ -> qError msgId "QKEY: AUTH"
-                  AM_QUSE_ -> qError msgId "QUSE: AUTH"
-                  AM_QTEST_ -> qError msgId "QTEST: AUTH"
-                  AM_EREADY_ -> notifyDel msgId err
+                        _ -> connError msgId msgType NOT_ACCEPTED
+                  AM_REPLY_ -> notifyDel msgId msgType err
+                  AM_A_MSG_ -> notifyDel msgId msgType err
+                  AM_A_RCVD_ -> notifyDel msgId msgType err
+                  AM_QCONT_ -> notifyDel msgId msgType err
+                  AM_QADD_ -> qError msgId msgType "QADD: AUTH"
+                  AM_QKEY_ -> qError msgId msgType "QKEY: AUTH"
+                  AM_QUSE_ -> qError msgId msgType "QUSE: AUTH"
+                  AM_QTEST_ -> qError msgId msgType "QTEST: AUTH"
+                  AM_EREADY_ -> notifyDel msgId msgType err
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg RIFast)
-                  | otherwise -> notifyDel msgId err
+                    ifM (msgExpired timeoutSel) (notifyDel msgId msgType err) (retrySndMsg RIFast)
+                  | otherwise -> notifyDel msgId msgType err
               where
                 msgExpired timeoutSel = do
                   msgTimeout <- asks $ timeoutSel . config
@@ -1188,7 +1190,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                         Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
                           -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
                           case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
-                            Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
+                            Nothing -> internalErr msgId msgType "sent QTEST: queue not found in connection"
                             Just (sq', sq'' : sqs') -> do
                               checkSQSwchStatus sq' SSSendingQTEST
                               -- remove the delivery from the map to stop the thread when the delivery loop is complete
@@ -1200,21 +1202,21 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                               let sqs'' = sq'' :| sqs'
                                   conn' = DuplexConnection cData' rqs sqs''
                               notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
-                            _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
-                        _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
-                    _ -> internalErr msgId "QTEST sent not in duplex connection"
+                            _ -> internalErr msgId msgType "sent QTEST: there is only one queue in connection"
+                        _ -> internalErr msgId msgType "sent QTEST: queue not in connection or not replacing another queue"
+                    _ -> internalErr msgId msgType "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
-              delMsg msgId
+              delMsg msgId msgType
   where
-    delMsg :: InternalId -> m ()
-    delMsg msgId = withStore' c $ \db -> deleteSndMsgDelivery db connId sq msgId
+    delMsg :: InternalId -> AgentMessageType -> m ()
+    delMsg msgId msgType = withStore' c $ \db -> deleteSndMsgDelivery db connId sq msgId msgType
     notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, APC (sAEntity @e) cmd)
-    notifyDel :: AEntityI e => InternalId -> ACommand 'Agent e -> m ()
-    notifyDel msgId cmd = notify cmd >> delMsg msgId
-    connError msgId = notifyDel msgId . ERR . CONN
-    qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
-    internalErr msgId = notifyDel msgId . ERR . INTERNAL
+    notifyDel :: AEntityI e => InternalId -> AgentMessageType -> ACommand 'Agent e -> m ()
+    notifyDel msgId msgType cmd = notify cmd >> delMsg msgId msgType
+    connError msgId msgType = notifyDel msgId msgType . ERR . CONN
+    qError msgId msgType = notifyDel msgId msgType . ERR . AGENT . A_QUEUE
+    internalErr msgId msgType = notifyDel msgId msgType . ERR . INTERNAL
 
 retrySndOp :: AgentMonad m => AgentClient -> m () -> m ()
 retrySndOp c loop = do
@@ -1228,29 +1230,41 @@ ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> 
 ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
-    DuplexConnection {} -> ack
-    RcvConnection {} -> ack
+    DuplexConnection cData _ sqs -> ackDuplex cData sqs
+    RcvConnection {} -> ack >> delete msgId
     SndConnection {} -> throwError $ CONN SIMPLEX
     ContactConnection {} -> throwError $ CMD PROHIBITED
     NewConnection _ -> throwError $ CMD PROHIBITED
   where
+    ackDuplex :: ConnData -> NonEmpty SndQueue -> m ()
+    ackDuplex cData sqs = do
+      msg@RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
+      case rcptInfo_ of
+        Just rcptInfo -> do
+          unless (msgType == AM_A_MSG_) $ throwError $ CMD PROHIBITED
+          ack
+          let RcvMsg {msgMeta = MsgMeta {sndMsgId}, internalHash} = msg
+              rcpt = A_RCVD [AMessageReceipt {agentMsgId = sndMsgId, msgHash = internalHash, rcptInfo}]
+          void $ enqueueMessages c cData sqs SMP.MsgFlags {notification = False} rcpt
+          delete msgId
+        Nothing -> do
+          ack
+          let RcvMsg {rcptMsgId} = msg
+          case (msgType, rcptMsgId) of
+            -- TODO possibly check if the message hash matches
+            -- this would prevent pending redundant delivery of this message and send MERR to the app when trying to get PendingMsgData
+            -- so we could:
+            -- 1) do this check in the delivery loop by adding some flag to PendingMsgData that it's delivery receipt is acknowledged - it would prevent sending it
+            -- 2) track cancelled deliveries to avoid sending MERR
+            (AM_A_RCVD_, Just rcptMsgId') -> delete rcptMsgId'
+            _ -> pure ()
+          delete msgId
     ack :: m ()
     ack = do
-      let mId = InternalId msgId
-      -- TODO get message from store (delivery receipt needs external snd ID, for normal message we still need to know if ack'd message is delivery receipt)
-      case rcptInfo_ of
-        Just rcptInfo_ -> do
-          -- TODO check that the message is A_MSG (and not A_RCVD), otherwise return PROHIBITED
-          (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
-          ackQueueMessage c rq srvMsgId
-          -- TODO enqueue delivery receipt
-          withStore' c $ \db -> deleteMsg db connId mId
-        Nothing -> do
-          -- TODO get message from store (we need to check if the message is delivery receipt)
-          (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId mId
-          ackQueueMessage c rq srvMsgId
-          withStore' c $ \db -> deleteMsg db connId mId
-          -- TODO if ackMessage is called for received delivery receipt, fully remove sent message after sending ACK
+      (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
+      ackQueueMessage c rq srvMsgId
+    delete :: AgentMsgId -> m ()
+    delete msgId' = withStore' c $ \db -> deleteMsg db connId $ InternalId msgId'
 
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 switchConnection' c connId =
@@ -1870,7 +1884,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               A_MSG body -> do
                                 logServer "<--" c srv rId "MSG <MSG>"
                                 notify $ MSG msgMeta msgFlags body
-                              A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts
+                              A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
                               QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending addr
                               QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg qs
                               QKEY qs -> qDuplexAckDel conn'' "QKEY" $ qKeyMsg qs
@@ -2094,18 +2108,31 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   void $ tryPutTMVar qLock ()
               Nothing -> qError "QCONT: queue address not found"
 
-          messagesRcvd :: NonEmpty AMessageReceipt -> Connection 'CDuplex -> m ()
-          messagesRcvd rcpts conn = forM_ rcpts $ \AMessageReceipt {agentMsgId, msgHash, rcptInfo} -> handleError $ do
-            -- TODO get sent message, if not found - send error to chat and ACK it here
-            -- otherwise
-            -- TODO compare message hash
-            -- TODO store message receipt as message, update sent message with receipt information
-            -- TODO send delivery receipt to chat
-            pure ()
+          -- TODOs:
+          -- 1) clean up sent messages after 2 weeks (possibly in the same thread that cleans up received message hashes)
+          -- 2) store sent message hash to snd_messages table
+          messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> m ()
+          messagesRcvd rcpts msgMeta _ = do
+            logServer "<--" c srv rId "MSG <RCPT>"
+            rs <-
+              forM rcpts $ \AMessageReceipt {agentMsgId, msgHash} -> handleError $ do
+                let sndMsgId = InternalSndId agentMsgId
+                SndMsg {internalId = InternalId msgId, msgType, internalHash, msgReceipt} <- withStore c $ \db -> getSndMsgViaRcpt db connId sndMsgId
+                if msgType == AM_A_MSG_ 
+                  then do -- ignore other receipts, they should not be sent
+                    let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
+                        rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
+                    case msgReceipt of
+                      Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing
+                      _ -> withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId rcpt $> Just rcpt
+                  else pure Nothing
+            let rs_ = L.nonEmpty . catMaybes $ L.toList rs
+            mapM_ (notify . RCVD msgMeta) rs_
             where
-              handleError :: m () -> m ()
+              -- TODO if sent message not found - send error to chat and ACK it here
+              handleError :: m a -> m a
               handleError = id
-
+  
           -- processed by queue sender
           qAddMsg :: NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> m ()
           qAddMsg ((_, Nothing) :| _) _ = qError "adding queue without switching is not supported"
