@@ -296,8 +296,9 @@ functionalAPITests t = do
   describe "getRatchetAdHash" $
     it "should return the same data for both peers" $
       withSmpServer t testRatchetAdHash
-  describe "Delivery receipts" $
+  describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
+    it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -1745,7 +1746,7 @@ testSwitch2ConnectionsAbort1 servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent agentCfg {initialClientId = 1} servers testDB2
 
-testCreateQueueAuth :: (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
+testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
   a <- getClient clnt1
   b <- getClient clnt2
@@ -1777,7 +1778,7 @@ testSMPServerConnectionTest t newQueueBasicAuth srv =
     a <- getSMPAgentClient' agentCfg initAgentServers testDB -- initially passed server is not running
     runRight $ testProtocolServer a 1 srv
 
-testRatchetAdHash :: IO ()
+testRatchetAdHash :: HasCallStack => IO ()
 testRatchetAdHash = do
   a <- getSMPAgentClient' agentCfg initAgentServers testDB
   b <- getSMPAgentClient' agentCfg initAgentServers testDB2
@@ -1787,7 +1788,7 @@ testRatchetAdHash = do
     ad2 <- getConnectionRatchetAdHash b aId
     liftIO $ ad1 `shouldBe` ad2
 
-testDeliveryReceipts :: IO ()
+testDeliveryReceipts :: HasCallStack => IO ()
 testDeliveryReceipts = do
   a <- getSMPAgentClient' agentCfg initAgentServers testDB
   b <- getSMPAgentClient' agentCfg initAgentServers testDB2
@@ -1806,7 +1807,53 @@ testDeliveryReceipts = do
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 6 $ Just ""
     get b =##> \case ("", c, Rcvd 6) -> c == aId; _ -> False
+    ackMessage b aId 7 (Just "") `catchError` \e -> liftIO $ e `shouldBe` Agent.CMD PROHIBITED
     ackMessage b aId 7 Nothing
+
+testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
+testDeliveryReceiptsVersion t = do
+  a <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  b <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aId, bId) <- runRight $ do
+      (aId, bId) <- makeConnection a b
+      checkVersion a bId 2
+      checkVersion b aId 2
+      4 <- sendMessage a bId SMP.noMsgFlags "hello"
+      get a ##> ("", bId, SENT 4)
+      get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+      ackMessage b aId 4 $ Just ""
+      liftIO $ noMessages a "no delivery receipt (unsupported version)"
+      5 <- sendMessage b aId SMP.noMsgFlags "hello too"
+      get b ##> ("", aId, SENT 5)
+      get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+      ackMessage a bId 5 $ Just ""
+      liftIO $ noMessages b "no delivery receipt (unsupported version)"
+      pure (aId, bId)
+
+    disconnectAgentClient a
+    disconnectAgentClient b
+    a' <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+    b' <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+
+    runRight_ $ do
+      subscribeConnection a' bId
+      subscribeConnection b' aId
+      exchangeGreetingsMsgId 6 a' bId b' aId
+      checkVersion a' bId 3
+      checkVersion b' aId 3
+      8 <- sendMessage a' bId SMP.noMsgFlags "hello"
+      get a' ##> ("", bId, SENT 8)
+      get b' =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+      ackMessage b' aId 8 $ Just ""
+      get a' =##> \case ("", c, Rcvd 8) -> c == bId; _ -> False
+      ackMessage a' bId 9 Nothing
+      10 <- sendMessage b' aId SMP.noMsgFlags "hello too"
+      get b' ##> ("", aId, SENT 10)
+      get a' =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+      ackMessage a' bId 10 $ Just ""
+      get b' =##> \case ("", c, Rcvd 10) -> c == aId; _ -> False
+      ackMessage b' aId 11 Nothing
 
 testTwoUsers :: HasCallStack => IO ()
 testTwoUsers = do

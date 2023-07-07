@@ -119,7 +119,6 @@ CREATE TABLE snd_messages(
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
   retry_int_slow INTEGER,
   retry_int_fast INTEGER,
-  msg_hash BLOB NOT NULL DEFAULT x'',
   rcpt_internal_id INTEGER,
   rcpt_status TEXT,
   PRIMARY KEY(conn_id, internal_snd_id),
