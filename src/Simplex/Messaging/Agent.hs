@@ -1095,13 +1095,13 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
               case e of
                 SMP SMP.QUOTA -> case msgType of
-                  AM_CONN_INFO -> connError msgId msgType NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId msgType NOT_AVAILABLE
+                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
+                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   _ -> retrySndMsg RISlow
                 SMP SMP.AUTH -> case msgType of
-                  AM_CONN_INFO -> connError msgId msgType NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId msgType NOT_AVAILABLE
-                  AM_RATCHET_INFO -> connError msgId msgType NOT_AVAILABLE
+                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
+                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                  AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
                   AM_HELLO_
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
@@ -1111,25 +1111,25 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     where
                       connErr = case rq_ of
                         -- party initiating connection
-                        Just _ -> connError msgId msgType NOT_AVAILABLE
+                        Just _ -> connError msgId NOT_AVAILABLE
                         -- party joining connection
-                        _ -> connError msgId msgType NOT_ACCEPTED
-                  AM_REPLY_ -> notifyDel msgId msgType err
-                  AM_A_MSG_ -> notifyDel msgId msgType err
-                  AM_A_RCVD_ -> notifyDel msgId msgType err
-                  AM_QCONT_ -> notifyDel msgId msgType err
-                  AM_QADD_ -> qError msgId msgType "QADD: AUTH"
-                  AM_QKEY_ -> qError msgId msgType "QKEY: AUTH"
-                  AM_QUSE_ -> qError msgId msgType "QUSE: AUTH"
-                  AM_QTEST_ -> qError msgId msgType "QTEST: AUTH"
-                  AM_EREADY_ -> notifyDel msgId msgType err
+                        _ -> connError msgId NOT_ACCEPTED
+                  AM_REPLY_ -> notifyDel msgId err
+                  AM_A_MSG_ -> notifyDel msgId err
+                  AM_A_RCVD_ -> notifyDel msgId err
+                  AM_QCONT_ -> notifyDel msgId err
+                  AM_QADD_ -> qError msgId "QADD: AUTH"
+                  AM_QKEY_ -> qError msgId "QKEY: AUTH"
+                  AM_QUSE_ -> qError msgId "QUSE: AUTH"
+                  AM_QTEST_ -> qError msgId "QTEST: AUTH"
+                  AM_EREADY_ -> notifyDel msgId err
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId msgType err) (retrySndMsg RIFast)
-                  | otherwise -> notifyDel msgId msgType err
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg RIFast)
+                  | otherwise -> notifyDel msgId err
               where
                 msgExpired timeoutSel = do
                   msgTimeout <- asks $ timeoutSel . config
@@ -1190,7 +1190,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                         Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
                           -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
                           case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
-                            Nothing -> internalErr msgId msgType "sent QTEST: queue not found in connection"
+                            Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
                             Just (sq', sq'' : sqs') -> do
                               checkSQSwchStatus sq' SSSendingQTEST
                               -- remove the delivery from the map to stop the thread when the delivery loop is complete
@@ -1202,21 +1202,23 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                               let sqs'' = sq'' :| sqs'
                                   conn' = DuplexConnection cData' rqs sqs''
                               notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
-                            _ -> internalErr msgId msgType "sent QTEST: there is only one queue in connection"
-                        _ -> internalErr msgId msgType "sent QTEST: queue not in connection or not replacing another queue"
-                    _ -> internalErr msgId msgType "QTEST sent not in duplex connection"
+                            _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
+                        _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
+                    _ -> internalErr msgId "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
-              delMsg msgId msgType
+              delMsgKeep (msgType == AM_A_MSG_) msgId
   where
-    delMsg :: InternalId -> AgentMessageType -> m ()
-    delMsg msgId msgType = withStore' c $ \db -> deleteSndMsgDelivery db connId sq msgId msgType
+    delMsg :: InternalId -> m ()
+    delMsg = delMsgKeep False
+    delMsgKeep :: Bool -> InternalId -> m ()
+    delMsgKeep keepForReceipt msgId = withStore' c $ \db -> deleteSndMsgDelivery db connId sq msgId keepForReceipt
     notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, APC (sAEntity @e) cmd)
-    notifyDel :: AEntityI e => InternalId -> AgentMessageType -> ACommand 'Agent e -> m ()
-    notifyDel msgId msgType cmd = notify cmd >> delMsg msgId msgType
-    connError msgId msgType = notifyDel msgId msgType . ERR . CONN
-    qError msgId msgType = notifyDel msgId msgType . ERR . AGENT . A_QUEUE
-    internalErr msgId msgType = notifyDel msgId msgType . ERR . INTERNAL
+    notifyDel :: AEntityI e => InternalId -> ACommand 'Agent e -> m ()
+    notifyDel msgId cmd = notify cmd >> delMsg msgId
+    connError msgId = notifyDel msgId . ERR . CONN
+    qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
+    internalErr msgId = notifyDel msgId . ERR . INTERNAL
 
 retrySndOp :: AgentMonad m => AgentClient -> m () -> m ()
 retrySndOp c loop = do

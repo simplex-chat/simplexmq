@@ -1068,8 +1068,8 @@ deleteDeliveredSndMsg db connId msgId = do
   cnt <- countPendingSndDeliveries_ db connId msgId
   when (cnt == 0) $ deleteMsg db connId msgId
 
-deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> AgentMessageType -> IO ()
-deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId msgType = do
+deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> Bool -> IO ()
+deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   DB.execute
     db
     "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
@@ -1079,7 +1079,7 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId msgType = do
     del <-
       maybeFirstRow id (DB.query db "SELECT rcpt_internal_id, rcpt_status FROM snd_messages WHERE conn_id = ? AND internal_id = ?" (connId, msgId)) >>= \case
         Just (Just (_ :: Int64), Just MROk) -> pure deleteMsg
-        _ -> pure $ if msgType == AM_A_MSG_ then deleteMsgContent else deleteMsg
+        _ -> pure $ if keepForReceipt then deleteMsgContent else deleteMsg
     del db connId msgId
 
 countPendingSndDeliveries_ :: DB.Connection -> ConnId -> InternalId -> IO Int
