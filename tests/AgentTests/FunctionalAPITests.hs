@@ -104,6 +104,9 @@ pGet c = do
 pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
+pattern Rcvd :: AgentMsgId -> ACommand 'Agent e
+pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
+
 smpCfgVPrev :: ProtocolClientConfig
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = serverVRangePrev}
   where
@@ -293,6 +296,8 @@ functionalAPITests t = do
   describe "getRatchetAdHash" $
     it "should return the same data for both peers" $
       withSmpServer t testRatchetAdHash
+  describe "Delivery receipts" $
+    it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -1781,6 +1786,27 @@ testRatchetAdHash = do
     ad1 <- getConnectionRatchetAdHash a bId
     ad2 <- getConnectionRatchetAdHash b aId
     liftIO $ ad1 `shouldBe` ad2
+
+testDeliveryReceipts :: IO ()
+testDeliveryReceipts = do
+  a <- getSMPAgentClient' agentCfg initAgentServers testDB
+  b <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    -- a sends, b receives and sends delivery receipt
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 4)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 4 $ Just ""
+    get a =##> \case ("", c, Rcvd 4) -> c == bId; _ -> False
+    ackMessage a bId 5 Nothing
+    -- b sends, a receives and sends delivery receipt
+    6 <- sendMessage b aId SMP.noMsgFlags "hello too"
+    get b ##> ("", aId, SENT 6)
+    get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+    ackMessage a bId 6 $ Just ""
+    get b =##> \case ("", c, Rcvd 6) -> c == aId; _ -> False
+    ackMessage b aId 7 Nothing
 
 testTwoUsers :: HasCallStack => IO ()
 testTwoUsers = do

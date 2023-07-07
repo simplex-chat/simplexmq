@@ -943,7 +943,7 @@ getSndMsgViaRcpt db connId sndMsgId =
     DB.query
       db
       [sql|
-        SELECT s.internal_id, m.msg_type, s.msg_hash, s.rcpt_internal_id, s.rcpt_status
+        SELECT s.internal_id, m.msg_type, s.internal_hash, s.rcpt_internal_id, s.rcpt_status
         FROM snd_messages s
         JOIN messages m ON s.internal_id = m.internal_id
         WHERE s.conn_id = ? AND s.internal_snd_id = ?

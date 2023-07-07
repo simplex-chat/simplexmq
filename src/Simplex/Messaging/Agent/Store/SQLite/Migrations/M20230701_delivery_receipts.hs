@@ -8,7 +8,6 @@ import Database.SQLite.Simple.QQ (sql)
 m20230701_delivery_receipts :: Query
 m20230701_delivery_receipts =
   [sql|
-ALTER TABLE snd_messages ADD COLUMN msg_hash BLOB NOT NULL DEFAULT x'';
 ALTER TABLE snd_messages ADD COLUMN rcpt_internal_id INTEGER;
 ALTER TABLE snd_messages ADD COLUMN rcpt_status TEXT;
 
@@ -20,7 +19,6 @@ down_m20230701_delivery_receipts =
   [sql|
 DROP INDEX idx_snd_messages_rcpt_internal_id;
 
-ALTER TABLE snd_messages DROP COLUMN msg_hash;
 ALTER TABLE snd_messages DROP COLUMN rcpt_internal_id;
 ALTER TABLE snd_messages DROP COLUMN rcpt_status;
 |]
