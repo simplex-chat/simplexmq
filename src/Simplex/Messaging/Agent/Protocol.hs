@@ -1403,7 +1403,7 @@ data MsgErrorType
 instance StrEncoding MsgErrorType where
   strP =
     "ID " *> (MsgBadId <$> A.decimal)
-      <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
+      <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
       <|> "HASH" $> MsgBadHash
       <|> "DUPLICATE" $> MsgDuplicate
   strEncode = \case
