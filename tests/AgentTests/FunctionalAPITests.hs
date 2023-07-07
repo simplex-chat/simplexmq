@@ -855,13 +855,13 @@ setupDesynchronizedRatchet alice bob = do
 
 ratchetSyncP :: ConnId -> RatchetSyncState -> AEntityTransmission 'AEConn -> Bool
 ratchetSyncP cId rss = \case
-  (_, cId', RSYNC rss' ConnectionStats {ratchetSyncState}) ->
+  (_, cId', RSYNC rss' _ ConnectionStats {ratchetSyncState}) ->
     cId' == cId && rss' == rss && ratchetSyncState == rss
   _ -> False
 
 ratchetSyncP' :: ConnId -> RatchetSyncState -> ATransmission 'Agent -> Bool
 ratchetSyncP' cId rss = \case
-  (_, cId', APC SAEConn (RSYNC rss' ConnectionStats {ratchetSyncState})) ->
+  (_, cId', APC SAEConn (RSYNC rss' _ ConnectionStats {ratchetSyncState})) ->
     cId' == cId && rss' == rss && ratchetSyncState == rss
   _ -> False
 
