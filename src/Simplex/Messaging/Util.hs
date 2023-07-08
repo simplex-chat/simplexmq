@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -99,12 +100,17 @@ catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
 
-catchExcept :: (MonadUnliftIO m, MonadError e m, UE.Exception e') => (e' -> e) -> m a -> (e -> m a) -> m a
-catchExcept err action handle = do
-  r <- tryError action `UE.catch` (pure . Left . err)
-  case r of
-    Right a -> pure a
-    Left e -> handle e
+catchExcept :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
+catchExcept err action handle = (tryError action `UE.catch` (pure . Left . err)) >>= either handle pure
+{-# INLINE catchExcept #-}
+
+catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
+catchThrow action err  = catchExcept err action throwError
+{-# INLINE catchThrow #-}
+
+tryThrow :: (MonadIO m, MonadError e m) => (E.SomeException -> e) -> IO a -> m a
+tryThrow f = liftIO . E.try >=> either (throwError . f) pure
+{-# INLINE tryThrow #-}
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
