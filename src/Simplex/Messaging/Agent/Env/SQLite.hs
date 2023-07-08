@@ -230,4 +230,7 @@ newXFTPAgent = do
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
-catchAgentError = catchExcept (\(e :: SomeException) -> INTERNAL $ show e)
+catchAgentError = catchExcept err
+  where
+    err :: SomeException -> AgentErrorType
+    err = INTERNAL . show

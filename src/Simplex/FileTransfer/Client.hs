@@ -195,7 +195,7 @@ downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {fi
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
   where
-    catchXFTPError = catchExcept $ \(_ :: SomeException) -> INTERNAL
+    catchXFTPError = catchExcept $ \(_ :: SomeException) -> FILE_IO
 
 chunkTimeout :: XFTPClientConfig -> Word32 -> Int
 chunkTimeout config chunkSize = fromIntegral $ (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
