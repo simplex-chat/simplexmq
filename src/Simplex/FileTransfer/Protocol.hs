@@ -14,6 +14,7 @@
 module Simplex.FileTransfer.Protocol where
 
 import Control.Applicative ((<|>))
+import Control.Exception (Exception)
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -356,6 +357,8 @@ data XFTPErrorType
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
+
+instance Exception XFTPErrorType
 
 instance ToJSON XFTPErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id

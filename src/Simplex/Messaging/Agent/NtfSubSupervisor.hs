@@ -173,7 +173,7 @@ runNtfWorker c srv doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop ->
             processAction a
-              `catchError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
+              `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, smpServer, ntfSubId}, action, actionTs) = do
@@ -257,7 +257,7 @@ runNtfSMPWorker c srv doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop ->
             processAction a
-              `catchError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
+              `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, ntfServer}, smpAction, actionTs) = do

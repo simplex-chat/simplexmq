@@ -1,4 +1,3 @@
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -13,12 +12,13 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
+import Data.List (groupBy, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
 import UnliftIO.Async
-import Data.List (groupBy, sortOn)
+import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
 raceAny_ = r []
@@ -98,6 +98,13 @@ catchAll = E.catch
 catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
+
+catchExcept :: (MonadUnliftIO m, MonadError e m, UE.Exception e') => (e' -> e) -> m a -> (e -> m a) -> m a
+catchExcept err action handle = do
+  r <- tryError action `UE.catch` (pure . Left . err)
+  case r of
+    Right a -> pure a
+    Left e -> handle e
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just

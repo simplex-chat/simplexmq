@@ -502,7 +502,7 @@ acceptContactAsync' c corrId enableNtfs invId ownConnInfo = do
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConnAsync c userId corrId enableNtfs connReq ownConnInfo `catchError` \err -> do
+      joinConnAsync c userId corrId enableNtfs connReq ownConnInfo `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
     _ -> throwError $ CMD PROHIBITED
@@ -565,7 +565,7 @@ newConnSrv c userId connId enableNtfs cMode clientData srv = do
 newRcvConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
 newRcvConnSrv c userId connId enableNtfs cMode clientData srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  (rq, qUri) <- newRcvQueue c userId connId srv smpClientVRange `catchError` \e -> liftIO (print e) >> throwError e
+  (rq, qUri) <- newRcvQueue c userId connId srv smpClientVRange `catchAgentError` \e -> liftIO (print e) >> throwError e
   void . withStore c $ \db -> updateNewConnRcv db connId rq
   addSubscription c rq
   when enableNtfs $ do
@@ -671,7 +671,7 @@ acceptContact' c connId enableNtfs invId ownConnInfo = withConnLock c connId "ac
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConn c userId connId False enableNtfs connReq ownConnInfo `catchError` \err -> do
+      joinConn c userId connId False enableNtfs connReq ownConnInfo `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
     _ -> throwError $ CMD PROHIBITED
@@ -787,7 +787,7 @@ getNotificationMessage' c nonce encNtfInfo = do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
       PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
-      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchError` \_ -> pure Nothing
+      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       maxMsgs <- asks $ ntfMaxMessages . config
       (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId maxMsgs ntfMsgMeta []
     _ -> throwError $ CMD PROHIBITED
@@ -1310,7 +1310,7 @@ synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" 
 
 ackQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> SMP.MsgId -> m ()
 ackQueueMessage c rq srvMsgId =
-  sendAck c rq srvMsgId `catchError` \case
+  sendAck c rq srvMsgId `catchAgentError` \case
     SMP SMP.NO_MSG -> pure ()
     e -> throwError e
 
@@ -1511,7 +1511,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         replaceToken :: NtfTokenId -> m NtfTknStatus
         replaceToken tknId = do
           ns <- asks ntfSupervisor
-          tryReplace ns `catchError` \e ->
+          tryReplace ns `catchAgentError` \e ->
             if temporaryOrHostError e
               then throwError e
               else do
@@ -1618,7 +1618,7 @@ deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
     let ntfTknAction = Just NTADelete
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c tknId tkn `catchError` \case
+    agentNtfDeleteToken c tknId tkn `catchAgentError` \case
       NTF AUTH -> pure ()
       e -> throwError e
   withStore' c $ \db -> removeNtfToken db tkn
@@ -1728,16 +1728,16 @@ cleanupManager c@AgentClient {subQ} = do
   int <- asks (cleanupInterval . config)
   forever $ do
     void . runExceptT $ do
-      deleteConns `catchError` (notify "" . ERR)
-      deleteRcvMsgHashes `catchError` (notify "" . ERR)
-      deleteProcessedRatchetKeyHashes `catchError` (notify "" . ERR)
-      deleteRcvFilesExpired `catchError` (notify "" . RFERR)
-      deleteRcvFilesDeleted `catchError` (notify "" . RFERR)
-      deleteRcvFilesTmpPaths `catchError` (notify "" . RFERR)
-      deleteSndFilesExpired `catchError` (notify "" . SFERR)
-      deleteSndFilesDeleted `catchError` (notify "" . SFERR)
-      deleteSndFilesPrefixPaths `catchError` (notify "" . SFERR)
-      deleteExpiredReplicasForDeletion `catchError` (notify "" . SFERR)
+      deleteConns `catchAgentError` (notify "" . ERR)
+      deleteRcvMsgHashes `catchAgentError` (notify "" . ERR)
+      deleteProcessedRatchetKeyHashes `catchAgentError` (notify "" . ERR)
+      deleteRcvFilesExpired `catchAgentError` (notify "" . RFERR)
+      deleteRcvFilesDeleted `catchAgentError` (notify "" . RFERR)
+      deleteRcvFilesTmpPaths `catchAgentError` (notify "" . RFERR)
+      deleteSndFilesExpired `catchAgentError` (notify "" . SFERR)
+      deleteSndFilesDeleted `catchAgentError` (notify "" . SFERR)
+      deleteSndFilesPrefixPaths `catchAgentError` (notify "" . SFERR)
+      deleteExpiredReplicasForDeletion `catchAgentError` (notify "" . SFERR)
     liftIO $ threadDelay' int
   where
     deleteConns =
@@ -1753,33 +1753,33 @@ cleanupManager c@AgentClient {subQ} = do
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
-      forM_ rcvExpired $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
+      forM_ rcvExpired $ \(dbId, entId, p) -> flip catchAgentError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`deleteRcvFile'` dbId)
     deleteRcvFilesDeleted = do
       rcvDeleted <- withStore' c getCleanupRcvFilesDeleted
-      forM_ rcvDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
+      forM_ rcvDeleted $ \(dbId, entId, p) -> flip catchAgentError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`deleteRcvFile'` dbId)
     deleteRcvFilesTmpPaths = do
       rcvTmpPaths <- withStore' c getCleanupRcvFilesTmpPaths
-      forM_ rcvTmpPaths $ \(dbId, entId, p) -> flip catchError (notify entId . RFERR) $ do
+      forM_ rcvTmpPaths $ \(dbId, entId, p) -> flip catchAgentError (notify entId . RFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateRcvFileNoTmpPath` dbId)
     deleteSndFilesExpired = do
       sndFilesTTL <- asks $ sndFilesTTL . config
       sndExpired <- withStore' c (`getSndFilesExpired` sndFilesTTL)
-      forM_ sndExpired $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+      forM_ sndExpired $ \(dbId, entId, p) -> flip catchAgentError (notify entId . SFERR) $ do
         forM_ p $ removePath <=< toFSFilePath
         withStore' c (`deleteSndFile'` dbId)
     deleteSndFilesDeleted = do
       sndDeleted <- withStore' c getCleanupSndFilesDeleted
-      forM_ sndDeleted $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+      forM_ sndDeleted $ \(dbId, entId, p) -> flip catchAgentError (notify entId . SFERR) $ do
         forM_ p $ removePath <=< toFSFilePath
         withStore' c (`deleteSndFile'` dbId)
     deleteSndFilesPrefixPaths = do
       sndPrefixPaths <- withStore' c getCleanupSndFilesPrefixPaths
-      forM_ sndPrefixPaths $ \(dbId, entId, p) -> flip catchError (notify entId . SFERR) $ do
+      forM_ sndPrefixPaths $ \(dbId, entId, p) -> flip catchAgentError (notify entId . SFERR) $ do
         removePath =<< toFSFilePath p
         withStore' c (`updateSndFileNoPrefixPath` dbId)
     deleteExpiredReplicasForDeletion = do
@@ -1944,7 +1944,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               ackDel :: InternalId -> m ()
               ackDel = enqueueCmd . ICAckDel rId srvMsgId
               handleNotifyAck :: m () -> m ()
-              handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
+              handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
           SMP.END ->
             atomically (TM.lookup tSess smpClients $>>= tryReadTMVar >>= processEND)
               >>= logServer "<--" c srv rId
@@ -2066,7 +2066,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 RcvConnection {} -> do
                   AcceptedConfirmation {ownConnInfo} <- withStore c (`getAcceptedConfirmation` connId)
                   let cData' = toConnData conn'
-                  connectReplyQueues c cData' ownConnInfo smpQueues `catchError` (notify . ERR)
+                  connectReplyQueues c cData' ownConnInfo smpQueues `catchAgentError` (notify . ERR)
                 _ -> prohibited
 
           continueSending :: (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()

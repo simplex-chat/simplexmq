@@ -47,7 +47,7 @@ import Simplex.Messaging.Transport (supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
-import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
+import Simplex.Messaging.Util (bshow, catchExcept, liftEitherError, whenM)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -190,10 +190,12 @@ downloadXFTPChunk c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {fi
         where
           download cbState =
             withExceptT PCEResponseError $
-              receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
+              receiveEncFile chunkPart cbState chunkSpec `catchXFTPError` \e ->
                 whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+  where
+    catchXFTPError = catchExcept $ \(_ :: SomeException) -> INTERNAL
 
 chunkTimeout :: XFTPClientConfig -> Word32 -> Int
 chunkTimeout config chunkSize = fromIntegral $ (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
