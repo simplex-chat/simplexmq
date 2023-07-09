@@ -109,8 +109,12 @@ catchThrow action err  = catchExcept err action throwError
 {-# INLINE catchThrow #-}
 
 tryThrow :: (MonadIO m, MonadError e m) => (E.SomeException -> e) -> IO a -> m a
-tryThrow f = liftIO . E.try >=> either (throwError . f) pure
+tryThrow err = liftIO . E.try >=> either (throwError . err) pure
 {-# INLINE tryThrow #-}
+
+exceptFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
+exceptFinally err action final = catchExcept err action (\e -> final >> throwError e) >> final
+{-# INLINE exceptFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just

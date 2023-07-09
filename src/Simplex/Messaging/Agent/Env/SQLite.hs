@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultAgentConfig,
     defaultReconnectInterval,
     catchAgentError,
+    agentFinally,
     Env (..),
     newSMPAgentEnv,
     createAgentStore,
@@ -54,7 +55,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (catchExcept)
+import Simplex.Messaging.Util (catchExcept, exceptFinally)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
@@ -230,7 +231,10 @@ newXFTPAgent = do
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
-catchAgentError = catchExcept err
-  where
-    err :: SomeException -> AgentErrorType
-    err = INTERNAL . show
+catchAgentError = catchExcept mkInternal
+
+agentFinally :: AgentMonad m => m a -> m a -> m a
+agentFinally = exceptFinally mkInternal
+
+mkInternal :: SomeException -> AgentErrorType
+mkInternal = INTERNAL . show

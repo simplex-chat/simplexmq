@@ -147,7 +147,7 @@ processNtfSub c (connId, cmd) = do
       atomically (TM.lookup srv ws) >>= \case
         Nothing -> do
           doWork <- newTMVarIO ()
-          worker <- async $ runWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
+          worker <- async $ runWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
           atomically $ TM.insert srv (doWork, worker) ws
         Just (doWork, _) ->
           void . atomically $ tryPutTMVar doWork ()
@@ -213,7 +213,7 @@ runNtfWorker c srv doWork = do
           NSADelete -> case ntfSubId of
             Just nSubId ->
               (getNtfToken >>= mapM_ (agentNtfDeleteSubscription c nSubId))
-                `E.finally` continueDeletion
+                `agentFinally` continueDeletion
             _ -> continueDeletion
             where
               continueDeletion = do
@@ -224,7 +224,7 @@ runNtfWorker c srv doWork = do
           NSARotate -> case ntfSubId of
             Just nSubId ->
               (getNtfToken >>= mapM_ (agentNtfDeleteSubscription c nSubId))
-                `E.finally` deleteCreate
+                `agentFinally` deleteCreate
             _ -> deleteCreate
             where
               deleteCreate = do

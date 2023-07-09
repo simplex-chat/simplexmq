@@ -162,7 +162,7 @@ addWorker c wsSel runWorker runWorkerNoSrv srv_ = do
       let runWorker' = case srv_ of
             Just srv -> runWorker c srv doWork
             Nothing -> runWorkerNoSrv c doWork
-      worker <- async $ runWorker' `E.finally` atomically (TM.delete srv_ ws)
+      worker <- async $ runWorker' `agentFinally` atomically (TM.delete srv_ ws)
       atomically $ TM.insert srv_ (doWork, worker) ws
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
@@ -594,7 +594,7 @@ addXFTPDelWorker c srv = do
   atomically (TM.lookup srv ws) >>= \case
     Nothing -> do
       doWork <- newTMVarIO ()
-      worker <- async $ runXFTPDelWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
+      worker <- async $ runXFTPDelWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
       atomically $ TM.insert srv (doWork, worker) ws
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
