@@ -100,17 +100,17 @@ catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
 
-catchExcept :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
-catchExcept err action handle = (tryError action `UE.catch` (pure . Left . err)) >>= either handle pure
-{-# INLINE catchExcept #-}
+catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
+catchAllErrors err action handle = (tryError action `UE.catch` (pure . Left . err)) >>= either handle pure
+{-# INLINE catchAllErrors #-}
 
 catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
-catchThrow action err  = catchExcept err action throwError
+catchThrow action err  = catchAllErrors err action throwError
 {-# INLINE catchThrow #-}
 
-exceptFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
-exceptFinally err action final = catchExcept err action (\e -> final >> throwError e) >> final
-{-# INLINE exceptFinally #-}
+allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
+allFinally err action final = catchAllErrors err action (\e -> final >> throwError e) >> final
+{-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just

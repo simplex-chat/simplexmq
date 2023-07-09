@@ -55,7 +55,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (catchExcept, exceptFinally)
+import Simplex.Messaging.Util (catchAllErrors, allFinally)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
@@ -231,11 +231,11 @@ newXFTPAgent = do
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
-catchAgentError = catchExcept mkInternal
+catchAgentError = catchAllErrors mkInternal
 {-# INLINE catchAgentError #-}
 
 agentFinally :: AgentMonad m => m a -> m a -> m a
-agentFinally = exceptFinally mkInternal
+agentFinally = allFinally mkInternal
 {-# INLINE agentFinally #-}
 
 mkInternal :: SomeException -> AgentErrorType

@@ -71,7 +71,6 @@ import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
 import UnliftIO.Directory
-import qualified UnliftIO.Exception as E
 
 startWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
 startWorkers c workDir = do
