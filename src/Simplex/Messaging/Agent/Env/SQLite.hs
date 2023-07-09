@@ -232,9 +232,12 @@ newXFTPAgent = do
 
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
 catchAgentError = catchExcept mkInternal
+{-# INLINE catchAgentError #-}
 
 agentFinally :: AgentMonad m => m a -> m a -> m a
 agentFinally = exceptFinally mkInternal
+{-# INLINE agentFinally #-}
 
 mkInternal :: SomeException -> AgentErrorType
 mkInternal = INTERNAL . show
+{-# INLINE mkInternal #-}

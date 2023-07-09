@@ -108,10 +108,6 @@ catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e)
 catchThrow action err  = catchExcept err action throwError
 {-# INLINE catchThrow #-}
 
-tryThrowIO :: (MonadIO m, MonadError e m) => (E.SomeException -> e) -> IO a -> m a
-tryThrowIO err = liftIO . E.try >=> either (throwError . err) pure
-{-# INLINE tryThrowIO #-}
-
 exceptFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
 exceptFinally err action final = catchExcept err action (\e -> final >> throwError e) >> final
 {-# INLINE exceptFinally #-}
