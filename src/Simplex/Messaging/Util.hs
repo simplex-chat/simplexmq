@@ -111,8 +111,8 @@ catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e)
 catchThrow action err  = catchAllErrors err action throwError
 {-# INLINE catchThrow #-}
 
-allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
-allFinally err action final = tryAllErrors err action >>= either (\e -> final >> throwError e) (const final)
+allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m b -> m a
+allFinally err action final = tryAllErrors err action >>= \r -> final >> either throwError pure r
 {-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b

@@ -84,7 +84,7 @@ utilTests = do
     it "then throw SomeException as ExceptT error" $ withFinal $ \final ->
       runExceptT (allFinally testErr throwTestException final) `shouldReturn` Left (TestException "user error (error)")
     it "and should not throw if there are no exceptions" $ withFinal $ \final ->
-      runExceptT (allFinally testErr noErrors final) `shouldReturn` Right "final"
+      runExceptT (allFinally testErr noErrors final) `shouldReturn` Right "no errors"
   describe "allFinally specialized as testFinally should run final action" $ do
     let testFinally = allFinally testErr
     it "then throw ExceptT error" $ withFinal $ \final ->
@@ -92,7 +92,7 @@ utilTests = do
     it "then throw SomeException as ExceptT error" $ withFinal $ \final ->
       runExceptT (throwTestException `testFinally` final) `shouldReturn` Left (TestException "user error (error)")
     it "and should not throw if there are no exceptions" $ withFinal $ \final ->
-      runExceptT (noErrors `testFinally` final) `shouldReturn` Right "final"
+      runExceptT (noErrors `testFinally` final) `shouldReturn` Right "no errors"
   where
     throwTestError :: ExceptT TestError IO String
     throwTestError = throwError $ TestError "error"
