@@ -872,8 +872,8 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
     atomically $ throwWhenInactive c
     cmdId <- atomically $ readTQueue cq
     atomically $ beginAgentOperation c AOSndNetwork
-    E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
-      Left (e :: E.SomeException) -> atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ INTERNAL $ show e)
+    tryAgentError (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
+      Left e -> atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right cmd -> processCmd (riFast ri) cmdId cmd
   where
     processCmd :: RetryInterval -> AsyncCmdId -> PendingCommand -> m ()
@@ -1078,9 +1078,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
     atomically $ beginAgentOperation c AOSndNetwork
     atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in queuePendingMsgs
     let mId = unId msgId
-    E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
-      Left (e :: E.SomeException) ->
-        notify $ MERR mId (INTERNAL $ show e)
+    tryAgentError (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
+      Left e -> notify $ MERR mId e
       Right (rq_, PendingMsgData {msgType, msgBody, msgFlags, msgRetryState, internalTs}) -> do
         let ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do

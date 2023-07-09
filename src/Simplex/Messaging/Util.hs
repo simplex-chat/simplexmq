@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -100,8 +99,12 @@ catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
 
+tryAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m (Either e a)
+tryAllErrors err action = tryError action `UE.catch` (pure . Left . err)
+{-# INLINE tryAllErrors #-}
+
 catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
-catchAllErrors err action handle = (tryError action `UE.catch` (pure . Left . err)) >>= either handle pure
+catchAllErrors err action handle = tryAllErrors err action >>= either handle pure
 {-# INLINE catchAllErrors #-}
 
 catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
@@ -109,7 +112,7 @@ catchThrow action err  = catchAllErrors err action throwError
 {-# INLINE catchThrow #-}
 
 allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
-allFinally err action final = catchAllErrors err action (\e -> final >> throwError e) >> final
+allFinally err action final = tryAllErrors err action >>= either (\e -> final >> throwError e) (const final)
 {-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b

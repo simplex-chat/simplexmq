@@ -12,21 +12,41 @@ import qualified UnliftIO.Exception as UE
 
 utilTests :: Spec
 utilTests = do
-  describe "lifted catch and finally problems" $ do
+  describe "lifted try, catch and finally problems" $ do
+    describe "try" $ do
+      it "lifted try does not catch errors" $ do
+        runExceptT (UE.try throwTestError >>= either handleCatch pure) `shouldReturn` Left (TestError "error")
+        runExceptT (UE.try throwTestException >>= either handleCatch pure) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
+      it "lifted try with SomeException catches all errors but wraps ExceptT errors" $ do
+        runExceptT (UE.try throwTestError >>= either handleException pure) `shouldReturn` Right "caught InternalException {unInternalException = TestError \"error\"}"
+        runExceptT (UE.try throwTestException >>= either handleException pure) `shouldReturn` Right "caught user error (error)"
     describe "catch" $ do
       it "lifted catch does not catch" $ do
-        runExceptT (throwTestException `UE.catch` handleCatch) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
         runExceptT (throwTestError `UE.catch` handleCatch) `shouldReturn` Left (TestError "error")
-      it "lifted catch specialized for SomeException catches all errors but wraps ExceptT errors" $ do
-        runExceptT (throwTestException `UE.catch` \(e :: SomeException) -> pure $ "caught " <> show e)
-          `shouldReturn` Right "caught user error (error)"
-        runExceptT (throwTestError `UE.catch` \(e :: SomeException) -> pure $ "caught " <> show e)
-          `shouldReturn` Right "caught InternalException {unInternalException = TestError \"error\"}"
+        runExceptT (throwTestException `UE.catch` handleCatch) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
+      it "lifted catch of SomeException catches all errors but wraps ExceptT errors" $ do
+        runExceptT (throwTestError `UE.catch` handleException) `shouldReturn` Right "caught InternalException {unInternalException = TestError \"error\"}"
+        runExceptT (throwTestException `UE.catch` handleException) `shouldReturn` Right "caught user error (error)"
     describe "finally" $ do
       it "lifted finally executes final action and stays in ExceptT monad" $ withFinal $ \final ->
         runExceptT (throwTestError `UE.finally` final) `shouldReturn` Left (TestError "error")
       it "lifted finally executes final action but throws exception" $ withFinal $ \final ->
         runExceptT (throwTestException `UE.finally` final) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
+  describe "tryAllErrors" $ do
+    it "should return ExceptT error as Left" $
+      runExceptT (tryAllErrors testErr throwTestError) `shouldReturn` Right (Left (TestError "error"))
+    it "should return SomeException as Left" $
+      runExceptT (tryAllErrors testErr throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
+    it "should return no errors as Right" $
+      runExceptT (tryAllErrors testErr noErrors) `shouldReturn` Right (Right "no errors")
+  describe "tryAllErrors specialized as tryTestError" $ do
+    let tryTestError = tryAllErrors testErr
+    it "should return ExceptT error as Left" $
+      runExceptT (tryTestError throwTestError) `shouldReturn` Right (Left (TestError "error"))
+    it "should return SomeException as Left" $
+      runExceptT (tryTestError throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
+    it "should return no errors as Right" $
+      runExceptT (tryTestError noErrors) `shouldReturn` Right (Right "no errors")
   describe "catchAllErrors" $ do
     it "should catch ExceptT error" $
       runExceptT (catchAllErrors testErr throwTestError handleCatch) `shouldReturn` Right "caught TestError \"error\""
@@ -75,6 +95,8 @@ utilTests = do
     testErr = TestException . show
     handleCatch :: TestError -> ExceptT TestError IO String
     handleCatch e = pure $ "caught " <> show e
+    handleException :: SomeException -> ExceptT TestError IO String
+    handleException e = pure $ "caught " <> show e
     withFinal :: (ExceptT TestError IO String -> IO ()) -> IO ()
     withFinal test = do
       r <- newIORef False
