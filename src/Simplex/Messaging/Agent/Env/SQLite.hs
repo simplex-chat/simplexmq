@@ -239,7 +239,7 @@ catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
 catchAgentError = catchAllErrors mkInternal
 {-# INLINE catchAgentError #-}
 
-agentFinally :: AgentMonad m => m a -> m a -> m a
+agentFinally :: AgentMonad m => m a -> m b -> m a
 agentFinally = allFinally mkInternal
 {-# INLINE agentFinally #-}
 
