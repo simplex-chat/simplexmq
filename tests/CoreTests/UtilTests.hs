@@ -12,26 +12,35 @@ import qualified UnliftIO.Exception as UE
 
 utilTests :: Spec
 utilTests = do
-  describe "lifted try, catch and finally problems" $ do
-    describe "try" $ do
-      it "lifted try does not catch errors" $ do
+  describe "problems of lifted try, catch and finally (don't use them)" $ do
+    describe "lifted try" $ do
+      it "does not catch errors" $ do
         runExceptT (UE.try throwTestError >>= either handleCatch pure) `shouldReturn` Left (TestError "error")
         runExceptT (UE.try throwTestException >>= either handleCatch pure) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
-      it "lifted try with SomeException catches all errors but wraps ExceptT errors" $ do
+      it "with SomeException catches all errors but wraps ExceptT errors" $ do
         runExceptT (UE.try throwTestError >>= either handleException pure) `shouldReturn` Right "caught InternalException {unInternalException = TestError \"error\"}"
         runExceptT (UE.try throwTestException >>= either handleException pure) `shouldReturn` Right "caught user error (error)"
-    describe "catch" $ do
-      it "lifted catch does not catch" $ do
+    describe "lifted catch" $ do
+      it "does not catch" $ do
         runExceptT (throwTestError `UE.catch` handleCatch) `shouldReturn` Left (TestError "error")
         runExceptT (throwTestException `UE.catch` handleCatch) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
-      it "lifted catch of SomeException catches all errors but wraps ExceptT errors" $ do
+      it "with SomeException catches all errors but wraps ExceptT errors" $ do
         runExceptT (throwTestError `UE.catch` handleException) `shouldReturn` Right "caught InternalException {unInternalException = TestError \"error\"}"
         runExceptT (throwTestException `UE.catch` handleException) `shouldReturn` Right "caught user error (error)"
-    describe "finally" $ do
-      it "lifted finally executes final action and stays in ExceptT monad" $ withFinal $ \final ->
+    describe "lifted finally" $ do
+      it "with ExceptT error executes final action and stays in ExceptT monad" $ withFinal $ \final ->
         runExceptT (throwTestError `UE.finally` final) `shouldReturn` Left (TestError "error")
-      it "lifted finally executes final action but throws exception" $ withFinal $ \final ->
+      it "with exception executes final action (not always - race condition?) and throws exception" $ withFinal $ \final ->
         runExceptT (throwTestException `UE.finally` final) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
+  describe "problems of tryError and catchError (don't use them)" $ do
+    describe "tryError" $ do
+      it "catches ExceptT errors but not Exceptions" $ do
+        runExceptT (tryError throwTestError >>= either handleCatch pure) `shouldReturn` Right "caught TestError \"error\""
+        runExceptT (tryError throwTestException >>= either handleCatch pure) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
+    describe "catchError" $ do
+      it "catches ExceptT errors but not Exceptions" $ do
+        runExceptT (throwTestError `catchError` handleCatch) `shouldReturn` Right "caught TestError \"error\""
+        runExceptT (throwTestException `catchError` handleCatch) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
   describe "tryAllErrors" $ do
     it "should return ExceptT error as Left" $
       runExceptT (tryAllErrors testErr throwTestError) `shouldReturn` Right (Left (TestError "error"))
