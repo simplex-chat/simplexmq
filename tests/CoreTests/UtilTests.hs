@@ -8,9 +8,25 @@ import Data.IORef
 import Simplex.Messaging.Util
 import Simplex.Messaging.Client.Agent ()
 import Test.Hspec
+import qualified UnliftIO.Exception as UE
 
 utilTests :: Spec
 utilTests = do
+  describe "lifted catch and finally problems" $ do
+    describe "catch" $ do
+      it "lifted catch does not catch" $ do
+        runExceptT (throwTestException `UE.catch` handleCatch) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
+        runExceptT (throwTestError `UE.catch` handleCatch) `shouldReturn` Left (TestError "error")
+      it "lifted catch specialized for SomeException catches all errors but wraps ExceptT errors" $ do
+        runExceptT (throwTestException `UE.catch` \(e :: SomeException) -> pure $ "caught " <> show e)
+          `shouldReturn` Right "caught user error (error)"
+        runExceptT (throwTestError `UE.catch` \(e :: SomeException) -> pure $ "caught " <> show e)
+          `shouldReturn` Right "caught InternalException {unInternalException = TestError \"error\"}"
+    describe "finally" $ do
+      it "lifted finally executes final action and stays in ExceptT monad" $ withFinal $ \final ->
+        runExceptT (throwTestError `UE.finally` final) `shouldReturn` Left (TestError "error")
+      it "lifted finally executes final action but throws exception" $ withFinal $ \final ->
+        runExceptT (throwTestException `UE.finally` final) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
   describe "catchAllErrors" $ do
     it "should catch ExceptT error" $
       runExceptT (catchAllErrors testErr throwTestError handleCatch) `shouldReturn` Right "caught TestError \"error\""
