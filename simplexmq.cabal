@@ -533,6 +533,7 @@ test-suite simplexmq-test
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
       CoreTests.RetryIntervalTests
+      CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
       NtfClient

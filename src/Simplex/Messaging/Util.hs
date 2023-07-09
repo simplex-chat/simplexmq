@@ -1,4 +1,3 @@
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -13,12 +12,13 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
+import Data.List (groupBy, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
 import UnliftIO.Async
-import Data.List (groupBy, sortOn)
+import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
 raceAny_ = r []
@@ -99,17 +99,34 @@ catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
 
+tryAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m (Either e a)
+tryAllErrors err action = tryError action `UE.catch` (pure . Left . err)
+{-# INLINE tryAllErrors #-}
+
+catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
+catchAllErrors err action handle = tryAllErrors err action >>= either handle pure
+{-# INLINE catchAllErrors #-}
+
+catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
+catchThrow action err  = catchAllErrors err action throwError
+{-# INLINE catchThrow #-}
+
+allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m a -> m a
+allFinally err action final = tryAllErrors err action >>= either (\e -> final >> throwError e) (const final)
+{-# INLINE allFinally #-}
+
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
 {-# INLINE eitherToMaybe #-}
 
 groupOn :: Eq k => (a -> k) -> [a] -> [[a]]
 groupOn = groupBy . eqOn
-    -- it is equivalent to groupBy ((==) `on` f),
-    -- but it redefines `on` to avoid duplicate computation for most values.
-    -- source: https://hackage.haskell.org/package/extra-1.7.13/docs/src/Data.List.Extra.html#groupOn
-    -- the on2 in this package is specialized to only use `==` as the function, `eqOn f` is equivalent to `(==) `on` f`
-    where eqOn f = \x -> let fx = f x in \y -> fx == f y
+  -- it is equivalent to groupBy ((==) `on` f),
+  -- but it redefines `on` to avoid duplicate computation for most values.
+  -- source: https://hackage.haskell.org/package/extra-1.7.13/docs/src/Data.List.Extra.html#groupOn
+  -- the on2 in this package is specialized to only use `==` as the function, `eqOn f` is equivalent to `(==) `on` f`
+  where
+    eqOn f = \x -> let fx = f x in \y -> fx == f y
 
 groupAllOn :: Ord k => (a -> k) -> [a] -> [[a]]
 groupAllOn f = groupOn f . sortOn f

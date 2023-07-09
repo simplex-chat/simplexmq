@@ -6,6 +6,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -17,6 +18,9 @@ module Simplex.Messaging.Agent.Env.SQLite
     NetworkConfig (..),
     defaultAgentConfig,
     defaultReconnectInterval,
+    tryAgentError,
+    catchAgentError,
+    agentFinally,
     Env (..),
     newSMPAgentEnv,
     createAgentStore,
@@ -52,9 +56,10 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
+import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
-import UnliftIO (Async)
+import UnliftIO (Async, SomeException)
 import UnliftIO.STM
 
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
@@ -225,3 +230,19 @@ newXFTPAgent = do
   xftpSndWorkers <- TM.empty
   xftpDelWorkers <- TM.empty
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
+
+tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
+tryAgentError = tryAllErrors mkInternal
+{-# INLINE tryAgentError #-}
+
+catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
+catchAgentError = catchAllErrors mkInternal
+{-# INLINE catchAgentError #-}
+
+agentFinally :: AgentMonad m => m a -> m a -> m a
+agentFinally = allFinally mkInternal
+{-# INLINE agentFinally #-}
+
+mkInternal :: SomeException -> AgentErrorType
+mkInternal = INTERNAL . show
+{-# INLINE mkInternal #-}
