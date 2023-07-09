@@ -7,6 +7,7 @@ import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
 import CoreTests.RetryIntervalTests
+import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
 import NtfServerTests (ntfServerTests)
@@ -39,6 +40,7 @@ main = do
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
           describe "Retry interval tests" retryIntervalTests
+          describe "Util tests" utilTests
         describe "SMP server via TLS" $ serverTests (transport @TLS)
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
