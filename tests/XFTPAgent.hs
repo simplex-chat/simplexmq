@@ -37,12 +37,11 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-  -- xit'' "should resume sending file after restart" testXFTPAgentSendRestore
-  fit "should resume sending file after restart" testXFTPAgentSendRestore
+  xit'' "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
-  fit "should delete sent file on server" testXFTPAgentDelete
-  fit "should resume deleting file after restart" testXFTPAgentDeleteRestore
-  fit "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
+  it "should delete sent file on server" testXFTPAgentDelete
+  it "should resume deleting file after restart" testXFTPAgentDeleteRestore
+  it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
     let srv1 = testXFTPServer2 {keyHash = "1234"}
