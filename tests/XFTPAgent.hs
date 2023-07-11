@@ -221,7 +221,6 @@ testXFTPAgentSendRestore :: IO ()
 testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
   filePath <- createRandomFile
 
-  liftIO $ print 1
   -- send file - should not succeed with server down
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   liftIO $ print 2
@@ -323,13 +322,10 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentDelete :: IO ()
 testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $ do
-  liftIO $ print 1
   withXFTPServer $ do
-    liftIO $ print 2
     filePath <- createRandomFile
 
     -- send file
-    liftIO $ print 3
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
     liftIO $ print 4
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
@@ -371,10 +367,8 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentDeleteRestore :: IO ()
 testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
-  liftIO $ print 1
   filePath <- createRandomFile
 
-  liftIO $ print 2
   (sfId, sndDescr, rfd2) <- withXFTPServerStoreLogOn $ \_ -> do
     -- send file
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
@@ -431,11 +425,9 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentRequestAdditionalRecipientIDs :: IO ()
 testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
-  liftIO $ print 1
   filePath <- createRandomFile
 
   -- send file
-  liftIO $ print 2
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   liftIO $ print 3
   rfds <- runRight $ do
@@ -456,9 +448,13 @@ testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
 
   -- receive file using different descriptions
   -- ! revise number of recipients and indexes if xftpMaxRecipientsPerRequest is changed
+  liftIO $ print 10
   testReceive' (head rfds) filePath
+  liftIO $ print 11
   testReceive' (rfds !! 99) filePath
+  liftIO $ print 12
   testReceive' (rfds !! 299) filePath
+  liftIO $ print 13
   testReceive' (rfds !! 499) filePath
   where
     testReceive' rfd originalFilePath = do
