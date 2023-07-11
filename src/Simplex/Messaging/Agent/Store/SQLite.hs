@@ -392,7 +392,7 @@ connectDB path key = do
   pure db
   where
     prepare db = do
-      void $ throwIO $ userError "error"
+      -- void $ throwIO $ userError "error"
       let exec = SQLite3.exec $ DB.connectionHandle db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
       exec "PRAGMA busy_timeout = 1000;"
