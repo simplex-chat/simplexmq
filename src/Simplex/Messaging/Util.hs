@@ -13,6 +13,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
@@ -130,6 +132,12 @@ groupOn = groupBy . eqOn
 
 groupAllOn :: Ord k => (a -> k) -> [a] -> [[a]]
 groupAllOn f = groupOn f . sortOn f
+
+toChunks :: Int -> [a] -> [NonEmpty a]
+toChunks _ [] = []
+toChunks n xs =
+  let (ys, xs') = splitAt n xs
+  in maybe id (:) (L.nonEmpty ys) (toChunks n xs')
 
 safeDecodeUtf8 :: ByteString -> Text
 safeDecodeUtf8 = decodeUtf8With onError
