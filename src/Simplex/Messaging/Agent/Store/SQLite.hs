@@ -206,7 +206,6 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
@@ -229,7 +228,7 @@ import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
@@ -246,6 +245,7 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRError, Migration (..), MigrationsToRun (..), mtrErrorDescription)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
@@ -258,24 +258,17 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, diffToMilliseconds, eitherToMaybe, groupOn, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (bracket, onException)
+import UnliftIO.Exception (onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- * SQLite Store implementation
-
-data SQLiteStore = SQLiteStore
-  { dbFilePath :: FilePath,
-    dbEncrypted :: TVar Bool,
-    dbConnection :: TMVar DB.Connection,
-    dbNew :: Bool
-  }
 
 data MigrationError
   = MEUpgrade {upMigrations :: [UpMigration]}
@@ -333,35 +326,35 @@ createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
     Left e -> closeSQLiteStore st $> Left e
 
 migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
-migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
-  Migrations.initialize db
-  Migrations.get db migrations >>= \case
+migrateSchema st migrations confirmMigrations = do
+  Migrations.initialize st
+  Migrations.get st migrations >>= \case
     Left e -> do
       when (confirmMigrations == MCConsole) $ confirmOrExit ("Database state error: " <> mtrErrorDescription e)
       pure . Left $ MigrationError e
     Right MTRNone -> pure $ Right ()
     Right ms@(MTRUp ums)
-      | dbNew st -> Migrations.run db ms $> Right ()
+      | dbNew st -> Migrations.run st ms $> Right ()
       | otherwise -> case confirmMigrations of
-        MCYesUp -> run db ms
-        MCYesUpDown -> run db ms
-        MCConsole -> confirm err >> run db ms
+        MCYesUp -> run ms
+        MCYesUpDown -> run ms
+        MCConsole -> confirm err >> run ms
         MCError -> pure $ Left err
       where
         err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
-      MCYesUpDown -> run db ms
-      MCConsole -> confirm err >> run db ms
+      MCYesUpDown -> run ms
+      MCConsole -> confirm err >> run ms
       MCYesUp -> pure $ Left err
       MCError -> pure $ Left err
       where
         err = MEDowngrade $ map downName dms
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
-    run db ms = do
+    run ms = do
       let f = dbFilePath st
       copyFile f (f <> ".bak")
-      Migrations.run db ms
+      Migrations.run st ms
       pure $ Right ()
 
 confirmOrExit :: String -> IO ()
@@ -375,9 +368,10 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConnection <- newTMVarIO =<< connectDB dbFilePath dbKey
+  dbConn <- dbBusyLoop $ connectDB dbFilePath dbKey
+  dbConnVar <- newTMVarIO dbConn
   dbEncrypted <- newTVarIO . not $ null dbKey
-  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew}
+  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection = dbConnVar, dbNew}
 
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
@@ -389,13 +383,11 @@ connectDB path key = do
     prepare db = do
       let exec = SQLite3.exec $ DB.connectionHandle db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-      exec . fromQuery $
-        [sql|
-          PRAGMA foreign_keys = ON;
-          -- PRAGMA trusted_schema = OFF;
-          PRAGMA secure_delete = ON;
-          PRAGMA auto_vacuum = FULL;
-        |]
+      exec "PRAGMA busy_timeout = 100;"
+      exec "PRAGMA foreign_keys = ON;"
+      -- exec "PRAGMA trusted_schema = OFF;"
+      exec "PRAGMA secure_delete = ON;"
+      exec "PRAGMA auto_vacuum = FULL;"
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
@@ -437,37 +429,6 @@ handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
   | DB.sqlError e == DB.ErrorConstraint = err
   | otherwise = SEInternal $ bshow e
-
-withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection SQLiteStore {dbConnection} =
-  bracket
-    (atomically $ takeTMVar dbConnection)
-    (atomically . putTMVar dbConnection)
-
-withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction = withTransactionCtx Nothing
-
-withTransactionCtx :: forall a. Maybe String -> SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransactionCtx ctx_ st action = withConnection st $ loop 500 3_000_000
-  where
-    loop :: Int -> Int -> DB.Connection -> IO a
-    loop t tLim db =
-      transactionWithCtx `E.catch` \(e :: SQLError) ->
-        if tLim > t && DB.sqlError e == DB.ErrorBusy
-          then do
-            threadDelay t
-            loop (t * 9 `div` 8) (tLim - t) db
-          else E.throwIO e
-      where
-        transactionWithCtx = case ctx_ of
-          Nothing -> DB.withImmediateTransaction db (action db)
-          Just ctx -> do
-            t1 <- getCurrentTime
-            r <- DB.withImmediateTransaction db (action db)
-            t2 <- getCurrentTime
-            putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
-            putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
-            pure r
 
 createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
