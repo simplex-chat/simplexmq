@@ -52,8 +52,9 @@ defaultTransportServerConfig = TransportServerConfig
   }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
-serverTransportConfig TransportServerConfig {logTLSErrors, transportTimeout} =
-  TransportConfig {logTLSErrors, transportTimeout = Just transportTimeout}
+serverTransportConfig TransportServerConfig {logTLSErrors} =
+  -- TransportConfig {logTLSErrors, transportTimeout = Just transportTimeout}
+  TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
