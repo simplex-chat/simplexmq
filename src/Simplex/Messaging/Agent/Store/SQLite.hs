@@ -375,7 +375,7 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- connectDB dbFilePath dbKey
+  dbConn <- dbBusyLoop $ connectDB dbFilePath dbKey
   dbConnVar <- newTMVarIO dbConn
   dbEncrypted <- newTVarIO . not $ null dbKey
   pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection = dbConnVar, dbNew}
@@ -383,16 +383,11 @@ connectSQLiteStore dbFilePath dbKey = do
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
-  prepare db
-    `onException` ( do
-                      putStrLn "Error preparing database"
-                      DB.close db
-                  )
+  prepare db `onException` DB.close db
   -- _printPragmas db path
   pure db
   where
     prepare db = do
-      -- void $ throwIO $ userError "error"
       let exec = SQLite3.exec $ DB.connectionHandle db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
       exec "PRAGMA busy_timeout = 1000;"
@@ -452,26 +447,29 @@ withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
 withTransaction = withTransactionCtx Nothing
 
 withTransactionCtx :: forall a. Maybe String -> SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransactionCtx ctx_ st action = withConnection st $ loop 500 3_000_000
+withTransactionCtx ctx_ st action = withConnection st $ \db -> dbBusyLoop (transactionWithCtx db)
   where
-    loop :: Int -> Int -> DB.Connection -> IO a
-    loop t tLim db =
-      transactionWithCtx `E.catch` \(e :: SQLError) ->
+    transactionWithCtx db = case ctx_ of
+      Nothing -> DB.withImmediateTransaction db (action db)
+      Just ctx -> do
+        t1 <- getCurrentTime
+        r <- DB.withImmediateTransaction db (action db)
+        t2 <- getCurrentTime
+        putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
+        putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
+        pure r
+
+dbBusyLoop :: forall a. IO a -> IO a
+dbBusyLoop action = loop 500 3_000_000
+  where
+    loop :: Int -> Int -> IO a
+    loop t tLim =
+      action `E.catch` \(e :: SQLError) ->
         if tLim > t && DB.sqlError e == DB.ErrorBusy
           then do
             threadDelay t
-            loop (t * 9 `div` 8) (tLim - t) db
+            loop (t * 9 `div` 8) (tLim - t)
           else E.throwIO e
-      where
-        transactionWithCtx = case ctx_ of
-          Nothing -> DB.withImmediateTransaction db (action db)
-          Just ctx -> do
-            t1 <- getCurrentTime
-            r <- DB.withImmediateTransaction db (action db)
-            t2 <- getCurrentTime
-            putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
-            putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
-            pure r
 
 createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
