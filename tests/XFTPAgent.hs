@@ -301,7 +301,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     doesFileExist encPath `shouldReturn` False
 
 testXFTPAgentDelete :: IO ()
-testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $ do
+testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
   withXFTPServer $ do
     filePath <- createRandomFile
 

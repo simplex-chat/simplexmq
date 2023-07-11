@@ -264,7 +264,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (bracket, onException, throwIO)
+import UnliftIO.Exception (bracket, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
