@@ -264,7 +264,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (bracket, onException)
+import UnliftIO.Exception (bracket, onException, throwIO)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -375,18 +375,24 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConnection <- newTMVarIO =<< connectDB dbFilePath dbKey
+  dbConn <- connectDB dbFilePath dbKey
+  dbConnVar <- newTMVarIO dbConn
   dbEncrypted <- newTVarIO . not $ null dbKey
-  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew}
+  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection = dbConnVar, dbNew}
 
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
-  prepare db `onException` DB.close db
+  prepare db
+    `onException` ( do
+                      putStrLn "Error preparing database"
+                      DB.close db
+                  )
   -- _printPragmas db path
   pure db
   where
     prepare db = do
+      void $ throwIO $ userError "error"
       let exec = SQLite3.exec $ DB.connectionHandle db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
       exec "PRAGMA busy_timeout = 1000;"
