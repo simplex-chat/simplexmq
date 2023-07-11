@@ -443,7 +443,7 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \_ loop ->
-        reconnectSMPClient c tSess `catchError` const loop
+        reconnectSMPClient c tSess `catchAgentError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
 reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
@@ -640,7 +640,7 @@ withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pur
 withClient_ :: forall a m err msg. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do
   cl <- getProtocolServerClient c tSess
-  (action cl <* stat cl "OK") `catchError` logServerError cl
+  (action cl <* stat cl "OK") `catchAgentError` logServerError cl
   where
     stat cl = liftIO . incClientStat c userId cl statCmd
     logServerError :: Client msg -> AgentErrorType -> m a

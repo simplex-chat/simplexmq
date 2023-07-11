@@ -63,6 +63,7 @@ library
       Simplex.Messaging.Agent.Server
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
+      Simplex.Messaging.Agent.Store.SQLite.Common
       Simplex.Messaging.Agent.Store.SQLite.Migrations
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -533,6 +534,7 @@ test-suite simplexmq-test
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
       CoreTests.RetryIntervalTests
+      CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
       NtfClient
