@@ -223,54 +223,36 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
 
   -- send file - should not succeed with server down
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-  -- liftIO $ print 2
   sfId <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
-    -- liftIO $ print 3
     sfId <- xftpSendFile sndr 1 filePath 2
-    -- liftIO $ print 4
     liftIO $ timeout 1000000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
     pure sfId
-  -- liftIO $ print 5
   disconnectAgentClient sndr
 
-  -- liftIO $ print 6
   dirEntries <- listDirectory senderFiles
-  -- liftIO $ print 7
   let prefixDir = fromJust $ find (isSuffixOf "_snd.xftp") dirEntries
       prefixPath = senderFiles </> prefixDir
       encPath = prefixPath </> "xftp.encrypted"
   doesDirectoryExist prefixPath `shouldReturn` True
   doesFileExist encPath `shouldReturn` True
 
-  -- liftIO $ print 8
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should start uploading with server up
-    -- liftIO $ print 9
     sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 10
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-    -- liftIO $ print 11
     ("", sfId', SFPROG _ _) <- sfGet sndr'
-    -- liftIO $ print 12
     liftIO $ sfId' `shouldBe` sfId
-    -- liftIO $ print 13
     disconnectAgentClient sndr'
 
   threadDelay 100000
 
-  -- liftIO $ print 14
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
-    -- liftIO $ print 15
     sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 16
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-    -- liftIO $ print 17
     sfProgress sndr' $ mb 18
-    -- liftIO $ print 18
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
-    -- liftIO $ print 19
     liftIO $ sfId' `shouldBe` sfId
 
     -- prefix path should be removed after sending file
@@ -278,9 +260,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     doesFileExist encPath `shouldReturn` False
 
     -- receive file
-    -- liftIO $ print 20
     rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 21
     runRight_ $
       void $ testReceive rcp rfd1 filePath
 
@@ -327,25 +307,19 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $ do
 
     -- send file
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 4
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
 
     -- receive file
-    -- liftIO $ print 5
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 6
     runRight_ $
       void $ testReceive rcp1 rfd1 filePath
 
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
     -- delete file
-    -- liftIO $ print 7
     runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
-      -- liftIO $ print 8
       xftpDeleteSndFileRemote sndr 1 sfId sndDescr
-      -- liftIO $ print 9
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
 
@@ -353,16 +327,11 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $ do
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
     -- receive file - should fail with AUTH error
-    -- liftIO $ print 10
     rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 11
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
-      -- liftIO $ print 12
       rfId <- xftpReceiveFile rcp2 1 rfd2
-      -- liftIO $ print 13
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
-      -- liftIO $ print 14
       liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteRestore :: IO ()
@@ -372,54 +341,39 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
   (sfId, sndDescr, rfd2) <- withXFTPServerStoreLogOn $ \_ -> do
     -- send file
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 3
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
 
     -- receive file
-    -- liftIO $ print 4
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 5
     runRight_ $
       void $ testReceive rcp1 rfd1 filePath
 
     pure (sfId, sndDescr, rfd2)
 
   -- delete file - should not succeed with server down
-  -- liftIO $ print 6
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   runRight $ do
-    -- liftIO $ print 7
     xftpStartWorkers sndr (Just senderFiles)
-    -- liftIO $ print 8
     xftpDeleteSndFileRemote sndr 1 sfId sndDescr
-    -- liftIO $ print 9
     liftIO $ timeout 300000 (get sndr) `shouldReturn` Nothing -- wait for worker attempt
-  -- liftIO $ print 10
   disconnectAgentClient sndr
 
   threadDelay 300000
   length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
-  -- liftIO $ print 11
   withXFTPServerStoreLogOn $ \_ -> do
     -- delete file - should succeed with server up
-    -- liftIO $ print 12
     sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
-    -- liftIO $ print 13
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
 
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
     -- receive file - should fail with AUTH error
-    -- liftIO $ print 14
     rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
     runRight $ do
-      -- liftIO $ print 15
       xftpStartWorkers rcp2 (Just recipientFiles)
-      -- liftIO $ print 16
       rfId <- xftpReceiveFile rcp2 1 rfd2
-      -- liftIO $ print 17
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
       liftIO $ rfId' `shouldBe` rfId
 
@@ -429,32 +383,21 @@ testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
 
   -- send file
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-  -- liftIO $ print 3
   rfds <- runRight $ do
-    -- liftIO $ print 4
     xftpStartWorkers sndr (Just senderFiles)
-    -- liftIO $ print 5
     sfId <- xftpSendFile sndr 1 filePath 500
-    -- liftIO $ print 6
     sfProgress sndr $ mb 18
-    -- liftIO $ print 7
     ("", sfId', SFDONE _sndDescr rfds) <- sfGet sndr
-    -- liftIO $ print 8
     liftIO $ do
       sfId' `shouldBe` sfId
       length rfds `shouldBe` 500
-    -- liftIO $ print 9
     pure rfds
 
   -- receive file using different descriptions
   -- ! revise number of recipients and indexes if xftpMaxRecipientsPerRequest is changed
-  -- liftIO $ print 10
   testReceive' (head rfds) filePath
-  -- liftIO $ print 11
   testReceive' (rfds !! 99) filePath
-  -- liftIO $ print 12
   testReceive' (rfds !! 299) filePath
-  -- liftIO $ print 13
   testReceive' (rfds !! 499) filePath
   where
     testReceive' rfd originalFilePath = do
