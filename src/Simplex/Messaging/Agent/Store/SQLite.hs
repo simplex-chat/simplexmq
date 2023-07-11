@@ -391,6 +391,7 @@ connectDB path key = do
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
       exec . fromQuery $
         [sql|
+          PRAGMA busy_timeout = 1000;
           PRAGMA foreign_keys = ON;
           -- PRAGMA trusted_schema = OFF;
           PRAGMA secure_delete = ON;
