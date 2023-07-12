@@ -46,6 +46,7 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     storeLogFile :: Maybe FilePath,
     -- CA certificate private key is not needed for initialization
