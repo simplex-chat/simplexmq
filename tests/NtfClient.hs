@@ -89,6 +89,7 @@ ntfServerCfg =
           { apnsPort = apnsTestPort,
             caStoreFile = "tests/fixtures/ca.crt"
           },
+      subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,
       -- CA certificate private key is not needed for initialization

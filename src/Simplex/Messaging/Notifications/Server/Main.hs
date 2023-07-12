@@ -115,6 +115,7 @@ ntfServerCLI cfgPath logPath =
               pushQSize = 1048,
               smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {batchDelay}},
               apnsConfig = defaultAPNSPushClientConfig,
+              subsBatchSize = 900,
               inactiveClientExpiration = Nothing,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               caCertificateFile = c caCrtFile,
