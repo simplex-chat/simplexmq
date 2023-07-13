@@ -315,6 +315,9 @@ ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
 ratchetSyncSupported' :: ConnData -> Bool
 ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
 
+messageRcptsSupported :: ConnData -> Bool
+messageRcptsSupported ConnData {connAgentVersion} = connAgentVersion >= 4
+
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool
 ratchetSyncSendProhibited ConnData {ratchetSyncState} =

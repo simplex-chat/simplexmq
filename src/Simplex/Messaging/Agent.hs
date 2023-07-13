@@ -1244,12 +1244,12 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
     del :: m ()
     del = withStore' c $ \db -> deleteMsg db connId $ InternalId msgId
     sendRcpt :: Connection 'CDuplex -> m ()
-    sendRcpt (DuplexConnection cData@ConnData {connAgentVersion} _ sqs) = do
+    sendRcpt (DuplexConnection cData _ sqs) = do
       msg@RcvMsg {msgType, msgReceipt} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
       case rcptInfo_ of
         Just rcptInfo -> do
           unless (msgType == AM_A_MSG_) $ throwError (CMD PROHIBITED)
-          when (connAgentVersion >= 3) $ do
+          when (messageRcptsSupported cData) $ do
             let RcvMsg {msgMeta = MsgMeta {sndMsgId}, internalHash} = msg
                 rcpt = A_RCVD [AMessageReceipt {agentMsgId = sndMsgId, msgHash = internalHash, rcptInfo}]
             void $ enqueueMessages c cData sqs SMP.MsgFlags {notification = False} rcpt

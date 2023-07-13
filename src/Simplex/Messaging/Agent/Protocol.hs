@@ -215,7 +215,7 @@ import Text.Read
 import UnliftIO.Exception (Exception)
 
 currentSMPAgentVersion :: Version
-currentSMPAgentVersion = 3
+currentSMPAgentVersion = 4
 
 supportedSMPAgentVRange :: VersionRange
 supportedSMPAgentVRange = mkVersionRange 1 currentSMPAgentVersion
