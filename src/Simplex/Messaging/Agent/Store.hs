@@ -316,6 +316,9 @@ ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
 ratchetSyncSupported' :: ConnData -> Bool
 ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
 
+messageRcptsSupported :: ConnData -> Bool
+messageRcptsSupported ConnData {connAgentVersion} = connAgentVersion >= 4
+
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool
 ratchetSyncSendProhibited ConnData {ratchetSyncState} =
@@ -507,7 +510,10 @@ data RcvMsgData = RcvMsgData
 data RcvMsg = RcvMsg
   { internalId :: InternalId,
     msgMeta :: MsgMeta,
+    msgType :: AgentMessageType,
     msgBody :: MsgBody,
+    internalHash :: MsgHash,
+    msgReceipt :: Maybe MsgReceipt, -- if this message is a delivery receipt
     userAck :: Bool
   }
 
@@ -520,6 +526,14 @@ data SndMsgData = SndMsgData
     msgBody :: MsgBody,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
+  }
+
+data SndMsg = SndMsg
+  { internalId :: InternalId,
+    internalSndId :: InternalSndId,
+    msgType :: AgentMessageType,
+    internalHash :: MsgHash,
+    msgReceipt :: Maybe MsgReceipt
   }
 
 data PendingMsgData = PendingMsgData
