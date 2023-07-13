@@ -1812,13 +1812,13 @@ testDeliveryReceipts = do
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsVersion t = do
-  a <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
-  b <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  a <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+  b <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aId, bId) <- runRight $ do
       (aId, bId) <- makeConnection a b
-      checkVersion a bId 2
-      checkVersion b aId 2
+      checkVersion a bId 3
+      checkVersion b aId 3
       4 <- sendMessage a bId SMP.noMsgFlags "hello"
       get a ##> ("", bId, SENT 4)
       get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
@@ -1833,15 +1833,15 @@ testDeliveryReceiptsVersion t = do
 
     disconnectAgentClient a
     disconnectAgentClient b
-    a' <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
-    b' <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+    a' <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB
+    b' <- getSMPAgentClient' agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection a' bId
       subscribeConnection b' aId
       exchangeGreetingsMsgId 6 a' bId b' aId
-      checkVersion a' bId 3
-      checkVersion b' aId 3
+      checkVersion a' bId 4
+      checkVersion b' aId 4
       8 <- sendMessage a' bId SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 8)
       get b' =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
