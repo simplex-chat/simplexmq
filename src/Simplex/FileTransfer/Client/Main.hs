@@ -74,7 +74,7 @@ import UnliftIO
 import UnliftIO.Directory
 
 xftpClientVersion :: String
-xftpClientVersion = "0.1.0"
+xftpClientVersion = "1.0.1"
 
 chunkSize1 :: Word32
 chunkSize1 = kb 256
