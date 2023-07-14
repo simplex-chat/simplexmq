@@ -261,7 +261,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
 
     -- receive file
     rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
-    runRight_ $ do
+    runRight_ $
       void $ testReceive rcp rfd1 filePath
 
 testXFTPAgentSendCleanup :: IO ()
