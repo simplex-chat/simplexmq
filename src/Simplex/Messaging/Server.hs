@@ -58,11 +58,13 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import GHC.TypeLits (KnownNat)
-import Network.Socket (ServiceName)
+import Network.Socket (ServiceName, Socket, socketToHandle)
+import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding (Encoding (smpEncode))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
@@ -74,10 +76,11 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
-import System.Exit (exitFailure)
-import System.IO (hPutStrLn)
+import System.Exit (exitFailure, exitSuccess)
+import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
@@ -110,14 +113,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
-      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg
+      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` (withLog closeStoreLog >> saveServerMessages >> saveServerStats)
+    `finally` withLock (savingLock s) "final" saveServer
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       runTransportServer started tcpPort serverParams tCfg (runClient t)
+
+    saveServer :: M ()
+    saveServer = withLog closeStoreLog >> saveServerMessages >> saveServerStats
 
     serverThread ::
       forall s.
@@ -222,6 +228,57 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       liftIO (runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
         Right th -> runClientTransport th
         Left _ -> pure ()
+
+    controlPortThread_ :: ServerConfig -> [M ()]
+    controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
+    controlPortThread_ _ = []
+
+    runCPServer :: ServiceName -> M ()
+    runCPServer port = do
+      srv <- asks server
+      cpStarted <- newEmptyTMVarIO
+      u <- askUnliftIO
+      liftIO $ runTCPServer cpStarted port $ runCPClient u srv
+      where
+        runCPClient :: UnliftIO (ReaderT Env IO) -> Server -> Socket -> IO ()
+        runCPClient u srv sock = do
+          h <- socketToHandle sock ReadWriteMode
+          hSetBuffering h LineBuffering
+          hSetNewlineMode h universalNewlineMode
+          hPutStrLn h "SMP server control port\n'help' for supported commands"
+          cpLoop h
+          where
+            cpLoop h = do
+              s <- B.hGetLine h
+              case strDecode $ trimCR s of
+                Right CPQuit -> hClose h
+                Right cmd -> processCP h cmd >> cpLoop h
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
+            processCP h = \case
+              CPSuspend -> hPutStrLn h "suspend not implemented"
+              CPResume -> hPutStrLn h "resume not implemented"
+              CPClients -> hPutStrLn h "clients not implemented"
+              CPStats -> do
+                ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
+                putStat "fromTime" fromTime
+                putStat "qCreated" qCreated
+                putStat "qSecured" qSecured
+                putStat "qDeleted" qDeleted
+                putStat "msgSent" msgSent
+                putStat "msgRecv" msgRecv
+                putStat "msgSentNtf" msgSentNtf
+                putStat "msgRecvNtf" msgRecvNtf
+                putStat "qCount" qCount
+                putStat "msgCount" msgCount
+                where
+                  putStat :: Show a => String -> TVar a -> IO ()
+                  putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
+              CPDump -> withLock (savingLock srv) "control" $ do
+                hPutStrLn h "saving server state..."
+                unliftIO u $ saveServer
+                hPutStrLn h "server state saved!"
+              CPHelp -> hPutStrLn h "commands: suspend, resume, clients, stats, dump, help, quit"
+              CPQuit -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()
 runClientTransport th@THandle {thVersion, sessionId} = do
