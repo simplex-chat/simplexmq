@@ -82,7 +82,7 @@ cfg =
   ServerConfig
     { transports = undefined,
       tbqSize = 1,
-      serverTbqSize = 1,
+      -- serverTbqSize = 1,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,

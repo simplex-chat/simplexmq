@@ -39,7 +39,7 @@ import UnliftIO.STM
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
-    serverTbqSize :: Natural,
+    -- serverTbqSize :: Natural,
     msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
@@ -103,9 +103,9 @@ data Env = Env
   }
 
 data Server = Server
-  { subscribedQ :: TBQueue (RecipientId, Client),
+  { subscribedQ :: TQueue (RecipientId, Client),
     subscribers :: TMap RecipientId Client,
-    ntfSubscribedQ :: TBQueue (NotifierId, Client),
+    ntfSubscribedQ :: TQueue (NotifierId, Client),
     notifiers :: TMap NotifierId Client
   }
 
@@ -127,11 +127,11 @@ data Sub = Sub
     delivered :: TMVar MsgId
   }
 
-newServer :: Natural -> STM Server
-newServer qSize = do
-  subscribedQ <- newTBQueue qSize
+newServer :: STM Server
+newServer = do
+  subscribedQ <- newTQueue
   subscribers <- TM.empty
-  ntfSubscribedQ <- newTBQueue qSize
+  ntfSubscribedQ <- newTQueue
   notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
@@ -152,7 +152,7 @@ newSubscription subThread = do
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
-  server <- atomically $ newServer (serverTbqSize config)
+  server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
