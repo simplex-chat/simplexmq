@@ -219,73 +219,49 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
 testXFTPAgentSendRestore :: IO ()
 testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
   filePath <- createRandomFile
-  liftIO $ print 1
 
   -- send file - should not succeed with server down
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-  liftIO $ print 2
   sfId <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
-    liftIO $ print 3
     sfId <- xftpSendFile sndr 1 filePath 2
-    liftIO $ print 4
     liftIO $ timeout 1000000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
     pure sfId
-  liftIO $ print 5
   disconnectAgentClient sndr
 
-  liftIO $ print 6
   dirEntries <- listDirectory senderFiles
   let prefixDir = fromJust $ find (isSuffixOf "_snd.xftp") dirEntries
       prefixPath = senderFiles </> prefixDir
       encPath = prefixPath </> "xftp.encrypted"
-  liftIO $ print 7
   doesDirectoryExist prefixPath `shouldReturn` True
-  liftIO $ print 8
   doesFileExist encPath `shouldReturn` True
 
-  liftIO $ print 9
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should start uploading with server up
-    liftIO $ print 10
     sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
-    liftIO $ print 11
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-    liftIO $ print 12
     ("", sfId', SFPROG _ _) <- sfGet sndr'
-    liftIO $ print 13
     liftIO $ sfId' `shouldBe` sfId
-    liftIO $ print 14
     disconnectAgentClient sndr'
 
   threadDelay 100000
 
-  liftIO $ print 15
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
-    liftIO $ print 16
     sndr' <- getSMPAgentClient' agentCfg initAgentServers testDB
-    liftIO $ print 17
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-    liftIO $ print 18
     sfProgress sndr' $ mb 18
-    liftIO $ print 19
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
-    liftIO $ print 20
     liftIO $ sfId' `shouldBe` sfId
 
     -- prefix path should be removed after sending file
     threadDelay 100000
-    liftIO $ print 21
     doesDirectoryExist prefixPath `shouldReturn` False
-    liftIO $ print 22
     doesFileExist encPath `shouldReturn` False
 
     -- receive file
-    liftIO $ print 23
     rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
     runRight_ $ do
-      liftIO $ print 24
       void $ testReceive rcp rfd1 filePath
 
 testXFTPAgentSendCleanup :: IO ()
@@ -328,49 +304,38 @@ testXFTPAgentDelete :: IO ()
 testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
   withXFTPServer $ do
     filePath <- createRandomFile
-    liftIO $ print 1
 
+    liftIO $ print 1
     -- send file
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-    liftIO $ print 2
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
-    liftIO $ print 3
 
     -- receive file
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
-    liftIO $ print 4
     runRight_ $
       void $ testReceive rcp1 rfd1 filePath
-    liftIO $ print 5
 
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
-    liftIO $ print 6
 
+    liftIO $ print 2
     -- delete file
     runRight $ do
-      liftIO $ print 7
       xftpStartWorkers sndr (Just senderFiles)
-      liftIO $ print 8
       xftpDeleteSndFileRemote sndr 1 sfId sndDescr
-      liftIO $ print 9
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
-    liftIO $ print 10
 
+    liftIO $ print 3
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
-    liftIO $ print 11
 
+    liftIO $ print 4
     -- receive file - should fail with AUTH error
     rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
-    liftIO $ print 12
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
-      liftIO $ print 13
       rfId <- xftpReceiveFile rcp2 1 rfd2
-      liftIO $ print 14
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
-      liftIO $ print 15
       liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteRestore :: IO ()
