@@ -1095,7 +1095,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndMsg RISlow
+                  _ -> retryIfNotExpired RISlow err
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1124,11 +1124,12 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
-                  | temporaryOrHostError e -> do
-                    let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg RIFast)
+                  | temporaryOrHostError e -> retryIfNotExpired RIFast err
                   | otherwise -> notifyDel msgId err
               where
+                retryIfNotExpired riMode err = do
+                  let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
+                  ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg riMode)
                 msgExpired timeoutSel = do
                   msgTimeout <- asks $ timeoutSel . config
                   currentTime <- liftIO getCurrentTime
