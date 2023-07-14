@@ -123,7 +123,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     serverThread ::
       forall s.
       Server ->
-      (Server -> TBQueue (QueueId, Client)) ->
+      (Server -> TQueue (QueueId, Client)) ->
       (Server -> TMap QueueId Client) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
@@ -135,7 +135,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       where
         updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
-          (qId, clnt) <- readTBQueue $ subQ s
+          (qId, clnt) <- readTQueue $ subQ s
           let clientToBeNotified = \c' ->
                 if sameClientSession clnt c'
                   then pure Nothing
@@ -478,7 +478,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           where
             newSub :: m (TVar Sub)
             newSub = time "SUB newSub" . atomically $ do
-              writeTBQueue subscribedQ (rId, clnt)
+              writeTQueue subscribedQ (rId, clnt)
               sub <- newTVar =<< newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
@@ -523,7 +523,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = time "NSUB" . atomically $ do
           unlessM (TM.member queueId ntfSubscriptions) $ do
-            writeTBQueue ntfSubscribedQ (queueId, clnt)
+            writeTQueue ntfSubscribedQ (queueId, clnt)
             TM.insert queueId () ntfSubscriptions
           pure ok
 
