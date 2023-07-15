@@ -110,10 +110,7 @@ data Server = Server
     subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TQueue (NotifierId, Client),
     notifiers :: TMap NotifierId Client,
-    active :: TVar Bool,
-    savingLock :: Lock,
-    subSuspended :: TVar Bool,
-    ntfSubSuspended :: TVar Bool
+    savingLock :: Lock
   }
 
 data Client = Client
@@ -124,8 +121,7 @@ data Client = Client
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
-    activeAt :: TVar SystemTime,
-    suspended :: TVar Bool
+    activeAt :: TVar SystemTime
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub

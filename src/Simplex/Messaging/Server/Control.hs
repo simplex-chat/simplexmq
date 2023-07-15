@@ -34,9 +34,3 @@ instance StrEncoding ControlProtocol where
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
       _ -> fail "bad ControlProtocol command"
-
--- suspendInactive :: TVar Bool -> TVar Bool -> STM ()
--- suspendInactive active suspended = do
---   a <- readTVar active
---   writeTVar suspended $! not a
---   unless a retry
