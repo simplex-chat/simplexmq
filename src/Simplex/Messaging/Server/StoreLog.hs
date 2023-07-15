@@ -25,20 +25,17 @@ module Simplex.Messaging.Server.StoreLog
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad (unless)
-import Data.Bifunctor (first, second)
+import Control.Monad (foldM, unless, when)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Either (partitionEithers)
 import Data.Functor (($>))
-import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..), ServerQueueStatus (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
+import Simplex.Messaging.Util (ifM)
 import System.Directory (doesFileExist)
 import System.IO
 
@@ -139,37 +136,33 @@ logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
 logDeleteNotifier :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
-readWriteStoreLog :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
-readWriteStoreLog s@(ReadStoreLog f _) = do
-  qs <- readQueues s
-  closeStoreLog s
-  s' <- openWriteStoreLog f
-  writeQueues s' qs
-  pure (qs, s')
+readWriteStoreLog :: FilePath -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
+readWriteStoreLog f = do
+  qs <- ifM (doesFileExist f) (readQueues f) (pure M.empty)
+  s <- openWriteStoreLog f
+  writeQueues s qs
+  pure (qs, s)
 
 writeQueues :: StoreLog 'WriteMode -> Map RecipientId QueueRec -> IO ()
-writeQueues s = mapM_ (writeStoreLogRecord s . CreateQueue) . M.filter active
+writeQueues s = mapM_ $ \q -> when (active q) $ logCreateQueue s q
   where
     active QueueRec {status} = status == QueueActive
 
-type LogParsingError = (String, ByteString)
-
-readQueues :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec)
-readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLog
+readQueues :: FilePath -> IO (Map RecipientId QueueRec)
+readQueues f = foldM processLine M.empty . B.lines =<< B.readFile f
   where
-    procStoreLog :: LB.ByteString -> ([LogParsingError], Map RecipientId QueueRec)
-    procStoreLog = second (foldl' procLogRecord M.empty) . partitionEithers . map parseLogRecord . LB.lines
-    returnResult :: ([LogParsingError], Map RecipientId QueueRec) -> IO (Map RecipientId QueueRec)
-    returnResult (errs, res) = mapM_ printError errs $> res
-    parseLogRecord :: LB.ByteString -> Either LogParsingError StoreLogRecord
-    parseLogRecord = (\s -> first (,s) $ strDecode s) . trimCR . LB.toStrict
-    procLogRecord :: Map RecipientId QueueRec -> StoreLogRecord -> Map RecipientId QueueRec
-    procLogRecord m = \case
-      CreateQueue q -> M.insert (recipientId q) q m
-      SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-      AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
-      SuspendQueue qId -> M.adjust (\q -> q {status = QueueOff}) qId m
-      DeleteQueue qId -> M.delete qId m
-      DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
-    printError :: LogParsingError -> IO ()
-    printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
+    processLine :: Map RecipientId QueueRec -> ByteString -> IO (Map RecipientId QueueRec)
+    processLine m s = case strDecode $ trimCR s of
+      Right r -> pure $ procLogRecord r
+      Left e -> printError e $> m
+      where
+        procLogRecord :: StoreLogRecord -> Map RecipientId QueueRec
+        procLogRecord = \case
+          CreateQueue q -> M.insert (recipientId q) q m
+          SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
+          AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
+          SuspendQueue qId -> M.adjust (\q -> q {status = QueueOff}) qId m
+          DeleteQueue qId -> M.delete qId m
+          DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
+        printError :: String -> IO ()
+        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
