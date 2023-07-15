@@ -19,6 +19,7 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
+import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
@@ -70,7 +71,9 @@ data ServerConfig = ServerConfig
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRange,
     -- | TCP transport config
-    transportConfig :: TransportServerConfig
+    transportConfig :: TransportServerConfig,
+    -- | run listener on control port
+    controlPort :: Maybe ServiceName
   }
 
 defMsgExpirationDays :: Int64
@@ -106,7 +109,8 @@ data Server = Server
   { subscribedQ :: TQueue (RecipientId, Client),
     subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TQueue (NotifierId, Client),
-    notifiers :: TMap NotifierId Client
+    notifiers :: TMap NotifierId Client,
+    savingLock :: Lock
   }
 
 data Client = Client
@@ -133,7 +137,8 @@ newServer = do
   subscribers <- TM.empty
   ntfSubscribedQ <- newTQueue
   notifiers <- TM.empty
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
+  savingLock <- createLock
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
 newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
 newClient qSize thVersion sessionId ts = do

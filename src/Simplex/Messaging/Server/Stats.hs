@@ -94,7 +94,7 @@ setServerStats s d = do
   writeTVar (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
   writeTVar (qCount s) $! _qCount d
-  writeTVar (msgCount s) $! _qCount d
+  writeTVar (msgCount s) $! _msgCount d
 
 instance StrEncoding ServerStatsData where
   strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf} =

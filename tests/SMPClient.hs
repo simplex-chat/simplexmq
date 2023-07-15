@@ -100,7 +100,8 @@ cfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange,
-      transportConfig = defaultTransportServerConfig
+      transportConfig = defaultTransportServerConfig,
+      controlPort = Nothing
     }
 
 withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
