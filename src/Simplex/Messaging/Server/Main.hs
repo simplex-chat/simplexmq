@@ -130,7 +130,8 @@ smpServerCLI cfgPath logPath =
                 <> ("host: " <> host <> "\n")
                 <> ("port: " <> defaultServerPort <> "\n")
                 <> "log_tls_errors: off\n\
-                   \websockets: off\n\n\
+                   \websockets: off\n\
+                   \# control_port: 5224\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
@@ -202,7 +203,8 @@ smpServerCLI cfgPath logPath =
               transportConfig =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
-                  }
+                  },
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini
             }
 
 data CliCommand
