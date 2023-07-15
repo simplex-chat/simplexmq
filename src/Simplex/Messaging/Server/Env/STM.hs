@@ -165,22 +165,21 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  storeLog <- liftIO $ openReadStoreLog `mapM` storeLogFile
-  s' <- restoreQueues queueStore `mapM` storeLog
+  storeLog <- restoreQueues queueStore `mapM` storeLogFile
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams, serverStats}
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats}
   where
-    restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
-    restoreQueues QueueStore {queues, senders, notifiers} s = do
-      (qs, s') <- liftIO $ readWriteStoreLog s
+    restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
+    restoreQueues QueueStore {queues, senders, notifiers} f = do
+      (qs, s) <- liftIO $ readWriteStoreLog f
       atomically $ do
         writeTVar queues =<< mapM newTVar qs
         writeTVar senders $! M.foldr' addSender M.empty qs
         writeTVar notifiers $! M.foldr' addNotifier M.empty qs
-      pure s'
+      pure s
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
     addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
