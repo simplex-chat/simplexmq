@@ -79,7 +79,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
-import System.Exit (exitFailure, exitSuccess)
+import System.Exit (exitFailure)
 import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
@@ -115,15 +115,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` withLock (savingLock s) "final" saveServer
+    `finally` withLock (savingLock s) "final" (saveServer False)
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       runTransportServer started tcpPort serverParams tCfg (runClient t)
 
-    saveServer :: M ()
-    saveServer = withLog closeStoreLog >> saveServerMessages >> saveServerStats
+    saveServer :: Bool -> M ()
+    saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
 
     serverThread ::
       forall s.
@@ -273,11 +273,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
-              CPDump -> withLock (savingLock srv) "control" $ do
+              CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
-                unliftIO u $ saveServer
+                unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: suspend, resume, clients, stats, dump, help, quit"
+              CPHelp -> hPutStrLn h "commands: stats, save, help, quit"
               CPQuit -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()
@@ -777,8 +777,8 @@ randomId n = do
   gVar <- asks idsDrg
   atomically (C.pseudoRandomBytes n gVar)
 
-saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => m ()
-saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
+saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => Bool -> m ()
+saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
     saveMessages f = do
       logInfo $ "saving messages to file " <> T.pack f
@@ -787,8 +787,9 @@ saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
         readTVarIO ms >>= mapM_ (saveQueueMsgs ms h) . M.keys
       logInfo "messages saved"
       where
+        getMessages = if keepMsgs then snapshotMsgQueue else flushMsgQueue
         saveQueueMsgs ms h rId =
-          atomically (flushMsgQueue ms rId)
+          atomically (getMessages ms rId)
             >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
 restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()

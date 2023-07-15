@@ -11,7 +11,7 @@ data ControlProtocol
   | CPResume
   | CPClients
   | CPStats
-  | CPDump
+  | CPSave
   | CPHelp
   | CPQuit
 
@@ -21,7 +21,7 @@ instance StrEncoding ControlProtocol where
     CPResume -> "resume"
     CPClients -> "clients"
     CPStats -> "stats"
-    CPDump -> "dump"
+    CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
   strP =
@@ -30,7 +30,7 @@ instance StrEncoding ControlProtocol where
       "resume" -> pure CPResume
       "clients" -> pure CPClients
       "stats" -> pure CPStats
-      "dump" -> pure CPDump
+      "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
       _ -> fail "bad ControlProtocol command"
