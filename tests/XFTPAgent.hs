@@ -37,7 +37,7 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-  xit'' "should resume sending file after restart" testXFTPAgentSendRestore
+  it "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
@@ -255,6 +255,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     liftIO $ sfId' `shouldBe` sfId
 
     -- prefix path should be removed after sending file
+    threadDelay 100000
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
 
