@@ -37,9 +37,9 @@ xftpAgentTests = around_ testBracket . describe "Functional API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-  fit "should resume sending file after restart" testXFTPAgentSendRestore
+  it "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
-  fit "should delete sent file on server" testXFTPAgentDelete
+  it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
@@ -305,7 +305,6 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
   withXFTPServer $ do
     filePath <- createRandomFile
 
-    liftIO $ print 1
     -- send file
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
@@ -317,7 +316,6 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
 
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
-    liftIO $ print 2
     -- delete file
     runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
@@ -325,11 +323,9 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
 
-    liftIO $ print 3
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
-    liftIO $ print 4
     -- receive file - should fail with AUTH error
     rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
     runRight $ do
