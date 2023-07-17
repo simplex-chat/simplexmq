@@ -130,7 +130,8 @@ smpServerCLI cfgPath logPath =
                 <> ("host: " <> host <> "\n")
                 <> ("port: " <> defaultServerPort <> "\n")
                 <> "log_tls_errors: off\n\
-                   \websockets: off\n\n\
+                   \websockets: off\n\
+                   \# control_port: 5224\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
@@ -166,7 +167,7 @@ smpServerCLI cfgPath logPath =
           ServerConfig
             { transports = iniTransports ini,
               tbqSize = 64,
-              serverTbqSize = 1024,
+              -- serverTbqSize = 1024,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
@@ -202,7 +203,8 @@ smpServerCLI cfgPath logPath =
               transportConfig =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
-                  }
+                  },
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini
             }
 
 data CliCommand

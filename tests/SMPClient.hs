@@ -82,7 +82,7 @@ cfg =
   ServerConfig
     { transports = undefined,
       tbqSize = 1,
-      serverTbqSize = 1,
+      -- serverTbqSize = 1,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
@@ -100,7 +100,8 @@ cfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange,
-      transportConfig = defaultTransportServerConfig
+      transportConfig = defaultTransportServerConfig,
+      controlPort = Nothing
     }
 
 withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

@@ -13,6 +13,7 @@ module Simplex.Messaging.Server.MsgStore.STM
     getMsgQueue,
     delMsgQueue,
     flushMsgQueue,
+    snapshotMsgQueue,
     writeMsg,
     tryPeekMsg,
     peekMsg,
@@ -61,6 +62,14 @@ delMsgQueue st rId = TM.delete rId st
 
 flushMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
 flushMsgQueue st rId = TM.lookupDelete rId st >>= maybe (pure []) (flushTQueue . msgQueue)
+
+snapshotMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
+snapshotMsgQueue st rId  = TM.lookup rId st >>= maybe (pure []) (snapshotTQueue . msgQueue)
+  where
+    snapshotTQueue q = do
+      msgs <- flushTQueue q
+      mapM_ (writeTQueue q) msgs
+      pure msgs
 
 writeMsg :: MsgQueue -> Message -> STM (Maybe Message)
 writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} msg = do
