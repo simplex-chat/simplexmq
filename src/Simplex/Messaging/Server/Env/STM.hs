@@ -6,6 +6,8 @@
 module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
+import Control.Concurrent.STM (retry)
+import Control.Monad (unless)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
@@ -110,8 +112,21 @@ data Server = Server
     subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TQueue (NotifierId, Client),
     notifiers :: TMap NotifierId Client,
-    savingLock :: Lock
+    savingLock :: Lock,
+    active :: TVar Bool,
+    serverState :: ServerState
   }
+
+data ServerState = ServerState
+  { subsThread :: TVar ThreadState,
+    ntfSubsThread :: TVar ThreadState,
+    listenThreads :: TMap ServiceName (TVar ThreadState),
+    expireThread :: TVar ThreadState,
+    statsThread :: TVar ThreadState
+  }
+
+data ThreadState = TSActive | TSSuspended | TSBlocked Int | TSFinished
+  deriving (Show)
 
 data Client = Client
   { subscriptions :: TMap RecipientId (TVar Sub),
@@ -121,7 +136,13 @@ data Client = Client
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
-    activeAt :: TVar SystemTime
+    activeAt :: TVar SystemTime,
+    clientState :: ClientState
+  }
+
+data ClientState = ClientState
+  { -- TODO
+
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
@@ -138,7 +159,18 @@ newServer = do
   ntfSubscribedQ <- newTQueue
   notifiers <- TM.empty
   savingLock <- createLock
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
+  active <- newTVar True
+  serverState <- newServerState
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock, active, serverState}
+
+newServerState :: STM ServerState
+newServerState = do
+  subsThread <- newTVar TSActive
+  ntfSubsThread <- newTVar TSActive
+  listenThreads <- TM.empty
+  expireThread <- newTVar TSActive
+  statsThread <- newTVar TSActive
+  pure ServerState {subsThread, ntfSubsThread, listenThreads, expireThread, statsThread}
 
 newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
 newClient qSize thVersion sessionId ts = do
@@ -148,12 +180,22 @@ newClient qSize thVersion sessionId ts = do
   sndQ <- newTBQueue qSize
   connected <- newTVar True
   activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt}
+  clientState <- newClientState
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt, clientState}
+
+newClientState :: STM ClientState
+newClientState = pure ClientState {} -- TODO
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
   delivered <- newEmptyTMVar
   return Sub {subThread, delivered}
+
+suspendInactive :: Server -> TVar ThreadState -> STM ()
+suspendInactive Server {active} threadState = do
+  a <- readTVar active
+  writeTVar threadState $! if a then TSSuspended else TSActive
+  unless a retry
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do

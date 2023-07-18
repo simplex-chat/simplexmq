@@ -111,8 +111,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   restoreServerMessages
   restoreServerStats
   raceAny_
-    ( serverThread s subscribedQ subscribers subscriptions cancelSub :
-      serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
+    ( serverThread s subscribedQ subscribers subsThread subscriptions cancelSub :
+      serverThread s ntfSubscribedQ notifiers ntfSubsThread ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock (savingLock s) "final" (saveServer False)
@@ -130,10 +130,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       Server ->
       (Server -> TQueue (QueueId, Client)) ->
       (Server -> TMap QueueId Client) ->
+      (ServerState -> TVar ThreadState) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
-    serverThread s subQ subs clientSubs unsub = forever $ do
+    serverThread s subQ subs threadState clientSubs unsub = forever $ do
+      atomically $ suspendInactive s (threadState $ serverState s)
       atomically updateSubscribers
         $>>= endPreviousSubscriptions
         >>= liftIO . mapM_ unsub
