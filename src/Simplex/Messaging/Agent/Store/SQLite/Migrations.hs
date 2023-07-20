@@ -64,6 +64,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_m
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -93,7 +94,8 @@ schemaMigrations =
     ("m20230516_encrypted_rcv_message_hashes", m20230516_encrypted_rcv_message_hashes, Just down_m20230516_encrypted_rcv_message_hashes),
     ("m20230531_switch_status", m20230531_switch_status, Just down_m20230531_switch_status),
     ("m20230615_ratchet_sync", m20230615_ratchet_sync, Just down_m20230615_ratchet_sync),
-    ("m20230701_delivery_receipts", m20230701_delivery_receipts, Just down_m20230701_delivery_receipts)
+    ("m20230701_delivery_receipts", m20230701_delivery_receipts, Just down_m20230701_delivery_receipts),
+    ("m20230720_delete_expired_messages", m20230720_delete_expired_messages, Just down_m20230720_delete_expired_messages)
   ]
 
 -- | The list of migrations in ascending order by date
