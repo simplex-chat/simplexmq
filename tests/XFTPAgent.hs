@@ -16,7 +16,6 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
-import SMPClient (xit'')
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))

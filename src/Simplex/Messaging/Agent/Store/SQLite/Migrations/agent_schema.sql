@@ -467,3 +467,7 @@ CREATE INDEX idx_snd_messages_rcpt_internal_id ON snd_messages(
   conn_id,
   rcpt_internal_id
 );
+CREATE INDEX idx_messages_internal_snd_id_ts ON messages(
+  internal_snd_id,
+  internal_ts
+);
