@@ -50,13 +50,13 @@ testSchemaMigrations = do
       putStrLn $ "down migration " <> name m
       let downMigr = fromJust $ toDownMigration m
       schema <- getSchema testDB testSchema
-      Migrations.run st $ MTRUp [m]
+      withConnection st (`Migrations.run` MTRUp [m])
       schema' <- getSchema testDB testSchema
       schema' `shouldNotBe` schema
-      Migrations.run st $ MTRDown [downMigr]
+      withConnection st (`Migrations.run` MTRDown [downMigr])
       schema'' <- getSchema testDB testSchema
       schema'' `shouldBe` schema
-      Migrations.run st $ MTRUp [m]
+      withConnection st (`Migrations.run` MTRUp [m])
       schema''' <- getSchema testDB testSchema
       schema''' `shouldBe` schema'
 
