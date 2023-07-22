@@ -977,7 +977,7 @@ getRcvMsg db connId agentMsgId =
           m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.internal_id = m.internal_id
-        LEFT JOIN snd_messages s ON s.rcpt_internal_id = r.internal_id
+        LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.internal_id = ?
       |]
       (connId, agentMsgId)
@@ -994,7 +994,7 @@ getLastMsg db connId msgId =
         FROM rcv_messages r
         JOIN messages m ON r.internal_id = m.internal_id
         JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
-        LEFT JOIN snd_messages s ON s.rcpt_internal_id = r.internal_id
+        LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
       (connId, msgId)
