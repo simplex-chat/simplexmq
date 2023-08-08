@@ -75,7 +75,6 @@
                 hsPkgs.haskell-language-server
                 haskellPackages.cabal-install
                 hpack
-                # cabal2nix
                 haskellPackages.ghcid
               ];
         };

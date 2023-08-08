@@ -1,0 +1,14 @@
+cradle:
+  cabal:
+    - path: "./src"
+      component: "lib:simplexmq"
+    - path: "./apps/smp-server"
+      component: "exe:smp-server"
+    - path: "./apps/ntf-server"
+      component: "exe:ntf-server"
+    - path: "./apps/xftp-server"
+      component: "exe:xftp-server"
+    - path: "./apps/xftp"
+      component: "exe:xftp"
+    - path: "./tests"
+      component: "test:simplexmq-test"
