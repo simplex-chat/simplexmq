@@ -75,7 +75,10 @@
                 hsPkgs.haskell-language-server
                 haskellPackages.cabal-install
                 hpack
+                stack
                 haskellPackages.ghcid
+                pkgconfig
+                zlib
               ];
         };
       });

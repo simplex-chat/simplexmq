@@ -67,7 +67,7 @@ import Simplex.Messaging.Encoding (Encoding (smpEncode))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Control
-import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.Env.STM as E
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM
@@ -116,7 +116,7 @@ smpServer started cfg@ServerConfig{transports, transportConfig = tCfg} = do
   restoreServerStats
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub
-        : serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ())
+        : serverThread s ntfSubscribedQ E.notifiers ntfSubscriptions (\_ -> pure ())
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock (savingLock s) "final" (saveServer False)

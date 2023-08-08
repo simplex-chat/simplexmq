@@ -17,7 +17,7 @@
 #
 # resolver: ./custom-snapshot.yaml
 # resolver: https://example.com/snapshots/2018-01-01.yaml
-resolver: lts-18.28
+resolver: lts-21.6
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -35,19 +35,25 @@ packages:
 # forks / in-progress versions pinned to a git hash. For example:
 #
 extra-deps:
-  - cryptostore-0.2.1.0@sha256:9896e2984f36a1c8790f057fd5ce3da4cbcaf8aa73eb2d9277916886978c5b19,3881
-  - network-3.1.2.7@sha256:e3d78b13db9512aeb106e44a334ab42b7aa48d26c097299084084cb8be5c5568,4888
-  - simple-logger-0.1.0@sha256:be8ede4bd251a9cac776533bae7fb643369ebd826eb948a9a18df1a8dd252ff8,1079
-  - tls-1.6.0@sha256:7ae39373fd2de27fb80e90f76d22aeeb9a074a0ddd120cbd02c9c52f516a9e55,6987
-  # below dependencies are to update Aeson to 2.0.3
-  - OneTuple-0.3.1@sha256:a848c096c9d29e82ffdd30a9998aa2931cbccb3a1bc137539d80f6174d31603e,2262
-  - attoparsec-0.14.4@sha256:79584bdada8b730cb5138fca8c35c76fbef75fc1d1e01e6b1d815a5ee9843191,5810
-  - hashable-1.4.0.2@sha256:0cddd0229d1aac305ea0404409c0bbfab81f075817bd74b8b2929eff58333e55,5005
-  - semialign-1.2.0.1@sha256:0e179b4d3a8eff79001d374d6c91917c6221696b9620f0a4d86852fc6a9b9501,2836
-  - text-short-0.1.5@sha256:962c6228555debdc46f758d0317dea16e5240d01419b42966674b08a5c3d8fa6,3498
-  - time-compat-1.9.6.1@sha256:42d8f2e08e965e1718917d54ad69e1d06bd4b87d66c41dc7410f59313dba4ed1,5033
-  - github: simplex-chat/aeson
-    commit: 3eb66f9a68f103b5f1489382aad89f5712a64db7
+  - cryptostore-0.2.3.0@sha256:11fef09c281eb08ce897dcce3de7e2fcfbdcb143b374765659e8f0214d2a6e80,3881
+  - ini-0.4.1@sha256:ace68f1e022b4319e4cb575a17665bb64a271bc7118e1127f09cea7d33e06824,1229
+  - optparse-applicative-0.16.1.0@sha256:418c22ed6a19124d457d96bc66bd22c93ac22fad0c7100fe4972bbb4ac989731,4982
+  - semialign-1.2.0.1@sha256:ee3468e349e72ec0a604ae05573a4de7181d97d10366254244a0cca8a76d6c35,2852
+  - simple-logger-0.1.1@sha256:a21912c52a702b4e3f2376f61e5bde61cb4504debe5269dd9f9dc762097ffdbd,1098
+  - strict-0.4.0.1@sha256:d6205a748eb8db4cd17a7179be970c94598809709294ccfa43159c7f3cc4bf5d,4187
+  - these-1.1.1.1@sha256:2991c13e264b0c35c696c8f5f85c428c53bc42e93b1dfbd19a582052112d948a,2748
+  - time-1.9.3@sha256:8f1b5448722a12a952248b356c9eb366e351226543d9086a2da71270522d5f45,5679
+  - Cabal-3.10.1.0@sha256:6d11adf7847d9734e7b02785ff831b5a0d11536bfbcefd6634b2b08411c63c94,12316
+  - OneTuple-0.3.1@sha256:fc32cb744477befa450a538ea4975cc523f0a2f1585cb5a36e9936a3d18e9a3c,2276
+  - assoc-1.0.2@sha256:9decd0933cb6b903a40a8ace02d634bf90048ee2e5b0a514dccad7056c041881,1253
+  - directory-1.3.8.1@sha256:e384a4831b0ac0f8908a1d99d14ce44bf9c5fe2092eec5b2c47ea072d477a493,2942
+  - process-1.6.17.0@sha256:49d8a7f372d35363011591b253cae4c8db8b9ec594590448e20b7bed7acaee98,2845
+  - unix-2.8.1.1@sha256:91cbc951a742fc2c95d5902be38fcf1b859c2891241bc353ff16154a8f7c35ae,7314
+  - Cabal-syntax-3.10.1.0@sha256:bb835ebab577fd0f9c11dab96210dbb8d68ffc62652576f4b092563c345930e7,7434
+  - filepath-1.4.100.3@sha256:ab6e3330c42817b0effb14cae9c60d5cdc41d61f7354d04bc529ed031113f27c,5623
+
+  - github: JonathanLorimer/aeson
+    commit: b6634ea9c8960d2dab4dc0e1ab76bbfe23fba928
   - github: kazu-yamamoto/http2
     commit: b5a1b7200cf5bc7044af34ba325284271f6dff25
   # - ../direct-sqlcipher
@@ -56,6 +62,10 @@ extra-deps:
   # - ../sqlcipher-simple
   - github: simplex-chat/sqlcipher-simple
     commit: 5e154a2aeccc33ead6c243ec07195ab673137221
+
+  - github: simplex-chat/hs-socks
+    commit: a30cc7a79a08d8108316094f8f2f82a0c5e1ac51
+
   # - ../hs-tls/core
   # - github: simplex-chat/hs-tls
   #   commit: f6cc753611f80af300401cfae63846e9d7c40d9e

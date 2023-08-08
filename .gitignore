@@ -11,3 +11,4 @@ cabal.project.local~
 .hpc/
 *.tix
 .coverage
+.stack-work/
