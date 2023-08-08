@@ -15,6 +15,7 @@ module Simplex.Messaging.TMap
     alter,
     alterF,
     union,
+    assocs,
   )
 where
 
@@ -85,3 +86,7 @@ alterF f k m = do
 union :: Ord k => Map k a -> TMap k a -> STM ()
 union m' m = modifyTVar' m $ M.union m'
 {-# INLINE union #-}
+
+assocs :: Ord k => TMap k a -> STM [(k, a)]
+assocs m = M.assocs <$> readTVar m
+{-# INLINE assocs #-}

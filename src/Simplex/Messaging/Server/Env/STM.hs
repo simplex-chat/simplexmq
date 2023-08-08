@@ -18,6 +18,7 @@ import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
+import GHC.Conc (BlockReason)
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
@@ -125,8 +126,22 @@ data ServerState = ServerState
     statsThread :: TVar ThreadState
   }
 
-data ThreadState = TSActive | TSSuspended | TSBlocked Int | TSFinished
+data ThreadState = TSActive | TSBlocked { reason :: BlockReason, isSuspended :: Bool} | TSFinished | TSDied
   deriving (Show)
+
+data ThreadMonitorSpec = ThreadMonitorSpec
+  { tState :: Maybe (TVar ThreadState),
+    isActive :: Maybe (TVar Bool)
+  }
+
+noThreadMonitoring :: ThreadMonitorSpec
+noThreadMonitoring = ThreadMonitorSpec {tState = Nothing, isActive = Nothing}
+
+monitoredThread :: TVar ThreadState -> ThreadMonitorSpec
+monitoredThread tsVar = ThreadMonitorSpec {tState = Just tsVar, isActive = Nothing}
+
+suspendableMonitoredThread :: TVar ThreadState -> TVar Bool -> ThreadMonitorSpec
+suspendableMonitoredThread tsVar aVar = ThreadMonitorSpec {tState = Just tsVar, isActive = Just aVar}
 
 data Client = Client
   { subscriptions :: TMap RecipientId (TVar Sub),
@@ -191,10 +206,9 @@ newSubscription subThread = do
   delivered <- newEmptyTMVar
   return Sub {subThread, delivered}
 
-suspendInactive :: Server -> TVar ThreadState -> STM ()
-suspendInactive Server {active} threadState = do
-  a <- readTVar active
-  writeTVar threadState $! if a then TSSuspended else TSActive
+suspendUntilActive :: TVar Bool -> STM ()
+suspendUntilActive isActive = do
+  a <- readTVar isActive
   unless a retry
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env

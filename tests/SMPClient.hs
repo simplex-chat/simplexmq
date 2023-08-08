@@ -43,6 +43,9 @@ testPort = "5001"
 testPort2 :: ServiceName
 testPort2 = "5002"
 
+testControlPort :: ServiceName
+testControlPort = "5222"
+
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 

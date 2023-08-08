@@ -12,6 +12,7 @@ module Simplex.Messaging.Transport.Client
     defaultSMPPort,
     defaultTransportClientConfig,
     defaultSocksProxy,
+    connectTCPClient,
     TransportClientConfig (..),
     SocksProxy,
     TransportHost (..),

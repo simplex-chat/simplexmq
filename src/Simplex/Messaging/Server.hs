@@ -50,13 +50,14 @@ import Data.Int (Int64)
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (isNothing, maybeToList)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
+import GHC.Conc (ThreadStatus (..), threadStatus)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
@@ -80,8 +81,9 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
+import System.IO (hPutStr, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
+import UnliftIO.Async
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -108,12 +110,28 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
+  let ss = serverState s
+      serverIsActive = active s
   restoreServerMessages
   restoreServerStats
-  raceAny_
-    ( serverThread s subscribedQ subscribers subsThread subscriptions cancelSub :
-      serverThread s ntfSubscribedQ notifiers ntfSubsThread ntfSubscriptions (\_ -> pure ()) :
-      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+
+  transportsAndThreadStates <- atomically $
+    forM transports $ \t@(tcpPort, _) -> do
+      tsVar <- newTVar TSActive
+      TM.insert tcpPort tsVar (listenThreads ss)
+      pure (t, tsVar)
+
+  raceAnyWithThreadMonitoring_
+    ( ( serverThread s subscribedQ subscribers subscriptions cancelSub
+      , suspendableMonitoredThread (subsThread ss) serverIsActive
+      ) :
+      ( serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ())
+      , suspendableMonitoredThread (ntfSubsThread ss) serverIsActive
+      ) :
+      map (\(t, tsVar) -> (runServer t, monitoredThread tsVar)) transportsAndThreadStates
+        <> maybeToList (fmap (\x -> (x, monitoredThread (expireThread ss))) (expireMessagesThread_ cfg))
+        <> maybeToList (fmap (\x -> (x, monitoredThread (statsThread ss))) (serverStatsThread_ cfg))
+        <> map (\x -> (x, noThreadMonitoring)) (controlPortThread_ cfg serverIsActive)
     )
     `finally` withLock (savingLock s) "final" (saveServer False)
   where
@@ -130,12 +148,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       Server ->
       (Server -> TQueue (QueueId, Client)) ->
       (Server -> TMap QueueId Client) ->
-      (ServerState -> TVar ThreadState) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
-    serverThread s subQ subs threadState clientSubs unsub = forever $ do
-      atomically $ suspendInactive s (threadState $ serverState s)
+    serverThread s subQ subs clientSubs unsub = forever $ do
+      atomically $ suspendUntilActive (active s)
       atomically updateSubscribers
         $>>= endPreviousSubscriptions
         >>= liftIO . mapM_ unsub
@@ -156,9 +173,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             writeTBQueue (sndQ c) [(CorrId "", qId, END)]
           atomically $ TM.lookupDelete qId (clientSubs c)
 
-    expireMessagesThread_ :: ServerConfig -> [M ()]
-    expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]
-    expireMessagesThread_ _ = []
+    expireMessagesThread_ :: ServerConfig -> Maybe (M ())
+    expireMessagesThread_ ServerConfig {messageExpiration} = expireMessages <$> messageExpiration
 
     expireMessages :: ExpirationConfig -> M ()
     expireMessages expCfg = do
@@ -173,10 +189,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           atomically (getMsgQueue ms rId quota)
             >>= atomically . (`deleteExpiredMsgs` old)
 
-    serverStatsThread_ :: ServerConfig -> [M ()]
+    serverStatsThread_ :: ServerConfig -> Maybe (M ())
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
-      [logServerStats logStatsStartTime interval serverStatsLogFile]
-    serverStatsThread_ _ = []
+      Just $ logServerStats logStatsStartTime interval serverStatsLogFile
+    serverStatsThread_ _ = Nothing
 
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
@@ -223,6 +239,37 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               ]
           threadDelay' interval
 
+    raceAnyWithThreadMonitoring_ :: MonadUnliftIO m => [(m (), ThreadMonitorSpec)] -> m ()
+    raceAnyWithThreadMonitoring_ = r []
+      where
+        r as ((m, ti) : ms) = withAsync m $ \a ->
+          r ((a, ti) : as) ms
+        r as [] = withAsync (monitorAsyncs as) $ \a ->
+          void $ waitAnyCancel (a : map fst as)
+
+        monitorAsyncs :: MonadUnliftIO m => [(Async a, ThreadMonitorSpec)] -> m ()
+        monitorAsyncs as =
+          liftIO . forever $ do
+            forM_ as $ \(a, ti) ->
+              case tState ti of
+                Nothing -> pure ()
+                Just tsVar -> do
+                  currentThreadStatus <- threadStatus (asyncThreadId a)
+                  isCurrentlyActive <- case isActive ti of
+                    Nothing -> pure True
+                    Just aVar -> atomically $ readTVar aVar
+                  let currentThreadState = threadStatusToThreadState currentThreadStatus isCurrentlyActive
+                  atomically $ writeTVar tsVar currentThreadState
+            threadDelay' 100_000
+
+        threadStatusToThreadState :: ThreadStatus -> Bool -> ThreadState
+        threadStatusToThreadState tStatus isActive =
+          case tStatus of
+            ThreadRunning -> TSActive
+            ThreadFinished -> TSFinished
+            ThreadBlocked reason -> TSBlocked reason (not isActive)
+            ThreadDied -> TSDied
+
     runClient :: Transport c => TProxy c -> c -> M ()
     runClient _ h = do
       kh <- asks serverIdentity
@@ -231,12 +278,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         Right th -> runClientTransport th
         Left _ -> pure ()
 
-    controlPortThread_ :: ServerConfig -> [M ()]
-    controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
-    controlPortThread_ _ = []
+    controlPortThread_ :: ServerConfig -> TVar Bool -> [M ()]
+    controlPortThread_ ServerConfig {controlPort = Just port} serverIsActive = [runCPServer port serverIsActive]
+    controlPortThread_ _ _ = []
 
-    runCPServer :: ServiceName -> M ()
-    runCPServer port = do
+    runCPServer :: ServiceName -> TVar Bool -> M ()
+    runCPServer port serverIsActive = do
       srv <- asks server
       cpStarted <- newEmptyTMVarIO
       u <- askUnliftIO
@@ -257,11 +304,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 Right cmd -> processCP h cmd >> cpLoop h
                 Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
             processCP h = \case
-              CPSuspend -> hPutStrLn h "suspend not implemented"
-              CPResume -> hPutStrLn h "resume not implemented"
+              CPSuspend -> do
+                atomically $ writeTVar serverIsActive False
+                hPutStrLn h "server suspended"
+              CPResume -> do
+                atomically $ writeTVar serverIsActive True
+                hPutStrLn h "server resumed"
               CPClients -> hPutStrLn h "clients not implemented"
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
+                hPutStrLn h "Server Stats"
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
                 putStat "qSecured" qSecured
@@ -272,14 +324,29 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "msgRecvNtf" msgRecvNtf
                 putStat "qCount" qCount
                 putStat "msgCount" msgCount
+
+                ServerState {subsThread, ntfSubsThread, listenThreads, expireThread, statsThread} <- unliftIO u $ asks (serverState . server)
+                hPutStrLn h "Server Threads"
+                putStat "subsThread" subsThread
+                putStat "ntfSubsThread" ntfSubsThread
+                putStatMap "listenThread" "port" listenThreads
+                putStat "expireThread" expireThread
+                putStat "statsThread" statsThread
+                hPutStrLn h ""
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
+                  putStatMap :: (Show a) => String -> String -> TMap String (TVar a) -> IO ()
+                  putStatMap label keyLabel m = do
+                    assocs <- atomically $ TM.assocs m
+                    forM_ assocs $ \(k, v) -> do
+                      hPutStr h $ label <> " (" <> keyLabel <> " " <> k <> ")"
+                      putStat "" v
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: stats, save, help, quit"
+              CPHelp -> hPutStrLn h "commands: suspend, resume, stats, save, help, quit"
               CPQuit -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()

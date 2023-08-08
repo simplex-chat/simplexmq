@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -14,14 +15,18 @@ module ServerTests where
 import AgentTests.NotificationTests (removeFileIfExists)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
-import Control.Monad.Except (forM, forM_)
+import Control.Exception (SomeException, try, bracket)
+import Control.Monad.Except (forM, forM_, replicateM, replicateM_)
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.List (isInfixOf)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as S
+import Network.Socket (socketToHandle)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -32,11 +37,15 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client (connectTCPClient)
+import Simplex.Messaging.Util (threadDelay')
 import System.Directory (removeFile)
+import System.IO (BufferMode (..), Handle, hClose, hGetLine, hIsEOF, hPutStrLn, hSetBuffering)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
+import UnliftIO (IOMode (..))
 
 serverTests :: ATransport -> Spec
 serverTests t@(ATransport t') = do
@@ -58,6 +67,7 @@ serverTests t@(ATransport t') = do
   describe "Restore messages (old / v2)" $ do
     testRestoreMessagesV2 t
     testRestoreExpireMessages t
+  describe "Control port" $ testControlPortCommands t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -600,6 +610,117 @@ testWithStoreLog at@(ATransport t) =
 
     runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
+
+testControlPortCommands :: ATransport -> Spec
+testControlPortCommands at@(ATransport t) = do
+  it "is unavailable when control port not configured" $
+    withSmpServerConfigOn at cfg testPort . runTest t $ \_ ->
+      connectToControlPort `shouldThrow` anyIOException
+
+  it "is available when control port is configured" $ do
+    let cfg1 = cfg {controlPort = (Just testControlPort)}
+    withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ ->
+      bracket connectToControlPort hClose $ \h -> do
+        results <- replicateM 2 (hGetLine h)
+        results `shouldBe` ["SMP server control port", "'help' for supported commands"]
+
+  it "should list supported commands on 'help'" $ do
+    let cfg1 = cfg {controlPort = (Just testControlPort)}
+    withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ ->
+      bracket connectToControlPort hClose $ \h -> do
+        replicateM_ 2 (hGetLine h)
+        hPutStrLn h "help"
+        response <- hGetLine h
+        response `shouldBe` "commands: suspend, resume, stats, save, help, quit"
+
+  it "should exit on 'quit'" $ do
+    let cfg1 = cfg {controlPort = (Just testControlPort)}
+    withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ ->
+      bracket connectToControlPort hClose $ \h -> do
+        replicateM_ 2 (hGetLine h)
+        hPutStrLn h "quit"
+        isEOF <- hIsEOF h
+        isEOF `shouldBe` True
+        (hGetLine h) `shouldThrow` anyIOException
+
+  it "should display server stats on 'stats'" $ do
+    let cfg1 = cfg {controlPort = (Just testControlPort)}
+    withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> do
+      bracket connectToControlPort hClose $ \h -> do
+        hPutStrLn h "stats"
+        statsMap <- createStatsMap <$> readUntilBlankLine h
+        statsMap `shouldSatisfy` Map.member "fromTime"
+        statsMap `shouldSatisfy` hasKeyWithValue "qCount" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "qCreated" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "qSecured" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "qDeleted" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "msgCount" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "msgRecv" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "msgRecvNtf" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "msgSent" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "msgSentNtf" "0"
+        statsMap `shouldSatisfy` hasKeyWithValue "subsThread" "TSBlocked {reason = BlockedOnSTM, isSuspended = False}"
+        statsMap `shouldSatisfy` hasKeyWithValue "ntfSubsThread" "TSBlocked {reason = BlockedOnSTM, isSuspended = False}"
+        statsMap `shouldSatisfy` Map.member "listenThread (port 5001)"
+        statsMap `shouldSatisfy` hasKeyWithValue "expireThread" "TSBlocked {reason = BlockedOnOther, isSuspended = False}"
+        statsMap `shouldSatisfy` hasKeyWithValue "statsThread" "TSActive"
+
+  it "should be able to suspend and resume" $ do
+    let cfg1 = cfg {controlPort = (Just testControlPort)}
+    withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> do
+      bracket connectToControlPort hClose $ \h -> do
+
+        hPutStrLn h "suspend"
+        threadDelay' 110_000
+        hPutStrLn h "stats"
+        suspendedStats <- createStatsMap <$> readUntilBlankLine h
+        suspendedStats `shouldSatisfy` hasKeyWithValue "subsThread" "TSBlocked {reason = BlockedOnSTM, isSuspended = True}"
+        suspendedStats `shouldSatisfy` hasKeyWithValue "ntfSubsThread" "TSBlocked {reason = BlockedOnSTM, isSuspended = True}"
+
+        hPutStrLn h "resume"
+        threadDelay' 110_000
+        hPutStrLn h "stats"
+        resumedStats <- createStatsMap <$> readUntilBlankLine h
+        resumedStats `shouldSatisfy` hasKeyWithValue "subsThread" "TSBlocked {reason = BlockedOnSTM, isSuspended = False}"
+        resumedStats `shouldSatisfy` hasKeyWithValue "ntfSubsThread" "TSBlocked {reason = BlockedOnSTM, isSuspended = False}"
+
+  where
+    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
+    runTest _ test' server = do
+      testSMPClient test' `shouldReturn` ()
+      killThread server
+
+    connectToControlPort :: IO Handle
+    connectToControlPort = do
+      sock <- connectTCPClient "localhost" testControlPort
+      h <- socketToHandle sock ReadWriteMode
+      hSetBuffering h LineBuffering
+      pure h
+
+    readUntilBlankLine :: Handle -> IO [String]
+    readUntilBlankLine h = r []
+      where
+        r ls = do
+          l <- hGetLine h
+          if null l then pure (reverse ls) else r (l : ls)
+
+    hasKeyWithValue :: (Ord a, Eq b) => a -> b -> Map a b -> Bool
+    hasKeyWithValue k v m =
+      case Map.lookup k m of
+        Nothing -> False
+        Just v' -> v == v'
+
+    createStatsMap :: [String] -> Map String String
+    createStatsMap statsLines =
+      foldl
+        ( \acc line ->
+            let (key, value) = break (== ':') line
+             in Map.insert key (drop 2 $ value) acc
+        )
+        Map.empty
+        . filter (\line -> ":" `isInfixOf` line)
+        . takeWhile (\l -> not . null $ l)
+        $ statsLines
 
 logSize :: FilePath -> IO Int
 logSize f =
