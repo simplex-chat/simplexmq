@@ -1,0 +1,117 @@
+{
+  "nodes": {
+    "aeson-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1691447481,
+        "narHash": "sha256-BAgyGuXdoHEZFpLJnA9awkTAmz5ZIRARZwqe4pnN5fY=",
+        "owner": "JonathanLorimer",
+        "repo": "aeson",
+        "rev": "b6634ea9c8960d2dab4dc0e1ab76bbfe23fba928",
+        "type": "github"
+      },
+      "original": {
+        "owner": "JonathanLorimer",
+        "repo": "aeson",
+        "rev": "b6634ea9c8960d2dab4dc0e1ab76bbfe23fba928",
+        "type": "github"
+      }
+    },
+    "direct-sqlcipher-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1661865205,
+        "narHash": "sha256-zTlbfYHi2YzgX8r46c6Ur8CQX9Ul0Edbj1RY7Tysk08=",
+        "owner": "simplex-chat",
+        "repo": "direct-sqlcipher",
+        "rev": "34309410eb2069b029b8fc1872deb1e0db123294",
+        "type": "github"
+      },
+      "original": {
+        "owner": "simplex-chat",
+        "repo": "direct-sqlcipher",
+        "rev": "34309410eb2069b029b8fc1872deb1e0db123294",
+        "type": "github"
+      }
+    },
+    "hs-socks-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1673127458,
+        "narHash": "sha256-aEgouR5om+yElV5efcsLi+4plvq7qimrOTOkd7LdWnk=",
+        "owner": "simplex-chat",
+        "repo": "hs-socks",
+        "rev": "a30cc7a79a08d8108316094f8f2f82a0c5e1ac51",
+        "type": "github"
+      },
+      "original": {
+        "owner": "simplex-chat",
+        "repo": "hs-socks",
+        "rev": "a30cc7a79a08d8108316094f8f2f82a0c5e1ac51",
+        "type": "github"
+      }
+    },
+    "http2-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1680780147,
+        "narHash": "sha256-6zubMhgzsCTKXMht+Pbfoc1OPtvFMUycJcaqUyQoCzc=",
+        "owner": "kazu-yamamoto",
+        "repo": "http2",
+        "rev": "b5a1b7200cf5bc7044af34ba325284271f6dff25",
+        "type": "github"
+      },
+      "original": {
+        "owner": "kazu-yamamoto",
+        "repo": "http2",
+        "rev": "b5a1b7200cf5bc7044af34ba325284271f6dff25",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1691403902,
+        "narHash": "sha256-J74y4xWtKPDPyVtF4arzrwuSOGznlFlJ+uB9RwNNnbo=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "c91024273f020df2dcb209cc133461ca17848026",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "aeson-src": "aeson-src",
+        "direct-sqlcipher-src": "direct-sqlcipher-src",
+        "hs-socks-src": "hs-socks-src",
+        "http2-src": "http2-src",
+        "nixpkgs": "nixpkgs",
+        "sqlcipher-simple-src": "sqlcipher-simple-src"
+      }
+    },
+    "sqlcipher-simple-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1661865375,
+        "narHash": "sha256-oAK4Hl+3arynrhWtc49PbfOlQ69aqgAQeHiTrnhhL7Q=",
+        "owner": "simplex-chat",
+        "repo": "sqlcipher-simple",
+        "rev": "5e154a2aeccc33ead6c243ec07195ab673137221",
+        "type": "github"
+      },
+      "original": {
+        "owner": "simplex-chat",
+        "repo": "sqlcipher-simple",
+        "rev": "5e154a2aeccc33ead6c243ec07195ab673137221",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

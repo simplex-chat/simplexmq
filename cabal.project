@@ -5,8 +5,8 @@ packages: .
 
 source-repository-package
     type: git
-    location: https://github.com/simplex-chat/aeson.git
-    tag: 3eb66f9a68f103b5f1489382aad89f5712a64db7
+    location: https://github.com/JonathanLorimer/aeson.git
+    tag: b6634ea9c8960d2dab4dc0e1ab76bbfe23fba928
 
 source-repository-package
     type: git
