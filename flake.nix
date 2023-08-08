@@ -60,10 +60,8 @@
         });
     in
     {
-      # nix fmt
       formatter = forAllSystems ({pkgs, ...}: pkgs.alejandra);
 
-      # nix develop
       devShells = forAllSystems ({hsPkgs, pkgs, system, ...}: {
         default = 
           hsPkgs.shellFor {
@@ -84,16 +82,13 @@
         };
       });
 
-      # nix build
       packages = forAllSystems ({hsPkgs, ...}: {
           simplexmq = hsPkgs.simplexmq;
           default = hsPkgs.simplexmq;
       });
 
-      # You can't build the cfg package as a check because of IFD in cabal2nix
       checks = {};
 
-      # nix run
       apps = forAllSystems ({system, ...}: {
         #TODO: add all the different bins here
       });
