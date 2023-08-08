@@ -74,6 +74,7 @@
               [
                 hsPkgs.haskell-language-server
                 haskellPackages.cabal-install
+                ormolu
                 hpack
                 stack
                 haskellPackages.ghcid
