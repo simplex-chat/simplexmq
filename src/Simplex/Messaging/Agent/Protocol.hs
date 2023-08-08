@@ -69,6 +69,10 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
+    AMessageReceipt (..),
+    MsgReceipt (..),
+    MsgReceiptInfo,
+    MsgReceiptStatus (..),
     SndQAddr,
     SMPServer,
     pattern SMPServer,
@@ -211,7 +215,7 @@ import Text.Read
 import UnliftIO.Exception (Exception)
 
 currentSMPAgentVersion :: Version
-currentSMPAgentVersion = 3
+currentSMPAgentVersion = 4
 
 supportedSMPAgentVRange :: VersionRange
 supportedSMPAgentVRange = mkVersionRange 1 currentSMPAgentVersion
@@ -314,7 +318,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
-  REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
+  REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
   ACPT :: InvitationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client AEConn
   INFO :: ConnInfo -> ACommand Agent AEConn
@@ -326,13 +330,14 @@ data ACommand (p :: AParty) (e :: AEntity) where
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
-  RSYNC :: RatchetSyncState -> ConnectionStats -> ACommand Agent AEConn
+  RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
-  ACK :: AgentMsgId -> ACommand Client AEConn
+  ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
+  RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn 
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
   DEL :: ACommand Client AEConn
@@ -392,6 +397,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   MERR_ :: ACommandTag Agent AEConn
   MSG_ :: ACommandTag Agent AEConn
   ACK_ :: ACommandTag Client AEConn
+  RCVD_ :: ACommandTag Agent AEConn
   SWCH_ :: ACommandTag Client AEConn
   OFF_ :: ACommandTag Client AEConn
   DEL_ :: ACommandTag Client AEConn
@@ -443,7 +449,8 @@ aCommandTag = \case
   SENT _ -> SENT_
   MERR {} -> MERR_
   MSG {} -> MSG_
-  ACK _ -> ACK_
+  ACK {} -> ACK_
+  RCVD {} -> RCVD_
   SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
@@ -743,6 +750,25 @@ data MsgMeta = MsgMeta
   }
   deriving (Eq, Show)
 
+instance StrEncoding MsgMeta where
+  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
+    B.unwords
+      [ strEncode integrity,
+        "R=" <> bshow rmId <> "," <> showTs rTs,
+        "B=" <> encode bmId <> "," <> showTs bTs,
+        "S=" <> bshow sndMsgId
+      ]
+    where
+      showTs = B.pack . formatISO8601Millis
+  strP = do
+    integrity <- strP
+    recipient <- " R=" *> partyMeta A.decimal
+    broker <- " B=" *> partyMeta base64P
+    sndMsgId <- " S=" *> A.decimal
+    pure MsgMeta {integrity, recipient, broker, sndMsgId}
+    where
+      partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
+
 data SMPConfirmation = SMPConfirmation
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
     senderKey :: SndPublicVerifyKey,
@@ -815,7 +841,7 @@ data AgentMessage
   = AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It makes REPLY message unnecessary.
-    AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
+    AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
   deriving (Show)
@@ -841,6 +867,7 @@ data AgentMessageType
   | AM_HELLO_
   | AM_REPLY_
   | AM_A_MSG_
+  | AM_A_RCVD_
   | AM_QCONT_
   | AM_QADD_
   | AM_QKEY_
@@ -857,6 +884,7 @@ instance Encoding AgentMessageType where
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
+    AM_A_RCVD_ -> "V"
     AM_QCONT_ -> "QC"
     AM_QADD_ -> "QA"
     AM_QKEY_ -> "QK"
@@ -871,6 +899,7 @@ instance Encoding AgentMessageType where
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
+      'V' -> pure AM_A_RCVD_
       'Q' ->
         A.anyChar >>= \case
           'C' -> pure AM_QCONT_
@@ -896,6 +925,7 @@ agentMessageType = \case
     -- REPLY is only used in v1
     REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
+    A_RCVD {} -> AM_A_RCVD_
     QCONT _ -> AM_QCONT_
     QADD _ -> AM_QADD_
     QKEY _ -> AM_QKEY_
@@ -920,6 +950,7 @@ data AMsgType
   = HELLO_
   | REPLY_
   | A_MSG_
+  | A_RCVD_
   | QCONT_
   | QADD_
   | QKEY_
@@ -933,6 +964,7 @@ instance Encoding AMsgType where
     HELLO_ -> "H"
     REPLY_ -> "R"
     A_MSG_ -> "M"
+    A_RCVD_ -> "V"
     QCONT_ -> "QC"
     QADD_ -> "QA"
     QKEY_ -> "QK"
@@ -944,6 +976,7 @@ instance Encoding AMsgType where
       'H' -> pure HELLO_
       'R' -> pure REPLY_
       'M' -> pure A_MSG_
+      'V' -> pure A_RCVD_
       'Q' ->
         A.anyChar >>= \case
           'C' -> pure QCONT_
@@ -962,22 +995,59 @@ data AMessage
   = -- | the first message in the queue to validate it is secured
     HELLO
   | -- | reply queues information
-    REPLY (L.NonEmpty SMPQueueInfo)
+    REPLY (NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
+  | -- | agent envelope for delivery receipt 
+    A_RCVD (NonEmpty AMessageReceipt)
   | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
     QCONT SndQAddr
   | -- add queue to connection (sent by recipient), with optional address of the replaced queue
-    QADD (L.NonEmpty (SMPQueueUri, Maybe SndQAddr))
+    QADD (NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
-    QKEY (L.NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
+    QKEY (NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
   | -- inform that the queues are ready to use (sent by recipient)
-    QUSE (L.NonEmpty (SndQAddr, Bool))
+    QUSE (NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
-    QTEST (L.NonEmpty SndQAddr)
+    QTEST (NonEmpty SndQAddr)
   | -- ratchet re-synchronization is complete, with last decrypted sender message id (recipient's `last_external_snd_msg_id`)
-    EREADY Int64
+    EREADY AgentMsgId
   deriving (Show)
+
+-- | this type is used to send as part of the protocol between different clients
+-- TODO possibly, rename fields and types referring to external and internal IDs to make them different
+data AMessageReceipt = AMessageReceipt
+  { agentMsgId :: AgentMsgId, -- this is an external snd message ID referenced by the message recipient
+    msgHash :: MsgHash,
+    rcptInfo :: MsgReceiptInfo
+  }
+  deriving (Show)
+
+-- | this type is used as part of agent protocol to communicate with the user application
+data MsgReceipt = MsgReceipt
+  { agentMsgId :: AgentMsgId, -- this is an internal agent message ID of received message
+    msgRcptStatus :: MsgReceiptStatus
+  }
+  deriving (Eq, Show)
+
+data MsgReceiptStatus = MROk | MRBadMsgHash
+  deriving (Eq, Show)
+
+instance StrEncoding MsgReceiptStatus where
+  strEncode = \case
+    MROk -> "ok"
+    MRBadMsgHash -> "badMsgHash"
+  strP =
+    A.takeWhile1 (/= ' ') >>= \ case
+      "ok" -> pure MROk
+      "badMsgHash" -> pure MRBadMsgHash
+      _ -> fail "bad MsgReceiptStatus"
+
+instance ToJSON MsgReceiptStatus where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+type MsgReceiptInfo = ByteString
 
 type SndQAddr = (SMPServer, SMP.SenderId)
 
@@ -986,6 +1056,7 @@ instance Encoding AMessage where
     HELLO -> smpEncode HELLO_
     REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
     A_MSG body -> smpEncode (A_MSG_, Tail body)
+    A_RCVD mrs -> smpEncode (A_RCVD_, mrs)
     QCONT addr -> smpEncode (QCONT_, addr)
     QADD qs -> smpEncode (QADD_, qs)
     QKEY qs -> smpEncode (QKEY_, qs)
@@ -998,12 +1069,28 @@ instance Encoding AMessage where
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
+        A_RCVD_ -> A_RCVD <$> smpP
         QCONT_ -> QCONT <$> smpP
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
         EREADY_ -> EREADY <$> smpP
+
+instance Encoding AMessageReceipt where
+  smpEncode AMessageReceipt {agentMsgId, msgHash, rcptInfo} =
+    smpEncode (agentMsgId, msgHash, Large rcptInfo)
+  smpP = do
+    (agentMsgId, msgHash, Large rcptInfo) <- smpP
+    pure AMessageReceipt {agentMsgId, msgHash, rcptInfo}
+
+instance StrEncoding MsgReceipt where
+  strEncode MsgReceipt {agentMsgId, msgRcptStatus} =
+    strEncode agentMsgId <> ":" <> strEncode msgRcptStatus
+  strP = do
+    agentMsgId <- strP <* A.char ':'
+    msgRcptStatus <- strP
+    pure MsgReceipt {agentMsgId, msgRcptStatus}
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
@@ -1234,7 +1321,7 @@ deriving instance Show AConnectionRequestUri
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ConnReqScheme,
     crAgentVRange :: VersionRange,
-    crSmpQueues :: L.NonEmpty SMPQueueUri,
+    crSmpQueues :: NonEmpty SMPQueueUri,
     crClientData :: Maybe CRClientData
   }
   deriving (Eq, Show)
@@ -1296,7 +1383,7 @@ instance StrEncoding MsgIntegrity where
   strP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> strP)
   strEncode = \case
     MsgOk -> "OK"
-    MsgError e -> "ERR" <> strEncode e
+    MsgError e -> "ERR " <> strEncode e
 
 instance ToJSON MsgIntegrity where
   toJSON = J.genericToJSON $ sumTypeJSON fstToLower
@@ -1316,7 +1403,7 @@ data MsgErrorType
 instance StrEncoding MsgErrorType where
   strP =
     "ID " *> (MsgBadId <$> A.decimal)
-      <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
+      <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
       <|> "HASH" $> MsgBadHash
       <|> "DUPLICATE" $> MsgDuplicate
   strEncode = \case
@@ -1449,6 +1536,20 @@ instance ToJSON AgentCryptoError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance StrEncoding AgentCryptoError where
+  strP =
+    "DECRYPT_AES" $> DECRYPT_AES
+      <|> "DECRYPT_CB" $> DECRYPT_CB
+      <|> "RATCHET_HEADER" $> RATCHET_HEADER
+      <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
+      <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
+  strEncode = \case
+    DECRYPT_AES -> "DECRYPT_AES"
+    DECRYPT_CB -> "DECRYPT_CB"
+    RATCHET_HEADER -> "RATCHET_HEADER"
+    RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
+    RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
+
 instance ToJSON SMPAgentError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
@@ -1467,7 +1568,7 @@ instance StrEncoding AgentErrorType where
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-      <|> "INACTIVE" *> pure INACTIVE
+      <|> "INACTIVE" $> INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
@@ -1543,6 +1644,7 @@ instance StrEncoding ACmdTag where
       "MERR" -> ct MERR_
       "MSG" -> ct MSG_
       "ACK" -> t ACK_
+      "RCVD" -> ct RCVD_
       "SWCH" -> t SWCH_
       "OFF" -> t OFF_
       "DEL" -> t DEL_
@@ -1597,6 +1699,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     MERR_ -> "MERR"
     MSG_ -> "MSG"
     ACK_ -> "ACK"
+    RCVD_ -> "RCVD"
     SWCH_ -> "SWCH"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
@@ -1640,7 +1743,7 @@ commandP binaryP =
           RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
-          ACK_ -> s (ACK <$> A.decimal)
+          ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
           SWCH_ -> pure SWCH
           OFF_ -> pure OFF
           DEL_ -> pure DEL
@@ -1658,11 +1761,12 @@ commandP binaryP =
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
-          RSYNC_ -> s (RSYNC <$> strP_ <*> strP)
+          RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
-          MSG_ -> s (MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> binaryP)
+          MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
+          RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
           DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
           DEL_CONN_ -> pure DEL_CONN
           DEL_USER_ -> s (DEL_USER <$> strP)
@@ -1687,13 +1791,6 @@ commandP binaryP =
        in case ds of
             [] -> Left "no sender file description"
             sd : rds -> SFDONE <$> strDecode (encodeUtf8 sd) <*> mapM (strDecode . encodeUtf8) rds
-    msgMetaP = do
-      integrity <- strP
-      recipient <- " R=" *> partyMeta A.decimal
-      broker <- " B=" *> partyMeta base64P
-      sndMsgId <- " S=" *> A.decimal
-      pure MsgMeta {integrity, recipient, broker, sndMsgId}
-    partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
@@ -1717,13 +1814,14 @@ serializeCommand = \case
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
-  RSYNC rrState cstats -> s (RSYNC_, rrState, cstats)
+  RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
-  MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
-  ACK mId -> s (ACK_, Str $ bshow mId)
+  MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
+  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
+  RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_
@@ -1745,19 +1843,9 @@ serializeCommand = \case
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
-    showTs :: UTCTime -> ByteString
-    showTs = B.pack . formatISO8601Millis
     connections :: [ConnId] -> ByteString
     connections = B.intercalate "," . map strEncode
     sfDone sd rds = B.intercalate fdSeparator $ strEncode sd : map strEncode rds
-    serializeMsgMeta :: MsgMeta -> ByteString
-    serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
-      B.unwords
-        [ strEncode integrity,
-          "R=" <> bshow rmId <> "," <> showTs rTs,
-          "B=" <> encode bmId <> "," <> showTs bTs,
-          "S=" <> bshow sndMsgId
-        ]
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body

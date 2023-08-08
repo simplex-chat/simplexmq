@@ -71,7 +71,6 @@ import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Concurrent
 import UnliftIO.Directory
-import qualified UnliftIO.Exception as E
 
 startWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
 startWorkers c workDir = do
@@ -162,7 +161,7 @@ addWorker c wsSel runWorker runWorkerNoSrv srv_ = do
       let runWorker' = case srv_ of
             Just srv -> runWorker c srv doWork
             Nothing -> runWorkerNoSrv c doWork
-      worker <- async $ runWorker' `E.finally` atomically (TM.delete srv_ ws)
+      worker <- async $ runWorker' `agentFinally` atomically (TM.delete srv_ ws)
       atomically $ TM.insert srv_ (doWork, worker) ws
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
@@ -187,10 +186,10 @@ runXFTPRcvWorker c srv doWork = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
             downloadFileChunk fc replica
-              `catchError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              flip catchError (\_ -> pure ()) $ do
+              flip catchAgentError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
                 closeXFTPServerClient c userId server digest
@@ -249,7 +248,7 @@ runXFTPRcvLocalWorker c doWork = do
       case nextFile of
         Nothing -> noWorkToDo
         Just f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
-          decryptFile f `catchError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
+          decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, status, chunks} = do
@@ -300,7 +299,7 @@ sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients =
       createDirectory outputDir
       let tempPath = workPath </> "snd"
       createDirectoryIfMissing False tempPath
-      runSend fileName outputDir tempPath `catchError` \e -> do
+      runSend fileName outputDir tempPath `catchAgentError` \e -> do
         cleanup outputDir tempPath
         notify c sndFileId $ SFERR e
       where
@@ -370,7 +369,7 @@ runXFTPSndPrepareWorker c doWork = do
       case nextFile of
         Nothing -> noWorkToDo
         Just f@SndFile {sndFileId, sndFileEntityId, prefixPath} ->
-          prepareFile f `catchError` (sndWorkerInternalError c sndFileId sndFileEntityId prefixPath . show)
+          prepareFile f `catchAgentError` (sndWorkerInternalError c sndFileId sndFileEntityId prefixPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     prepareFile :: SndFile -> m ()
     prepareFile SndFile {prefixPath = Nothing} =
@@ -424,7 +423,7 @@ runXFTPSndPrepareWorker c doWork = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
               withRetryInterval (riFast ri) $ \_ loop ->
                 createWithNextSrv usedSrvs
-                  `catchError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
+                  `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where
                 retryLoop loop = atomically (assertAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
@@ -460,10 +459,10 @@ runXFTPSndWorker c srv doWork = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
             uploadFileChunk fc replica
-              `catchError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              flip catchError (\_ -> pure ()) $ do
+              flip catchAgentError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
                 closeXFTPServerClient c userId server digest
@@ -581,8 +580,8 @@ deleteSndFileInternal c sndFileEntityId = do
 
 deleteSndFileRemote :: forall m. AgentMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescription {chunks}) = do
-  deleteSndFileInternal c sndFileEntityId `catchError` (notify c sndFileEntityId . SFERR)
-  forM_ chunks $ \ch -> deleteFileChunk ch `catchError` (notify c sndFileEntityId . SFERR)
+  deleteSndFileInternal c sndFileEntityId `catchAgentError` (notify c sndFileEntityId . SFERR)
+  forM_ chunks $ \ch -> deleteFileChunk ch `catchAgentError` (notify c sndFileEntityId . SFERR)
   where
     deleteFileChunk :: FileChunk -> m ()
     deleteFileChunk FileChunk {digest, replicas = replica@FileChunkReplica {server} : _} = do
@@ -596,7 +595,7 @@ addXFTPDelWorker c srv = do
   atomically (TM.lookup srv ws) >>= \case
     Nothing -> do
       doWork <- newTMVarIO ()
-      worker <- async $ runXFTPDelWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
+      worker <- async $ runXFTPDelWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
       atomically $ TM.insert srv (doWork, worker) ws
     Just (doWork, _) ->
       void . atomically $ tryPutTMVar doWork ()
@@ -621,10 +620,10 @@ runXFTPDelWorker c srv doWork = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryInterval ri' $ \delay' loop ->
             deleteChunkReplica replica
-              `catchError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              flip catchError (\_ -> pure ()) $ do
+              flip catchAgentError (\_ -> pure ()) $ do
                 notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c "" $ SFERR e
                 closeXFTPServerClient c userId server chunkDigest

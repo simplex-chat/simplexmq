@@ -90,6 +90,8 @@ module Simplex.Messaging.Agent.Client
     whenSuspending,
     withStore,
     withStore',
+    withStoreCtx,
+    withStoreCtx',
     storeError,
     userServers,
     pickServer,
@@ -127,6 +129,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time.Clock (diffUTCTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
@@ -443,7 +446,7 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \_ loop ->
-        reconnectSMPClient c tSess `catchError` const loop
+        reconnectSMPClient c tSess `catchAgentError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
 reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
@@ -640,7 +643,7 @@ withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pur
 withClient_ :: forall a m err msg. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do
   cl <- getProtocolServerClient c tSess
-  (action cl <* stat cl "OK") `catchError` logServerError cl
+  (action cl <* stat cl "OK") `catchAgentError` logServerError cl
   where
     stat cl = liftIO . incClientStat c userId cl statCmd
     logServerError :: Client msg -> AgentErrorType -> m a
@@ -1236,16 +1239,37 @@ waitUntilForeground :: AgentClient -> STM ()
 waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
-withStore' c action = withStore c $ fmap Right . action
+withStore' = withStoreCtx_' Nothing
 
 withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
-withStore c action = do
+withStore = withStoreCtx_ Nothing
+
+withStoreCtx' :: AgentMonad m => String -> AgentClient -> (DB.Connection -> IO a) -> m a
+withStoreCtx' = withStoreCtx_' . Just
+
+withStoreCtx :: AgentMonad m => String -> AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
+withStoreCtx = withStoreCtx_ . Just
+
+withStoreCtx_' :: AgentMonad m => Maybe String -> AgentClient -> (DB.Connection -> IO a) -> m a
+withStoreCtx_' ctx_ c action = withStoreCtx_ ctx_ c $ fmap Right . action
+
+withStoreCtx_ :: AgentMonad m => Maybe String -> AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
+withStoreCtx_ ctx_ c action = do
   st <- asks store
-  liftEitherError storeError . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catch` handleInternal
+  liftEitherError storeError . agentOperationBracket c AODatabase (\_ -> pure ()) $ case ctx_ of
+    Nothing -> withTransaction st action `E.catch` handleInternal ""
+    -- uncomment to debug store performance
+    -- Just ctx -> do
+    --   t1 <- liftIO getCurrentTime
+    --   putStrLn $ "agent withStoreCtx start       :: " <> show t1 <> " :: " <> ctx
+    --   r <- withTransaction st action `E.catch` handleInternal (" (" <> ctx <> ")")
+    --   t2 <- liftIO getCurrentTime
+    --   putStrLn $ "agent withStoreCtx end         :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
+    --   pure r
+    Just _ -> withTransaction st action `E.catch` handleInternal ""
   where
-    handleInternal :: E.SomeException -> IO (Either StoreError a)
-    handleInternal = pure . Left . SEInternal . bshow
+    handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
+    handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case

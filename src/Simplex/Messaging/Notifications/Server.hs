@@ -158,17 +158,12 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe = forever $ do
       subs <- atomically (readTBQueue newSubQ)
       let ss = L.groupAllWith server subs
+      batchSize <- asks $ subsBatchSize . config
       forM_ ss $ \serverSubs -> do
         let srv = server $ L.head serverSubs
-            batches = toChunks 900 $ L.toList serverSubs
+            batches = toChunks batchSize $ L.toList serverSubs
         SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber srv
         mapM_ (atomically . writeTQueue subscriberSubQ) batches
-
-    toChunks :: Int -> [a] -> [NonEmpty a]
-    toChunks _ [] = []
-    toChunks n xs =
-      let (ys, xs') = splitAt n xs
-      in maybe id (:) (L.nonEmpty ys) (toChunks n xs')
 
     server :: NtfEntityRec 'Subscription -> SMPServer
     server (NtfSub sub) = ntfSubServer sub

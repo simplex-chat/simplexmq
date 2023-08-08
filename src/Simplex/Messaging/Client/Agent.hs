@@ -39,7 +39,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPS
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, tryE, ($>>=))
+import Simplex.Messaging.Util (catchAll_, tryE, ($>>=), toChunks)
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.Exception (Exception)
@@ -66,7 +66,8 @@ data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     msgQSize :: Natural,
-    agentQSize :: Natural
+    agentQSize :: Natural,
+    agentSubsBatchSize :: Int
   }
 
 defaultSMPClientAgentConfig :: SMPClientAgentConfig
@@ -79,8 +80,9 @@ defaultSMPClientAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      msgQSize = 64,
-      agentQSize = 64
+      msgQSize = 256,
+      agentQSize = 256,
+      agentSubsBatchSize = 900
     }
   where
     second = 1000000
@@ -222,9 +224,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
           SPRecipient -> False
 
         subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> ExceptT SMPClientError IO ()
-        subscribe_ smp party subs =
-          case L.nonEmpty subs of
-            Just subs' -> do
+        subscribe_ smp party = mapM_ subscribeBatch . toChunks (agentSubsBatchSize agentCfg)
+          where
+            subscribeBatch subs' = do
               let subs'' :: (NonEmpty (QueueId, C.APrivateSignKey)) = L.map (first snd) subs'
               rs <- liftIO $ smpSubscribeQueues party ca smp srv subs''
               let rs' :: (NonEmpty ((SMPSub, C.APrivateSignKey), Either SMPClientError ())) =
@@ -238,7 +240,6 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
               mapM_ (atomically . removePendingSubscription ca srv . fst) finalErrs 
               mapM_ (liftIO . notify . CASubError srv) $ L.nonEmpty finalErrs
               mapM_ (throwE . snd) $ listToMaybe tempErrs
-            Nothing -> pure ()
 
     notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt

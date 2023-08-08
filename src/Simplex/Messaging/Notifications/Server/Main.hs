@@ -30,7 +30,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 ntfServerVersion :: String
-ntfServerVersion = "1.4.2"
+ntfServerVersion = "1.5.1"
 
 defaultSMPBatchDelay :: Int
 defaultSMPBatchDelay = 10000
@@ -115,6 +115,7 @@ ntfServerCLI cfgPath logPath =
               pushQSize = 1048,
               smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {batchDelay}},
               apnsConfig = defaultAPNSPushClientConfig,
+              subsBatchSize = 900,
               inactiveClientExpiration = Nothing,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               caCertificateFile = c caCrtFile,
