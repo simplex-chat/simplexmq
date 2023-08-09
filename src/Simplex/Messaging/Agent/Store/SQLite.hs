@@ -945,7 +945,7 @@ getSndMsgViaRcpt db connId sndMsgId =
       [sql|
         SELECT s.internal_id, m.msg_type, s.internal_hash, s.rcpt_internal_id, s.rcpt_status
         FROM snd_messages s
-        JOIN messages m ON s.internal_id = m.internal_id
+        JOIN messages m ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
         WHERE s.conn_id = ? AND s.internal_snd_id = ?
       |]
       (connId, sndMsgId)
@@ -1015,8 +1015,8 @@ getRcvMsg db connId agentMsgId =
           r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity, r.internal_hash,
           m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
-        JOIN messages m ON r.internal_id = m.internal_id
-        LEFT JOIN snd_messages s ON s.rcpt_internal_id = r.internal_id
+        JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
+        LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.internal_id = ?
       |]
       (connId, agentMsgId)
@@ -1031,9 +1031,9 @@ getLastMsg db connId msgId =
           r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity, r.internal_hash,
           m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
-        JOIN messages m ON r.internal_id = m.internal_id
+        JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
         JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
-        LEFT JOIN snd_messages s ON s.rcpt_internal_id = r.internal_id
+        LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
       (connId, msgId)
