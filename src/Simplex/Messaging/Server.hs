@@ -50,7 +50,7 @@ import Data.Int (Int64)
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing, maybeToList)
+import Data.Maybe (isJust, isNothing, maybeToList)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -115,23 +115,26 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   restoreServerMessages
   restoreServerStats
 
-  transportsAndThreadStates <- atomically $
-    forM transports $ \t@(tcpPort, _) -> do
-      tsVar <- newTVar TSActive
-      TM.insert tcpPort tsVar (listenThreads ss)
+  transportsAndThreadStates <- forM transports $ \t@(tcpPort, _) -> do
+      tsVar <- atomically $ newTVar TSActive
+      atomically $ TM.insert tcpPort tsVar (listenThreads ss)
       pure (t, tsVar)
 
-  raceAnyWithThreadMonitoring_
-    ( ( serverThread s subscribedQ subscribers subscriptions cancelSub
-      , suspendableMonitoredThread (subsThread ss) serverIsActive
-      ) :
-      ( serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ())
-      , suspendableMonitoredThread (ntfSubsThread ss) serverIsActive
-      ) :
-      map (\(t, tsVar) -> (runServer t, monitoredThread tsVar)) transportsAndThreadStates
-        <> maybeToList (fmap (\x -> (x, monitoredThread (expireThread ss))) (expireMessagesThread_ cfg))
-        <> maybeToList (fmap (\x -> (x, monitoredThread (statsThread ss))) (serverStatsThread_ cfg))
-        <> map (\x -> (x, noThreadMonitoring)) (controlPortThread_ cfg serverIsActive)
+  let threadsAndMonitorSpec :: [(M (), ThreadMonitorSpec)] =
+        ( serverThread s subscribedQ subscribers subscriptions cancelSub,
+          suspendableMonitoredThread (subsThread ss) serverIsActive
+        ) :
+        ( serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()),
+          suspendableMonitoredThread (ntfSubsThread ss) serverIsActive
+        ) :
+        map (\(t, tsVar) -> (runServer t, monitoredThread tsVar)) transportsAndThreadStates
+          <> maybeToList (fmap (\x -> (x, monitoredThread (expireThread ss))) (expireMessagesThread_ cfg))
+          <> maybeToList (fmap (\x -> (x, monitoredThread (statsThread ss))) (serverStatsThread_ cfg))
+          <> map (\x -> (x, noThreadMonitoring)) (controlPortThread_ cfg serverIsActive)
+
+  ( if (isJust $ controlPort cfg)
+      then raceAnyWithThreadMonitoring_ threadsAndMonitorSpec
+      else raceAny_ (map fst threadsAndMonitorSpec)
     )
     `finally` withLock (savingLock s) "final" (saveServer False)
   where

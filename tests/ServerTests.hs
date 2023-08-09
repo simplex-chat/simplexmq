@@ -67,8 +67,8 @@ serverTests t@(ATransport t') = do
   describe "Restore messages (old / v2)" $ do
     testRestoreMessagesV2 t
     testRestoreExpireMessages t
-  describe "Control port" $ testControlPortCommands t
   describe "Timing of AUTH error" $ testTiming t
+  describe "Control port" $ testControlPortCommands t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
     testMsgExpireOnSend t'
