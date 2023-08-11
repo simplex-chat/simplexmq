@@ -6,8 +6,8 @@ import Control.Monad
 import Data.Maybe (fromJust)
 import Data.Word (Word32)
 import Database.SQLite.Simple (fromOnly)
-import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), MigrationError (MEDowngrade, MEUpgrade, MigrationError), SQLiteStore, closeSQLiteStore, createSQLiteStore, upMigration, withTransaction)
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Migrations
 import System.Directory (removeFile)
 import System.Random (randomIO)

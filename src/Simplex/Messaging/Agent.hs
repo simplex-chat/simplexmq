@@ -122,7 +122,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
-import qualified Database.SQLite.Simple as DB
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteSndFileInternal, deleteSndFileRemote, receiveFile, sendFile, startWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -135,6 +134,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
@@ -1720,7 +1720,7 @@ execAgentStoreSQL' :: AgentMonad m => AgentClient -> Text -> m [Text]
 execAgentStoreSQL' c sql = withStore' c (`execSQL` sql)
 
 getAgentMigrations' :: AgentMonad m => AgentClient -> m [UpMigration]
-getAgentMigrations' c = map upMigration <$> withStore' c Migrations.getCurrent
+getAgentMigrations' c = map upMigration <$> withStore' c (Migrations.getCurrent . DB.conn)
 
 debugAgentLocks' :: AgentMonad' m => AgentClient -> m AgentLocks
 debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = d} = do
