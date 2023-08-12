@@ -146,6 +146,7 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
@@ -1244,8 +1245,8 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
-tPut th trs
+tPut :: Transport c => THandle c -> Maybe Int -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
+tPut th delay_ trs 
   | batch th = tPutBatch [] $ L.map tEncode trs
   | otherwise = forM (L.toList trs) $ tPutLog . tEncode
   where
@@ -1255,7 +1256,7 @@ tPut th trs
       r <- if n == 0 then largeMsg else replicate n <$> tPutLog (tEncodeBatch n s)
       let rs' = rs <> r
       case ts_ of
-        Just ts' -> tPutBatch rs' ts'
+        Just ts' -> mapM_ threadDelay delay_ >> tPutBatch rs' ts'
         _ -> pure rs'
     largeMsg = putStrLn "tPut error: large message" >> pure [Left TELargeMsg]
     tPutLog s = do

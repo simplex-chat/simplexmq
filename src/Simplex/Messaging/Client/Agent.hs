@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -16,24 +17,31 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
+import Data.Bifunctor (first, bimap)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (partitionEithers)
+import Data.List (partition)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import Data.Text.Encoding
+import Data.Tuple (swap)
 import Numeric.Natural
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPServer)
+import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPServer, NtfPrivateSignKey, NotifierId, RcvPrivateSignKey, RecipientId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, tryE, unlessM, ($>>=))
+import Simplex.Messaging.Util (catchAll_, tryE, ($>>=), toChunks)
 import System.Timeout (timeout)
-import UnliftIO (async, forConcurrently_)
+import UnliftIO (async)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -44,8 +52,8 @@ data SMPClientAgentEvent
   = CAConnected SMPServer
   | CADisconnected SMPServer (Set SMPSub)
   | CAReconnected SMPServer
-  | CAResubscribed SMPServer SMPSub
-  | CASubError SMPServer SMPSub SMPClientError
+  | CAResubscribed SMPServer (NonEmpty SMPSub)
+  | CASubError SMPServer (NonEmpty (SMPSub, SMPClientError))
 
 data SMPSubParty = SPRecipient | SPNotifier
   deriving (Eq, Ord, Show)
@@ -58,7 +66,8 @@ data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     msgQSize :: Natural,
-    agentQSize :: Natural
+    agentQSize :: Natural,
+    agentSubsBatchSize :: Int
   }
 
 defaultSMPClientAgentConfig :: SMPClientAgentConfig
@@ -71,8 +80,9 @@ defaultSMPClientAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      msgQSize = 64,
-      agentQSize = 64
+      msgQSize = 256,
+      agentQSize = 256,
+      agentSubsBatchSize = 900
     }
   where
     second = 1000000
@@ -184,9 +194,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
             _ -> TM.insert srv sVar ps
 
     serverDown :: Map SMPSub C.APrivateSignKey -> IO ()
-    serverDown ss = unless (M.null ss) . void . runExceptT $ do
+    serverDown ss = unless (M.null ss) $ do
       notify . CADisconnected srv $ M.keysSet ss
-      reconnectServer
+      void $ runExceptT reconnectServer
 
     reconnectServer :: ExceptT SMPClientError IO ()
     reconnectServer = do
@@ -201,27 +211,37 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
     reconnectClient :: ExceptT SMPClientError IO ()
     reconnectClient = do
       withSMP ca srv $ \smp -> do
-        notify $ CAReconnected srv
-        cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
-        forConcurrently_ (maybe [] M.assocs cs) $ \sub@(s, _) ->
-          unlessM (atomically $ hasSub (srvSubs ca) srv s) $
-            subscribe_ smp sub `catchE` handleError s
+        liftIO $ notify $ CAReconnected srv
+        cs_ <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
+        forM_ cs_ $ \cs -> do
+          subs' <- filterM (fmap not . atomically . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
+          let (nSubs, rSubs) = partition (isNotifier . fst . fst) subs'
+          subscribe_ smp SPNotifier nSubs
+          subscribe_ smp SPRecipient rSubs
       where
-        subscribe_ :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
-        subscribe_ smp sub@(s, _) = do
-          smpSubscribe smp sub
-          atomically $ addSubscription ca srv sub
-          notify $ CAResubscribed srv s
+        isNotifier = \case
+          SPNotifier -> True
+          SPRecipient -> False
 
-        handleError :: SMPSub -> SMPClientError -> ExceptT SMPClientError IO ()
-        handleError s = \case
-          e@PCEResponseTimeout -> throwE e
-          e@PCENetworkError -> throwE e
-          e -> do
-            notify $ CASubError srv s e
-            atomically $ removePendingSubscription ca srv s
+        subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateSignKey)] -> ExceptT SMPClientError IO ()
+        subscribe_ smp party = mapM_ subscribeBatch . toChunks (agentSubsBatchSize agentCfg)
+          where
+            subscribeBatch subs' = do
+              let subs'' :: (NonEmpty (QueueId, C.APrivateSignKey)) = L.map (first snd) subs'
+              rs <- liftIO $ smpSubscribeQueues party ca smp srv subs''
+              let rs' :: (NonEmpty ((SMPSub, C.APrivateSignKey), Either SMPClientError ())) =
+                    L.zipWith (first . const) subs' rs
+                  rs'' :: [Either (SMPSub, SMPClientError) (SMPSub, C.APrivateSignKey)] =
+                    map (\(sub, r) -> bimap (fst sub,) (const sub) r) $ L.toList rs'
+                  (errs, oks) = partitionEithers rs''
+                  (tempErrs, finalErrs) = partition (temporaryClientError . snd) errs
+              mapM_ (atomically . addSubscription ca srv) oks
+              mapM_ (liftIO . notify . CAResubscribed srv) $ L.nonEmpty $ map fst oks
+              mapM_ (atomically . removePendingSubscription ca srv . fst) finalErrs 
+              mapM_ (liftIO . notify . CASubError srv) $ L.nonEmpty finalErrs
+              mapM_ (throwE . snd) $ listToMaybe tempErrs
 
-    notify :: SMPClientAgentEvent -> ExceptT SMPClientError IO ()
+    notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
 
 closeSMPClientAgent :: MonadUnliftIO m => SMPClientAgent -> m ()
@@ -262,6 +282,35 @@ subscribeQueue ca srv sub = do
       atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
         removePendingSubscription ca srv $ fst sub
       throwE e
+
+subscribeQueuesSMP :: SMPClientAgent -> SMPServer -> NonEmpty (RecipientId, RcvPrivateSignKey) -> IO (NonEmpty (RecipientId, Either SMPClientError ()))
+subscribeQueuesSMP = subscribeQueues_ SPRecipient
+
+subscribeQueuesNtfs :: SMPClientAgent -> SMPServer -> NonEmpty (NotifierId, NtfPrivateSignKey) -> IO (NonEmpty (NotifierId, Either SMPClientError ()))
+subscribeQueuesNtfs = subscribeQueues_ SPNotifier
+
+subscribeQueues_ :: SMPSubParty -> SMPClientAgent -> SMPServer -> NonEmpty (QueueId, C.APrivateSignKey) -> IO (NonEmpty (QueueId, Either SMPClientError ()))
+subscribeQueues_ party ca srv subs = do
+  atomically $ forM_ subs $ addPendingSubscription ca srv . first (party,)
+  runExceptT (getSMPServerClient' ca srv) >>= \case
+    Left e -> pure $ L.map ((,Left e) . fst) subs
+    Right smp -> smpSubscribeQueues party ca smp srv subs
+
+smpSubscribeQueues :: SMPSubParty -> SMPClientAgent -> SMPClient -> SMPServer -> NonEmpty (QueueId, C.APrivateSignKey) -> IO (NonEmpty (QueueId, Either SMPClientError ()))
+smpSubscribeQueues party ca smp srv subs = do
+  rs <- L.zip subs <$> subscribe smp (L.map swap subs)
+  atomically $ forM rs $ \(sub, r) -> (fst sub,) <$> case r of
+    Right () -> do
+      addSubscription ca srv $ first (party,) sub
+      pure $ Right ()
+    Left e -> do
+      when (e /= PCENetworkError && e /= PCEResponseTimeout) $
+        removePendingSubscription ca srv $ (party,) $ fst sub
+      pure $ Left e
+  where
+    subscribe = case party of
+      SPRecipient -> subscribeSMPQueues
+      SPNotifier -> subscribeSMPQueuesNtfs
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =

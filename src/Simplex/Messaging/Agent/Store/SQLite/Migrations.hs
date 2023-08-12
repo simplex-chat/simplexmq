@@ -42,6 +42,7 @@ import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import GHC.Generics (Generic)
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
+import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
@@ -60,6 +61,11 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -86,7 +92,12 @@ schemaMigrations =
     ("m20230320_retry_state", m20230320_retry_state, Just down_m20230320_retry_state),
     ("m20230401_snd_files", m20230401_snd_files, Just down_m20230401_snd_files),
     ("m20230510_files_pending_replicas_indexes", m20230510_files_pending_replicas_indexes, Just down_m20230510_files_pending_replicas_indexes),
-    ("m20230516_encrypted_rcv_message_hashes", m20230516_encrypted_rcv_message_hashes, Just down_m20230516_encrypted_rcv_message_hashes)
+    ("m20230516_encrypted_rcv_message_hashes", m20230516_encrypted_rcv_message_hashes, Just down_m20230516_encrypted_rcv_message_hashes),
+    ("m20230531_switch_status", m20230531_switch_status, Just down_m20230531_switch_status),
+    ("m20230615_ratchet_sync", m20230615_ratchet_sync, Just down_m20230615_ratchet_sync),
+    ("m20230701_delivery_receipts", m20230701_delivery_receipts, Just down_m20230701_delivery_receipts),
+    ("m20230720_delete_expired_messages", m20230720_delete_expired_messages, Just down_m20230720_delete_expired_messages),
+    ("m20230722_indexes", m20230722_indexes, Just down_m20230722_indexes)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -95,44 +106,42 @@ app = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
-get :: Connection -> [Migration] -> IO (Either MTRError MigrationsToRun)
-get db migrations = migrationsToRun migrations <$> getCurrent db
+get :: SQLiteStore -> [Migration] -> IO (Either MTRError MigrationsToRun)
+get st migrations = migrationsToRun migrations <$> withTransaction st getCurrent
 
 getCurrent :: Connection -> IO [Migration]
 getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = "", down}
 
-run :: Connection -> MigrationsToRun -> IO ()
-run db = \case
+run :: SQLiteStore -> MigrationsToRun -> IO ()
+run st = \case
   MTRUp [] -> pure ()
-  MTRUp ms -> mapM_ runUp ms >> execSQL "VACUUM;"
+  MTRUp ms -> mapM_ runUp ms >> withConnection st (`execSQL` "VACUUM;")
   MTRDown ms -> mapM_ runDown $ reverse ms
   MTRNone -> pure ()
   where
-    runUp Migration {name, up, down} = do
-      when (name == "m20220811_onion_hosts") updateServers
-      DB.withImmediateTransaction db $ insert >> execSQL up
+    runUp Migration {name, up, down} = withTransaction st $ \db -> do
+      when (name == "m20220811_onion_hosts") $ updateServers db
+      insert db >> execSQL db up
       where
-        insert = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
-        updateServers = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
-          DB.withImmediateTransaction db $
-            let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
-             in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
-    runDown DownMigration {downName, downQuery} = do
-      DB.withImmediateTransaction db $ do
-        execSQL downQuery
-        DB.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)
-    execSQL = SQLite3.exec $ DB.connectionHandle db
+        insert db = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
+        updateServers db = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
+          let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
+           in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
+    runDown DownMigration {downName, downQuery} = withTransaction st $ \db -> do
+      execSQL db downQuery
+      DB.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)
+    execSQL db = SQLite3.exec $ DB.connectionHandle db
 
-initialize :: Connection -> IO ()
-initialize db = do
+initialize :: SQLiteStore -> IO ()
+initialize st = withTransaction st $ \db -> do
   cs :: [Text] <- map fromOnly <$> DB.query_ db "SELECT name FROM pragma_table_info('migrations')"
   case cs of
-    [] -> createMigrations
+    [] -> createMigrations db
     _ -> when ("down" `notElem` cs) $ DB.execute_ db "ALTER TABLE migrations ADD COLUMN down TEXT"
   where
-    createMigrations =
+    createMigrations db =
       DB.execute_
         db
         [sql|

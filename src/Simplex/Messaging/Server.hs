@@ -58,11 +58,13 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import GHC.TypeLits (KnownNat)
-import Network.Socket (ServiceName)
+import Network.Socket (ServiceName, Socket, socketToHandle)
+import Simplex.Messaging.Agent.Lock
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding (Encoding (smpEncode))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
@@ -74,10 +76,11 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn)
+import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
@@ -103,26 +106,29 @@ runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started 
 type M a = ReaderT Env IO a
 
 smpServer :: TMVar Bool -> ServerConfig -> M ()
-smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
+smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
   restoreServerMessages
   restoreServerStats
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
-      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg
+      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` (withLog closeStoreLog >> saveServerMessages >> saveServerStats)
+    `finally` withLock (savingLock s) "final" (saveServer False)
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams logTLSErrors (runClient t)
+      runTransportServer started tcpPort serverParams tCfg (runClient t)
+
+    saveServer :: Bool -> M ()
+    saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
 
     serverThread ::
       forall s.
       Server ->
-      (Server -> TBQueue (QueueId, Client)) ->
+      (Server -> TQueue (QueueId, Client)) ->
       (Server -> TMap QueueId Client) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
@@ -134,7 +140,7 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
       where
         updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
-          (qId, clnt) <- readTBQueue $ subQ s
+          (qId, clnt) <- readTQueue $ subQ s
           let clientToBeNotified = \c' ->
                 if sameClientSession clnt c'
                   then pure Nothing
@@ -223,6 +229,57 @@ smpServer started cfg@ServerConfig {transports, logTLSErrors} = do
         Right th -> runClientTransport th
         Left _ -> pure ()
 
+    controlPortThread_ :: ServerConfig -> [M ()]
+    controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
+    controlPortThread_ _ = []
+
+    runCPServer :: ServiceName -> M ()
+    runCPServer port = do
+      srv <- asks server
+      cpStarted <- newEmptyTMVarIO
+      u <- askUnliftIO
+      liftIO $ runTCPServer cpStarted port $ runCPClient u srv
+      where
+        runCPClient :: UnliftIO (ReaderT Env IO) -> Server -> Socket -> IO ()
+        runCPClient u srv sock = do
+          h <- socketToHandle sock ReadWriteMode
+          hSetBuffering h LineBuffering
+          hSetNewlineMode h universalNewlineMode
+          hPutStrLn h "SMP server control port\n'help' for supported commands"
+          cpLoop h
+          where
+            cpLoop h = do
+              s <- B.hGetLine h
+              case strDecode $ trimCR s of
+                Right CPQuit -> hClose h
+                Right cmd -> processCP h cmd >> cpLoop h
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
+            processCP h = \case
+              CPSuspend -> hPutStrLn h "suspend not implemented"
+              CPResume -> hPutStrLn h "resume not implemented"
+              CPClients -> hPutStrLn h "clients not implemented"
+              CPStats -> do
+                ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
+                putStat "fromTime" fromTime
+                putStat "qCreated" qCreated
+                putStat "qSecured" qSecured
+                putStat "qDeleted" qDeleted
+                putStat "msgSent" msgSent
+                putStat "msgRecv" msgRecv
+                putStat "msgSentNtf" msgSentNtf
+                putStat "msgRecvNtf" msgRecvNtf
+                putStat "qCount" qCount
+                putStat "msgCount" msgCount
+                where
+                  putStat :: Show a => String -> TVar a -> IO ()
+                  putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
+              CPSave -> withLock (savingLock srv) "control" $ do
+                hPutStrLn h "saving server state..."
+                unliftIO u $ saveServer True
+                hPutStrLn h "server state saved!"
+              CPHelp -> hPutStrLn h "commands: stats, save, help, quit"
+              CPQuit -> pure ()
+
 runClientTransport :: Transport c => THandle c -> M ()
 runClientTransport th@THandle {thVersion, sessionId} = do
   q <- asks $ tbqSize . config
@@ -281,12 +338,13 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-  void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+  void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
   atomically . writeTVar activeAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
     tOrder (_, _, cmd) = case cmd of
       MSG {} -> 0
+      NMSG {} -> 0
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
@@ -476,7 +534,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           where
             newSub :: m (TVar Sub)
             newSub = time "SUB newSub" . atomically $ do
-              writeTBQueue subscribedQ (rId, clnt)
+              writeTQueue subscribedQ (rId, clnt)
               sub <- newTVar =<< newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
@@ -521,7 +579,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = time "NSUB" . atomically $ do
           unlessM (TM.member queueId ntfSubscriptions) $ do
-            writeTBQueue ntfSubscribedQ (queueId, clnt)
+            writeTQueue ntfSubscribedQ (queueId, clnt)
             TM.insert queueId () ntfSubscriptions
           pure ok
 
@@ -719,8 +777,8 @@ randomId n = do
   gVar <- asks idsDrg
   atomically (C.pseudoRandomBytes n gVar)
 
-saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => m ()
-saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
+saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => Bool -> m ()
+saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
     saveMessages f = do
       logInfo $ "saving messages to file " <> T.pack f
@@ -729,8 +787,9 @@ saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
         readTVarIO ms >>= mapM_ (saveQueueMsgs ms h) . M.keys
       logInfo "messages saved"
       where
+        getMessages = if keepMsgs then snapshotMsgQueue else flushMsgQueue
         saveQueueMsgs ms h rId =
-          atomically (flushMsgQueue ms rId)
+          atomically (getMessages ms rId)
             >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
 restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
@@ -741,7 +800,8 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
       st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota) . B.lines) >>= \case
+      old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
+      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota old_) . B.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -749,7 +809,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
           renameFile f $ f <> ".bak"
           logInfo "messages restored"
       where
-        restoreMsg st ms quota s = do
+        restoreMsg st ms quota old_ s = do
           r <- liftEither . first (msgErr "parsing") $ strDecode s
           case r of
             MLRv3 rId msg -> addToMsgQueue rId msg
@@ -759,13 +819,14 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
               addToMsgQueue rId msg'
           where
             addToMsgQueue rId msg = do
-              full <- atomically $ do
+              logFull <- atomically $ do
                 q <- getMsgQueue ms rId quota
-                isNothing <$> writeMsg q msg
-              case msg of
-                Message {} ->
-                  when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
-                MessageQuota {} -> pure ()
+                case msg of
+                  Message {msgTs}
+                    | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
+                    | otherwise -> pure False
+                  MessageQuota {} -> writeMsg q msg $> False
+              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body

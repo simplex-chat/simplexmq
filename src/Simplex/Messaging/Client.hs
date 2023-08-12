@@ -11,6 +11,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TupleSections #-}
 
 -- |
 -- Module      : Simplex.Messaging.Client
@@ -41,6 +42,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueues,
     getSMPMessage,
     subscribeSMPQueueNotifications,
+    subscribeSMPQueuesNtfs,
     secureSMPQueue,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
@@ -81,10 +83,11 @@ import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (rights)
+import Data.Foldable (foldl')
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
@@ -113,6 +116,9 @@ data ProtocolClient err msg = ProtocolClient
     sessionId :: SessionId,
     sessionTs :: UTCTime,
     thVersion :: Version,
+    timeoutPerBlock :: Int,
+    blockSize :: Int,
+    batch :: Bool,
     client_ :: PClient err msg
   }
 
@@ -121,6 +127,7 @@ data PClient err msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
+    batchDelay :: Maybe Int,
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
@@ -167,6 +174,8 @@ data NetworkConfig = NetworkConfig
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
     tcpTimeout :: Int,
+    -- | additional timeout per kilobyte (1024 bytes) to be sent
+    tcpTimeoutPerKb :: Int,
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds, 0 to disable)
@@ -198,8 +207,9 @@ defaultNetworkConfig =
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
-      tcpConnectTimeout = 7_500_000,
-      tcpTimeout = 5_000_000,
+      tcpConnectTimeout = 15_000_000,
+      tcpTimeout = 10_000_000,
+      tcpTimeoutPerKb = 20_000, -- 20ms, should be less than 130ms to avoid Int overflow on 32 bit systems
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPingInterval = 600_000_000, -- 10min
       smpPingCount = 3,
@@ -218,8 +228,10 @@ data ProtocolClientConfig = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport),
     -- | network configuration
     networkConfig :: NetworkConfig,
-    -- | SMP client-server protocol version range
-    smpServerVRange :: VersionRange
+    -- | client-server protocol version range
+    serverVRange :: VersionRange,
+    -- | delay between sending batches of commands (microseconds)
+    batchDelay :: Maybe Int
   }
 
 -- | Default protocol client configuration.
@@ -229,7 +241,8 @@ defaultClientConfig =
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
-      smpServerVRange = supportedSMPServerVRange
+      serverVRange = supportedSMPServerVRange,
+      batchDelay = Nothing
     }
 
 data Request err msg = Request
@@ -275,14 +288,14 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall err msg. Protocol err msg => TransportSession msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient err msg))
-getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected = do
+getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, batchDelay} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpTimeoutPerKb, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> STM (PClient err msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
@@ -297,6 +310,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
             transportSession,
             transportHost,
             tcpTimeout,
+            batchDelay,
             pingErrorCount,
             clientCorrId,
             sentCommands,
@@ -328,11 +342,12 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
 
     client :: forall c. Transport c => TProxy c -> PClient err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient err msg)) -> c -> IO ()
     client _ c cVar h =
-      runExceptT (protocolClientHandshake @err @msg h (keyHash srv) smpServerVRange) >>= \case
+      runExceptT (protocolClientHandshake @err @msg h (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
-        Right th@THandle {sessionId, thVersion} -> do
+        Right th@THandle {sessionId, thVersion, blockSize, batch} -> do
           sessionTs <- getCurrentTime
-          let c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, sessionTs}
+          let timeoutPerBlock = (blockSize * tcpTimeoutPerKb) `div` 1024
+              c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, sessionTs, timeoutPerBlock, blockSize, batch}
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
@@ -340,7 +355,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPut h batchDelay
 
     receive :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
@@ -487,6 +502,10 @@ getSMPMessage c rpKey rId =
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateSignKey -> NotifierId -> ExceptT SMPClientError IO ()
 subscribeSMPQueueNotifications = okSMPCommand NSUB
 
+-- | Subscribe to multiple SMP queues notifications batching commands if supported.
+subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateSignKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
+subscribeSMPQueuesNtfs = okSMPCommands NSUB
+
 -- | Secure the SMP queue by adding a sender public key.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
@@ -578,32 +597,61 @@ okSMPCommands cmd c qs = L.map response <$> sendProtocolCommands c cs
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
+type PCTransmission err msg = (SentRawTransmission, TMVar (Response err msg))
+
 -- | Send multiple commands with batching and collect responses
+-- It will result in Int overflow on 32 bit platform for a large number of blocks (~13.4k blocks / ~1.2m subscriptions)
+-- TODO switch to timeout or TimeManager that supports Int64
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either (ProtocolClientError err) msg))
-sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ}} cs = do
-  ts <- mapM (runExceptT . mkTransmission c) cs
-  mapM_ (atomically . writeTBQueue sndQ . L.map fst) . L.nonEmpty . rights $ L.toList ts
-  forConcurrently ts $ \case
-    Right (_, r) -> withTimeout c $ atomically $ takeTMVar r
+sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, batchDelay}, batch, blockSize, timeoutPerBlock} cs = do
+  (h :| ts) <- mapM (runExceptT . mkTransmission c) cs
+  let h' :: Either (ProtocolClientError err) (PCTransmission err msg, Int) = (,timeoutPerBlock) <$> h
+      batchSz = if batch then either (const 0) tSize h else 0
+      ts' :: NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)) =
+        L.reverse . fst3 $ foldl' batchTimeouts ([h'], timeoutPerBlock, batchSz) ts
+      ts_ :: (Maybe (NonEmpty SentRawTransmission)) =
+        L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
+  mapM_ (atomically . writeTBQueue sndQ) ts_
+  forConcurrently ts' $ \case
+    Right ((_t, r), bt) -> withTimeout c (tcpTimeout + bt) (atomically $ takeTMVar r)
     Left e -> pure $ Left e
+  where
+    fst3 (x, _, _) = x
+    -- tSize calculation matches the batching logic in tPut that does actual breaking of transmissions into blocks
+    tSize :: PCTransmission err msg -> Int
+    tSize ((sig, t), _) = maybe 0 C.signatureSize sig + B.length t + 3 -- 1 byte for signature size + 2 bytes for transmission size
+    batchTimeouts :: (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
+    batchTimeouts (ts, bt, batchSz) = \case
+      Left e -> (Left e <| ts, bt, batchSz)
+      Right t
+        | not batch ->
+          (Right (t, bt') <| ts, bt', 0)
+        | batchSz' + 1 > blockSize ->
+          (Right (t, bt') <| ts, bt', tSz)
+        | otherwise -> -- same block in the batch
+          (Right (t, bt) <| ts, bt, batchSz') -- 1 byte for the number of transmissions in the batch
+        where
+          batchSz' = batchSz + tSz
+          bt' = bt + timeoutPerBlock + fromMaybe 0 batchDelay
+          tSz = tSize t
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}} pKey qId cmd = do
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}} pKey qId cmd = do
   (t, r) <- mkTransmission c (pKey, qId, cmd)
   ExceptT $ sendRecv t r
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> TMVar (Response err msg) -> IO (Response err msg)
-    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout c (atomically $ takeTMVar r)
+    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout c tcpTimeout (atomically $ takeTMVar r)
 
-withTimeout :: ProtocolClient err msg -> IO (Either (ProtocolClientError err) msg) -> IO (Either (ProtocolClientError err) msg)
-withTimeout ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} a =
-  timeout tcpTimeout a >>= \case
+withTimeout :: ProtocolClient err msg -> Int -> IO (Either (ProtocolClientError err) msg) -> IO (Either (ProtocolClientError err) msg)
+withTimeout ProtocolClient {client_ = PClient {pingErrorCount}} t a = do
+  timeout t a >>= \case
     Just r -> atomically (writeTVar pingErrorCount 0) >> pure r
     _ -> pure $ Left PCEResponseTimeout
 
-mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> ExceptT (ProtocolClientError err) IO (SentRawTransmission, TMVar (Response err msg))
+mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> ExceptT (ProtocolClientError err) IO (PCTransmission err msg)
 mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCorrId, sentCommands}} (pKey, qId, cmd) = do
   corrId <- liftIO $ atomically getNextCorrId
   let t = signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)

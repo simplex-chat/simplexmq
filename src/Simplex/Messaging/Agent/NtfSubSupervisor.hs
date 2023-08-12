@@ -147,7 +147,7 @@ processNtfSub c (connId, cmd) = do
       atomically (TM.lookup srv ws) >>= \case
         Nothing -> do
           doWork <- newTMVarIO ()
-          worker <- async $ runWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
+          worker <- async $ runWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
           atomically $ TM.insert srv (doWork, worker) ws
         Just (doWork, _) ->
           void . atomically $ tryPutTMVar doWork ()
@@ -173,7 +173,7 @@ runNtfWorker c srv doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop ->
             processAction a
-              `catchError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
+              `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, smpServer, ntfSubId}, action, actionTs) = do
@@ -213,7 +213,7 @@ runNtfWorker c srv doWork = do
           NSADelete -> case ntfSubId of
             Just nSubId ->
               (getNtfToken >>= mapM_ (agentNtfDeleteSubscription c nSubId))
-                `E.finally` continueDeletion
+                `agentFinally` continueDeletion
             _ -> continueDeletion
             where
               continueDeletion = do
@@ -224,7 +224,7 @@ runNtfWorker c srv doWork = do
           NSARotate -> case ntfSubId of
             Just nSubId ->
               (getNtfToken >>= mapM_ (agentNtfDeleteSubscription c nSubId))
-                `E.finally` deleteCreate
+                `agentFinally` deleteCreate
             _ -> deleteCreate
             where
               deleteCreate = do
@@ -257,7 +257,7 @@ runNtfSMPWorker c srv doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop ->
             processAction a
-              `catchError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
+              `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, ntfServer}, smpAction, actionTs) = do

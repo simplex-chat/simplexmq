@@ -429,7 +429,7 @@ data NtfSubStatus
     NSAuth
   | -- | SMP error other than AUTH
     NSErr ByteString
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 ntfShouldSubscribe :: NtfSubStatus -> Bool
 ntfShouldSubscribe = \case

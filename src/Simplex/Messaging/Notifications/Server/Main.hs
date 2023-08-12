@@ -14,7 +14,8 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..))
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
@@ -22,13 +23,17 @@ import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientCo
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 ntfServerVersion :: String
-ntfServerVersion = "1.4.0"
+ntfServerVersion = "1.5.1"
+
+defaultSMPBatchDelay :: Int
+defaultSMPBatchDelay = 10000
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -80,7 +85,9 @@ ntfServerCLI cfgPath logPath =
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
             <> "log_tls_errors: off\n\
-               \websockets: off\n"
+               \# delay between command batches sent to SMP relays (microseconds), 0 to disable\n"
+            <> ("smp_batch_delay: " <> show defaultSMPBatchDelay <> "\n")
+            <> "websockets: off\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -96,19 +103,21 @@ ntfServerCLI cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        smpBatchDelay = readIniDefault defaultSMPBatchDelay "TRANSPORT" "smp_batch_delay" ini
+        batchDelay = if smpBatchDelay <= 0 then Nothing else Just smpBatchDelay
         serverConfig =
           NtfServerConfig
             { transports = iniTransports ini,
               subIdBytes = 24,
               regCodeBytes = 32,
-              clientQSize = 16,
-              subQSize = 64,
-              pushQSize = 128,
-              smpAgentCfg = defaultSMPClientAgentConfig,
+              clientQSize = 64,
+              subQSize = 512,
+              pushQSize = 1048,
+              smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {batchDelay}},
               apnsConfig = defaultAPNSPushClientConfig,
+              subsBatchSize = 900,
               inactiveClientExpiration = Nothing,
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              resubscribeDelay = 50000, -- 50ms
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,
@@ -116,7 +125,10 @@ ntfServerCLI cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log",
-              logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+              transportConfig =
+                defaultTransportServerConfig
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  }
             }
 
 data CliCommand

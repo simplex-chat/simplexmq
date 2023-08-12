@@ -28,6 +28,7 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClien
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -129,7 +130,8 @@ smpServerCLI cfgPath logPath =
                 <> ("host: " <> host <> "\n")
                 <> ("port: " <> defaultServerPort <> "\n")
                 <> "log_tls_errors: off\n\
-                   \websockets: off\n\n\
+                   \websockets: off\n\
+                   \# control_port: 5224\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
@@ -164,8 +166,8 @@ smpServerCLI cfgPath logPath =
         serverConfig =
           ServerConfig
             { transports = iniTransports ini,
-              tbqSize = 32,
-              serverTbqSize = 128,
+              tbqSize = 64,
+              -- serverTbqSize = 1024,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
@@ -198,7 +200,11 @@ smpServerCLI cfgPath logPath =
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
               smpServerVRange = supportedSMPServerVRange,
-              logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+              transportConfig =
+                defaultTransportServerConfig
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  },
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini
             }
 
 data CliCommand

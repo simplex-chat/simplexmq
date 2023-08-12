@@ -38,9 +38,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
-import Data.Function (on)
 import Data.Int (Int64)
-import Data.List (foldl', groupBy, sortOn)
+import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
@@ -66,7 +65,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
-import Simplex.Messaging.Util (ifM, tshow, whenM)
+import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
@@ -75,7 +74,7 @@ import UnliftIO
 import UnliftIO.Directory
 
 xftpClientVersion :: String
-xftpClientVersion = "0.1.0"
+xftpClientVersion = "1.0.1"
 
 chunkSize1 :: Word32
 chunkSize1 = kb 256
@@ -316,7 +315,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       let xftpSrvs = fromMaybe defaultXFTPServers (nonEmpty xftpServers)
       srvs <- liftIO $ replicateM (length chunks) $ getXFTPServer gen xftpSrvs
       let thd3 (_, _, x) = x
-          chunks' = groupBy ((==) `on` thd3) $ sortOn thd3 $ zip3 [1 ..] chunks srvs
+          chunks' = groupAllOn thd3 $ zip3 [1 ..] chunks srvs
       -- TODO shuffle/unshuffle chunks
       -- the reason we don't do pooled downloads here within one server is that http2 library doesn't handle cleint concurrency, even though
       -- upload doesn't allow other requests within the same client until complete (but download does allow).
@@ -428,7 +427,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       liftIO $ printNoNewLine "Downloading file..."
       downloadedChunks <- newTVarIO []
       let srv FileChunk {replicas} = server (head replicas :: FileChunkReplica)
-          srvChunks = groupBy ((==) `on` srv) $ sortOn srv chunks
+          srvChunks = groupAllOn srv chunks
       chunkPaths <- map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 srvChunks (mapM $ downloadFileChunk a encPath size downloadedChunks)
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"

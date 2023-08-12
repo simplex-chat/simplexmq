@@ -44,6 +44,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
+import Simplex.Messaging.Transport.Server
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -88,9 +89,9 @@ ntfServerCfg =
           { apnsPort = apnsTestPort,
             caStoreFile = "tests/fixtures/ca.crt"
           },
+      subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,
-      resubscribeDelay = 1000,
       -- CA certificate private key is not needed for initialization
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
@@ -100,7 +101,7 @@ ntfServerCfg =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      logTLSErrors = True
+      transportConfig = defaultTransportServerConfig
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
@@ -134,7 +135,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' h (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
-      [Right ()] <- tPut h [(sig, t')]
+      [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
@@ -167,7 +168,7 @@ apnsMockServerConfig =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
-      logTLSErrors = True
+      transportConfig = defaultTransportServerConfig
     }
 
 withAPNSMockServer :: (APNSMockServer -> IO ()) -> IO ()

@@ -12,6 +12,7 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
@@ -31,7 +32,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams, TransportServerConfig)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -45,9 +46,9 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     storeLogFile :: Maybe FilePath,
-    resubscribeDelay :: Int, -- microseconds
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -57,7 +58,7 @@ data NtfServerConfig = NtfServerConfig
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
-    logTLSErrors :: Bool
+    transportConfig :: TransportServerConfig
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig
@@ -93,7 +94,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (NtfEntityRec 'Subscription),
+    newSubQ :: TBQueue [NtfEntityRec 'Subscription],
     smpAgent :: SMPClientAgent
   }
 
@@ -105,7 +106,7 @@ newNtfSubscriber qSize smpAgentCfg = do
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
 data SMPSubscriber = SMPSubscriber
-  { newSubQ :: TQueue (NtfEntityRec 'Subscription),
+  { newSubQ :: TQueue (NonEmpty (NtfEntityRec 'Subscription)),
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 

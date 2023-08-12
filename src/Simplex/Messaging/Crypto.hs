@@ -680,6 +680,9 @@ instance SignatureSize (Signature a) where
     SignatureEd25519 _ -> Ed25519.signatureSize
     SignatureEd448 _ -> Ed448.signatureSize
 
+instance SignatureSize ASignature where
+  signatureSize (ASignature _ s) = signatureSize s
+
 instance SignatureSize APrivateSignKey where
   signatureSize (APrivateSignKey _ k) = signatureSize k
 
