@@ -37,7 +37,7 @@ timeIt slow sql a = do
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
       update = Just . maybe diff (max diff)
-  atomically $ when (diff > 100) $ TM.alter update sql slow
+  atomically $ when (diff > 50) $ TM.alter update sql slow
   pure r
 
 open :: String -> IO Connection
