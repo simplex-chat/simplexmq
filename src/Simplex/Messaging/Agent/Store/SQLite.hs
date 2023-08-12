@@ -203,6 +203,7 @@ module Simplex.Messaging.Agent.Store.SQLite
 
     -- * utilities
     withConnection,
+    withConnection',
     withTransaction,
     withTransactionCtx,
     firstRow,
@@ -236,8 +237,8 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Data.Word (Word32)
-import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
-import qualified Database.SQLite.Simple as DB
+import Database.SQLite.Simple (FromRow (..), NamedParam (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
+import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -251,6 +252,7 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRError, Migration (..), MigrationsToRun (..), mtrErrorDescription)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
@@ -338,7 +340,7 @@ createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
     Left e -> closeSQLiteStore st $> Left e
 
 migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
-migrateSchema st migrations confirmMigrations = withConnection st $ \db -> do
+migrateSchema st migrations confirmMigrations = withConnection' st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
     Left e -> do
@@ -392,7 +394,7 @@ connectDB path key = do
   pure db
   where
     prepare db = do
-      let exec = SQLite3.exec $ DB.connectionHandle db
+      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
       exec . fromQuery $
         [sql|
@@ -425,7 +427,7 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 execSQL :: DB.Connection -> Text -> IO [Text]
 execSQL db query = do
   rs <- newIORef []
-  SQLite3.execWithCallback (DB.connectionHandle db) query (addSQLResultRow rs)
+  SQLite3.execWithCallback (SQL.connectionHandle $ DB.conn db) query (addSQLResultRow rs)
   reverse <$> readIORef rs
 
 addSQLResultRow :: IORef [Text] -> SQLite3.ColumnIndex -> [Text] -> [Maybe Text] -> IO ()
@@ -440,7 +442,7 @@ checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
 
 handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
-  | DB.sqlError e == DB.ErrorConstraint = err
+  | SQL.sqlError e == SQL.ErrorConstraint = err
   | otherwise = SEInternal $ bshow e
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
@@ -449,6 +451,13 @@ withConnection SQLiteStore {dbConnection} =
     (atomically $ takeTMVar dbConnection)
     (atomically . putTMVar dbConnection)
 
+withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
+withConnection' SQLiteStore {dbConnection} a =
+  bracket
+    (atomically $ takeTMVar dbConnection)
+    (atomically . putTMVar dbConnection)
+    (a . DB.conn)
+
 withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
 withTransaction = withTransactionCtx Nothing
 
@@ -456,19 +465,19 @@ withTransactionCtx :: forall a. Maybe String -> SQLiteStore -> (DB.Connection ->
 withTransactionCtx ctx_ st action = withConnection st $ loop 500 3_000_000
   where
     loop :: Int -> Int -> DB.Connection -> IO a
-    loop t tLim db =
+    loop t tLim db@DB.Connection {conn} =
       transactionWithCtx `E.catch` \(e :: SQLError) ->
-        if tLim > t && DB.sqlError e == DB.ErrorBusy
+        if tLim > t && SQL.sqlError e == SQL.ErrorBusy
           then do
             threadDelay t
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
       where
         transactionWithCtx = case ctx_ of
-          Nothing -> DB.withImmediateTransaction db (action db)
+          Nothing -> SQL.withImmediateTransaction conn (action db)
           Just ctx -> do
             t1 <- getCurrentTime
-            r <- DB.withImmediateTransaction db (action db)
+            r <- SQL.withImmediateTransaction conn (action db)
             t2 <- getCurrentTime
             putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
             putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
@@ -2090,7 +2099,7 @@ createWithRandomId gVar create = tryCreate 3
       E.try (create id') >>= \case
         Right _ -> pure $ Right id'
         Left e
-          | DB.sqlError e == DB.ErrorConstraint -> tryCreate (n - 1)
+          | SQL.sqlError e == SQL.ErrorConstraint -> tryCreate (n - 1)
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
