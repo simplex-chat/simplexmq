@@ -18,5 +18,5 @@ down_m20230814_indexes =
   [sql|
 DROP INDEX idx_messages_internal_ts;
 
-CREATE INDEX idx_messages_internal_snd_id_ts ON messages(internal_ts, internal_snd_id);
+CREATE INDEX idx_messages_internal_snd_id_ts ON messages(internal_snd_id, internal_ts);
 |]
