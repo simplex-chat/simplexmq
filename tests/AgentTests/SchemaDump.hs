@@ -4,7 +4,7 @@
 module AgentTests.SchemaDump where
 
 import Control.DeepSeq
-import Control.Monad (void)
+import Control.Monad (unless, void)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
 import Simplex.Messaging.Agent.Store.SQLite
@@ -54,11 +54,18 @@ testSchemaMigrations = do
       schema' <- getSchema testDB testSchema
       schema' `shouldNotBe` schema
       withConnection' st (`Migrations.run` MTRDown [downMigr])
-      schema'' <- getSchema testDB testSchema
-      schema'' `shouldBe` schema
+      unless (name m `elem` skipComparisonForDownMigrations) $ do
+        schema'' <- getSchema testDB testSchema
+        schema'' `shouldBe` schema
       withConnection' st (`Migrations.run` MTRUp [m])
       schema''' <- getSchema testDB testSchema
       schema''' `shouldBe` schema'
+
+skipComparisonForDownMigrations :: [String]
+skipComparisonForDownMigrations =
+  [ -- on down migration idx_messages_internal_snd_id_ts index moves down to the end of the file
+    "m20230814_indexes"
+  ]
 
 getSchema :: FilePath -> FilePath -> IO String
 getSchema dpPath schemaPath = do

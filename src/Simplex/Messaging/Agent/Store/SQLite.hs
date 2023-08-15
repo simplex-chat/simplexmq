@@ -1106,7 +1106,7 @@ deleteSndMsgsExpired db ttl = do
   cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   DB.execute
     db
-    "DELETE FROM messages WHERE internal_snd_id IS NOT NULL AND internal_ts < ?"
+    "DELETE FROM messages WHERE internal_ts < ? AND internal_snd_id IS NOT NULL"
     (Only cutoffTs)
 
 createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
