@@ -4,6 +4,7 @@
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
   ( Connection (..),
+    SlowQueryStats (..),
     open,
     close,
     execute,
