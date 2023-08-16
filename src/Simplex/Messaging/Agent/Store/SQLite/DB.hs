@@ -38,7 +38,7 @@ data Connection = Connection
 data SlowQueryStats = SlowQueryStats
   { count :: Int64,
     timeMax :: Int64,
-    timeAvgApprx :: Int64
+    timeAvg :: Int64
   }
   deriving (Show, Generic)
 
@@ -55,12 +55,12 @@ timeIt slow sql a = do
   where
     updateQueryStats :: Int64 -> Maybe SlowQueryStats -> Maybe SlowQueryStats
     updateQueryStats diff Nothing = Just $ SlowQueryStats 1 diff diff
-    updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvgApprx}) =
+    updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvg}) =
       Just $
         SlowQueryStats
           { count = count + 1,
             timeMax = max timeMax diff,
-            timeAvgApprx = (timeAvgApprx * count + diff) `div` (count + 1)
+            timeAvg = (timeAvg * count + diff) `div` (count + 1)
           }
 
 open :: String -> IO Connection
