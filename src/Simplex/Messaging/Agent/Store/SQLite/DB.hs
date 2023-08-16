@@ -1,8 +1,10 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
   ( Connection (..),
+    SlowQueryStats (..),
     open,
     close,
     execute,
@@ -17,28 +19,49 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
+import Data.Aeson (ToJSON (..))
+import qualified Data.Aeson as J
 import Data.Int (Int64)
+import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
-import Data.Time (diffUTCTime, getCurrentTime)
+import GHC.Generics (Generic)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds)
 
 data Connection = Connection
   { conn :: SQL.Connection,
-    slow :: TMap Query Int64
+    slow :: TMap Query SlowQueryStats
   }
 
-timeIt :: TMap Query Int64 -> Query -> IO a -> IO a
+data SlowQueryStats = SlowQueryStats
+  { count :: Int64,
+    timeMax :: Int64,
+    timeAvg :: Int64
+  }
+  deriving (Show, Generic)
+
+instance ToJSON SlowQueryStats where toEncoding = J.genericToEncoding J.defaultOptions
+
+timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
   r <- a
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
-      update = Just . maybe diff (max diff)
-  atomically $ when (diff > 50) $ TM.alter update sql slow
+  atomically $ when (diff > 50) $ TM.alter (updateQueryStats diff) sql slow
   pure r
+  where
+    updateQueryStats :: Int64 -> Maybe SlowQueryStats -> Maybe SlowQueryStats
+    updateQueryStats diff Nothing = Just $ SlowQueryStats 1 diff diff
+    updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvg}) =
+      Just $
+        SlowQueryStats
+          { count = count + 1,
+            timeMax = max timeMax diff,
+            timeAvg = (timeAvg * count + diff) `div` (count + 1)
+          }
 
 open :: String -> IO Connection
 open f = do
