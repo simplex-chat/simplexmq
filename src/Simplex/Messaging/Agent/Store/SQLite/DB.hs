@@ -35,7 +35,7 @@ data Connection = Connection
     slow :: TMap Query SlowQueryStats
   }
 
-data SlowQueryStats = QueryStats
+data SlowQueryStats = SlowQueryStats
   { count :: Int64,
     timeMax :: Int64,
     timeAvgApprx :: Int64
@@ -54,10 +54,10 @@ timeIt slow sql a = do
   pure r
   where
     updateQueryStats :: Int64 -> Maybe SlowQueryStats -> Maybe SlowQueryStats
-    updateQueryStats diff Nothing = Just $ QueryStats 1 diff diff
-    updateQueryStats diff (Just QueryStats {count, timeMax, timeAvgApprx}) =
+    updateQueryStats diff Nothing = Just $ SlowQueryStats 1 diff diff
+    updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvgApprx}) =
       Just $
-        QueryStats
+        SlowQueryStats
           { count = count + 1,
             timeMax = max timeMax diff,
             timeAvgApprx = (timeAvgApprx * count + diff) `div` (count + 1)
