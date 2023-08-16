@@ -87,6 +87,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
