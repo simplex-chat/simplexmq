@@ -11,7 +11,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TupleSections #-}
 
 -- |
 -- Module      : Simplex.Messaging.Client
@@ -69,6 +68,13 @@ module Simplex.Messaging.Client
     temporaryClientError,
     ServerTransmission,
     ClientCommand,
+
+    -- * For testing
+    ClientBatch (..),
+    PCTransmission,
+    batchClientTransmissions,
+    mkTransmission,
+    clientStub,
   )
 where
 
@@ -82,12 +88,10 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (rights)
-import Data.Foldable (foldl')
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
-import Data.List.NonEmpty (NonEmpty (..), (<|))
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
@@ -95,6 +99,7 @@ import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol as SMP
@@ -131,10 +136,42 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue (NonEmpty SentRawTransmission),
+    sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
+
+clientStub :: ByteString -> STM (ProtocolClient err msg)
+clientStub sessionId = do
+  connected <- newTVar False
+  clientCorrId <- newTVar 0
+  sentCommands <- TM.empty
+  sndQ <- newTBQueue 100
+  rcvQ <- newTBQueue 100
+  return
+    ProtocolClient
+      { action = Nothing,
+        sessionId,
+        sessionTs = undefined,
+        thVersion = 5,
+        timeoutPerBlock = undefined,
+        blockSize = smpBlockSize,
+        batch = undefined,
+        client_ =
+          PClient
+            { connected,
+              transportSession = undefined,
+              transportHost = undefined,
+              tcpTimeout = undefined,
+              batchDelay = Nothing,
+              pingErrorCount = undefined,
+              clientCorrId,
+              sentCommands,
+              sndQ,
+              rcvQ,
+              msgQ = Nothing
+            }
+      }
 
 type SMPClient = ProtocolClient ErrorType SMP.BrokerMsg
 
@@ -247,10 +284,12 @@ defaultClientConfig =
 
 data Request err msg = Request
   { queueId :: QueueId,
-    responseVar :: TMVar (Response err msg)
+    responseVar :: TResponse err msg
   }
 
 type Response err msg = Either (ProtocolClientError err) msg
+
+type TResponse err msg = TMVar (Response err msg)
 
 chooseTransportHost :: NetworkConfig -> NonEmpty TransportHost -> Either (ProtocolClientError err) TransportHost
 chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts =
@@ -355,7 +394,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPut h batchDelay
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPutLog h
 
     receive :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
@@ -597,55 +636,100 @@ okSMPCommands cmd c qs = L.map response <$> sendProtocolCommands c cs
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
-type PCTransmission err msg = (SentRawTransmission, TMVar (Response err msg))
+type PCTransmission err msg = (SentRawTransmission, TResponse err msg)
 
 -- | Send multiple commands with batching and collect responses
--- It will result in Int overflow on 32 bit platform for a large number of blocks (~13.4k blocks / ~1.2m subscriptions)
 -- TODO switch to timeout or TimeManager that supports Int64
-sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either (ProtocolClientError err) msg))
-sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout, batchDelay}, batch, blockSize, timeoutPerBlock} cs = do
-  (h :| ts) <- mapM (runExceptT . mkTransmission c) cs
-  let h' :: Either (ProtocolClientError err) (PCTransmission err msg, Int) = (,timeoutPerBlock) <$> h
-      batchSz = if batch then either (const 0) tSize h else 0
-      ts' :: NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)) =
-        L.reverse . fst3 $ foldl' batchTimeouts ([h'], timeoutPerBlock, batchSz) ts
-      ts_ :: (Maybe (NonEmpty SentRawTransmission)) =
-        L.nonEmpty . map (fst . fst) . rights $ L.toList ts'
-  mapM_ (atomically . writeTBQueue sndQ) ts_
-  forConcurrently ts' $ \case
-    Right ((_t, r), bt) -> withTimeout c (tcpTimeout + bt) (atomically $ takeTMVar r)
-    Left e -> pure $ Left e
+sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
+sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}, batch, blockSize} cs = do
+  bs <- batchClientTransmissions batch blockSize <$> mapM (runExceptT . mkTransmission c) cs
+  validate . concat =<< mapM sendBatch bs
   where
-    fst3 (x, _, _) = x
-    -- tSize calculation matches the batching logic in tPut that does actual breaking of transmissions into blocks
-    tSize :: PCTransmission err msg -> Int
-    tSize ((sig, t), _) = maybe 0 C.signatureSize sig + B.length t + 3 -- 1 byte for signature size + 2 bytes for transmission size
-    batchTimeouts :: (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int) -> Either (ProtocolClientError err) (PCTransmission err msg) -> (NonEmpty (Either (ProtocolClientError err) (PCTransmission err msg, Int)), Int, Int)
-    batchTimeouts (ts, bt, batchSz) = \case
-      Left e -> (Left e <| ts, bt, batchSz)
-      Right t
-        | not batch ->
-          (Right (t, bt') <| ts, bt', 0)
-        | batchSz' + 1 > blockSize ->
-          (Right (t, bt') <| ts, bt', tSz)
-        | otherwise -> -- same block in the batch
-          (Right (t, bt) <| ts, bt, batchSz') -- 1 byte for the number of transmissions in the batch
+    validate :: [Response err msg] -> IO (NonEmpty (Response err msg))
+    validate rs
+      | diff == 0 = pure $ L.fromList rs
+      | diff > 0 = do
+        putStrLn "send error: fewer responses than expected"
+        pure $ L.fromList $ rs <> replicate diff (Left $ PCETransportError TEBadBlock)
+      | otherwise = do
+        putStrLn "send error: more responses than expected"
+        pure $ L.fromList $ take (L.length cs) rs
         where
-          batchSz' = batchSz + tSz
-          bt' = bt + timeoutPerBlock + fromMaybe 0 batchDelay
-          tSz = tSize t
+          diff = L.length cs - length rs
+    sendBatch :: ClientBatch err msg -> IO [Response err msg]
+    sendBatch b = do
+      case b of
+        CBLargeTransmission -> [Left (PCETransportError TELargeMsg)] <$ putStrLn "send error: large message"
+        CBTransmissions n s rs -> do
+          when (n > 0) $ atomically $ writeTBQueue sndQ $ tEncodeBatch n s
+          forConcurrently rs $ \case
+            Right r -> withTimeout c tcpTimeout (atomically $ takeTMVar r)
+            Left e -> pure $ Left e
+        CBTransmission s r -> do
+          atomically $ writeTBQueue sndQ s
+          (: []) <$> withTimeout c tcpTimeout (atomically $ takeTMVar r)
+
+-- ByteString does not include length byte, it is added by tEncodeBatch
+type PCTransmissionOrErr err msg = Either (ProtocolClientError err) (PCTransmission err msg)
+
+type TResponseOrErr err msg = Either (ProtocolClientError err) (TResponse err msg)
+
+data ClientBatch err msg
+  = CBTransmissions Int ByteString [TResponseOrErr err msg]
+  | CBTransmission ByteString (TResponse err msg)
+  | CBLargeTransmission
+
+-- | encodes and batches transmissions into blocks, 
+batchClientTransmissions :: forall err msg. Bool -> Int -> NonEmpty (PCTransmissionOrErr err msg) -> [ClientBatch err msg]
+batchClientTransmissions batch bSize
+  | batch = reverse . mkBatch []
+  | otherwise = map mkBatch1 . L.toList
+  where
+    mkBatch :: [ClientBatch err msg] -> NonEmpty (PCTransmissionOrErr err msg) -> [ClientBatch err msg]
+    mkBatch bs ts =
+      let (b, ts_) = encodeBatch 0 "" [] ts
+          bs' = b : bs
+       in maybe bs' (mkBatch bs') ts_
+    mkBatch1 :: PCTransmissionOrErr err msg -> ClientBatch err msg
+    mkBatch1 = \case
+      Left e -> CBTransmissions 0 "" [Left e]
+      Right (t, r) ->
+        let s = tEncode t
+         in if B.length s > bSize - 2 then CBLargeTransmission else CBTransmission s r
+    encodeBatch :: Int -> ByteString -> [TResponseOrErr err msg] -> NonEmpty (PCTransmissionOrErr err msg) -> (ClientBatch err msg, Maybe (NonEmpty (PCTransmissionOrErr err msg)))
+    encodeBatch n s rs ts@(t_ :| ts_)
+      | n == 255 = (res, Just ts)
+      | otherwise = case t_ of
+          Left e -> next n s (Left e : rs)
+          Right (t, r)
+            | B.length s' <= bSize - 3 -> next (n + 1) s' (Right r : rs)
+            | null rs -> (CBLargeTransmission, L.nonEmpty ts_)
+            | otherwise -> (res, Just ts)
+            where
+              s' = s <> smpEncode (Large $ tEncode t)
+      where
+        res = CBTransmissions n s (reverse rs)
+        next n' s' rs' = case L.nonEmpty ts_ of
+          Just ts' -> encodeBatch n' s' rs' ts'
+          Nothing -> (CBTransmissions n' s' (reverse rs'), Nothing)
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}} pKey qId cmd = do
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}, batch, blockSize} pKey qId cmd = do
   (t, r) <- mkTransmission c (pKey, qId, cmd)
   ExceptT $ sendRecv t r
   where
     -- two separate "atomically" needed to avoid blocking
-    sendRecv :: SentRawTransmission -> TMVar (Response err msg) -> IO (Response err msg)
-    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout c tcpTimeout (atomically $ takeTMVar r)
+    sendRecv :: SentRawTransmission -> TResponse err msg -> IO (Response err msg)
+    sendRecv t r
+      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | otherwise = atomically (writeTBQueue sndQ s) >> withTimeout c tcpTimeout (atomically $ takeTMVar r)
+      where
+        s
+          | batch = tEncodeBatch 1 . smpEncode . Large $ tEncode t
+          | otherwise = tEncode t
 
-withTimeout :: ProtocolClient err msg -> Int -> IO (Either (ProtocolClientError err) msg) -> IO (Either (ProtocolClientError err) msg)
+withTimeout :: ProtocolClient err msg -> Int -> IO (Response err msg) -> IO (Response err msg)
 withTimeout ProtocolClient {client_ = PClient {pingErrorCount}} t a = do
   timeout t a >>= \case
     Just r -> atomically (writeTVar pingErrorCount 0) >> pure r
@@ -664,7 +748,7 @@ mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCo
       pure . CorrId $ bshow i
     signTransmission :: ByteString -> SentRawTransmission
     signTransmission t = ((`C.sign` t) <$> pKey, t)
-    mkRequest :: CorrId -> STM (TMVar (Response err msg))
+    mkRequest :: CorrId -> STM (TResponse err msg)
     mkRequest corrId = do
       r <- newEmptyTMVar
       TM.insert corrId (Request qId r) sentCommands

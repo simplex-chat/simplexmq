@@ -533,6 +533,7 @@ test-suite simplexmq-test
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
       CLITests
+      CoreTests.BatchingTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests

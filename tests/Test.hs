@@ -3,6 +3,7 @@
 import AgentTests (agentTests)
 import CLITests
 import Control.Logger.Simple
+import CoreTests.BatchingTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
@@ -35,6 +36,7 @@ main = do
       . after_ (removeDirectoryRecursive "tests/tmp")
       $ do
         describe "Core tests" $ do
+          describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
           describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
