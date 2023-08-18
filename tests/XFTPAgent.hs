@@ -15,7 +15,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
-import SMPAgentClient (agentCfg, initAgentServers, testDB)
+import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
@@ -93,10 +93,11 @@ testXFTPAgentSendReceive = withXFTPServer $ do
   testReceiveDelete rfd2 filePath
   where
     testReceiveDelete rfd originalFilePath = do
-      rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
+      rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
       runRight_ $ do
         rfId <- testReceive rcp rfd originalFilePath
         xftpDeleteRcvFile rcp rfId
+      disconnectAgentClient rcp
 
 createRandomFile :: IO FilePath
 createRandomFile = do
@@ -145,7 +146,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
       pure rfd
 
   -- receive file - should not succeed with server down
-  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
+  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
     rfId <- xftpReceiveFile rcp 1 rfd
@@ -159,7 +160,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- receive file - should start downloading with server up
-    rcp' <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp' <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
     ("", rfId', RFPROG _ _) <- rfGet rcp'
     liftIO $ rfId' `shouldBe` rfId
@@ -169,7 +170,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- receive file - should continue downloading with server up
-    rcp' <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp' <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
     rfProgress rcp' $ mb 18
     ("", rfId', RFDONE path) <- rfGet rcp'
@@ -193,7 +194,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
       pure rfd
 
   -- receive file - should not succeed with server down
-  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
+  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
     rfId <- xftpReceiveFile rcp 1 rfd
@@ -207,7 +208,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
 
   withXFTPServerThreadOn $ \_ -> do
     -- receive file - should fail with AUTH error
-    rcp' <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp' <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
     ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp'
     rfId' `shouldBe` rfId
@@ -259,7 +260,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     doesFileExist encPath `shouldReturn` False
 
     -- receive file
-    rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $
       void $ testReceive rcp rfd1 filePath
 
@@ -309,7 +310,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
 
     -- receive file
-    rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $
       void $ testReceive rcp1 rfd1 filePath
 
@@ -321,12 +322,13 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       xftpDeleteSndFileRemote sndr 1 sfId sndDescr
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
+    disconnectAgentClient rcp1
 
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
     -- receive file - should fail with AUTH error
-    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
       rfId <- xftpReceiveFile rcp2 1 rfd2
@@ -343,10 +345,11 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
 
     -- receive file
-    rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $
       void $ testReceive rcp1 rfd1 filePath
-
+    disconnectAgentClient rcp1
+    disconnectAgentClient sndr
     pure (sfId, sndDescr, rfd2)
 
   -- delete file - should not succeed with server down
@@ -369,7 +372,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
     -- receive file - should fail with AUTH error
-    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB
+    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
       rfId <- xftpReceiveFile rcp2 1 rfd2
@@ -394,15 +397,12 @@ testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
 
   -- receive file using different descriptions
   -- ! revise number of recipients and indexes if xftpMaxRecipientsPerRequest is changed
-  testReceive' (head rfds) filePath
-  testReceive' (rfds !! 99) filePath
-  testReceive' (rfds !! 299) filePath
-  testReceive' (rfds !! 499) filePath
-  where
-    testReceive' rfd originalFilePath = do
-      rcp <- getSMPAgentClient' agentCfg initAgentServers testDB
-      runRight_ $
-        void $ testReceive rcp rfd originalFilePath
+  rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  runRight_ $ do
+    void $ testReceive rcp (head rfds) filePath
+    void $ testReceive rcp (rfds !! 99) filePath
+    void $ testReceive rcp (rfds !! 299) filePath
+    void $ testReceive rcp (rfds !! 499) filePath
 
 testXFTPServerTest :: Maybe BasicAuth -> XFTPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testXFTPServerTest newFileBasicAuth srv =
