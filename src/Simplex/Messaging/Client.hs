@@ -669,17 +669,17 @@ sendProtocolCommands c@ProtocolClient {client_ = PClient {sndQ, tcpTimeout}, bat
           atomically $ writeTBQueue sndQ s
           (: []) <$> withTimeout c tcpTimeout (atomically $ takeTMVar r)
 
--- ByteString does not include length byte, it is added by tEncodeBatch
 type PCTransmissionOrErr err msg = Either (ProtocolClientError err) (PCTransmission err msg)
 
 type TResponseOrErr err msg = Either (ProtocolClientError err) (TResponse err msg)
 
 data ClientBatch err msg
+  -- ByteString in CBTransmissions does not include count byte, it is added by tEncodeBatch
   = CBTransmissions Int ByteString [TResponseOrErr err msg]
   | CBTransmission ByteString (TResponse err msg)
   | CBLargeTransmission
 
--- | encodes and batches transmissions into blocks, 
+-- | encodes and batches transmissions into blocks
 batchClientTransmissions :: forall err msg. Bool -> Int -> NonEmpty (PCTransmissionOrErr err msg) -> [ClientBatch err msg]
 batchClientTransmissions batch bSize
   | batch = reverse . mkBatch []
