@@ -83,7 +83,7 @@ testClientBatchSubscriptions = do
   all lenOk1' batches1 `shouldBe` True
   let batches = batchClientTransmissions True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
-  [CBTransmissions n1 s1 rs1, CBTransmissions n2 s2 rs2, CBTransmissions n3 s3 rs3] <- pure batches
+  [CBTransmissions s1 n1 rs1, CBTransmissions s2 n2 rs2, CBTransmissions s3 n3 rs3] <- pure batches
   (n1, n2, n3) `shouldBe` (90, 90, 20)
   (length rs1, length rs2, length rs3) `shouldBe` (90, 90, 20)
   all lenOk [s1, s2, s3] `shouldBe` True
@@ -101,7 +101,7 @@ testClientBatchWithMessage = do
   length batches1 `shouldBe` 101
   let batches = batchClientTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 2
-  [CBTransmissions n1 s1 rs1, CBTransmissions n2 s2 rs2] <- pure batches
+  [CBTransmissions s1 n1 rs1, CBTransmissions s2 n2 rs2] <- pure batches
   (n1, n2) `shouldBe` (60, 41)
   (length rs1, length rs2) `shouldBe` (60, 41)
   all lenOk [s1, s2] `shouldBe` True
@@ -123,7 +123,7 @@ testClientBatchWithLargeMessage = do
   --
   let batches = batchClientTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
-  [CBTransmissions n1 s1 rs1, CBLargeTransmission, CBTransmissions n2 s2 rs2, CBTransmissions n3 s3 rs3] <- pure batches
+  [CBTransmissions s1 n1 rs1, CBLargeTransmission _, CBTransmissions s2 n2 rs2, CBTransmissions s3 n3 rs3] <- pure batches
   (n1, n2, n3) `shouldBe` (60, 90, 10)
   (length rs1, length rs2, length rs3) `shouldBe` (60, 90, 10)
   all lenOk [s1, s2, s3] `shouldBe` True
@@ -131,7 +131,7 @@ testClientBatchWithLargeMessage = do
   let cmds' = [send] <> subs1 <> subs2
   let batches' = batchClientTransmissions True smpBlockSize $ L.fromList cmds'
   length batches' `shouldBe` 3
-  [CBLargeTransmission, CBTransmissions n1' s1' rs1', CBTransmissions n2' s2' rs2'] <- pure batches'
+  [CBLargeTransmission _, CBTransmissions s1' n1' rs1', CBTransmissions s2' n2' rs2'] <- pure batches'
   (n1', n2') `shouldBe` (90, 70)
   (length rs1', length rs2') `shouldBe` (90, 70)
   all lenOk [s1', s2'] `shouldBe` True
@@ -144,11 +144,11 @@ randomSUB sessId = do
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, rId, Cmd SRecipient SUB)
   pure (Just $ C.sign rpKey s, s)
 
-randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (Either (ProtocolClientError ErrorType) (PCTransmission ErrorType BrokerMsg))
+randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd c = do
   rId <- getRandomBytes 24
   (_, rpKey) <- C.generateSignatureKeyPair C.SEd448
-  runExceptT $ mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
+  mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
 
 randomSEND :: ByteString -> Int -> IO (Maybe C.ASignature, ByteString)
 randomSEND sessId len = do
@@ -159,12 +159,12 @@ randomSEND sessId len = do
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
   pure (Just $ C.sign rpKey s, s)
 
-randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (Either (ProtocolClientError ErrorType) (PCTransmission ErrorType BrokerMsg))
+randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd c len = do
   sId <- getRandomBytes 24
   (_, rpKey) <- C.generateSignatureKeyPair C.SEd448
   msg <- getRandomBytes len
-  runExceptT $ mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
+  mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: ByteString -> Bool
 lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2
