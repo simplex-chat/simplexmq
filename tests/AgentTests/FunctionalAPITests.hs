@@ -231,6 +231,8 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
+    it "join connection when reply queue creation fails" $
+      testJoinConnectionAsyncReplyError t
   describe "Users" $ do
     it "should create and delete user with connections" $
       withSmpServer t testUsers
@@ -1306,6 +1308,46 @@ testDeleteConnectionAsync t = do
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
+
+testJoinConnectionAsyncReplyError :: HasCallStack => ATransport -> IO ()
+testJoinConnectionAsyncReplyError t = do
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2]}
+  a <- getSMPAgentClient' agentCfg initAgentServers testDB
+  b <- getSMPAgentClient' agentCfg initAgentServersSrv2 testDB2
+  (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    bId <- createConnectionAsync a 1 "1" True SCMInvitation
+    ("1", bId', INV (ACR _ qInfo)) <- get a
+    liftIO $ bId' `shouldBe` bId
+    aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo"
+    liftIO $ threadDelay 500000
+    ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
+    pure (aId, bId)
+  nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+  withSmpServerOn t testPort2 $ do
+    ("2", aId', OK) <- get b
+    liftIO $ aId' `shouldBe` aId
+    confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
+      pGet a >>= \case
+        ("", "", APC _ (UP _ [_])) -> do
+          ("", _, CONF confId _ "bob's connInfo") <- get a
+          pure confId
+        ("", _, APC _ (CONF confId _ "bob's connInfo")) -> do
+          ("", "", UP _ [_]) <- nGet a
+          pure confId
+        r -> error $ "unexpected response " <> show r
+    nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    runRight_ $ do
+      allowConnectionAsync a "3" bId confId "alice's connInfo"
+      liftIO $ threadDelay 500000
+      ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {}], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
+      pure ()
+    withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+      pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
+      pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, INFO "alice's connInfo")
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
 
 testUsers :: IO ()
 testUsers = do
