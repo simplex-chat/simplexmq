@@ -558,7 +558,9 @@ testWithStoreLog at@(ATransport t) =
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
-      Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
+      signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
+        Resp "cdab" _ OK -> pure ()
+        r -> print $ "unexpected response " <> show r
       Resp "" _ (Msg mId2 msg2) <- tGet1 h
       (decryptMsgV3 dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
