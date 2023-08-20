@@ -389,11 +389,14 @@ connectDB path key = do
     prepare db = do
       let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-      exec "PRAGMA busy_timeout = 100;"
-      exec "PRAGMA foreign_keys = ON;"
-      -- exec "PRAGMA trusted_schema = OFF;"
-      exec "PRAGMA secure_delete = ON;"
-      exec "PRAGMA auto_vacuum = FULL;"
+      exec . fromQuery $
+        [sql|
+          PRAGMA busy_timeout = 100;
+          PRAGMA foreign_keys = ON;
+          -- PRAGMA trusted_schema = OFF;
+          PRAGMA secure_delete = ON;
+          PRAGMA auto_vacuum = FULL;
+        |]
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
