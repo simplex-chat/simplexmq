@@ -969,7 +969,9 @@ testMsgExpireOnInterval t =
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should expire)")
         threadDelay 2500000
         testSMPClient @c $ \rh -> do
-          Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, SUB)
+          signSendRecv rh rKey ("2", rId, SUB) >>= \case
+            Resp "2" _ OK -> pure ()
+            r -> error $ "unexpected response: " <> show r
           1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"

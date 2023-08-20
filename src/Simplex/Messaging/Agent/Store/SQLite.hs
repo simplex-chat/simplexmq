@@ -1728,7 +1728,7 @@ insertSndQueue_ db connId' SndQueue {..} serverKeyHash_ = do
   DB.execute
     db
     [sql|
-      INSERT INTO snd_queues
+      INSERT OR REPLACE INTO snd_queues
         (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
