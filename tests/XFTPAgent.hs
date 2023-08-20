@@ -15,7 +15,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
-import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
+import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
@@ -372,7 +372,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
     -- receive file - should fail with AUTH error
-    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
+    rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB3
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
       rfId <- xftpReceiveFile rcp2 1 rfd2
