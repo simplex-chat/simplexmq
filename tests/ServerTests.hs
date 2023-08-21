@@ -235,7 +235,9 @@ testCreateSecure (ATransport t) =
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
       let maxAllowedMessage = B.replicate maxMessageLength '-'
-      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
+      signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage) >>= \case
+        Resp "bcda" _ OK -> pure ()
+        r -> expectationFailure $ "expected OK, got " <> show r
       Resp "" _ (Msg mId3 msg3) <- tGet1 h
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
