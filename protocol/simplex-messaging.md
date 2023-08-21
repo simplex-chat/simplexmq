@@ -347,7 +347,7 @@ Simplex messaging server implementations MUST NOT create, store or send to any o
 
 - Snapshots of the database they use to store queues and messages (instead simplex messaging clients must manage redundancy by using more than one simplex messaging server). In-memory persistence is recommended.
 
-- Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging servers.
+- Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging servers (the servers cannot compromise forward secrecy of any application layer protocol, such as double ratchet).
 
 ## Message delivery notifications
 
