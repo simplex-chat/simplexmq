@@ -640,10 +640,11 @@ joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRan
 joinConnSrvAsync :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SMPServerWithAuth -> m ()
 joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo srv = do
   (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
-  withStore c $ \db -> runExceptT $ do
-    void . ExceptT $ updateNewConnSnd db connId q
+  dbQueueId <- withStore c $ \db -> runExceptT $ do
     liftIO $ createRatchet db connId rc
-  confirmQueueAsync aVersion c cData q srv cInfo $ Just e2eSndParams
+    ExceptT $ updateNewConnSnd db connId q
+  let q' = (q :: SndQueue) {dbQueueId}
+  confirmQueueAsync aVersion c cData q' srv cInfo $ Just e2eSndParams
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _srv = do
   throwError $ CMD PROHIBITED
 
