@@ -10,6 +10,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -424,7 +425,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           TM.delete tSess smpClients
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
-          let cs = S.fromList $ map qConnId qs
+          let cs = S.fromList $ map (\q -> q.connId) qs
           cs' <- RQ.getConns $ activeSubs c
           pure (qs, S.toList $ cs `S.difference` cs')
 
@@ -812,7 +813,7 @@ mkSMPTransportSession :: (AgentMonad' m, SMPQueueRec q) => AgentClient -> q -> m
 mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
 
 mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
-mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
+mkSMPTSession q = mkTSession q.userId (qServer q) q.connId
 
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig

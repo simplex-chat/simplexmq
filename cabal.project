@@ -1,8 +1,8 @@
--- packages: .
+packages: .
 -- packages: . ../direct-sqlcipher ../sqlcipher-simple
 -- packages: . ../hs-socks
 -- packages: . ../http2
-packages: . ../network-transport
+-- packages: . ../network-transport
 
 source-repository-package
     type: git
@@ -28,3 +28,8 @@ source-repository-package
     type: git
     location: https://github.com/simplex-chat/sqlcipher-simple.git
     tag: a46bd361a19376c5211f1058908fc0ae6bf42446
+
+source-repository-package
+    type: git
+    location: https://github.com/simplex-chat/network-transport.git
+    tag: 0013798272a683e35ca38d2fdaf480942311fba8

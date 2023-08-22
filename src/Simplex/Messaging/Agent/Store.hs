@@ -1,15 +1,17 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
@@ -25,6 +27,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
+import GHC.Records (HasField)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
@@ -37,7 +40,6 @@ import Simplex.Messaging.Protocol
     NotifierId,
     NtfPrivateSignKey,
     NtfPublicVerifyKey,
-    QueueId,
     RcvDhSecret,
     RcvNtfDhSecret,
     RcvPrivateSignKey,
@@ -145,18 +147,14 @@ sndQueueInfo SndQueue {server, sndSwchStatus} =
 instance SMPQueue RcvQueue where
   qServer RcvQueue {server} = server
   {-# INLINE qServer #-}
-  qAddress RcvQueue {server, rcvId} = (server, rcvId)
-  {-# INLINE qAddress #-}
-  sameQueue addr q = sameQAddress addr (qAddress q)
-  {-# INLINE sameQueue #-}
+  queueId RcvQueue {rcvId} = rcvId
+  {-# INLINE queueId #-}
 
 instance SMPQueue SndQueue where
   qServer SndQueue {server} = server
   {-# INLINE qServer #-}
-  qAddress SndQueue {server, sndId} = (server, sndId)
-  {-# INLINE qAddress #-}
-  sameQueue addr q = sameQAddress addr (qAddress q)
-  {-# INLINE sameQueue #-}
+  queueId SndQueue {sndId} = sndId
+  {-# INLINE queueId #-}
 
 findQ :: SMPQueue q => (SMPServer, SMP.QueueId) -> NonEmpty q -> Maybe q
 findQ = find . sameQueue
@@ -184,39 +182,16 @@ switchingRQ = find $ isJust . rcvSwchStatus
 {-# INLINE switchingRQ #-}
 
 updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
-updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
+updatedQs q = L.map $ \q' -> if q.dbQueueId == q'.dbQueueId then q else q'
 {-# INLINE updatedQs #-}
 
-class SMPQueue q => SMPQueueRec q where
-  qUserId :: q -> UserId
-  qConnId :: q -> ConnId
-  queueId :: q -> QueueId
-  dbQId :: q -> Int64
-  dbReplaceQId :: q -> Maybe Int64
-
-instance SMPQueueRec RcvQueue where
-  qUserId q = q.userId
-  {-# INLINE qUserId #-}
-  qConnId q = q.connId
-  {-# INLINE qConnId #-}
-  queueId q = q.rcvId
-  {-# INLINE queueId #-}
-  dbQId q = q.dbQueueId
-  {-# INLINE dbQId #-}
-  dbReplaceQId q = q.dbReplaceQueueId
-  {-# INLINE dbReplaceQId #-}
-
-instance SMPQueueRec SndQueue where
-  qUserId q = q.userId
-  {-# INLINE qUserId #-}
-  qConnId q = q.connId
-  {-# INLINE qConnId #-}
-  queueId q = q.sndId
-  {-# INLINE queueId #-}
-  dbQId q = q.dbQueueId
-  {-# INLINE dbQId #-}
-  dbReplaceQId q = q.dbReplaceQueueId
-  {-# INLINE dbReplaceQId #-}
+type SMPQueueRec q =
+  ( SMPQueue q,
+    HasField "userId" q UserId,
+    HasField "connId" q ConnId,
+    HasField "dbQueueId" q Int64,
+    HasField "dbReplaceQueueId" q (Maybe Int64)
+  )
 
 -- * Connection types
 

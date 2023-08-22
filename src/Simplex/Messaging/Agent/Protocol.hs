@@ -80,6 +80,8 @@ module Simplex.Messaging.Agent.Protocol
     SMPServerWithAuth,
     SrvLoc (..),
     SMPQueue (..),
+    qAddress,
+    sameQueue,
     sameQAddress,
     noAuthSrv,
     SMPQueueUri (..),
@@ -1195,8 +1197,15 @@ updateSMPServerHosts srv@ProtocolServer {host} = case host of
 
 class SMPQueue q where
   qServer :: q -> SMPServer
-  qAddress :: q -> (SMPServer, SMP.QueueId)
-  sameQueue :: (SMPServer, SMP.QueueId) -> q -> Bool
+  queueId :: q -> SMP.QueueId
+
+qAddress :: SMPQueue q => q -> (SMPServer, SMP.QueueId)
+qAddress q = (qServer q, queueId q)
+{-# INLINE qAddress #-}
+
+sameQueue :: SMPQueue q => (SMPServer, SMP.QueueId) -> q -> Bool
+sameQueue addr q = sameQAddress addr (qAddress q)
+{-# INLINE sameQueue #-}
 
 data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
@@ -1241,26 +1250,20 @@ data SMPQueueAddress = SMPQueueAddress
 instance SMPQueue SMPQueueUri where
   qServer SMPQueueUri {queueAddress} = qServer queueAddress
   {-# INLINE qServer #-}
-  qAddress SMPQueueUri {queueAddress} = qAddress queueAddress
-  {-# INLINE qAddress #-}
-  sameQueue addr q = sameQAddress addr (qAddress q)
-  {-# INLINE sameQueue #-}
+  queueId SMPQueueUri {queueAddress} = queueId queueAddress
+  {-# INLINE queueId #-}
 
 instance SMPQueue SMPQueueInfo where
   qServer SMPQueueInfo {queueAddress} = qServer queueAddress
   {-# INLINE qServer #-}
-  qAddress SMPQueueInfo {queueAddress} = qAddress queueAddress
-  {-# INLINE qAddress #-}
-  sameQueue addr q = sameQAddress addr (qAddress q)
-  {-# INLINE sameQueue #-}
+  queueId SMPQueueInfo {queueAddress} = queueId queueAddress
+  {-# INLINE queueId #-}
 
 instance SMPQueue SMPQueueAddress where
   qServer SMPQueueAddress {smpServer} = smpServer
   {-# INLINE qServer #-}
-  qAddress SMPQueueAddress {smpServer, senderId} = (smpServer, senderId)
-  {-# INLINE qAddress #-}
-  sameQueue addr q = sameQAddress addr (qAddress q)
-  {-# INLINE sameQueue #-}
+  queueId SMPQueueAddress {senderId} = senderId
+  {-# INLINE queueId #-}
 
 sameQAddress :: (SMPServer, SMP.QueueId) -> (SMPServer, SMP.QueueId) -> Bool
 sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'

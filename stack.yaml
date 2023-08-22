@@ -56,6 +56,8 @@ extra-deps:
   # - ../sqlcipher-simple
   - github: simplex-chat/sqlcipher-simple
     commit: a46bd361a19376c5211f1058908fc0ae6bf42446
+  - github: simplex-chat/network-transport
+    commit: 0013798272a683e35ca38d2fdaf480942311fba8
   # - ../hs-tls/core
   # - github: simplex-chat/hs-tls
   #   commit: f6cc753611f80af300401cfae63846e9d7c40d9e
