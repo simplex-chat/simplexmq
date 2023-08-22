@@ -32,6 +32,7 @@ module Simplex.Messaging.Server
     disconnectTransport,
     verifyCmdSignature,
     dummyVerifyCmd,
+    randomId,
   )
 where
 

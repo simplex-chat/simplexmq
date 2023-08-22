@@ -129,9 +129,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
-import Data.Time.Clock (diffUTCTime)
 import Data.Word (Word16)
-import qualified Database.SQLite.Simple as DB
 import GHC.Generics (Generic)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
@@ -147,6 +145,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.TAsyncs
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues)
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ

@@ -1,8 +1,10 @@
 {-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentTests)
+import AgentTests.SchemaDump (schemaDumpTest)
 import CLITests
 import Control.Logger.Simple
+import CoreTests.BatchingTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
@@ -34,7 +36,9 @@ main = do
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (removeDirectoryRecursive "tests/tmp")
       $ do
+        describe "Agent SQLite schema dump" schemaDumpTest
         describe "Core tests" $ do
+          describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
           describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests

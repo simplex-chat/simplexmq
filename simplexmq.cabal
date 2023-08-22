@@ -63,6 +63,7 @@ library
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common
+      Simplex.Messaging.Agent.Store.SQLite.DB
       Simplex.Messaging.Agent.Store.SQLite.Migrations
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -87,6 +88,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
@@ -533,6 +535,7 @@ test-suite simplexmq-test
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
       CLITests
+      CoreTests.BatchingTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests

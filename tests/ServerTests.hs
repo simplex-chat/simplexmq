@@ -182,65 +182,65 @@ testCreateSecureV2 _ =
 testCreateSecure :: ATransport -> Spec
 testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
-    smpTest t $ \h -> do
+    smpTest2 t $ \r s -> do
       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", "", NEW rPub dhPub Nothing)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
-      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, _SEND "hello")
+      Resp "bcda" sId1 ok1 <- sendRecv s ("", "bcda", sId, _SEND "hello")
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
-      Resp "" _ (Msg mId1 msg1) <- tGet1 h
+      Resp "" _ (Msg mId1 msg1) <- tGet1 r
       (dec mId1 msg1, Right "hello") #== "delivers message"
 
-      Resp "cdab" _ ok4 <- signSendRecv h rKey ("cdab", rId, ACK mId1)
+      Resp "cdab" _ ok4 <- signSendRecv r rKey ("cdab", rId, ACK mId1)
       (ok4, OK) #== "replies OK when message acknowledged if no more messages"
 
-      Resp "dabc" _ err6 <- signSendRecv h rKey ("dabc", rId, ACK mId1)
+      Resp "dabc" _ err6 <- signSendRecv r rKey ("dabc", rId, ACK mId1)
       (err6, ERR NO_MSG) #== "replies ERR when message acknowledged without messages"
 
       (sPub, sKey) <- C.generateSignatureKeyPair C.SEd448
-      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, _SEND "hello")
+      Resp "abcd" sId2 err1 <- signSendRecv s sKey ("abcd", sId, _SEND "hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
 
-      Resp "bcda" _ err2 <- sendRecv h (sampleSig, "bcda", rId, KEY sPub)
+      Resp "bcda" _ err2 <- sendRecv r (sampleSig, "bcda", rId, KEY sPub)
       (err2, ERR AUTH) #== "rejects KEY with wrong signature"
 
-      Resp "cdab" _ err3 <- signSendRecv h rKey ("cdab", sId, KEY sPub)
+      Resp "cdab" _ err3 <- signSendRecv r rKey ("cdab", sId, KEY sPub)
       (err3, ERR AUTH) #== "rejects KEY with sender's ID"
 
-      Resp "dabc" rId2 ok2 <- signSendRecv h rKey ("dabc", rId, KEY sPub)
+      Resp "dabc" rId2 ok2 <- signSendRecv r rKey ("dabc", rId, KEY sPub)
       (ok2, OK) #== "secures queue"
       (rId2, rId) #== "same queue ID in response 3"
 
-      Resp "abcd" _ OK <- signSendRecv h rKey ("abcd", rId, KEY sPub)
+      Resp "abcd" _ OK <- signSendRecv r rKey ("abcd", rId, KEY sPub)
       (sPub', _) <- C.generateSignatureKeyPair C.SEd448
-      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, KEY sPub')
+      Resp "abcd" _ err4 <- signSendRecv r rKey ("abcd", rId, KEY sPub')
       (err4, ERR AUTH) #== "rejects if secured with different key"
 
-      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, _SEND "hello again")
+      Resp "bcda" _ ok3 <- signSendRecv s sKey ("bcda", sId, _SEND "hello again")
       (ok3, OK) #== "accepts signed SEND"
 
-      Resp "" _ (Msg mId2 msg2) <- tGet1 h
+      Resp "" _ (Msg mId2 msg2) <- tGet1 r
       (dec mId2 msg2, Right "hello again") #== "delivers message 2"
 
-      Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, ACK mId2)
+      Resp "cdab" _ ok5 <- signSendRecv r rKey ("cdab", rId, ACK mId2)
       (ok5, OK) #== "replies OK when message acknowledged 2"
 
-      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, _SEND "hello")
+      Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
       let maxAllowedMessage = B.replicate maxMessageLength '-'
-      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
-      Resp "" _ (Msg mId3 msg3) <- tGet1 h
+      Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
+      Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
       let biggerMessage = B.replicate (maxMessageLength + 1) '-'
-      Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv h sKey ("bcda", sId, _SEND biggerMessage)
+      Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
 testCreateDelete :: ATransport -> Spec
@@ -558,7 +558,9 @@ testWithStoreLog at@(ATransport t) =
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
-      Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
+      signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
+        Resp "cdab" _ OK -> pure ()
+        r -> print $ "unexpected response " <> show r
       Resp "" _ (Msg mId2 msg2) <- tGet1 h
       (decryptMsgV3 dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
@@ -969,7 +971,9 @@ testMsgExpireOnInterval t =
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should expire)")
         threadDelay 2500000
         testSMPClient @c $ \rh -> do
-          Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, SUB)
+          signSendRecv rh rKey ("2", rId, SUB) >>= \case
+            Resp "2" _ OK -> pure ()
+            r -> error $ "unexpected response: " <> show r
           1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"

@@ -18,13 +18,14 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
 import Data.Word (Word32)
-import qualified Database.SQLite.Simple as DB
+import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 import SMPClient (testKeyHash)
 import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
@@ -137,7 +138,7 @@ testForeignKeysEnabled =
               ('smp.simplex.im', '5223', '1234', '2345', x'', x'', 'new');
           |]
     DB.execute_ db inconsistentQuery
-      `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
+      `shouldThrow` (\e -> SQL.sqlError e == SQL.ErrorConstraint)
 
 cData1 :: ConnData
 cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}

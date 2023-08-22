@@ -236,8 +236,8 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
-import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
-import qualified Database.SQLite.Simple as DB
+import Database.SQLite.Simple (FromRow (..), NamedParam (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
+import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -252,6 +252,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Common
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRError, Migration (..), MigrationsToRun (..), mtrErrorDescription)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
@@ -387,13 +388,16 @@ connectDB path key = do
   pure db
   where
     prepare db = do
-      let exec = SQLite3.exec $ DB.connectionHandle db
+      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
       unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-      exec "PRAGMA busy_timeout = 100;"
-      exec "PRAGMA foreign_keys = ON;"
-      -- exec "PRAGMA trusted_schema = OFF;"
-      exec "PRAGMA secure_delete = ON;"
-      exec "PRAGMA auto_vacuum = FULL;"
+      exec . fromQuery $
+        [sql|
+          PRAGMA busy_timeout = 100;
+          PRAGMA foreign_keys = ON;
+          -- PRAGMA trusted_schema = OFF;
+          PRAGMA secure_delete = ON;
+          PRAGMA auto_vacuum = FULL;
+        |]
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
@@ -418,7 +422,7 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 execSQL :: DB.Connection -> Text -> IO [Text]
 execSQL db query = do
   rs <- newIORef []
-  SQLite3.execWithCallback (DB.connectionHandle db) query (addSQLResultRow rs)
+  SQLite3.execWithCallback (SQL.connectionHandle $ DB.conn db) query (addSQLResultRow rs)
   reverse <$> readIORef rs
 
 addSQLResultRow :: IORef [Text] -> SQLite3.ColumnIndex -> [Text] -> [Maybe Text] -> IO ()
@@ -433,7 +437,7 @@ checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
 
 handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
-  | DB.sqlError e == DB.ErrorConstraint = err
+  | SQL.sqlError e == SQL.ErrorConstraint = err
   | otherwise = SEInternal $ bshow e
 
 createUserRecord :: DB.Connection -> IO UserId
@@ -1059,7 +1063,7 @@ deleteSndMsgsExpired db ttl = do
   cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
   DB.execute
     db
-    "DELETE FROM messages WHERE internal_snd_id IS NOT NULL AND internal_ts < ?"
+    "DELETE FROM messages WHERE internal_ts < ? AND internal_snd_id IS NOT NULL"
     (Only cutoffTs)
 
 createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
@@ -1681,7 +1685,7 @@ insertSndQueue_ db connId' SndQueue {..} serverKeyHash_ = do
   DB.execute
     db
     [sql|
-      INSERT INTO snd_queues
+      INSERT OR REPLACE INTO snd_queues
         (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
@@ -2052,7 +2056,7 @@ createWithRandomId gVar create = tryCreate 3
       E.try (create id') >>= \case
         Right _ -> pure $ Right id'
         Left e
-          | DB.sqlError e == DB.ErrorConstraint -> tryCreate (n - 1)
+          | SQL.sqlError e == SQL.ErrorConstraint -> tryCreate (n - 1)
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
