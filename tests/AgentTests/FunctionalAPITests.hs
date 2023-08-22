@@ -59,7 +59,6 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
-import Simplex.Messaging.Util (tryError)
 import Simplex.Messaging.Version
 import System.Directory (copyFile, renameFile)
 import Test.Hspec

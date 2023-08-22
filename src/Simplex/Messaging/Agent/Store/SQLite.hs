@@ -19,7 +19,9 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
@@ -212,8 +214,9 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Aeson (ToJSON)
 import qualified Data.Aeson as J

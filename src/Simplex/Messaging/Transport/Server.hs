@@ -18,7 +18,7 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
-import Control.Monad.Except
+import Control.Monad
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)

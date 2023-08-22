@@ -6,6 +6,7 @@
 
 module Simplex.FileTransfer.Crypto where
 
+import Control.Monad
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)

@@ -10,6 +10,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 module Simplex.FileTransfer.Agent
   ( startWorkers,
     closeXFTPAgent,
@@ -25,7 +27,6 @@ module Simplex.FileTransfer.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except

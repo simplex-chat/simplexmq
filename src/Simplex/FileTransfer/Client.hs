@@ -9,6 +9,7 @@
 
 module Simplex.FileTransfer.Client where
 
+import Control.Monad
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)

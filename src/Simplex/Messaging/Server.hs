@@ -116,7 +116,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
-Env.    )
+    )
     `finally` withLock (savingLock s) "final" (saveServer False)
   where
     runServer :: (ServiceName, ATransport) -> M ()

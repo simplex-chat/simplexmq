@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -159,8 +160,9 @@ smpServerTest ::
   IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
+    tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
     tPut' h (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
+      let t' = smpEncode (h.sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do

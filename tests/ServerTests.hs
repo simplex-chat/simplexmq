@@ -15,7 +15,7 @@ import AgentTests.NotificationTests (removeFileIfExists)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad.Except (forM, forM_)
+import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
 import Data.ByteString.Base64

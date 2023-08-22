@@ -11,7 +11,9 @@ module AgentTests.NotificationTests where
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (killThread, threadDelay)
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (bimap, first)
@@ -33,7 +35,6 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsg
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Util (tryE)
 import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO

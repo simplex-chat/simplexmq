@@ -14,6 +14,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 -- |
 -- Module      : Simplex.Messaging.Agent
 -- Copyright   : (c) simplex.chat
@@ -100,8 +102,8 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo, showText)
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader

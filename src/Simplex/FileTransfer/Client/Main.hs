@@ -9,6 +9,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 module Simplex.FileTransfer.Client.Main
   ( SendOptions (..),
     CLIError (..),
@@ -27,7 +29,6 @@ module Simplex.FileTransfer.Client.Main
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except

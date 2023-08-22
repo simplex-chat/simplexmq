@@ -5,8 +5,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -133,8 +133,9 @@ ntfServerTest ::
   IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
+    tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
     tPut' h (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
+      let t' = smpEncode (h.sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do

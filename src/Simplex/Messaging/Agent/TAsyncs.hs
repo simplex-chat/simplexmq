@@ -1,6 +1,5 @@
 module Simplex.Messaging.Agent.TAsyncs where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM

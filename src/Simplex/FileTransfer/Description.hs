@@ -8,7 +8,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE LambdaCase #-}
+
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),

@@ -104,9 +104,10 @@ where
 import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
-import Control.Concurrent.STM (retry, stateTVar, throwSTM)
+import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..))
 import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
