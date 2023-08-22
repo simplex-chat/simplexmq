@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -542,9 +543,7 @@ runXFTPSndWorker c srv doWork = do
             rcvChunks :: [[FileChunk]]
             rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
             sortChunks :: [FileChunk] -> [FileChunk]
-            getChunkNo :: FileChunk -> Int
-            getChunkNo FileChunk{chunkNo} = chunkNo
-            sortChunks = map reverseReplicas . sortOn getChunkNo
+            sortChunks = map reverseReplicas . sortOn (\fc -> fc.chunkNo)
             reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
             addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
             addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =

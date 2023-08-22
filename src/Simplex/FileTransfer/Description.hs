@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -27,7 +28,6 @@ module Simplex.FileTransfer.Description
     YAMLServerReplicas (..), -- for tests
     validateFileDescription,
     groupReplicasByServer,
-    replicaServer,
     fdSeparator,
     kb,
     mb,
@@ -201,9 +201,7 @@ validateFileDescription fd@FileDescription {size, chunks}
   | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
   | otherwise = Right $ ValidFD fd
   where
-    getChunkNo :: FileChunk -> Int
-    getChunkNo FileChunk{chunkNo} = chunkNo
-    chunkNos = map getChunkNo chunks
+    chunkNos = map (\c -> c.chunkNo) chunks
     chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription p -> YAMLFileDescription
@@ -261,7 +259,7 @@ instance (ToField a) => ToField (FileSize a) where toField (FileSize s) = toFiel
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
 groupReplicasByServer defChunkSize =
-  groupAllOn replicaServer . unfoldChunksToReplicas defChunkSize
+  groupAllOn (\r -> r.server) . unfoldChunksToReplicas defChunkSize
 
 encodeFileReplicas :: FileSize Word32 -> [FileChunk] -> [YAMLServerReplicas]
 encodeFileReplicas defChunkSize =
@@ -269,12 +267,9 @@ encodeFileReplicas defChunkSize =
   where
     encodeServerReplicas fs =
       YAMLServerReplicas
-        { server = replicaServer $ head fs, -- groupAllOn guarantees that fs is not empty
+        { server = (head fs).server, -- groupAllOn guarantees that fs is not empty
           chunks = map (B.unpack . encodeServerReplica) fs
         }
-
-replicaServer :: FileServerReplica -> XFTPServer
-replicaServer FileServerReplica{server} = server
 
 encodeServerReplica :: FileServerReplica -> ByteString
 encodeServerReplica FileServerReplica {chunkNo, replicaId, replicaKey, digest, chunkSize} =
@@ -327,10 +322,8 @@ foldReplicasToChunks :: FileSize Word32 -> [FileServerReplica] -> Either String 
 foldReplicasToChunks defChunkSize fs = do
   sd <- foldSizesDigests fs
   -- TODO validate (check that chunks match) or in separate function
-  sortOn getChunkNo . map reverseReplicas . M.elems <$> foldChunks sd fs
+  sortOn (\c -> c.chunkNo) . map reverseReplicas . M.elems <$> foldChunks sd fs
   where
-    getChunkNo :: FileChunk -> Int
-    getChunkNo FileChunk{chunkNo} = chunkNo
     foldSizesDigests :: [FileServerReplica] -> Either String (Map Int (FileSize Word32), Map Int FileDigest)
     foldSizesDigests = foldl' addSizeDigest $ Right (M.empty, M.empty)
     addSizeDigest :: Either String (Map Int (FileSize Word32), Map Int FileDigest) -> FileServerReplica -> Either String (Map Int (FileSize Word32), Map Int FileDigest)
