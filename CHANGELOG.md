@@ -1,3 +1,12 @@
+# 5.3.0
+
+Agent:
+- improve performance, track slow database queries.
+- support delievery receipts.
+
+SMP server:
+- control port
+
 # 5.2.0 (NTF server 1.5.0)
 
 Agent:
