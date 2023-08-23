@@ -1,5 +1,3 @@
-with-compiler: ghc-8.10.7
-
 packages: .
 -- packages: . ../direct-sqlcipher ../sqlcipher-simple
 -- packages: . ../hs-socks
