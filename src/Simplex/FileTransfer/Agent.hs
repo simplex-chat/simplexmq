@@ -204,6 +204,7 @@ runXFTPRcvWorker c srv doWork = do
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
+      atomically $ waitUntilForeground c
       (complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
         RcvFile {size = FileSize total, chunks} <- ExceptT $ getRcvFile db rcvFileId
@@ -261,6 +262,7 @@ runXFTPRcvLocalWorker c doWork = do
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure fsSavePath
       notify c rcvFileEntityId $ RFDONE fsSavePath
       forM_ tmpPath (removePath <=< toFSFilePath)
+      atomically $ waitUntilForeground c
       withStore' c (`updateRcvFileComplete` rcvFileId)
       where
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
@@ -478,6 +480,7 @@ runXFTPSndWorker c srv doWork = do
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
+      atomically $ waitUntilForeground c
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
