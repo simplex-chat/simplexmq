@@ -11,6 +11,7 @@ data ControlProtocol
   | CPResume
   | CPClients
   | CPStats
+  | CPStatsRTS
   | CPSave
   | CPHelp
   | CPQuit
@@ -21,6 +22,7 @@ instance StrEncoding ControlProtocol where
     CPResume -> "resume"
     CPClients -> "clients"
     CPStats -> "stats"
+    CPStatsRTS -> "stats-rts"
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
@@ -30,6 +32,7 @@ instance StrEncoding ControlProtocol where
       "resume" -> pure CPResume
       "clients" -> pure CPClients
       "stats" -> pure CPStats
+      "stats-rts" -> pure CPStatsRTS
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
