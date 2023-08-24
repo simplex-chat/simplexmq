@@ -12,8 +12,8 @@
 
 module Simplex.Messaging.Notifications.Server where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (second)

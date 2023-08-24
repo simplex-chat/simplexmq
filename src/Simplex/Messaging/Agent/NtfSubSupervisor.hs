@@ -6,6 +6,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 module Simplex.Messaging.Agent.NtfSubSupervisor
   ( runNtfSupervisor,
     nsUpdateToken,
@@ -17,7 +19,6 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.Except
@@ -51,13 +52,13 @@ runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
     cmd@(connId, _) <- atomically . readTBQueue $ ntfSubQ ns
-    handleError connId . agentOperationBracket c AONtfNetwork waitUntilActive $
+    handleErr connId . agentOperationBracket c AONtfNetwork waitUntilActive $
       runExceptT (processNtfSub c cmd) >>= \case
         Left e -> notifyErr connId e
         Right _ -> return ()
   where
-    handleError :: ConnId -> m () -> m ()
-    handleError connId = E.handle $ \(e :: E.SomeException) -> do
+    handleErr :: ConnId -> m () -> m ()
+    handleErr connId = E.handle $ \(e :: E.SomeException) -> do
       logError $ "runNtfSupervisor error " <> tshow e
       notifyErr connId e
     notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e

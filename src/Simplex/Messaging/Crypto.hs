@@ -149,6 +149,7 @@ where
 
 import Control.Concurrent.STM
 import Control.Exception (Exception)
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)

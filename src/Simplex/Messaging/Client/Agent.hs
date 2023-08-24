@@ -14,6 +14,7 @@ module Simplex.Messaging.Client.Agent where
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
@@ -39,7 +40,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPS
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, tryE, ($>>=), toChunks)
+import Simplex.Messaging.Util (catchAll_, ($>>=), toChunks)
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.Exception (Exception)
@@ -272,13 +273,13 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
 subscribeQueue :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
 subscribeQueue ca srv sub = do
   atomically $ addPendingSubscription ca srv sub
-  withSMP ca srv $ \smp -> subscribe_ smp `catchE` handleError
+  withSMP ca srv $ \smp -> subscribe_ smp `catchE` handleErr
   where
     subscribe_ smp = do
       smpSubscribe smp sub
       atomically $ addSubscription ca srv sub
 
-    handleError e = do
+    handleErr e = do
       atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
         removePendingSubscription ca srv $ fst sub
       throwE e

@@ -3,6 +3,8 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 module AgentTests.ConnectionRequestTests where
 
 import Data.ByteString (ByteString)

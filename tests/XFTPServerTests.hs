@@ -10,7 +10,9 @@ import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Unlift
 import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
@@ -140,7 +142,7 @@ runTestFileChunkDelete s r = do
   deleteXFTPChunk s spKey sId
   liftIO $
     readChunk sId
-      `shouldThrow` \(e :: SomeException) -> "openBinaryFile: does not exist" `isInfixOf` show e
+      `shouldThrow` \(e :: SomeException) -> "withBinaryFile: does not exist" `isInfixOf` show e
   downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId

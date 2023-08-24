@@ -5,9 +5,9 @@ module Simplex.Messaging.Util where
 
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
-import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -65,14 +65,6 @@ liftEitherError f a = liftIOEither (first f <$> a)
 liftEitherWith :: (MonadError e' m) => (e -> e') -> Either e a -> m a
 liftEitherWith f = liftEither . first f
 {-# INLINE liftEitherWith #-}
-
-tryError :: MonadError e m => m a -> m (Either e a)
-tryError action = (Right <$> action) `catchError` (pure . Left)
-{-# INLINE tryError #-}
-
-tryE :: Monad m => ExceptT e m a -> ExceptT e m (Either e a)
-tryE m = (Right <$> m) `catchE` (pure . Left)
-{-# INLINE tryE #-}
 
 liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
 liftE f a = ExceptT $ first f <$> runExceptT a

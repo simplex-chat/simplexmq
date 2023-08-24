@@ -10,6 +10,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -18,7 +19,9 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
@@ -211,8 +214,9 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Aeson (ToJSON)
 import qualified Data.Aeson as J
@@ -1954,7 +1958,7 @@ updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
       WHERE conn_id = :conn_id
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
-    [ ":last_external_snd_msg_id" := sndMsgId (msgMeta :: MsgMeta),
+    [ ":last_external_snd_msg_id" := msgMeta.sndMsgId,
       ":last_rcv_msg_hash" := internalHash,
       ":conn_id" := connId,
       ":last_internal_rcv_msg_id" := internalRcvId

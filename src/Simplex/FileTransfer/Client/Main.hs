@@ -5,9 +5,12 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Client.Main
   ( SendOptions (..),
@@ -27,7 +30,6 @@ module Simplex.FileTransfer.Client.Main
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -367,7 +369,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
         rcvChunks :: [[FileChunk]]
         rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
         sortChunks :: [FileChunk] -> [FileChunk]
-        sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
+        sortChunks = map reverseReplicas . sortOn (\c -> c.chunkNo)
         reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
         addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
         addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
@@ -426,7 +428,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       liftIO $ printNoNewLine "Downloading file..."
       downloadedChunks <- newTVarIO []
-      let srv FileChunk {replicas} = server (head replicas :: FileChunkReplica)
+      let srv FileChunk {replicas} = (head replicas).server
           srvChunks = groupAllOn srv chunks
       chunkPaths <- map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 srvChunks (mapM $ downloadFileChunk a encPath size downloadedChunks)
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
@@ -505,7 +507,7 @@ cliFileDescrInfo InfoOptions {fileDescription} = do
         putStrLn $ "File download size: " <> strEnc size
         putStrLn "File server(s):"
         forM_ replicas $ \srvReplicas -> do
-          let srv = replicaServer $ head srvReplicas
+          let srv = (head srvReplicas).server
               chSizes = map (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
           putStrLn $ strEnc srv <> ": " <> strEnc (FileSize $ sum chSizes)
       where

@@ -4,11 +4,14 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Agent
   ( startXFTPWorkers,
@@ -24,7 +27,6 @@ module Simplex.FileTransfer.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
@@ -480,7 +482,7 @@ runXFTPSndWorker c srv doWork = do
             rcvChunks :: [[FileChunk]]
             rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
             sortChunks :: [FileChunk] -> [FileChunk]
-            sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
+            sortChunks = map reverseReplicas . sortOn (\fc -> fc.chunkNo)
             reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
             addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
             addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
