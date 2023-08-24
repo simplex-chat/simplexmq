@@ -71,6 +71,8 @@ module Simplex.Messaging.Agent.Client
     removeSubscription,
     hasActiveSubscription,
     agentClientStore,
+    getAgentSubscriptions,
+    SubscriptionsInfo (..),
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
@@ -127,6 +129,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Word (Word16)
@@ -147,7 +150,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.TAsyncs
-import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues)
+import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
@@ -1340,3 +1343,27 @@ withNextSrv c userId usedSrvs initUsed action = do
         used' = if null unused then initUsed else srv : used
     writeTVar usedSrvs $! used'
   action srvAuth
+
+data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text}
+  deriving (Generic)
+
+instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions
+
+data SubscriptionsInfo = SubscriptionsInfo
+  { activeSubscriptions :: [SubInfo],
+    pendingSubscriptions :: [SubInfo]
+  }
+  deriving (Generic)
+
+instance ToJSON SubscriptionsInfo where toEncoding = J.genericToEncoding J.defaultOptions
+
+getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo
+getAgentSubscriptions c = do
+  activeSubscriptions <- getSubs activeSubs
+  pendingSubscriptions <- getSubs pendingSubs
+  pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions}
+  where
+    getSubs sel = map subInfo . M.keys <$> readTVarIO (getRcvQueues $ sel c)
+    subInfo (uId, srv, rId) = SubInfo {userId = uId, server = enc srv, rcvId = enc rId}
+    enc :: StrEncoding a => a -> Text
+    enc = decodeLatin1 . strEncode
