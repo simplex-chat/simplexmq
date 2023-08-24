@@ -11,15 +11,14 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Agent
-  ( startWorkers,
+  ( startXFTPWorkers,
     closeXFTPAgent,
     toFSFilePath,
     -- Receiving files
-    receiveFile,
-    deleteRcvFile,
+    xftpReceiveFile',
+    xftpDeleteRcvFile',
     -- Sending files
-    sendFileExperimental,
-    sendFile,
+    xftpSendFile',
     deleteSndFileInternal,
     deleteSndFileRemote,
   )
@@ -30,16 +29,10 @@ import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Bifunctor (first)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Composition ((.:))
 import Data.Int (Int64)
-import Data.List (foldl', isSuffixOf, partition, sortOn)
-import Data.List.NonEmpty (nonEmpty)
+import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
@@ -50,7 +43,7 @@ import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), FilePartyI, SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -62,18 +55,16 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (EntityId, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (EntityId, XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (liftError, liftIOEither, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
-import UnliftIO.Concurrent
 import UnliftIO.Directory
 
-startWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
-startWorkers c workDir = do
+startXFTPWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
+startXFTPWorkers c workDir = do
   wd <- asks $ xftpWorkDir . xftpAgent
   atomically $ writeTVar wd workDir
   startRcvFiles
@@ -108,8 +99,8 @@ closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
       ws <- atomically $ stateTVar wsSel (,M.empty)
       mapM_ (uninterruptibleCancel . snd) ws
 
-receiveFile :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
-receiveFile c userId (ValidFileDescription fd@FileDescription {chunks}) = do
+xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
+xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) = do
   g <- asks idsDrg
   prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
@@ -274,8 +265,8 @@ runXFTPRcvLocalWorker c doWork = do
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
           throwError $ INTERNAL "no chunk path"
 
-deleteRcvFile :: AgentMonad m => AgentClient -> RcvFileId -> m ()
-deleteRcvFile c rcvFileEntityId = do
+xftpDeleteRcvFile' :: AgentMonad m => AgentClient -> RcvFileId -> m ()
+xftpDeleteRcvFile' c rcvFileEntityId = do
   RcvFile {rcvFileId, prefixPath, status} <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
   if status == RFSComplete || status == RFSError
     then do
@@ -283,66 +274,11 @@ deleteRcvFile c rcvFileEntityId = do
       withStore' c (`deleteRcvFile'` rcvFileId)
     else withStore' c (`updateRcvFileDeleted` rcvFileId)
 
-sendFileExperimental :: forall m. AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-sendFileExperimental c@AgentClient {xftpServers} userId filePath numRecipients = do
-  g <- asks idsDrg
-  sndFileId <- liftIO $ randomId g 12
-  xftpSrvs <- atomically $ TM.lookup userId xftpServers
-  void $ forkIO $ sendCLI sndFileId $ maybe [] L.toList xftpSrvs
-  pure sndFileId
-  where
-    randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-    randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
-    sendCLI :: SndFileId -> [XFTPServerWithAuth] -> m ()
-    sendCLI sndFileId xftpSrvs = do
-      let fileName = takeFileName filePath
-      workPath <- getXFTPWorkPath
-      outputDir <- uniqueCombine workPath $ fileName <> ".descr"
-      createDirectory outputDir
-      let tempPath = workPath </> "snd"
-      createDirectoryIfMissing False tempPath
-      runSend fileName outputDir tempPath `catchAgentError` \e -> do
-        cleanup outputDir tempPath
-        notify c sndFileId $ SFERR e
-      where
-        runSend :: String -> FilePath -> FilePath -> m ()
-        runSend fileName outputDir tempPath = do
-          let sendOptions =
-                SendOptions
-                  { filePath,
-                    outputDir = Just outputDir,
-                    numRecipients,
-                    xftpServers = xftpSrvs,
-                    retryCount = 3,
-                    tempPath = Just tempPath,
-                    verbose = False
-                  }
-          liftCLI $ cliSendFileOpts sendOptions False $ notify c sndFileId .: SFPROG
-          (sndDescr, rcvDescrs) <- readDescrs outputDir fileName
-          cleanup outputDir tempPath
-          notify c sndFileId $ SFDONE sndDescr rcvDescrs
-        cleanup :: FilePath -> FilePath -> m ()
-        cleanup outputDir tempPath = do
-          removePath tempPath
-          removePath outputDir
-    liftCLI :: ExceptT CLIError IO () -> m ()
-    liftCLI = either (throwError . INTERNAL . show) pure <=< liftIO . runExceptT
-    readDescrs :: FilePath -> FilePath -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
-    readDescrs outDir fileName = do
-      let descrDir = outDir </> (fileName <> ".xftp")
-      files <- listDirectory descrDir
-      let (sdFiles, rdFiles) = partition ("snd.xftp.private" `isSuffixOf`) files
-          sdFile = maybe "" (\l -> descrDir </> L.head l) (nonEmpty sdFiles)
-          rdFiles' = map (descrDir </>) rdFiles
-      (,) <$> readDescr sdFile <*> mapM readDescr rdFiles'
-    readDescr :: FilePartyI p => FilePath -> m (ValidFileDescription p)
-    readDescr f = liftIOEither $ first INTERNAL . strDecode <$> B.readFile f
-
 notify :: forall m e. (MonadUnliftIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
 
-sendFile :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-sendFile c userId filePath numRecipients = do
+xftpSendFile' :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+xftpSendFile' c userId filePath numRecipients = do
   g <- asks idsDrg
   prefixPath <- getPrefixPath "snd.xftp"
   createDirectory prefixPath
