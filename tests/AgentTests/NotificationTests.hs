@@ -112,7 +112,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
     deleteNtfToken a tkn
     -- agent deleted this token
     Left (CMD PROHIBITED) <- tryE $ checkNtfToken a tkn
-    pure ()
+    disconnectAgentClient a
 
 (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
 v .-> key = do
@@ -144,7 +144,7 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
     -- can still use the first verification code, it is the same after decryption
     verifyNtfToken a tkn nonce verification
     NTActive <- checkNtfToken a tkn
-    pure ()
+    disconnectAgentClient a
 
 testNtfTokenSecondRegistration :: APNSMockServer -> IO ()
 testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
@@ -180,7 +180,8 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
-    pure ()
+    disconnectAgentClient a
+    disconnectAgentClient a'
 
 testNtfTokenServerRestart :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
@@ -209,7 +210,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse' APNSRespOk
     verifyNtfToken a' tkn nonce' verification'
     NTActive <- checkNtfToken a' tkn
-    pure ()
+    disconnectAgentClient a'
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
@@ -263,6 +264,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     -- no notifications should follow
     noNotification apnsQ
+  disconnectAgentClient alice
+  disconnectAgentClient bob
   where
     baseId = 3
     msgId = subtract baseId
@@ -306,6 +309,8 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     ackMessage bob aliceId (baseId + 2) Nothing
     -- no unexpected notifications should follow
     noNotification apnsQ
+  disconnectAgentClient alice
+  disconnectAgentClient bob
   where
     baseId = 3
     msgId = subtract baseId
@@ -383,6 +388,8 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     ackMessage alice bobId (baseId + 5) Nothing
     -- no notifications should follow
     noNotification apnsQ
+  disconnectAgentClient alice
+  disconnectAgentClient bob
   where
     baseId = 3
     msgId = subtract baseId
@@ -426,6 +433,8 @@ testChangeToken APNSMockServer {apnsQ} = do
     ackMessage alice1 bobId (baseId + 2) Nothing
     -- no notifications should follow
     noNotification apnsQ
+  disconnectAgentClient alice1
+  disconnectAgentClient bob
   where
     baseId = 3
     msgId = subtract baseId
@@ -455,6 +464,8 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
     void $ messageNotification apnsQ
     get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
     liftIO $ killThread threadId
+  disconnectAgentClient alice
+  disconnectAgentClient bob
 
 testNotificationsSMPRestart :: ATransport -> APNSMockServer -> IO ()
 testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
@@ -485,6 +496,8 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
     _ <- messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
     liftIO $ killThread threadId
+  disconnectAgentClient alice
+  disconnectAgentClient bob
 
 testNotificationsSMPRestartBatch :: Int -> ATransport -> APNSMockServer -> IO ()
 testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
@@ -523,6 +536,8 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
       get b ##> ("", aliceId, SENT msgId)
       _ <- messageNotificationData a apnsQ
       get a =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+  disconnectAgentClient a
+  disconnectAgentClient b
   where
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
@@ -552,6 +567,8 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
     switchComplete a bId b aId
     liftIO $ threadDelay 500000
     testMessage "hello again"
+  disconnectAgentClient a
+  disconnectAgentClient b
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do

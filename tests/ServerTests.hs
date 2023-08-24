@@ -551,7 +551,9 @@ testWithStoreLog at@(ATransport t) =
         writeTVar senderId1 sId1
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
-      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
+      signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
+        Resp "bcda" _ OK -> pure ()
+        r -> unexpected r
       Resp "" _ (Msg mId1 msg1) <- tGet1 h
       (decryptMsgV3 dhShared mId1 msg1, Right "hello") #== "delivered from queue 1"
       Resp "" _ (NMSG _ _) <- tGet1 h1
@@ -560,7 +562,7 @@ testWithStoreLog at@(ATransport t) =
       atomically $ writeTVar senderId2 sId2
       signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
         Resp "cdab" _ OK -> pure ()
-        r -> print $ "unexpected response " <> show r
+        r -> unexpected r
       Resp "" _ (Msg mId2 msg2) <- tGet1 h
       (decryptMsgV3 dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
@@ -973,7 +975,7 @@ testMsgExpireOnInterval t =
         testSMPClient @c $ \rh -> do
           signSendRecv rh rKey ("2", rId, SUB) >>= \case
             Resp "2" _ OK -> pure ()
-            r -> error $ "unexpected response: " <> show r
+            r -> unexpected r
           1000 `timeout` tGet @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"

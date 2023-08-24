@@ -195,3 +195,6 @@ smpTest4 _ test' = smpTestN 4 _test
     _test :: HasCallStack => [THandle c] -> IO ()
     _test [h1, h2, h3, h4] = test' h1 h2 h3 h4
     _test _ = error "expected 4 handles"
+
+unexpected :: (HasCallStack, Show a) => a -> Expectation
+unexpected r = expectationFailure $ "unexpected response " <> show r

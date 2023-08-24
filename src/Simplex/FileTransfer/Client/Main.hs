@@ -419,10 +419,10 @@ getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
-  getFileDescription' fileDescription >>= receiveFile
+  getFileDescription' fileDescription >>= receive
   where
-    receiveFile :: ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
-    receiveFile (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
+    receive :: ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
+    receive (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
