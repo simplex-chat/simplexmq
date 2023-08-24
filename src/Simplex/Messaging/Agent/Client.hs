@@ -1345,7 +1345,7 @@ withNextSrv c userId usedSrvs initUsed action = do
   action srvAuth
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text}
-  deriving (Generic)
+  deriving (Show, Generic)
 
 instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions
 
@@ -1353,7 +1353,7 @@ data SubscriptionsInfo = SubscriptionsInfo
   { activeSubscriptions :: [SubInfo],
     pendingSubscriptions :: [SubInfo]
   }
-  deriving (Generic)
+  deriving (Show, Generic)
 
 instance ToJSON SubscriptionsInfo where toEncoding = J.genericToEncoding J.defaultOptions
 
