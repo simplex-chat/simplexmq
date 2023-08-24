@@ -35,6 +35,7 @@ module Simplex.Messaging.Agent
     AgentClient (..),
     AgentMonad,
     AgentErrorMonad,
+    SubscriptionsInfo (..),
     getSMPAgentClient,
     disconnectAgentClient,
     resumeAgentClient,
@@ -96,6 +97,7 @@ module Simplex.Messaging.Agent
     debugAgentLocks,
     getAgentStats,
     resetAgentStats,
+    getAgentSubscriptions,
     logConnection,
   )
 where
