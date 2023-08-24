@@ -122,7 +122,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteRcvFile, deleteSndFileInternal, deleteSndFileRemote, receiveFile, sendFile, startWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, xftpDeleteRcvFile', deleteSndFileInternal, deleteSndFileRemote, xftpReceiveFile', xftpSendFile', startXFTPWorkers, toFSFilePath)
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -351,19 +351,19 @@ toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m 
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 xftpStartWorkers :: AgentErrorMonad m => AgentClient -> Maybe FilePath -> m ()
-xftpStartWorkers c = withAgentEnv c . startWorkers c
+xftpStartWorkers c = withAgentEnv c . startXFTPWorkers c
 
 -- | Receive XFTP file
 xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
-xftpReceiveFile c = withAgentEnv c .: receiveFile c
+xftpReceiveFile c = withAgentEnv c .: xftpReceiveFile' c
 
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> RcvFileId -> m ()
-xftpDeleteRcvFile c = withAgentEnv c . deleteRcvFile c
+xftpDeleteRcvFile c = withAgentEnv c . xftpDeleteRcvFile' c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-xftpSendFile c = withAgentEnv c .:. sendFile c
+xftpSendFile c = withAgentEnv c .:. xftpSendFile' c
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
 xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> SndFileId -> m ()
