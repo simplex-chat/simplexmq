@@ -15,6 +15,7 @@ data ControlProtocol
   | CPSave
   | CPHelp
   | CPQuit
+  | CPSkip
 
 instance StrEncoding ControlProtocol where
   strEncode = \case
@@ -26,6 +27,7 @@ instance StrEncoding ControlProtocol where
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
+    CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
       "suspend" -> pure CPSuspend
@@ -36,4 +38,5 @@ instance StrEncoding ControlProtocol where
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
+      "" -> pure CPSkip
       _ -> fail "bad ControlProtocol command"

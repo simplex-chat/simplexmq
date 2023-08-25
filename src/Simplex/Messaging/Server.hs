@@ -285,6 +285,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h "server state saved!"
               CPHelp -> hPutStrLn h "commands: stats, save, help, quit"
               CPQuit -> pure ()
+              CPSkip -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()
 runClientTransport th@THandle {thVersion, sessionId} = do
