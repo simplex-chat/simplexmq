@@ -1,5 +1,6 @@
+{-# LANGUAGE LambdaCase #-}
 module Simplex.Messaging.Agent.TRcvQueues
-  ( TRcvQueues,
+  ( TRcvQueues (getRcvQueues),
     empty,
     clear,
     deleteConn,
@@ -22,7 +23,7 @@ import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 
-newtype TRcvQueues = TRcvQueues (TMap (UserId, SMPServer, RecipientId) RcvQueue)
+newtype TRcvQueues = TRcvQueues {getRcvQueues :: TMap (UserId, SMPServer, RecipientId) RcvQueue}
 
 empty :: STM TRcvQueues
 empty = TRcvQueues <$> TM.empty
