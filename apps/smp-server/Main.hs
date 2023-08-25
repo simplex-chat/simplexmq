@@ -21,8 +21,7 @@ main = do
   setLogLevel LogDebug
   cfgPath <- getEnvPath "SMP_SERVER_CFG_PATH" defaultCfgPath
   logPath <- getEnvPath "SMP_SERVER_LOG_PATH" defaultLogPath
-  withGlobalLogging logCfg $
-    smpServerCLI cfgPath logPath
+  withGlobalLogging logCfg $ smpServerCLI cfgPath logPath
     
 getEnvPath :: String -> FilePath -> FilePath
 getEnvPath name def = maybe def (\case "" -> def; f -> f) <$> lookupEnv name
