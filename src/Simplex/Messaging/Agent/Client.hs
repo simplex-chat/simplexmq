@@ -73,6 +73,7 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     getAgentSubscriptions,
     SubscriptionsInfo (..),
+    SubInfo (..),
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
