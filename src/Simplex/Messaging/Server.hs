@@ -49,7 +49,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (intercalate)
+import Data.List (intercalate, sort)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
@@ -59,6 +59,8 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
+import GHC.Conc (listThreads, threadStatus)
+import GHC.Conc.Sync (threadLabel)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -114,8 +116,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   restoreServerMessages
   restoreServerStats
   raceAny_
-    ( serverThread s subscribedQ subscribers subscriptions cancelSub :
-      serverThread s ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ()) :
+    ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub :
+      serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock (savingLock s) "final" (saveServer False)
@@ -131,12 +133,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     serverThread ::
       forall s.
       Server ->
+      String ->
       (Server -> TQueue (QueueId, Client)) ->
       (Server -> TMap QueueId Client) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
-    serverThread s subQ subs clientSubs unsub = forever $ do
+    serverThread s label subQ subs clientSubs unsub = forever $ do
+      labelMyThread label
       atomically updateSubscribers
         $>>= endPreviousSubscriptions
         >>= liftIO . mapM_ unsub
@@ -153,6 +157,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
+          labelMyThread $ label <> ".endPreviousSubscriptions"
           void . forkIO . atomically $
             writeTBQueue (sndQ c) [(CorrId "", qId, END)]
           atomically $ TM.lookupDelete qId (clientSubs c)
@@ -166,6 +171,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
+      labelMyThread "expireMessages"
       forever $ do
         liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
@@ -181,6 +187,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
+      labelMyThread "logServerStats"
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
@@ -225,9 +232,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           threadDelay' interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
-    runClient _ h = do
+    runClient tp h = do
       kh <- asks serverIdentity
       smpVRange <- asks $ smpServerVRange . config
+      labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
         Right th -> runClientTransport th
         Left _ -> pure ()
@@ -241,10 +249,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       srv <- asks server
       cpStarted <- newEmptyTMVarIO
       u <- askUnliftIO
-      liftIO $ runTCPServer cpStarted port $ runCPClient u srv
+      liftIO $ do
+        labelMyThread "control port server"
+        runTCPServer cpStarted port $ runCPClient u srv
       where
         runCPClient :: UnliftIO (ReaderT Env IO) -> Server -> Socket -> IO ()
         runCPClient u srv sock = do
+          labelMyThread "control port client"
           h <- socketToHandle sock ReadWriteMode
           hSetBuffering h LineBuffering
           hSetNewlineMode h universalNewlineMode
@@ -260,7 +271,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             processCP h = \case
               CPSuspend -> hPutStrLn h "suspend not implemented"
               CPResume -> hPutStrLn h "resume not implemented"
-              CPClients -> hPutStrLn h "clients not implemented"
+              CPClients -> do
+                Server{subscribers} <- unliftIO u $ asks server
+                clients <- readTVarIO subscribers
+                hPutStrLn h $ "Clients: " <> show (length clients)
+                forM_ (M.toList clients) $ \(cid, Client{sessionId, connected, activeAt, subscriptions}) -> do
+                  hPutStrLn h $ "Client " <> showHexBytes cid <> " $" <> showHexBytes sessionId
+                  readTVarIO connected >>=
+                    hPutStrLn h . mappend "  connected: "  . show
+                  readTVarIO activeAt >>=
+                    hPutStrLn h . mappend "  activeAt: "  . B.unpack . strEncode
+                  readTVarIO subscriptions >>=
+                    hPutStrLn h . mappend "  subscriptions: "  . show . M.size
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -276,14 +298,21 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
-              CPStatsRTS -> do
-                rts <- getRTSStats
-                hPutStrLn h $ show rts
+              CPStatsRTS ->
+                getRTSStats >>=
+                  hPutStrLn h . show
+              CPThreads -> do
+                threads <- liftIO listThreads
+                hPutStrLn h $ "Threads: " <> show (length threads)
+                forM_ (sort threads) $ \tid -> do
+                  label <- threadLabel tid
+                  status <- threadStatus tid
+                  hPutStrLn h $ show tid <> " (" <> show status <> ") " <> maybe "" id label
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: stats, save, help, quit"
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, threads, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
 
@@ -294,6 +323,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   c <- atomically $ newClient q thVersion sessionId ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
+  labelMyThread $ "client $" <> showHexBytes c.sessionId
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
@@ -324,12 +354,14 @@ cancelSub sub =
     _ -> return ()
 
 receive :: Transport c => THandle c -> Client -> M ()
-receive th Client {rcvQ, sndQ, activeAt} = forever $ do
-  ts <- L.toList <$> liftIO (tGet th)
-  atomically . writeTVar activeAt =<< liftIO getSystemTime
-  as <- partitionEithers <$> mapM cmdAction ts
-  write sndQ $ fst as
-  write rcvQ $ snd as
+receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
+  labelMyThread $ "client $" <> showHexBytes sessionId <> " receive"
+  forever $ do
+    ts <- L.toList <$> liftIO (tGet th)
+    atomically . writeTVar activeAt =<< liftIO getSystemTime
+    as <- partitionEithers <$> mapM cmdAction ts
+    write sndQ $ fst as
+    write rcvQ $ snd as
   where
     cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
     cmdAction (sig, signed, (corrId, queueId, cmdOrError)) =
@@ -343,10 +375,12 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandle c -> Client -> IO ()
-send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
-  ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-  void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
-  atomically . writeTVar activeAt =<< liftIO getSystemTime
+send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
+  labelMyThread $ "client $" <> showHexBytes sessionId <> " send"
+  forever $ do
+    ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
+    void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+    atomically . writeTVar activeAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
     tOrder (_, _, cmd) = case cmd of
@@ -355,7 +389,8 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
-disconnectTransport THandle {connection} c activeAt expCfg = do
+disconnectTransport THandle {connection, sessionId} c activeAt expCfg = do
+  labelMyThread $ "client $" <> showHexBytes sessionId <> " disconnectTransport"
   let interval = checkInterval expCfg * 1000000
   forever . liftIO $ do
     threadDelay' interval
@@ -411,7 +446,8 @@ dummyKeyEd448 :: C.PublicKey 'C.Ed448
 dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/XopbOSaq9qyLhrgJWKOLyNrQPNVvpMA"
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} =
+client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+  labelMyThread $ "client $" <> showHexBytes clnt.sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
