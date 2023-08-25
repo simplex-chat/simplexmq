@@ -23,5 +23,5 @@ main = do
   logPath <- getEnvPath "SMP_SERVER_LOG_PATH" defaultLogPath
   withGlobalLogging logCfg $ smpServerCLI cfgPath logPath
     
-getEnvPath :: String -> FilePath -> FilePath
+getEnvPath :: String -> FilePath -> IO FilePath
 getEnvPath name def = maybe def (\case "" -> def; f -> f) <$> lookupEnv name
