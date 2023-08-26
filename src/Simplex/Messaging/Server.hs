@@ -272,10 +272,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPSuspend -> hPutStrLn h "suspend not implemented"
               CPResume -> hPutStrLn h "resume not implemented"
               CPClients -> do
-                Server{subscribers} <- unliftIO u $ asks server
+                Server {subscribers} <- unliftIO u $ asks server
                 clients <- readTVarIO subscribers
                 hPutStrLn h $ "Clients: " <> show (length clients)
-                forM_ (M.toList clients) $ \(cid, Client{sessionId, connected, activeAt, subscriptions}) -> do
+                forM_ (M.toList clients) $ \(cid, Client {sessionId, connected, activeAt, subscriptions}) -> do
                   hPutStrLn h . B.unpack $ "Client " <> encode cid <> " $" <> encode sessionId
                   readTVarIO connected >>= hPutStrLn h . ("  connected: " <>)  . show
                   readTVarIO activeAt >>= hPutStrLn h . ("  activeAt: " <>)  . B.unpack . strEncode
@@ -295,9 +295,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
-              CPStatsRTS ->
-                getRTSStats >>=
-                  hPutStrLn h . show
+              CPStatsRTS -> getRTSStats >>= hPutStrLn h . show
               CPThreads -> do
                 threads <- liftIO listThreads
                 hPutStrLn h $ "Threads: " <> show (length threads)
