@@ -203,7 +203,7 @@ executable ntf-server
       Paths_simplexmq
   hs-source-dirs:
       apps/ntf-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.2.*
@@ -268,7 +268,7 @@ executable smp-agent
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-agent
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.2.*
@@ -333,7 +333,7 @@ executable smp-server
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.2.*
@@ -398,7 +398,7 @@ executable xftp
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.2.*
@@ -463,7 +463,7 @@ executable xftp-server
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.2.*
