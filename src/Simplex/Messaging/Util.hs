@@ -9,6 +9,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Bifunctor (first)
+import qualified Data.ByteString as BW
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -19,6 +20,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
+import GHC.Conc
+import Numeric (showHex)
 import UnliftIO.Async
 import qualified UnliftIO.Exception as UE
 
@@ -149,3 +152,6 @@ diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
 
 diffToMilliseconds :: NominalDiffTime -> Int64
 diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
+
+labelMyThread :: MonadIO m => String -> m ()
+labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)

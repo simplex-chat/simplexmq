@@ -97,6 +97,7 @@ executables:
       - simplexmq
     ghc-options:
       - -threaded
+      - -rtsopts
 
   ntf-server:
     source-dirs: apps/ntf-server
@@ -105,6 +106,7 @@ executables:
       - simplexmq
     ghc-options:
       - -threaded
+      - -rtsopts
 
   xftp-server:
     source-dirs: apps/xftp-server
@@ -113,6 +115,7 @@ executables:
       - simplexmq
     ghc-options:
       - -threaded
+      - -rtsopts
 
   smp-agent:
     source-dirs: apps/smp-agent
@@ -121,6 +124,7 @@ executables:
       - simplexmq
     ghc-options:
       - -threaded
+      - -rtsopts
 
   xftp:
     source-dirs: apps/xftp
@@ -129,6 +133,7 @@ executables:
       - simplexmq
     ghc-options:
       - -threaded
+      - -rtsopts
 
 tests:
   simplexmq-test:
