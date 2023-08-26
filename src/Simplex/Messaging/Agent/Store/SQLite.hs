@@ -328,7 +328,7 @@ instance StrEncoding MigrationConfirmation where
 createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
-  createDirectoryIfMissing False dbDir
+  createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey
   r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
   case r of
@@ -1007,11 +1007,11 @@ getLastMsg db connId msgId =
       |]
       (connId, msgId)
 
-toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg    
+toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
 toRcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, internalHash, msgType, msgBody, rcptInternalId_, rcptStatus_, userAck) =
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
-    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
+   in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash = do
