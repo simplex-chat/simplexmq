@@ -276,13 +276,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 clients <- readTVarIO subscribers
                 hPutStrLn h $ "Clients: " <> show (length clients)
                 forM_ (M.toList clients) $ \(cid, Client{sessionId, connected, activeAt, subscriptions}) -> do
-                  hPutStrLn h $ "Client " <> showHexBytes cid <> " $" <> showHexBytes sessionId
-                  readTVarIO connected >>=
-                    hPutStrLn h . mappend "  connected: "  . show
-                  readTVarIO activeAt >>=
-                    hPutStrLn h . mappend "  activeAt: "  . B.unpack . strEncode
-                  readTVarIO subscriptions >>=
-                    hPutStrLn h . mappend "  subscriptions: "  . show . M.size
+                  hPutStrLn h . B.unpack $ "Client " <> encode cid <> " $" <> encode sessionId
+                  readTVarIO connected >>= hPutStrLn h . ("  connected: " <>)  . show
+                  readTVarIO activeAt >>= hPutStrLn h . ("  activeAt: " <>)  . B.unpack . strEncode
+                  readTVarIO subscriptions >>= hPutStrLn h . ("  subscriptions: " <>)  . show . M.size
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -323,7 +320,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   c <- atomically $ newClient q thVersion sessionId ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  labelMyThread $ "client $" <> showHexBytes c.sessionId
+  labelMyThread . B.unpack $ "client $" <> encode c.sessionId
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
@@ -355,7 +352,7 @@ cancelSub sub =
 
 receive :: Transport c => THandle c -> Client -> M ()
 receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
-  labelMyThread $ "client $" <> showHexBytes sessionId <> " receive"
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet th)
     atomically . writeTVar activeAt =<< liftIO getSystemTime
@@ -376,7 +373,7 @@ receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
 
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
-  labelMyThread $ "client $" <> showHexBytes sessionId <> " send"
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
     void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
@@ -390,7 +387,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
 
 disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
 disconnectTransport THandle {connection, sessionId} c activeAt expCfg = do
-  labelMyThread $ "client $" <> showHexBytes sessionId <> " disconnectTransport"
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   let interval = checkInterval expCfg * 1000000
   forever . liftIO $ do
     threadDelay' interval
@@ -447,7 +444,7 @@ dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/Xo
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
-  labelMyThread $ "client $" <> showHexBytes clnt.sessionId <> " commands"
+  labelMyThread . B.unpack $ "client $" <> encode clnt.sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand

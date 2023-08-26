@@ -153,12 +153,5 @@ diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
 diffToMilliseconds :: NominalDiffTime -> Int64
 diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
 
-showHexBytes :: ByteString -> String
-showHexBytes = foldr toHex0 "" . BW.unpack
- where
-  toHex0 n
-    | n < 0x10 = ('0' :) . showHex n
-    | otherwise = showHex n
-
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
