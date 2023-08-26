@@ -52,7 +52,7 @@ import Data.Int (Int64)
 import Data.List (intercalate, sort)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (fromMaybe, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -304,7 +304,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 forM_ (sort threads) $ \tid -> do
                   label <- threadLabel tid
                   status <- threadStatus tid
-                  hPutStrLn h $ show tid <> " (" <> show status <> ") " <> maybe "" id label
+                  hPutStrLn h $ show tid <> " (" <> show status <> ") " <> fromMaybe "" label
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
