@@ -160,7 +160,5 @@ showHexBytes = foldr toHex0 "" . BW.unpack
     | n < 0x10 = ('0' :) . showHex n
     | otherwise = showHex n
 
-labelMyThread :: (MonadIO m) => String -> m ()
-labelMyThread label =
-  liftIO $ myThreadId >>= \tid ->
-    labelThread tid label
+labelMyThread :: MonadIO m => String -> m ()
+labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
