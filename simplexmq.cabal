@@ -94,6 +94,7 @@ library
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding

@@ -53,6 +53,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (EncryptedFile (..))
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
@@ -250,7 +251,7 @@ runXFTPRcvLocalWorker c doWork = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure fsSavePath
+      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure $ EncryptedFile fsSavePath Nothing
       notify c rcvFileEntityId $ RFDONE fsSavePath
       forM_ tmpPath (removePath <=< toFSFilePath)
       atomically $ waitUntilForeground c
@@ -341,7 +342,8 @@ runXFTPSndPrepareWorker c doWork = do
               chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
               chunkSizes' = map fromIntegral chunkSizes
               encSize = sum chunkSizes'
-          void $ liftError (INTERNAL . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize fsEncPath
+              srcFile = EncryptedFile filePath Nothing
+          void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs

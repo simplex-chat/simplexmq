@@ -17,6 +17,8 @@ module Simplex.Messaging.Crypto.Lazy
     sbEncryptTailTag,
     sbDecryptTailTag,
     fastReplicate,
+    secretBox,
+    secretBoxTailTag,
     SbState,
     cbInit,
     sbInit,
