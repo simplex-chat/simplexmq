@@ -57,10 +57,10 @@ withXFTPServerCfg cfg =
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
 
-withXFTPServer :: IO a -> IO a
+withXFTPServer :: HasCallStack => IO a -> IO a
 withXFTPServer = withXFTPServerCfg testXFTPServerConfig . const
 
-withXFTPServer2 :: IO a -> IO a
+withXFTPServer2 :: HasCallStack => IO a -> IO a
 withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig {xftpPort = xftpTestPort2, filesPath = xftpServerFiles2} . const
 
 xftpTestPort :: ServiceName

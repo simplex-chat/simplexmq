@@ -54,6 +54,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
+import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
@@ -339,7 +340,7 @@ runXFTPSndPrepareWorker c doWork = do
         encryptFileForUpload SndFile {key, nonce, srcFile} fsEncPath = do
           let CryptoFile {filePath} = srcFile
               fileName = takeFileName filePath
-          fileSize <- fromInteger <$> getFileSize filePath
+          fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
           when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize

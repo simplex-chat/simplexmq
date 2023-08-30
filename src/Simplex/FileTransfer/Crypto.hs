@@ -34,6 +34,7 @@ encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
         padLen = encSize - authTagSize - fileSize' - 8
     liftIO $ B.hPut w hdr
     sb2 <- encryptChunks r w (sb', fileSize' - fromIntegral (B.length fileHdr))
+    CF.hGetTag r
     sb3 <- encryptPad w (sb2, padLen)
     let tag = BA.convert $ LC.sbAuth sb3
     liftIO $ B.hPut w tag
@@ -96,6 +97,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
             ch3 = LB.take (LB.length ch2 - len' + expectedLen) ch2
             tag :: ByteString = BA.convert (LC.sbAuth sb')
         CF.hPut h ch3
+        CF.hPutTag h
         pure $ B.length tag'' == 16 && BA.constEq tag'' tag
   where
     parseFileHeader :: LazyByteString -> ExceptT FTCryptoError IO (FileHeader, LazyByteString)
