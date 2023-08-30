@@ -16,7 +16,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Simplex.FileTransfer.Types (FileHeader (..), authTagSize)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.File (EncryptedFile (..), FTCryptoError (..))
+import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
 import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -25,7 +25,7 @@ import Simplex.Messaging.Util (liftEitherWith)
 import UnliftIO
 import UnliftIO.Directory (removeFile)
 
-encryptFile :: EncryptedFile -> ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT FTCryptoError IO ()
+encryptFile :: CryptoFile -> ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT FTCryptoError IO ()
 encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
   sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
   CF.withFile srcFile ReadMode $ \r -> withFile encFile WriteMode $ \w -> do
@@ -51,7 +51,7 @@ encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
         liftIO $ B.hPut w ch'
         encryptChunks_ get w (sb', len - chSize)
 
-decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO EncryptedFile) -> ExceptT FTCryptoError IO EncryptedFile
+decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO CryptoFile) -> ExceptT FTCryptoError IO CryptoFile
 decryptChunks _ [] _ _ _ = throwError $ FTCEInvalidHeader "empty"
 decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse chPaths of
   [] -> do
@@ -64,7 +64,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
   lastPath : chPaths' -> do
     (state, expectedLen, ch) <- decryptFirstChunk
     (FileHeader {fileName}, ch') <- parseFileHeader ch
-    destFile@(EncryptedFile path _) <- withExceptT FTCEFileIOError $ getDestFile fileName
+    destFile@(CryptoFile path _) <- withExceptT FTCEFileIOError $ getDestFile fileName
     authOk <- CF.withFile destFile WriteMode $ \h -> liftIO $ do
       CF.hPut h ch'
       state' <- foldM (decryptChunk h) state $ reverse chPaths'

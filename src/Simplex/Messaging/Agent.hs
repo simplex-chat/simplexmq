@@ -119,12 +119,12 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing, catMaybes)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, xftpDeleteRcvFile', deleteSndFileInternal, deleteSndFileRemote, xftpReceiveFile', xftpSendFile', startXFTPWorkers, toFSFilePath)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpReceiveFile', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -140,6 +140,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -356,15 +357,15 @@ xftpStartWorkers :: AgentErrorMonad m => AgentClient -> Maybe FilePath -> m ()
 xftpStartWorkers c = withAgentEnv c . startXFTPWorkers c
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
-xftpReceiveFile c = withAgentEnv c .: xftpReceiveFile' c
+xftpReceiveFile :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
+xftpReceiveFile c = withAgentEnv c .:. xftpReceiveFile' c
 
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> RcvFileId -> m ()
 xftpDeleteRcvFile c = withAgentEnv c . xftpDeleteRcvFile' c
 
 -- | Send XFTP file
-xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
+xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> CryptoFile -> Int -> m SndFileId
 xftpSendFile c = withAgentEnv c .:. xftpSendFile' c
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
@@ -2339,8 +2340,8 @@ mkAgentConfirmation :: AgentMonad m => Compatible Version -> AgentClient -> Conn
 mkAgentConfirmation (Compatible agentVersion) c cData sq srv connInfo
   | agentVersion == 1 = pure $ AgentConnInfo connInfo
   | otherwise = do
-      qInfo <- createReplyQueue c cData sq srv
-      pure $ AgentConnInfoReply (qInfo :| []) connInfo
+    qInfo <- createReplyQueue c cData sq srv
+    pure $ AgentConnInfoReply (qInfo :| []) connInfo
 
 enqueueConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
 enqueueConfirmation c cData sq connInfo e2eEncryption_ = do

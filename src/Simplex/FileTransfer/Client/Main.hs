@@ -59,7 +59,7 @@ import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.File (EncryptedFile (..), FTCryptoError (..))
+import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -303,7 +303,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           defChunkSize = head chunkSizes
           chunkSizes' = map fromIntegral chunkSizes
           encSize = sum chunkSizes'
-          srcFile = EncryptedFile filePath Nothing
+          srcFile = CryptoFile filePath Nothing
       withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
@@ -437,7 +437,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
-      EncryptedFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap (`EncryptedFile` Nothing) . getFilePath
+      CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap (`CryptoFile` Nothing) . getFilePath
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do

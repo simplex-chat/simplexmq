@@ -22,6 +22,7 @@ import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
+import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory)
@@ -32,7 +33,7 @@ import XFTPCLI
 import XFTPClient
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . describe "Functional API" $ do
+xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
@@ -80,7 +81,6 @@ checkProgress (prev, expected) (progress, total) loop
 testXFTPAgentSendReceive :: IO ()
 testXFTPAgentSendReceive = withXFTPServer $ do
   filePath <- createRandomFile
-
   -- send file, delete snd file internally
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   (rfd1, rfd2) <- runRight $ do
@@ -109,7 +109,7 @@ createRandomFile = do
 testSend :: AgentClient -> FilePath -> ExceptT AgentErrorType IO (SndFileId, ValidFileDescription 'FSender, ValidFileDescription 'FRecipient, ValidFileDescription 'FRecipient)
 testSend sndr filePath = do
   xftpStartWorkers sndr (Just senderFiles)
-  sfId <- xftpSendFile sndr 1 filePath 2
+  sfId <- xftpSendFile sndr 1 (CF.plain filePath) 2
   sfProgress sndr $ mb 18
   ("", sfId', SFDONE sndDescr [rfd1, rfd2]) <- sfGet sndr
   liftIO $ sfId' `shouldBe` sfId
@@ -118,7 +118,7 @@ testSend sndr filePath = do
 testReceive :: AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceive rcp rfd originalFilePath = do
   xftpStartWorkers rcp (Just recipientFiles)
-  rfId <- xftpReceiveFile rcp 1 rfd
+  rfId <- xftpReceiveFile rcp 1 rfd Nothing
   rfProgress rcp $ mb 18
   ("", rfId', RFDONE path) <- rfGet rcp
   liftIO $ do
@@ -149,7 +149,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
   rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
-    rfId <- xftpReceiveFile rcp 1 rfd
+    rfId <- xftpReceiveFile rcp 1 rfd Nothing
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure rfId
   disconnectAgentClient rcp
@@ -197,7 +197,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
   rfId <- runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
-    rfId <- xftpReceiveFile rcp 1 rfd
+    rfId <- xftpReceiveFile rcp 1 rfd Nothing
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure rfId
   disconnectAgentClient rcp
@@ -224,7 +224,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   sfId <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
-    sfId <- xftpSendFile sndr 1 filePath 2
+    sfId <- xftpSendFile sndr 1 (CF.plain filePath) 2
     liftIO $ timeout 1000000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
     pure sfId
   disconnectAgentClient sndr
@@ -273,7 +273,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
     sfId <- runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
-      sfId <- xftpSendFile sndr 1 filePath 2
+      sfId <- xftpSendFile sndr 1 (CF.plain filePath) 2
       -- wait for progress events for 5 out of 6 chunks - at this point all chunks should be created on the server
       forM_ [1 .. 5 :: Integer] $ \_ -> do
         (_, _, SFPROG _ _) <- sfGet sndr
@@ -331,7 +331,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
     rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
-      rfId <- xftpReceiveFile rcp2 1 rfd2
+      rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
       liftIO $ rfId' `shouldBe` rfId
 
@@ -375,7 +375,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     rcp2 <- getSMPAgentClient' agentCfg initAgentServers testDB3
     runRight $ do
       xftpStartWorkers rcp2 (Just recipientFiles)
-      rfId <- xftpReceiveFile rcp2 1 rfd2
+      rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
       liftIO $ rfId' `shouldBe` rfId
 
@@ -387,7 +387,7 @@ testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   rfds <- runRight $ do
     xftpStartWorkers sndr (Just senderFiles)
-    sfId <- xftpSendFile sndr 1 filePath 500
+    sfId <- xftpSendFile sndr 1 (CF.plain filePath) 500
     sfProgress sndr $ mb 18
     ("", sfId', SFDONE _sndDescr rfds) <- sfGet sndr
     liftIO $ do
