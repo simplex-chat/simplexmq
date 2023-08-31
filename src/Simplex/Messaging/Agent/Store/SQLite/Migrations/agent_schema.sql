@@ -271,6 +271,8 @@ CREATE TABLE rcv_files(
   error TEXT,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  save_file_key BLOB,
+  save_file_nonce BLOB,
   UNIQUE(rcv_file_entity_id)
 );
 CREATE TABLE rcv_file_chunks(
@@ -311,6 +313,9 @@ CREATE TABLE snd_files(
   error TEXT,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  src_file_key BLOB,
+  src_file_nonce BLOB
 );
 CREATE TABLE snd_file_chunks(
   snd_file_chunk_id INTEGER PRIMARY KEY,

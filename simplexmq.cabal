@@ -89,11 +89,13 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
@@ -536,6 +538,7 @@ test-suite simplexmq-test
       AgentTests.SQLiteTests
       CLITests
       CoreTests.BatchingTests
+      CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests

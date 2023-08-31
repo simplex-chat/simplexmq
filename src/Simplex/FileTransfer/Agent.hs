@@ -53,6 +53,8 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
+import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
@@ -99,8 +101,8 @@ closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
       ws <- atomically $ stateTVar wsSel (,M.empty)
       mapM_ (uninterruptibleCancel . snd) ws
 
-xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m RcvFileId
-xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) = do
+xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
+xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfArgs = do
   g <- asks idsDrg
   prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
@@ -109,7 +111,8 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) = d
       relSavePath = relPrefixPath </> "xftp.decrypted"
   createDirectory =<< toFSFilePath relTmpPath
   createEmptyFile =<< toFSFilePath relSavePath
-  fId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath relSavePath
+  let saveFile = CryptoFile relSavePath cfArgs
+  fId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile
   forM_ chunks downloadChunk
   pure fId
   where
@@ -243,14 +246,16 @@ runXFTPRcvLocalWorker c doWork = do
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, savePath, status, chunks} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks} = do
+      let CryptoFile savePath cfArgs = saveFile
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
         whenM (doesFileExist fsSavePath) (removeFile fsSavePath >> createEmptyFile fsSavePath)
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure fsSavePath
+      let destFile = CryptoFile fsSavePath cfArgs
+      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       notify c rcvFileEntityId $ RFDONE fsSavePath
       forM_ tmpPath (removePath <=< toFSFilePath)
       atomically $ waitUntilForeground c
@@ -277,8 +282,8 @@ xftpDeleteRcvFile' c rcvFileEntityId = do
 notify :: forall m e. (MonadUnliftIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
 
-xftpSendFile' :: AgentMonad m => AgentClient -> UserId -> FilePath -> Int -> m SndFileId
-xftpSendFile' c userId filePath numRecipients = do
+xftpSendFile' :: AgentMonad m => AgentClient -> UserId -> CryptoFile -> Int -> m SndFileId
+xftpSendFile' c userId file numRecipients = do
   g <- asks idsDrg
   prefixPath <- getPrefixPath "snd.xftp"
   createDirectory prefixPath
@@ -286,7 +291,7 @@ xftpSendFile' c userId filePath numRecipients = do
   key <- liftIO C.randomSbKey
   nonce <- liftIO C.randomCbNonce
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
-  fId <- withStore c $ \db -> createSndFile db g userId numRecipients filePath relPrefixPath key nonce
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce
   addXFTPSndWorker c Nothing
   pure fId
 
@@ -332,16 +337,17 @@ runXFTPSndPrepareWorker c doWork = do
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
         encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
-        encryptFileForUpload SndFile {key, nonce, filePath} fsEncPath = do
-          let fileName = takeFileName filePath
-          fileSize <- fromInteger <$> getFileSize filePath
+        encryptFileForUpload SndFile {key, nonce, srcFile} fsEncPath = do
+          let CryptoFile {filePath} = srcFile
+              fileName = takeFileName filePath
+          fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
           when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize
               chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
               chunkSizes' = map fromIntegral chunkSizes
               encSize = sum chunkSizes'
-          void $ liftError (INTERNAL . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize fsEncPath
+          void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs

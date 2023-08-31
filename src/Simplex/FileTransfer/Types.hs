@@ -13,6 +13,7 @@ import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.Messaging.Agent.Protocol (RcvFileId, SndFileId)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (fromTextField_)
@@ -49,7 +50,7 @@ data RcvFile = RcvFile
     chunks :: [RcvFileChunk],
     prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
-    savePath :: FilePath,
+    saveFile :: CryptoFile,
     status :: RcvFileStatus,
     deleted :: Bool
   }
@@ -120,7 +121,7 @@ data SndFile = SndFile
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunks :: [SndFileChunk],
-    filePath :: FilePath,
+    srcFile :: CryptoFile,
     prefixPath :: Maybe FilePath,
     status :: SndFileStatus,
     deleted :: Bool

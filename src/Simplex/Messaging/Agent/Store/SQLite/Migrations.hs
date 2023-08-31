@@ -67,6 +67,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receip
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -99,7 +100,8 @@ schemaMigrations =
     ("m20230701_delivery_receipts", m20230701_delivery_receipts, Just down_m20230701_delivery_receipts),
     ("m20230720_delete_expired_messages", m20230720_delete_expired_messages, Just down_m20230720_delete_expired_messages),
     ("m20230722_indexes", m20230722_indexes, Just down_m20230722_indexes),
-    ("m20230814_indexes", m20230814_indexes, Just down_m20230814_indexes)
+    ("m20230814_indexes", m20230814_indexes, Just down_m20230814_indexes),
+    ("m20230829_crypto_files", m20230829_crypto_files, Just down_m20230829_crypto_files)
   ]
 
 -- | The list of migrations in ascending order by date

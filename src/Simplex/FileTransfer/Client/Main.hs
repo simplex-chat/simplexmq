@@ -59,6 +59,8 @@ import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
+import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -102,6 +104,7 @@ cliCryptoError = \case
   FTCECryptoError e -> CLIError $ "Error decrypting file: " <> show e
   FTCEInvalidHeader e -> CLIError $ "Invalid file header: " <> e
   FTCEInvalidAuthTag -> CLIError "Error decrypting file: incorrect auth tag"
+  FTCEInvalidFileSize -> CLIError "Error decrypting file: incorrect file size"
   FTCEFileIOError e -> CLIError $ "File IO error: " <> show e
 
 data CliCommand
@@ -301,7 +304,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           defChunkSize = head chunkSizes
           chunkSizes' = map fromIntegral chunkSizes
           encSize = sum chunkSizes'
-      withExceptT (CLIError . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize encPath
+          srcFile = CF.plain filePath
+      withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
           fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
@@ -434,7 +438,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
-      path <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce getFilePath
+      CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do
