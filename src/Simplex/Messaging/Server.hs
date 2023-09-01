@@ -362,7 +362,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission sig_ signed queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
+    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
@@ -422,10 +422,10 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey auth ->
+            NEW rKey dhKey autoSub auth ->
               ifM
                 allowNew
-                (createQueue st rKey dhKey)
+                (createQueue st rKey dhKey autoSub)
                 (pure (corrId, queueId, ERR AUTH))
               where
                 allowNew = do
@@ -440,8 +440,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> m (Transmission BrokerMsg)
-        createQueue st recipientKey dhKey = time "NEW" $ do
+        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> Bool -> m (Transmission BrokerMsg)
+        createQueue st recipientKey dhKey autoSub = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}

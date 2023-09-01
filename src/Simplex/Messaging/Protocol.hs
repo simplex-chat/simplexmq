@@ -276,7 +276,7 @@ type EntityId = ByteString
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
-  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Maybe BasicAuth -> Command Recipient
+  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Bool -> Maybe BasicAuth -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -1044,8 +1044,9 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
 instance PartyI p => ProtocolEncoding ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey auth_ -> case auth_ of
+    NEW rKey dhKey _todo'autoSub auth_ -> case auth_ of
       Just auth
+        | v >= 6 -> error "todo: encodeProtocol >= 6"
         | v >= 5 -> new <> e ('A', auth)
         | otherwise -> new
       _ -> new
@@ -1102,8 +1103,9 @@ instance ProtocolEncoding ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= 5 -> new <*> optional (A.char 'A' *> smpP)
-          | otherwise -> new <*> pure Nothing
+          | v >= 6 -> new <*> smpP <*> optional (A.char 'A' *> smpP)
+          | v >= 5 -> new <*> pure True <*> optional (A.char 'A' *> smpP)
+          | otherwise -> new <*> pure True <*> pure Nothing
           where
             new = NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
