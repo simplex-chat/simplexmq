@@ -21,6 +21,7 @@ module Simplex.Messaging.Crypto.File
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Exception
 import Control.Monad.Except
 import Data.Aeson (FromJSON, ToJSON)
