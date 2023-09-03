@@ -441,7 +441,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
-        createQueue st recipientKey dhKey todo'subMode = time "NEW" $ do
+        createQueue st recipientKey dhKey subMode = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
@@ -472,7 +472,10 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   stats <- asks serverStats
                   atomically $ modifyTVar' (qCreated stats) (+ 1)
                   atomically $ modifyTVar' (qCount stats) (+ 1)
-                  subscribeQueue qr rId $> IDS (qik ids)
+                  case subMode of
+                    SMOnlyCreate -> pure ()
+                    SMSubscribe -> void $ subscribeQueue qr rId
+                  pure $ IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
             logCreateById s rId =

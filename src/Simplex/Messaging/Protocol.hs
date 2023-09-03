@@ -1066,7 +1066,7 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
       where
         new = e (NEW_, ' ', rKey, dhKey)
         subModeEnc = case subMode of
-          SMOnlyCreate -> e ('S')
+          SMOnlyCreate -> e 'S'
           SMSubscribe -> mempty
         authEnc = case auth_ of
           Just auth -> e ('A', auth)

@@ -182,6 +182,7 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta (..),
     SProtocolType (..),
     SndPublicVerifyKey,
+    SubscriptionMode (..),
     UserProtocol,
     XFTPServer,
     XFTPServerWithAuth,
@@ -749,7 +750,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, _) <- C.generateSignatureKeyPair a
         (dhKey, _) <- C.generateKeyPair'
         r <- runExceptT $ do
-          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey auth
+          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey SMSubscribe auth
           liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
@@ -823,8 +824,8 @@ mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
-newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> m (RcvQueue, SMPQueueUri)
-newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
+newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> SubscriptionMode -> VersionRange -> m (RcvQueue, SMPQueueUri)
+newRcvQueue c userId connId (ProtoServerWithAuth srv auth) subMode vRange = do
   C.SignAlg a <- asks (cmdSignAlg . config)
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (dhKey, privDhKey) <- liftIO C.generateKeyPair'
@@ -832,7 +833,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange = do
   logServer "-->" c srv "" "NEW"
   tSess <- mkTransportSession c userId srv connId
   QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey auth
+    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey subMode auth
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue

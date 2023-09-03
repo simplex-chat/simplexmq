@@ -532,14 +532,14 @@ createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SCon
 createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake, needsSub} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, needs_sub, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, needsSub, duplexHandshake)
     void $ insertRcvQueue_ db connId q serverKeyHash_
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake, needsSub} q@SndQueue {server} =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, needs_sub, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, needsSub, duplexHandshake)
     void $ insertSndQueue_ db connId q serverKeyHash_
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))

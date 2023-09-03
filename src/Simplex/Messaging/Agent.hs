@@ -572,7 +572,7 @@ newConnSrv c userId connId enableNtfs subMode cMode clientData srv = do
 newRcvConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> SConnectionMode c -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
 newRcvConnSrv c userId connId enableNtfs subMode cMode clientData srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  (rq, qUri) <- newRcvQueue c userId connId srv smpClientVRange `catchAgentError` \e -> liftIO (print e) >> throwError e
+  (rq, qUri) <- newRcvQueue c userId connId srv subMode smpClientVRange `catchAgentError` \e -> liftIO (print e) >> throwError e
   void . withStore c $ \db -> updateNewConnRcv db connId rq
   case subMode of
     SMOnlyCreate -> pure ()
@@ -657,8 +657,9 @@ joinConnSrvAsync _c _userId _connId _enableNtfs _subMode (CRContactUri _) _cInfo
   throwError $ CMD PROHIBITED
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> m SMPQueueInfo
-createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} srv = do
-  (rq, qUri) <- newRcvQueue c userId connId srv $ versionToRange smpClientVersion
+createReplyQueue c ConnData {userId, connId, enableNtfs, needsSub} SndQueue {smpClientVersion} srv = do
+  let subMode = if needsSub then SMOnlyCreate else SMSubscribe
+  (rq, qUri) <- newRcvQueue c userId connId srv subMode $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq
   void . withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -1293,13 +1294,14 @@ switchConnection' c connId =
       _ -> throwError $ CMD PROHIBITED
 
 switchDuplexConnection :: AgentMonad m => AgentClient -> Connection 'CDuplex -> RcvQueue -> m ConnectionStats
-switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId, sndId} = do
+switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId, needsSub} rqs sqs) rq@RcvQueue {server, dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
-  (q, qUri) <- newRcvQueue c userId connId srv' clientVRange
+  let subMode = if needsSub then SMOnlyCreate else SMSubscribe
+  (q, qUri) <- newRcvQueue c userId connId srv' subMode clientVRange
   let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   void . withStore c $ \db -> addConnRcvQueue db connId rq'
   addSubscription c rq'

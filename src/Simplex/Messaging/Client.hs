@@ -494,10 +494,11 @@ createSMPQueue ::
   RcvPrivateSignKey ->
   RcvPublicVerifyKey ->
   RcvPublicDhKey ->
+  SubscriptionMode ->
   Maybe BasicAuth ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c rpKey rKey dhKey auth =
-  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey (error "todo: get subMode") auth) >>= \case
+createSMPQueue c rpKey rKey dhKey subMode auth =
+  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey subMode auth) >>= \case
     IDS qik -> pure qik
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
