@@ -197,6 +197,7 @@ import Simplex.Messaging.Protocol
     SMPServerWithAuth,
     SndPublicVerifyKey,
     SrvLoc (..),
+    SubscriptionMode,
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
@@ -313,9 +314,9 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (e :: AEntity) where
-  NEW :: Bool -> AConnectionMode -> Bool -> ACommand Client AEConn -- response INV
+  NEW :: Bool -> SubscriptionMode -> AConnectionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
-  JOIN :: Bool -> Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client AEConn -- response OK
+  JOIN :: Bool -> SubscriptionMode -> AConnectionRequestUri -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
@@ -998,7 +999,7 @@ data AMessage
     REPLY (NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- | agent envelope for delivery receipt 
+  | -- | agent envelope for delivery receipt
     A_RCVD (NonEmpty AMessageReceipt)
   | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
     QCONT SndQAddr
@@ -1736,7 +1737,7 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient e cmd ->
         ACmd SClient e <$> case cmd of
-          NEW_ -> s (NEW <$> strP_ <*> strP <*> strP)
+          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> strP)
           JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> strP_ <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
@@ -1798,9 +1799,9 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode autoSub -> s (NEW_, ntfs, cMode, autoSub)
+  NEW ntfs subMode cMode -> s (NEW_, ntfs, subMode, cMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs autoSub cReq cInfo -> s (JOIN_, ntfs, autoSub, cReq, Str $ serializeBinary cInfo)
+  JOIN ntfs subMode cReq cInfo -> s (JOIN_, ntfs, subMode, cReq, Str $ serializeBinary cInfo)
   CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]

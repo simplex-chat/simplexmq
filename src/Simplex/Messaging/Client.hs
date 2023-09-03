@@ -497,7 +497,7 @@ createSMPQueue ::
   Maybe BasicAuth ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c rpKey rKey dhKey auth =
-  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey (error "todo: autoSub") auth) >>= \case
+  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey (error "todo: get subMode") auth) >>= \case
     IDS qik -> pure qik
     r -> throwE . PCEUnexpectedResponse $ bshow r
 

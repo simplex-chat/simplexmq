@@ -47,6 +47,7 @@ module Simplex.Messaging.Protocol
     -- * SMP protocol types
     ProtocolEncoding (..),
     Command (..),
+    SubscriptionMode (..),
     Party (..),
     Cmd (..),
     BrokerMsg (..),
@@ -276,7 +277,7 @@ type EntityId = ByteString
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
-  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Bool -> Maybe BasicAuth -> Command Recipient
+  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> Maybe BasicAuth -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -298,6 +299,20 @@ data Command (p :: Party) where
 deriving instance Show (Command p)
 
 deriving instance Eq (Command p)
+
+data SubscriptionMode = SMSubscribe | SMOnlyCreate
+  deriving (Eq, Show)
+
+instance StrEncoding SubscriptionMode where
+  strEncode = \case
+    SMSubscribe -> "subscribe"
+    SMOnlyCreate -> "only-create"
+  strP = do
+    tag <- strP :: Parser ByteString
+    case tag of
+      "subscribe" -> pure SMSubscribe
+      "only-create" -> pure SMOnlyCreate
+      _ -> fail "invalid SubscriptionMode"
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
@@ -1044,14 +1059,18 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
 instance PartyI p => ProtocolEncoding ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey _todo'autoSub auth_ -> case auth_ of
-      Just auth
-        | v >= 6 -> error "todo: encodeProtocol >= 6"
-        | v >= 5 -> new <> e ('A', auth)
-        | otherwise -> new
-      _ -> new
+    NEW rKey dhKey subMode auth_
+      | v >= 6 -> new <> subModeEnc <> authEnc
+      | v == 5 -> new <> authEnc
+      | otherwise -> new
       where
         new = e (NEW_, ' ', rKey, dhKey)
+        subModeEnc = case subMode of
+          SMOnlyCreate -> e ('S')
+          SMSubscribe -> mempty
+        authEnc = case auth_ of
+          Just auth -> e ('A', auth)
+          Nothing -> mempty
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
@@ -1103,10 +1122,12 @@ instance ProtocolEncoding ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= 6 -> new <*> smpP <*> optional (A.char 'A' *> smpP)
-          | v >= 5 -> new <*> pure True <*> optional (A.char 'A' *> smpP)
-          | otherwise -> new <*> pure True <*> pure Nothing
+          | v >= 6 -> new <*> subModeP <*> authP
+          | v == 5 -> new <*> pure SMSubscribe <*> authP
+          | otherwise -> new <*> pure SMSubscribe <*> pure Nothing
           where
+            subModeP = A.try (A.char 'C' $> SMOnlyCreate) <|> pure SMSubscribe
+            authP = optional (A.char 'A' *> smpP)
             new = NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
@@ -1271,7 +1292,7 @@ tPutLog th s = do
 -- ByteString does not include length byte, it is added by tEncodeBatch
 data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString |  TBLargeTransmission
 
--- | encodes and batches transmissions into blocks, 
+-- | encodes and batches transmissions into blocks,
 batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
 batchTransmissions batch bSize
   | batch = reverse . mkBatch [] . L.map tEncode

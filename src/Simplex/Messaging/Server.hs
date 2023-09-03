@@ -422,10 +422,10 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey autoSub auth ->
+            NEW rKey dhKey subMode auth ->
               ifM
                 allowNew
-                (createQueue st rKey dhKey autoSub)
+                (createQueue st rKey dhKey subMode)
                 (pure (corrId, queueId, ERR AUTH))
               where
                 allowNew = do
@@ -440,8 +440,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> Bool -> m (Transmission BrokerMsg)
-        createQueue st recipientKey dhKey autoSub = time "NEW" $ do
+        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
+        createQueue st recipientKey dhKey todo'subMode = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}

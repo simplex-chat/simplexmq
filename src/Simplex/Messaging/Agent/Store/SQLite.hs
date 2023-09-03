@@ -503,10 +503,12 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId = ""} -> createWithRandomId gVar create
   ConnData {connId} -> create connId $> Right connId
 
-createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> Bool -> IO (Either StoreError ConnId)
-createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode _todo'autoSub =
+createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> SubscriptionMode -> IO (Either StoreError ConnId)
+createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode subMode =
   createConn_ gVar cData $ \connId -> do
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, needs_sub) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake, needsSub)
+  where
+    needsSub = subMode == SMOnlyCreate
 
 updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError Int64)
 updateNewConnRcv db connId rq =
