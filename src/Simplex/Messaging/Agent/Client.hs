@@ -229,6 +229,7 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
+    removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     pendingMsgsQueued :: TMap SndQAddr Bool,
     smpQueueMsgQueues :: TMap SndQAddr (TQueue InternalId, TMVar ()),
     smpQueueMsgDeliveries :: TMap SndQAddr (Async ()),
@@ -305,6 +306,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
+  removedSubs <- TM.empty
   pendingMsgsQueued <- TM.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
@@ -341,6 +343,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         subscrConns,
         activeSubs,
         pendingSubs,
+        removedSubs,
         pendingMsgsQueued,
         smpQueueMsgQueues,
         smpQueueMsgDeliveries,
@@ -857,8 +860,9 @@ processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> IO (E
 processSubResult c rq r = do
   case r of
     Left e ->
-      atomically . unless (temporaryClientError e) $
+      unless (temporaryClientError e) . atomically $ do
         RQ.deleteQueue rq (pendingSubs c)
+        TM.insert (RQ.qKey rq) e (removedSubs c)
     _ -> addSubscription c rq
   pure r
 
@@ -1345,14 +1349,15 @@ withNextSrv c userId usedSrvs initUsed action = do
     writeTVar usedSrvs $! used'
   action srvAuth
 
-data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text}
+data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show, Generic)
 
-instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions
+instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 data SubscriptionsInfo = SubscriptionsInfo
   { activeSubscriptions :: [SubInfo],
-    pendingSubscriptions :: [SubInfo]
+    pendingSubscriptions :: [SubInfo],
+    removedSubscriptions :: [SubInfo]
   }
   deriving (Show, Generic)
 
@@ -1362,9 +1367,12 @@ getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo
 getAgentSubscriptions c = do
   activeSubscriptions <- getSubs activeSubs
   pendingSubscriptions <- getSubs pendingSubs
-  pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions}
+  removedSubscriptions <- getRemovedSubs
+  pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions, removedSubscriptions}
   where
-    getSubs sel = map subInfo . M.keys <$> readTVarIO (getRcvQueues $ sel c)
-    subInfo (uId, srv, rId) = SubInfo {userId = uId, server = enc srv, rcvId = enc rId}
+    getSubs sel = map (`subInfo` Nothing) . M.keys <$> readTVarIO (getRcvQueues $ sel c)
+    getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
+    subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
+    subInfo (uId, srv, rId) err  = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode

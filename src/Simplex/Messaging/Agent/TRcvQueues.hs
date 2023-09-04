@@ -10,6 +10,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
+    qKey,
   )
 where
 
