@@ -14,5 +14,5 @@ ALTER TABLE connections ADD COLUMN needs_sub INTEGER DEFAULT 0 NOT NULL;
 down_m20230903_connection_needs_sub :: Query
 down_m20230903_connection_needs_sub =
   [sql|
-ALTER TABLE rcv_files DROP COLUMN needs_sub;
+ALTER TABLE connections DROP COLUMN needs_sub;
 |]

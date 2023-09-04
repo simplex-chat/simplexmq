@@ -155,7 +155,7 @@ import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
-import Data.Attoparsec.ByteString.Char8 (Parser)
+import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -307,12 +307,9 @@ instance StrEncoding SubscriptionMode where
   strEncode = \case
     SMSubscribe -> "subscribe"
     SMOnlyCreate -> "only-create"
-  strP = do
-    tag <- strP :: Parser ByteString
-    case tag of
-      "subscribe" -> pure SMSubscribe
-      "only-create" -> pure SMOnlyCreate
-      _ -> fail "invalid SubscriptionMode"
+  strP =
+    (A.string "subscribe" $> SMSubscribe) <|> (A.string "only-create" $> SMOnlyCreate)
+      <?> "SubscriptionMode"
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
@@ -1066,7 +1063,7 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
       where
         new = e (NEW_, ' ', rKey, dhKey)
         subModeEnc = case subMode of
-          SMOnlyCreate -> e 'S'
+          SMOnlyCreate -> e 'C'
           SMSubscribe -> mempty
         authEnc = case auth_ of
           Just auth -> e ('A', auth)
@@ -1126,7 +1123,7 @@ instance ProtocolEncoding ErrorType Cmd where
           | v == 5 -> new <*> pure SMSubscribe <*> authP
           | otherwise -> new <*> pure SMSubscribe <*> pure Nothing
           where
-            subModeP = A.try (A.char 'C' $> SMOnlyCreate) <|> pure SMSubscribe
+            subModeP = A.char 'C' $> SMOnlyCreate <|> pure SMSubscribe
             authP = optional (A.char 'A' *> smpP)
             new = NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
