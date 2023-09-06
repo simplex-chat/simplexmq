@@ -17,6 +17,7 @@ module Simplex.Messaging.Version
     safeVersionRange,
     versionToRange,
     isCompatible,
+    isCompatibleRange,
     proveCompatible,
     compatibleVersion,
   )
