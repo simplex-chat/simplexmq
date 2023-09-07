@@ -189,12 +189,12 @@ deleteUser :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> m ()
 deleteUser c = withAgentEnv c .: deleteUser' c
 
 -- | Create SMP agent connection (NEW command) asynchronously, synchronous response is new connection id
-createConnectionAsync :: forall m c. (AgentErrorMonad m, ConnectionModeI c) => AgentClient -> UserId -> ACorrId -> Bool -> SubscriptionMode -> SConnectionMode c -> m ConnId
-createConnectionAsync c = withAgentEnv c .::. newConnAsync c
+createConnectionAsync :: forall m c. (AgentErrorMonad m, ConnectionModeI c) => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> SubscriptionMode -> m ConnId
+createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .: newConnAsync c userId aCorrId enableNtfs
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
-joinConnectionAsync :: AgentErrorMonad m => AgentClient -> UserId -> ACorrId -> Bool -> SubscriptionMode -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnectionAsync c = withAgentEnv c .::: joinConnAsync c
+joinConnectionAsync :: AgentErrorMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> SubscriptionMode -> ConnInfo -> m ConnId
+joinConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. joinConnAsync c userId aCorrId enableNtfs
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
 allowConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -202,7 +202,7 @@ allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 
 -- | Accept contact after REQ notification (ACPT command) asynchronously, synchronous response is new connection id
 acceptContactAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> Bool -> SubscriptionMode -> ConfirmationId -> ConnInfo -> m ConnId
-acceptContactAsync c = withAgentEnv c .::. acceptContactAsync' c
+acceptContactAsync c aCorrId enableNtfs = withAgentEnv c .:. acceptContactAsync' c aCorrId enableNtfs
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
@@ -221,12 +221,12 @@ deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
 deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SubscriptionMode -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
-createConnection c userId = withAgentEnv c .:: newConn c userId ""
+createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> SubscriptionMode -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
+createConnection c userId enableNtfs = withAgentEnv c .:. newConn c userId "" enableNtfs
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SubscriptionMode -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnection c userId = withAgentEnv c .:: joinConn c userId ""
+joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> SubscriptionMode -> ConnInfo -> m ConnId
+joinConnection c userId enableNtfs = withAgentEnv c .:. joinConn c userId "" enableNtfs
 
 -- | Allow connection to continue after CONF notification (LET command)
 allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -234,7 +234,7 @@ allowConnection c = withAgentEnv c .:. allowConnection' c
 
 -- | Accept contact after REQ notification (ACPT command)
 acceptContact :: AgentErrorMonad m => AgentClient -> Bool -> SubscriptionMode -> ConfirmationId -> ConnInfo -> m ConnId
-acceptContact c = withAgentEnv c .:: acceptContact' c ""
+acceptContact c enableNtfs = withAgentEnv c .:. acceptContact' c "" enableNtfs
 
 -- | Reject contact (RJCT command)
 rejectContact :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> m ()
@@ -427,8 +427,8 @@ client c@AgentClient {rcvQ, subQ} = forever $ do
 processCommand :: forall m. AgentMonad m => AgentClient -> (EntityId, APartyCmd 'Client) -> m (EntityId, APartyCmd 'Agent)
 processCommand c (connId, APC e cmd) =
   second (APC e) <$> case cmd of
-    NEW enableNtfs subMode (ACM cMode) -> second (INV . ACR cMode) <$> newConn c userId connId enableNtfs subMode cMode Nothing
-    JOIN enableNtfs subMode (ACR _ cReq) connInfo -> (,OK) <$> joinConn c userId connId enableNtfs subMode cReq connInfo
+    NEW enableNtfs (ACM cMode) subMode -> second (INV . ACR cMode) <$> newConn c userId connId enableNtfs cMode subMode Nothing
+    JOIN enableNtfs (ACR _ cReq) subMode connInfo -> (,OK) <$> joinConn c userId connId enableNtfs cReq subMode connInfo
     LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
     ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId True SMSubscribe invId ownCInfo
     RJCT invId -> rejectContact' c connId invId $> (connId, OK)
@@ -462,35 +462,33 @@ deleteUser' c userId delSMPQueues = do
       whenM (withStore' c (`deleteUserWithoutConns` userId)) $
         atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ DEL_USER userId)
 
-newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> UserId -> ACorrId -> Bool -> SubscriptionMode -> SConnectionMode c -> m ConnId
-newConnAsync c userId corrId enableNtfs subMode cMode = do
-  connId <- newConnNoQueues c userId "" enableNtfs subMode cMode
-  enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ NEW enableNtfs subMode (ACM cMode)
+newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> SubscriptionMode -> m ConnId
+newConnAsync c userId corrId enableNtfs cMode subMode = do
+  connId <- newConnNoQueues c userId "" enableNtfs cMode
+  enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ NEW enableNtfs (ACM cMode) subMode
   pure connId
 
-newConnNoQueues :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> SConnectionMode c -> m ConnId
-newConnNoQueues c userId connId enableNtfs subMode cMode = do
+newConnNoQueues :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> m ConnId
+newConnNoQueues c userId connId enableNtfs cMode = do
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   -- connection mode is determined by the accepting agent
-  let needsSub = subMode == SMOnlyCreate
-      cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, needsSub, ratchetSyncState = RSOk}
+  let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
   withStore c $ \db -> createNewConn db g cData cMode
 
-joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> SubscriptionMode -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnAsync c userId corrId enableNtfs subMode cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange} _) cInfo = do
+joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> SubscriptionMode -> ConnInfo -> m ConnId
+joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange} _) subMode cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   case crAgentVRange `compatibleVersion` aVRange of
     Just (Compatible connAgentVersion) -> do
       g <- asks idsDrg
       let duplexHS = connAgentVersion /= 1
-          needsSub = subMode == SMOnlyCreate
-          cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, needsSub, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
+          cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
       connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-      enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ JOIN enableNtfs subMode (ACR sConnectionMode cReqUri) cInfo
+      enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ JOIN enableNtfs (ACR sConnectionMode cReqUri) subMode cInfo
       pure connId
     _ -> throwError $ AGENT A_VERSION
-joinConnAsync _c _userId _corrId _enableNtfs _subMode (CRContactUri _) _cInfo =
+joinConnAsync _c _userId _corrId _enableNtfs (CRContactUri _) _subMode _cInfo =
   throwError $ CMD PROHIBITED
 
 allowConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -506,7 +504,7 @@ acceptContactAsync' c corrId enableNtfs subMode invId ownConnInfo = do
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConnAsync c userId corrId enableNtfs subMode connReq ownConnInfo `catchAgentError` \err -> do
+      joinConnAsync c userId corrId enableNtfs connReq subMode ownConnInfo `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
     _ -> throwError $ CMD PROHIBITED
@@ -560,17 +558,17 @@ switchConnectionAsync' c corrId connId =
           pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwError $ CMD PROHIBITED
 
-newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> SConnectionMode c -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
-newConn c userId connId enableNtfs subMode cMode clientData =
-  getSMPServer c userId >>= newConnSrv c userId connId enableNtfs subMode cMode clientData
+newConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> SubscriptionMode -> Maybe CRClientData -> m (ConnId, ConnectionRequestUri c)
+newConn c userId connId enableNtfs cMode subMode clientData =
+  getSMPServer c userId >>= newConnSrv c userId connId enableNtfs cMode subMode clientData
 
-newConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> SConnectionMode c -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
-newConnSrv c userId connId enableNtfs subMode cMode clientData srv = do
-  connId' <- newConnNoQueues c userId connId enableNtfs subMode cMode
-  newRcvConnSrv c userId connId' enableNtfs subMode cMode clientData srv
+newConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> SubscriptionMode -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
+newConnSrv c userId connId enableNtfs cMode subMode clientData srv = do
+  connId' <- newConnNoQueues c userId connId enableNtfs cMode
+  newRcvConnSrv c userId connId' enableNtfs cMode subMode clientData srv
 
-newRcvConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> SConnectionMode c -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
-newRcvConnSrv c userId connId enableNtfs subMode cMode clientData srv = do
+newRcvConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> SubscriptionMode -> Maybe CRClientData -> SMPServerWithAuth -> m (ConnId, ConnectionRequestUri c)
+newRcvConnSrv c userId connId enableNtfs cMode subMode clientData srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   (rq, qUri) <- newRcvQueue c userId connId srv subMode smpClientVRange `catchAgentError` \e -> liftIO (print e) >> throwError e
   void . withStore c $ \db -> updateNewConnRcv db connId rq
@@ -588,16 +586,16 @@ newRcvConnSrv c userId connId enableNtfs subMode cMode clientData srv = do
       withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2
       pure (connId, CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange)
 
-joinConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConn c userId connId enableNtfs subMode cReq cInfo = do
+joinConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> SubscriptionMode -> ConnInfo -> m ConnId
+joinConn c userId connId enableNtfs cReq subMode cInfo = do
   srv <- case cReq of
     CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ ->
       getNextServer c userId [qServer q]
     _ -> getSMPServer c userId
-  joinConnSrv c userId connId enableNtfs subMode cReq cInfo srv
+  joinConnSrv c userId connId enableNtfs cReq subMode cInfo srv
 
-startJoinInvitation :: AgentMonad m => UserId -> ConnId -> Bool -> SubscriptionMode -> ConnectionRequestUri 'CMInvitation -> m (Compatible Version, ConnData, SndQueue, CR.Ratchet 'C.X448, CR.E2ERatchetParams 'C.X448)
-startJoinInvitation userId connId enableNtfs subMode (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) = do
+startJoinInvitation :: AgentMonad m => UserId -> ConnId -> Bool -> ConnectionRequestUri 'CMInvitation -> m (Compatible Version, ConnData, SndQueue, CR.Ratchet 'C.X448, CR.E2ERatchetParams 'C.X448)
+startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   case ( qUri `compatibleVersion` smpClientVRange,
          e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange,
@@ -609,14 +607,13 @@ startJoinInvitation userId connId enableNtfs subMode (CRInvitationUri ConnReqUri
       let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
       q <- newSndQueue userId "" qInfo
       let duplexHS = connAgentVersion /= 1
-          needsSub = subMode == SMOnlyCreate
-          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, needsSub, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
+          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
       pure (aVersion, cData, q, rc, e2eSndParams)
     _ -> throwError $ AGENT A_VERSION
 
-joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> ConnectionRequestUri c -> ConnInfo -> SMPServerWithAuth -> m ConnId
-joinConnSrv c userId connId enableNtfs subMode inv@CRInvitationUri {} cInfo srv = do
-  (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs subMode inv
+joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> SubscriptionMode -> ConnInfo -> SMPServerWithAuth -> m ConnId
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} _subMode cInfo srv = do
+  (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
   g <- asks idsDrg
   connId' <- withStore c $ \db -> runExceptT $ do
     connId' <- ExceptT $ createSndConn db g cData q
@@ -633,33 +630,32 @@ joinConnSrv c userId connId enableNtfs subMode inv@CRInvitationUri {} cInfo srv 
       -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
       withStore' c (`deleteConn` connId')
       throwError e
-joinConnSrv c userId connId enableNtfs subMode (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) cInfo srv = do
+joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) subMode cInfo srv = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config
   case ( qUri `compatibleVersion` clientVRange,
          crAgentVRange `compatibleVersion` aVRange
        ) of
     (Just qInfo, Just vrsn) -> do
-      (connId', cReq) <- newConnSrv c userId connId enableNtfs subMode SCMInvitation Nothing srv
+      (connId', cReq) <- newConnSrv c userId connId enableNtfs SCMInvitation subMode Nothing srv
       sendInvitation c userId qInfo vrsn cReq cInfo
       pure connId'
     _ -> throwError $ AGENT A_VERSION
 
-joinConnSrvAsync :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SubscriptionMode -> ConnectionRequestUri c -> ConnInfo -> SMPServerWithAuth -> m ()
-joinConnSrvAsync c userId connId enableNtfs subMode inv@CRInvitationUri {} cInfo srv = do
-  (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs subMode inv
+joinConnSrvAsync :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SMPServerWithAuth -> m ()
+joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo srv = do
+  (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
   dbQueueId <- withStore c $ \db -> runExceptT $ do
     liftIO $ createRatchet db connId rc
     ExceptT $ updateNewConnSnd db connId q
   let q' = (q :: SndQueue) {dbQueueId}
   confirmQueueAsync aVersion c cData q' srv cInfo $ Just e2eSndParams
-joinConnSrvAsync _c _userId _connId _enableNtfs _subMode (CRContactUri _) _cInfo _srv = do
+joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _srv = do
   throwError $ CMD PROHIBITED
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> m SMPQueueInfo
-createReplyQueue c ConnData {userId, connId, enableNtfs, needsSub} SndQueue {smpClientVersion} srv = do
-  let subMode = if needsSub then SMOnlyCreate else SMSubscribe
-  (rq, qUri) <- newRcvQueue c userId connId srv subMode $ versionToRange smpClientVersion
+createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} srv = do
+  (rq, qUri) <- newRcvQueue c userId connId srv SMSubscribe $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq
   void . withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -689,7 +685,7 @@ acceptContact' c connId enableNtfs subMode invId ownConnInfo = withConnLock c co
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConn c userId connId enableNtfs subMode connReq ownConnInfo `catchAgentError` \err -> do
+      joinConn c userId connId enableNtfs connReq subMode ownConnInfo `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
     _ -> throwError $ CMD PROHIBITED
@@ -713,16 +709,13 @@ type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> Bool -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ _ [] = pure M.empty
-subscribeConnections' c onlyNeeded connIds = do
+subscribeConnections' c todo'onlyNeeded connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConns` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
-      cs' = case onlyNeeded of
-        False -> cs
-        True -> M.filter (\(SomeConn _ conn) -> needsSub $ toConnData conn) cs
-      (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs'
-  mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) cs'
-  mapM_ (resumeConnCmds c) $ M.keys cs'
+      (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
+  mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) cs
+  mapM_ (resumeConnCmds c) $ M.keys cs
   rcvRs <- connResults <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
@@ -900,16 +893,16 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
     processCmd :: RetryInterval -> AsyncCmdId -> PendingCommand -> m ()
     processCmd ri cmdId PendingCommand {corrId, userId, connId, command} = case command of
       AClientCommand (APC _ cmd) -> case cmd of
-        NEW enableNtfs subMode (ACM cMode) -> noServer $ do
+        NEW enableNtfs (ACM cMode) subMode -> noServer $ do
           usedSrvs <- newTVarIO ([] :: [SMPServer])
           tryCommand . withNextSrv c userId usedSrvs [] $ \srv -> do
-            (_, cReq) <- newRcvConnSrv c userId connId enableNtfs subMode cMode Nothing srv
+            (_, cReq) <- newRcvConnSrv c userId connId enableNtfs cMode subMode Nothing srv
             notify $ INV (ACR cMode cReq)
-        JOIN enableNtfs subMode (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) connInfo -> noServer $ do
+        JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) _subMode connInfo -> noServer $ do
           let initUsed = [qServer q]
           usedSrvs <- newTVarIO initUsed
           tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
-            joinConnSrvAsync c userId connId enableNtfs subMode cReq connInfo srv
+            joinConnSrvAsync c userId connId enableNtfs cReq connInfo srv
             notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
@@ -1294,14 +1287,13 @@ switchConnection' c connId =
       _ -> throwError $ CMD PROHIBITED
 
 switchDuplexConnection :: AgentMonad m => AgentClient -> Connection 'CDuplex -> RcvQueue -> m ConnectionStats
-switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId, needsSub} rqs sqs) rq@RcvQueue {server, dbQueueId, sndId} = do
+switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
-  let subMode = if needsSub then SMOnlyCreate else SMSubscribe
-  (q, qUri) <- newRcvQueue c userId connId srv' subMode clientVRange
+  (q, qUri) <- newRcvQueue c userId connId srv' SMSubscribe clientVRange
   let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   void . withStore c $ \db -> addConnRcvQueue db connId rq'
   addSubscription c rq'

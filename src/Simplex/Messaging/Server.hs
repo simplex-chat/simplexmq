@@ -422,7 +422,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey subMode auth ->
+            NEW rKey dhKey auth subMode ->
               ifM
                 allowNew
                 (createQueue st rKey dhKey subMode)

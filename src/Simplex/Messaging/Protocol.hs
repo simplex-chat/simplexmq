@@ -311,6 +311,15 @@ instance StrEncoding SubscriptionMode where
     (A.string "subscribe" $> SMSubscribe) <|> (A.string "only-create" $> SMOnlyCreate)
       <?> "SubscriptionMode"
 
+instance Encoding SubscriptionMode where
+  smpEncode = \case
+    SMSubscribe -> "S"
+    SMOnlyCreate -> "C"
+  smpP = A.anyChar >>= \case
+    'S' -> pure SMSubscribe
+    'C' -> pure SMOnlyCreate
+    _ -> fail "bad SubscriptionMode"
+
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
@@ -1056,18 +1065,14 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
 instance PartyI p => ProtocolEncoding ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey subMode auth_
-      | v >= 6 -> new <> e ('A', auth) <> e ('S', subMode)
-      | v == 5 -> new <> e ('A', auth)
+    NEW rKey dhKey auth_ subMode
+      | v >= 6 -> new <> e ('A', auth_) <> e subMode
+      | v == 5 -> case auth_ of
+        Just auth -> new <> e ('A', auth)
+        Nothing -> new
       | otherwise -> new
       where
         new = e (NEW_, ' ', rKey, dhKey)
-        subModeEnc = case subMode of
-          SMOnlyCreate -> e 'C'
-          SMSubscribe -> mempty
-        authEnc = case auth_ of
-          Just auth -> e ('A', auth)
-          Nothing -> mempty
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
@@ -1119,12 +1124,10 @@ instance ProtocolEncoding ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= 6 -> new <*> subModeP <*> authP
-          | v == 5 -> new <*> pure SMSubscribe <*> authP
-          | otherwise -> new <*> pure SMSubscribe <*> pure Nothing
+          | v >= 6 -> new <*> (A.char 'A' *> smpP) <*> smpP
+          | v >= 5 -> new <*> optional (A.char 'A' *> smpP) <*> pure SMSubscribe
+          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe
           where
-            subModeP = A.char 'C' $> SMOnlyCreate <|> pure SMSubscribe
-            authP = optional (A.char 'A' *> smpP)
             new = NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP

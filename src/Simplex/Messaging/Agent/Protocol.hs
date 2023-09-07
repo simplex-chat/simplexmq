@@ -314,9 +314,9 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (e :: AEntity) where
-  NEW :: Bool -> SubscriptionMode -> AConnectionMode -> ACommand Client AEConn -- response INV
+  NEW :: Bool -> AConnectionMode -> SubscriptionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
-  JOIN :: Bool -> SubscriptionMode -> AConnectionRequestUri -> ConnInfo -> ACommand Client AEConn -- response OK
+  JOIN :: Bool -> AConnectionRequestUri -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
@@ -1799,9 +1799,9 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
-  NEW ntfs subMode cMode -> s (NEW_, ntfs, subMode, cMode)
+  NEW ntfs cMode subMode -> s (NEW_, ntfs, cMode, subMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs subMode cReq cInfo -> s (JOIN_, ntfs, subMode, cReq, Str $ serializeBinary cInfo)
+  JOIN ntfs cReq subMode cInfo -> s (JOIN_, ntfs, cReq, subMode, Str $ serializeBinary cInfo)
   CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
@@ -1906,7 +1906,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       APC e <$$> case cmd of
         SEND msgFlags body -> SEND msgFlags <$$> getBody body
         MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-        JOIN ntfs autoSubs qUri cInfo -> JOIN ntfs autoSubs qUri <$$> getBody cInfo
+        JOIN ntfs qUri subMode cInfo -> JOIN ntfs qUri subMode <$$> getBody cInfo
         CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
         LET confId cInfo -> LET confId <$$> getBody cInfo
         REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo

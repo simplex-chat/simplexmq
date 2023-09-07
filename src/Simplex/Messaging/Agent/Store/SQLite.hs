@@ -504,9 +504,9 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId} -> create connId $> Right connId
 
 createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
-createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake, needsSub} cMode =
+createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode =
   createConn_ gVar cData $ \connId -> do
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake, needs_sub) VALUES (?,?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake, needsSub)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
 
 updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError Int64)
 updateNewConnRcv db connId rq =
@@ -529,17 +529,17 @@ updateNewConnSnd db connId sq =
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
-createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake, needsSub} q@RcvQueue {server} cMode =
+createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, needs_sub, duplex_handshake) VALUES (?,?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, needsSub, duplexHandshake)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertRcvQueue_ db connId q serverKeyHash_
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
-createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake, needsSub} q@SndQueue {server} =
+createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, needs_sub, duplex_handshake) VALUES (?,?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, needsSub, duplexHandshake)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertSndQueue_ db connId q serverKeyHash_
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))
@@ -1740,14 +1740,14 @@ getConnData db connId' =
       [sql|
         SELECT
           user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake,
-          last_external_snd_msg_id, deleted, needs_sub, ratchet_sync_state
+          last_external_snd_msg_id, deleted, ratchet_sync_state
         FROM connections
         WHERE conn_id = ?
       |]
       (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, lastExternalSndId, deleted, needsSub, ratchetSyncState) =
-      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, lastExternalSndId, deleted, needsSub, ratchetSyncState}, cMode)
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetSyncState) =
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetSyncState}, cMode)
 
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)

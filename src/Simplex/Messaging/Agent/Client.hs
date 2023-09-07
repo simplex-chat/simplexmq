@@ -750,7 +750,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, _) <- C.generateSignatureKeyPair a
         (dhKey, _) <- C.generateKeyPair'
         r <- runExceptT $ do
-          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey SMSubscribe auth
+          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey auth SMSubscribe
           liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
@@ -824,6 +824,7 @@ mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
+-- XXX: must have subMode to send server a NEW
 newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> SubscriptionMode -> VersionRange -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) subMode vRange = do
   C.SignAlg a <- asks (cmdSignAlg . config)
@@ -833,7 +834,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) subMode vRange = do
   logServer "-->" c srv "" "NEW"
   tSess <- mkTransportSession c userId srv connId
   QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey subMode auth
+    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey auth subMode -- XXX: must have subMode to send server a NEW
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
