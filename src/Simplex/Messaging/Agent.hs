@@ -111,7 +111,7 @@ import Crypto.Random (MonadRandom)
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:), (.:.), (.::), (.::.), (.:::))
+import Data.Composition ((.:), (.:.), (.::))
 import Data.Foldable (foldl')
 import Data.Functor (($>))
 import Data.List (find)
@@ -245,8 +245,8 @@ subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
 
 -- | Subscribe to receive connection messages from multiple connections, batching commands when possible
-subscribeConnections :: AgentErrorMonad m => AgentClient -> Bool -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-subscribeConnections c = withAgentEnv c .: subscribeConnections' c
+subscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections c = withAgentEnv c . subscribeConnections' c
 
 -- | Get connection message (GET command)
 getConnectionMessage :: AgentErrorMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
@@ -697,7 +697,7 @@ rejectContact' c contactConnId invId =
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection' c connId = toConnResult connId =<< subscribeConnections' c False [connId]
+subscribeConnection' c connId = toConnResult connId =<< subscribeConnections' c [connId]
 
 toConnResult :: AgentMonad m => ConnId -> Map ConnId (Either AgentErrorType ()) -> m ()
 toConnResult connId rs = case M.lookup connId rs of
@@ -707,9 +707,9 @@ toConnResult connId rs = case M.lookup connId rs of
 
 type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
-subscribeConnections' :: forall m. AgentMonad m => AgentClient -> Bool -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-subscribeConnections' _ _ [] = pure M.empty
-subscribeConnections' c todo'onlyNeeded connIds = do
+subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections' _ [] = pure M.empty
+subscribeConnections' c connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConns` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
@@ -781,7 +781,7 @@ resubscribeConnections' c connIds = do
   let r = M.fromList . zip connIds . repeat $ Right ()
   connIds' <- filterM (fmap not . atomically . hasActiveSubscription c) connIds
   -- union is left-biased, so results returned by subscribeConnections' take precedence
-  (`M.union` r) <$> subscribeConnections' c False connIds'
+  (`M.union` r) <$> subscribeConnections' c connIds'
 
 getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
 getConnectionMessage' c connId = do
