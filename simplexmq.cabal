@@ -35,6 +35,7 @@ flag swift
 library
   exposed-modules:
       Simplex.FileTransfer.Agent
+      Simplex.FileTransfer.Chunks
       Simplex.FileTransfer.Client
       Simplex.FileTransfer.Client.Agent
       Simplex.FileTransfer.Client.Main

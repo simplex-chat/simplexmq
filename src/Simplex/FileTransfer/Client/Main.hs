@@ -17,9 +17,6 @@ module Simplex.FileTransfer.Client.Main
     cliSendFileOpts,
     prepareChunkSizes,
     prepareChunkSpecs,
-    chunkSize1,
-    chunkSize2,
-    chunkSize3,
     maxFileSize,
     fileSizeLen,
     getChunkDigest,
@@ -49,6 +46,7 @@ import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
 import Options.Applicative
+import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Client.Presets
@@ -77,15 +75,6 @@ import UnliftIO.Directory
 
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
-
-chunkSize1 :: Word32
-chunkSize1 = kb 256
-
-chunkSize2 :: Word32
-chunkSize2 = mb 1
-
-chunkSize3 :: Word32
-chunkSize3 = mb 4
 
 maxFileSize :: Int64
 maxFileSize = gb 1
@@ -533,7 +522,10 @@ getFileDescription' path =
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes size' = prepareSizes size'
   where
-    (smallSize, bigSize) = if size' > size34 chunkSize3 then (chunkSize2, chunkSize3) else (chunkSize1, chunkSize2)
+    (smallSize, bigSize)
+      | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
+      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size
@@ -545,7 +537,7 @@ prepareChunkSizes size' = prepareSizes size'
         n2' = let (n2, remSz2) = (size `divMod` fromIntegral smallSize) in if remSz2 == 0 then n2 else n2 + 1
 
 prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
-prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
+prepareChunkSpecs filePath chSizes = reverse . snd $ foldl' addSpec (0, []) chSizes
   where
     addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
     addSpec (chunkOffset, specs) sz =

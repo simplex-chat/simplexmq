@@ -53,6 +53,7 @@ import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.Generics (Generic)
+import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -235,18 +236,6 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
           kb <$> A.decimal <* "kb",
           A.decimal
         ]
-
-kb :: Integral a => a -> a
-kb n = 1024 * n
-{-# INLINE kb #-}
-
-mb :: Integral a => a -> a
-mb n = 1024 * kb n
-{-# INLINE mb #-}
-
-gb :: Integral a => a -> a
-gb n = 1024 * mb n
-{-# INLINE gb #-}
 
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
