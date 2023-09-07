@@ -2,9 +2,9 @@ module Simplex.FileTransfer.Chunks where
 
 import Data.Word (Word32)
 
-chunkSizes :: [Word32]
-chunkSizes = [chunkSize0, chunkSize1, chunkSize2, chunkSize3]
-{-# INLINE chunkSizes #-}
+serverChunkSizes :: [Word32]
+serverChunkSizes = [chunkSize0, chunkSize1, chunkSize2, chunkSize3]
+{-# INLINE serverChunkSizes #-}
 
 chunkSize0 :: Word32
 chunkSize0 = kb 64

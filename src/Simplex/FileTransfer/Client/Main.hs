@@ -524,8 +524,9 @@ prepareChunkSizes size' = prepareSizes size'
   where
     (smallSize, bigSize)
       | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
-      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
-      | otherwise = (chunkSize0, chunkSize1)
+      | otherwise = (chunkSize1, chunkSize2)
+      --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      --  | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size

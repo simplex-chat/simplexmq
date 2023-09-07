@@ -152,7 +152,7 @@ testPrepareChunkSizes = do
   prepareChunkSizes (mb 2 + 1) `shouldBe` [mb 1, mb 1, kb 256]
   prepareChunkSizes (3 * kb 256 + 1) `shouldBe` [mb 1]
   prepareChunkSizes (3 * kb 256) `shouldBe` r3 (kb 256)
-  prepareChunkSizes 1 `shouldBe` [kb 64]
+  prepareChunkSizes 1 `shouldBe` [kb 256]
   where
     r3 = replicate 3
 
