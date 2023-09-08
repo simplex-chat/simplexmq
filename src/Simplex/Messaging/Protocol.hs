@@ -1066,13 +1066,12 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
     NEW rKey dhKey auth_ subMode
-      | v >= 6 -> new <> e ('A', auth_) <> e subMode
-      | v == 5 -> case auth_ of
-        Just auth -> new <> e ('A', auth)
-        Nothing -> new
+      | v >= 6 -> new <> auth <> e subMode
+      | v == 5 -> new <> auth
       | otherwise -> new
       where
         new = e (NEW_, ' ', rKey, dhKey)
+        auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
@@ -1124,11 +1123,12 @@ instance ProtocolEncoding ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= 6 -> new <*> (A.char 'A' *> smpP) <*> smpP
-          | v >= 5 -> new <*> optional (A.char 'A' *> smpP) <*> pure SMSubscribe
+          | v >= 6 -> new <*> auth <*> smpP
+          | v == 5 -> new <*> auth <*> pure SMSubscribe
           | otherwise -> new <*> pure Nothing <*> pure SMSubscribe
           where
             new = NEW <$> _smpP <*> smpP
+            auth = optional (A.char 'A' *> smpP)
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP <*> smpP
