@@ -538,7 +538,7 @@ prepareChunkSizes size' = prepareSizes size'
         n2' = let (n2, remSz2) = (size `divMod` fromIntegral smallSize) in if remSz2 == 0 then n2 else n2 + 1
 
 prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
-prepareChunkSpecs filePath chSizes = reverse . snd $ foldl' addSpec (0, []) chSizes
+prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
   where
     addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
     addSpec (chunkOffset, specs) sz =
