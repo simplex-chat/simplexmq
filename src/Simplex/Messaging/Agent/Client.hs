@@ -824,9 +824,8 @@ mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
--- XXX: must have subMode to send server a NEW
-newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> SubscriptionMode -> VersionRange -> m (RcvQueue, SMPQueueUri)
-newRcvQueue c userId connId (ProtoServerWithAuth srv auth) subMode vRange = do
+newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> SubscriptionMode -> m (RcvQueue, SMPQueueUri)
+newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   C.SignAlg a <- asks (cmdSignAlg . config)
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (dhKey, privDhKey) <- liftIO C.generateKeyPair'
@@ -834,7 +833,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) subMode vRange = do
   logServer "-->" c srv "" "NEW"
   tSess <- mkTransportSession c userId srv connId
   QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey auth subMode -- XXX: must have subMode to send server a NEW
+    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey auth subMode
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
