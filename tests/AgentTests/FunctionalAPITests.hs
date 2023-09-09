@@ -1008,25 +1008,27 @@ testRatchetSyncSimultaneous t = do
 testOnlyCreatePull :: IO ()
 testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   traceM "create alice"
-  (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe -- SMOnlyCreate
+  (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate
 
   traceM "join bob"
   aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
 
-  -- traceM "no messages"
-  -- liftIO $ noMessages alice "nothing should be delivered to alice before polling"
-  -- liftIO $ noMessages bob "nothing should be delivered to bob before polling"
+  traceM "no messages"
+  liftIO $ noMessages alice "nothing should be delivered to alice before polling"
+  liftIO $ noMessages bob "nothing should be delivered to bob before polling"
 
   traceM "get a b"
-  -- getConnectionMessage alice bobId >>= traceShowM
+  getConnectionMessage alice bobId >>= traceShowM
   Just ("", _, CONF confId _ "bob's connInfo") <- timeout 5_000000 $ get alice
 
   traceM "allow a b"
   allowConnection alice bobId confId "alice's connInfo"
-  liftIO $ threadDelay 5_000000
+  liftIO $ threadDelay 1_000000
+  getConnectionMessage bob aliceId >>= traceShowM
+  liftIO $ threadDelay 1_000000
 
   traceM "get a b 2"
-  -- getConnectionMessage alice bobId >>= traceShowM
+  getConnectionMessage alice bobId >>= traceShowM
   traceM "get a b 2 CON"
   get alice ?##> ("", bobId, CON)
 

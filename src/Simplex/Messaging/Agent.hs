@@ -657,7 +657,9 @@ createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Subsc
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   (rq, qUri) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode
   let qInfo = toVersionT qUri smpClientVersion
-  addSubscription c rq
+  case subMode of
+    SMOnlyCreate -> pure ()
+    SMSubscribe -> addSubscription c rq
   void . withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
