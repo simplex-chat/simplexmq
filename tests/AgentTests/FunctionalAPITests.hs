@@ -32,7 +32,6 @@ module AgentTests.FunctionalAPITests
   )
 where
 
-import Debug.Trace
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
@@ -1007,39 +1006,21 @@ testRatchetSyncSimultaneous t = do
 
 testOnlyCreatePull :: IO ()
 testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
-  traceM "create alice"
   (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate
-
-  traceM "join bob"
   aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
-
-  traceM "no messages"
   liftIO $ noMessages alice "nothing should be delivered to alice before polling"
   liftIO $ noMessages bob "nothing should be delivered to bob before polling"
-
-  traceM "get a b"
-  getConnectionMessage alice bobId >>= traceShowM
+  void $ getConnectionMessage alice bobId
   Just ("", _, CONF confId _ "bob's connInfo") <- timeout 5_000000 $ get alice
-
-  traceM "allow a b"
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
-  getConnectionMessage bob aliceId >>= traceShowM
+  void $ getConnectionMessage bob aliceId
   liftIO $ threadDelay 1_000000
-
-  traceM "get a b 2"
-  getConnectionMessage alice bobId >>= traceShowM
-  traceM "get a b 2 CON"
+  void $ getConnectionMessage alice bobId
   get alice ?##> ("", bobId, CON)
-
-  traceM "get b a"
-  getConnectionMessage bob aliceId >>= traceShowM
-  traceM "get b a INFO"
+  void $ getConnectionMessage bob aliceId
   get bob ?##> ("", aliceId, INFO "alice's connInfo")
-
-  traceM "get b a 2"
-  getConnectionMessage bob aliceId >>= traceShowM
-  traceM "get b a 2 CON"
+  void $ getConnectionMessage bob aliceId
   get bob ?##> ("", aliceId, CON)
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
