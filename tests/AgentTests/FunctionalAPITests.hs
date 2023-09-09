@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -31,6 +32,7 @@ module AgentTests.FunctionalAPITests
   )
 where
 
+import Debug.Trace
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
@@ -70,6 +72,11 @@ type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 
 (##>) :: (HasCallStack, MonadIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
 a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
+
+(?##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
+a ?##> t = timeout 5_000000 a >>= liftIO . \case
+  Nothing -> error "timed out"
+  Just t' -> t' `shouldBe` t
 
 (=##>) :: (Show a, HasCallStack, MonadIO m) => m a -> (a -> Bool) -> m ()
 a =##> p = a >>= \t -> liftIO (t `shouldSatisfy` p)
@@ -204,6 +211,9 @@ functionalAPITests t = do
         testRatchetSyncSuspendForeground t
       it "should synchronize ratchets when clients start synchronization simultaneously" $
         testRatchetSyncSimultaneous t
+    describe "Subscription mode OnlyCreate" $ do
+      it "messages delivered only when polled" $
+        withSmpServer t testOnlyCreatePull
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -994,6 +1004,41 @@ testRatchetSyncSimultaneous t = do
   disconnectAgentClient alice
   disconnectAgentClient bob
   disconnectAgentClient bob2
+
+testOnlyCreatePull :: IO ()
+testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
+  traceM "create alice"
+  (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe -- SMOnlyCreate
+
+  traceM "join bob"
+  aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
+
+  -- traceM "no messages"
+  -- liftIO $ noMessages alice "nothing should be delivered to alice before polling"
+  -- liftIO $ noMessages bob "nothing should be delivered to bob before polling"
+
+  traceM "get a b"
+  -- getConnectionMessage alice bobId >>= traceShowM
+  Just ("", _, CONF confId _ "bob's connInfo") <- timeout 5_000000 $ get alice
+
+  traceM "allow a b"
+  allowConnection alice bobId confId "alice's connInfo"
+  liftIO $ threadDelay 5_000000
+
+  traceM "get a b 2"
+  -- getConnectionMessage alice bobId >>= traceShowM
+  traceM "get a b 2 CON"
+  get alice ?##> ("", bobId, CON)
+
+  traceM "get b a"
+  getConnectionMessage bob aliceId >>= traceShowM
+  traceM "get b a INFO"
+  get bob ?##> ("", aliceId, INFO "alice's connInfo")
+
+  traceM "get b a 2"
+  getConnectionMessage bob aliceId >>= traceShowM
+  traceM "get b a 2 CON"
+  get bob ?##> ("", aliceId, CON)
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
