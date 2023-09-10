@@ -362,7 +362,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission sig_ signed queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
+    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
@@ -422,10 +422,10 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey auth ->
+            NEW rKey dhKey auth subMode ->
               ifM
                 allowNew
-                (createQueue st rKey dhKey)
+                (createQueue st rKey dhKey subMode)
                 (pure (corrId, queueId, ERR AUTH))
               where
                 allowNew = do
@@ -440,8 +440,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> m (Transmission BrokerMsg)
-        createQueue st recipientKey dhKey = time "NEW" $ do
+        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
+        createQueue st recipientKey dhKey subMode = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
@@ -472,7 +472,10 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   stats <- asks serverStats
                   atomically $ modifyTVar' (qCreated stats) (+ 1)
                   atomically $ modifyTVar' (qCount stats) (+ 1)
-                  subscribeQueue qr rId $> IDS (qik ids)
+                  case subMode of
+                    SMOnlyCreate -> pure ()
+                    SMSubscribe -> void $ subscribeQueue qr rId
+                  pure $ IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
             logCreateById s rId =

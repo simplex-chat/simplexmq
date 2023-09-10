@@ -197,6 +197,7 @@ import Simplex.Messaging.Protocol
     SMPServerWithAuth,
     SndPublicVerifyKey,
     SrvLoc (..),
+    SubscriptionMode,
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
@@ -313,9 +314,9 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (e :: AEntity) where
-  NEW :: Bool -> AConnectionMode -> ACommand Client AEConn -- response INV
+  NEW :: Bool -> AConnectionMode -> SubscriptionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
-  JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client AEConn -- response OK
+  JOIN :: Bool -> AConnectionRequestUri -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
@@ -337,7 +338,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
-  RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn 
+  RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
   DEL :: ACommand Client AEConn
@@ -998,7 +999,7 @@ data AMessage
     REPLY (NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- | agent envelope for delivery receipt 
+  | -- | agent envelope for delivery receipt
     A_RCVD (NonEmpty AMessageReceipt)
   | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
     QCONT SndQAddr
@@ -1736,8 +1737,8 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient e cmd ->
         ACmd SClient e <$> case cmd of
-          NEW_ -> s (NEW <$> strP_ <*> strP)
-          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> binaryP)
+          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> strP)
+          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> strP_ <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           RJCT_ -> s (RJCT <$> A.takeByteString)
@@ -1798,9 +1799,9 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode -> s (NEW_, ntfs, cMode)
+  NEW ntfs cMode subMode -> s (NEW_, ntfs, cMode, subMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs cReq cInfo -> s (JOIN_, ntfs, cReq, Str $ serializeBinary cInfo)
+  JOIN ntfs cReq subMode cInfo -> s (JOIN_, ntfs, cReq, subMode, Str $ serializeBinary cInfo)
   CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
@@ -1905,7 +1906,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       APC e <$$> case cmd of
         SEND msgFlags body -> SEND msgFlags <$$> getBody body
         MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-        JOIN ntfs qUri cInfo -> JOIN ntfs qUri <$$> getBody cInfo
+        JOIN ntfs qUri subMode cInfo -> JOIN ntfs qUri subMode <$$> getBody cInfo
         CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
         LET confId cInfo -> LET confId <$$> getBody cInfo
         REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo

@@ -3,7 +3,6 @@
 module Main where
 
 import Control.Logger.Simple
-import Data.Maybe
 import Simplex.Messaging.Server.Main
 import System.Environment
 
