@@ -20,9 +20,6 @@ module Simplex.FileTransfer.Client.Main
     cliSendFileOpts,
     prepareChunkSizes,
     prepareChunkSpecs,
-    chunkSize1,
-    chunkSize2,
-    chunkSize3,
     maxFileSize,
     fileSizeLen,
     getChunkDigest,
@@ -51,6 +48,7 @@ import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
 import Options.Applicative
+import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Client.Agent
 import Simplex.FileTransfer.Client.Presets
@@ -61,6 +59,8 @@ import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
+import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -77,15 +77,6 @@ import UnliftIO.Directory
 
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
-
-chunkSize1 :: Word32
-chunkSize1 = kb 256
-
-chunkSize2 :: Word32
-chunkSize2 = mb 1
-
-chunkSize3 :: Word32
-chunkSize3 = mb 4
 
 maxFileSize :: Int64
 maxFileSize = gb 1
@@ -104,6 +95,7 @@ cliCryptoError = \case
   FTCECryptoError e -> CLIError $ "Error decrypting file: " <> show e
   FTCEInvalidHeader e -> CLIError $ "Invalid file header: " <> e
   FTCEInvalidAuthTag -> CLIError "Error decrypting file: incorrect auth tag"
+  FTCEInvalidFileSize -> CLIError "Error decrypting file: incorrect file size"
   FTCEFileIOError e -> CLIError $ "File IO error: " <> show e
 
 data CliCommand
@@ -303,7 +295,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           defChunkSize = head chunkSizes
           chunkSizes' = map fromIntegral chunkSizes
           encSize = sum chunkSizes'
-      withExceptT (CLIError . show) $ encryptFile filePath fileHdr key nonce fileSize' encSize encPath
+          srcFile = CF.plain filePath
+      withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
           fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
@@ -436,7 +429,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
-      path <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce getFilePath
+      CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
       forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do
@@ -531,7 +524,11 @@ getFileDescription' path =
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes size' = prepareSizes size'
   where
-    (smallSize, bigSize) = if size' > size34 chunkSize3 then (chunkSize2, chunkSize3) else (chunkSize1, chunkSize2)
+    (smallSize, bigSize)
+      | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
+      | otherwise = (chunkSize1, chunkSize2)
+      --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      --  | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size

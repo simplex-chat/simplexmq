@@ -5,6 +5,7 @@ import AgentTests.SchemaDump (schemaDumpTest)
 import CLITests
 import Control.Logger.Simple
 import CoreTests.BatchingTests
+import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
@@ -43,6 +44,7 @@ main = do
           describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
+          describe "Encrypted files tests" cryptoFileTests
           describe "Retry interval tests" retryIntervalTests
           describe "Util tests" utilTests
         describe "SMP server via TLS" $ serverTests (transport @TLS)

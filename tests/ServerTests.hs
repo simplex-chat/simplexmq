@@ -22,6 +22,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Set as S
+import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -121,7 +122,7 @@ testCreateSecureV2 _ =
     withSmpServerConfigOn (transport @c) cfgV2 testPort $ \_ -> testSMPClient @c $ \h -> do
       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
       let dec = decryptMsgV2 $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
@@ -185,7 +186,7 @@ testCreateSecure (ATransport t) =
     smpTest2 t $ \r s -> do
       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", "", NEW rPub dhPub Nothing)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
@@ -249,7 +250,7 @@ testCreateDelete (ATransport t) =
     smpTest2 t $ \rh sh -> do
       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd25519
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
@@ -320,7 +321,7 @@ stressTest (ATransport t) =
       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd25519
       (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair'
       rIds <- forM ([1 .. 50] :: [Int]) . const $ do
-        Resp "" "" (Ids rId _ _) <- signSendRecv h1 rKey ("", "", NEW rPub dhPub Nothing)
+        Resp "" "" (Ids rId _ _) <- signSendRecv h1 rKey ("", "", NEW rPub dhPub Nothing SMSubscribe)
         pure rId
       let subscribeQueues h = forM_ rIds $ \rId -> do
             Resp "" rId' OK <- signSendRecv h rKey ("", rId, SUB)
@@ -337,7 +338,7 @@ testAllowNewQueues t =
       testSMPClient @c $ \h -> do
         (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
         (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair'
-        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing)
+        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
         pure ()
 
 testDuplex :: ATransport -> Spec
@@ -346,7 +347,7 @@ testDuplex (ATransport t) =
     smpTest2 t $ \alice bob -> do
       (arPub, arKey) <- C.generateSignatureKeyPair C.SEd448
       (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", "", NEW arPub aDhPub Nothing)
+      Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", "", NEW arPub aDhPub Nothing SMSubscribe)
       let aDec = decryptMsgV3 $ C.dh' aSrvDh aDhPriv
       -- aSnd ID is passed to Bob out-of-band
 
@@ -362,7 +363,7 @@ testDuplex (ATransport t) =
 
       (brPub, brKey) <- C.generateSignatureKeyPair C.SEd448
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", NEW brPub bDhPub Nothing)
+      Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", NEW brPub bDhPub Nothing SMSubscribe)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
@@ -400,7 +401,7 @@ testSwitchSub (ATransport t) =
     smpTest3 t $ \rh1 rh2 sh -> do
       (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", "", NEW rPub dhPub Nothing)
+      Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, _SEND "test1")
       (ok1, OK) #== "sent test message 1"
@@ -845,7 +846,7 @@ createAndSecureQueue :: Transport c => THandle c -> SndPublicVerifyKey -> IO (Se
 createAndSecureQueue h sPub = do
   (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
   (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-  Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing)
+  Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
   let dhShared = C.dh' srvDh dhPriv
   Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
   (rId', rId) #== "same queue ID"
@@ -870,7 +871,7 @@ testTiming (ATransport t) =
     testSameTiming rh sh (goodKeySize, badKeySize, n) = do
       (rPub, rKey) <- generateKeys goodKeySize
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-      Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing)
+      Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
@@ -1007,14 +1008,17 @@ sampleDhPubKey = "MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
 sampleSig :: Maybe C.ASignature
 sampleSig = "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
 
+noAuth :: (Char, Maybe BasicAuth)
+noAuth = ('A', Nothing)
+
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
   it "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", (NEW_, ' ', samplePubKey, sampleDhPubKey)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", (NEW_, ' ', samplePubKey, sampleDhPubKey)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no signature" $ ("", "dabc", "", (NEW_, ' ', samplePubKey, sampleDhPubKey, SMSubscribe)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", (NEW_, ' ', samplePubKey, sampleDhPubKey, SMSubscribe)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)
@@ -1049,4 +1053,4 @@ syntaxTests (ATransport t) = do
       (Maybe C.ASignature, ByteString, ByteString, smp) ->
       (Maybe C.ASignature, ByteString, ByteString, BrokerMsg) ->
       Expectation
-    command >#> response = smpServerTest t command `shouldReturn` response
+    command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response
