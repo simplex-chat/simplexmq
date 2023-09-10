@@ -55,7 +55,7 @@ import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..), supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -1009,21 +1009,34 @@ testOnlyCreatePull :: IO ()
 testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate
   aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
-  liftIO $ noMessages alice "nothing should be delivered to alice before polling"
-  Just _ <- getConnectionMessage alice bobId
+  getMsg alice bobId
   Just ("", _, CONF confId _ "bob's connInfo") <- timeout 5_000000 $ get alice
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
-  liftIO $ noMessages bob "nothing should be delivered to bob before polling"
-  Just _ <- getConnectionMessage bob aliceId
+  getMsg bob aliceId
   get bob ##> ("", aliceId, INFO "alice's connInfo")
   liftIO $ threadDelay 1_000000
-  liftIO $ noMessages alice "nothing should be delivered to alice before polling"
-  Just _ <- getConnectionMessage alice bobId
+  getMsg alice bobId
   get alice ##> ("", bobId, CON)
-  liftIO $ noMessages bob "nothing should be delivered to bob before polling"
-  Just _ <- getConnectionMessage bob aliceId
+  getMsg bob aliceId
   get bob ##> ("", aliceId, CON)
+  -- exchange messages
+  4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+  get alice ##> ("", bobId, SENT 4)
+  getMsg bob aliceId
+  get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+  ackMessage bob aliceId 4 Nothing
+  5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+  get bob ##> ("", aliceId, SENT 5)
+  getMsg alice bobId
+  get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+  ackMessage alice bobId 5 Nothing
+  where
+    getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+    getMsg c cId = do
+      liftIO $ noMessages c "nothing should be delivered before GET"
+      Just _ <- getConnectionMessage c cId
+      pure ()
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
