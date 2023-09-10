@@ -55,7 +55,7 @@ import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -69,16 +69,17 @@ import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 
-(##>) :: (HasCallStack, MonadIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
-a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
+(##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
+a ##> t = withTimeout a (`shouldBe` t)
 
-(?##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
-a ?##> t = timeout 5_000000 a >>= liftIO . \case
-  Nothing -> error "timed out"
-  Just t' -> t' `shouldBe` t
+(=##>) :: (Show a, HasCallStack, MonadUnliftIO m) => m a -> (a -> Bool) -> m ()
+a =##> p = withTimeout a (`shouldSatisfy` p)
 
-(=##>) :: (Show a, HasCallStack, MonadIO m) => m a -> (a -> Bool) -> m ()
-a =##> p = a >>= \t -> liftIO (t `shouldSatisfy` p)
+withTimeout :: MonadUnliftIO m => m a -> (a -> Expectation) -> m ()
+withTimeout a test =
+  timeout 10_000000 a >>= \case
+    Nothing -> error "operation timed out"
+    Just t -> liftIO $ test t
 
 get :: MonadIO m => AgentClient -> m (AEntityTransmission 'AEConn)
 get = get' @'AEConn
@@ -1009,19 +1010,20 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate
   aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
   liftIO $ noMessages alice "nothing should be delivered to alice before polling"
-  liftIO $ noMessages bob "nothing should be delivered to bob before polling"
-  void $ getConnectionMessage alice bobId
+  Just _ <- getConnectionMessage alice bobId
   Just ("", _, CONF confId _ "bob's connInfo") <- timeout 5_000000 $ get alice
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
-  void $ getConnectionMessage bob aliceId
+  liftIO $ noMessages bob "nothing should be delivered to bob before polling"
+  Just _ <- getConnectionMessage bob aliceId
+  get bob ##> ("", aliceId, INFO "alice's connInfo")
   liftIO $ threadDelay 1_000000
-  void $ getConnectionMessage alice bobId
-  get alice ?##> ("", bobId, CON)
-  void $ getConnectionMessage bob aliceId
-  get bob ?##> ("", aliceId, INFO "alice's connInfo")
-  void $ getConnectionMessage bob aliceId
-  get bob ?##> ("", aliceId, CON)
+  liftIO $ noMessages alice "nothing should be delivered to alice before polling"
+  Just _ <- getConnectionMessage alice bobId
+  get alice ##> ("", bobId, CON)
+  liftIO $ noMessages bob "nothing should be delivered to bob before polling"
+  Just _ <- getConnectionMessage bob aliceId
+  get bob ##> ("", aliceId, CON)
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
