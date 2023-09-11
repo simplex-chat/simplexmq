@@ -387,17 +387,18 @@ Each transmission/block for SMP v3 between the client and the server must have t
 
 ```abnf
 paddedTransmission = <padded(transmission), 16384>
-transmission = [signature] SP signed
-signed = sessionIdentifier SP [corrId] SP [queueId] SP smpCommand
+transmission = [signature] signed
+signed = sessionIdentifier corrId queueId smpCommand
 ; corrId is required in client commands and server responses,
 ; it is empty in server notifications.
-corrId = 1*32(%x21-7F) ; any characters other than control/whitespace
+corrId = length *OCTET
 queueId = encoded ; max 32 bytes when decoded (24 bytes is used),
 ; empty queue ID is used with "create" command and in some server responses
 signature = encoded
 ; empty signature can be used with "send" before the queue is secured with secure command
 ; signature is always empty with "ping" and "serverMsg"
-encoded = <base64 encoded binary>
+encoded = length *OCTET ; base64 encoded binary
+length = 1*1 OCTET
 ```
 
 `base64` encoding should be used with padding, as defined in section 4 of [RFC 4648][9]
