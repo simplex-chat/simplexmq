@@ -387,7 +387,7 @@ Each transmission/block for SMP v3 between the client and the server must have t
 
 ```abnf
 paddedTransmission = <padded(transmission), 16384>
-transmission = [signature] signed
+transmission = signature signed
 signed = sessionIdentifier corrId queueId smpCommand
 ; corrId is required in client commands and server responses,
 ; it is empty in server notifications.
