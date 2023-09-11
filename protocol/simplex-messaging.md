@@ -364,9 +364,9 @@ The clients can optionally instruct a dedicated push notification server to subs
 
 [`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recepient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
 
-## SMP Transmission andtransport block structure
+## SMP Transmission and transport block structure
 
-Each transport block (SMP transmission) has a fixed size of 16384 bytes for traffic uniformity.
+Each transport block has a fixed size of 16384 bytes for traffic uniformity.
 
 From SMP version 4 each block can contain multiple transmissions, version 3 blocks have 1 transmission.
 Some parts of SMP transmission are padded to a fixed size; this padding is uniformly added as a word16 encoded in network byte order - see `paddedString` syntax.
@@ -392,12 +392,11 @@ signed = sessionIdentifier corrId queueId smpCommand
 ; corrId is required in client commands and server responses,
 ; it is empty in server notifications.
 corrId = length *OCTET
-queueId = encoded ; max 32 bytes when decoded (24 bytes is used),
+queueId = length *OCTET
 ; empty queue ID is used with "create" command and in some server responses
-signature = encoded
+signature = length *OCTET
 ; empty signature can be used with "send" before the queue is secured with secure command
 ; signature is always empty with "ping" and "serverMsg"
-encoded = length *OCTET ; base64 encoded binary
 length = 1*1 OCTET
 ```
 
