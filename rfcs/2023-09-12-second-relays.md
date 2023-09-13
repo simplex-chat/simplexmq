@@ -102,7 +102,7 @@ proxy_transmission = corr_id relay_id proxy_command
 corr_id = length *8 OCTET
 proxy_command = server / server_id / forward / response / error
 server = "S" address [basic_auth] ; register relay, allows to optionally prevent unauthorised usage
-server_id = "I" relay_id [relay_key] [expiration] ; server IDs can expire
+server_id = "I" relay_id [signed_relay_key] [expiration] ; server IDs/keys can expire
 forward = %s"F" [acknowledge_corr_id] random_dh_pub_key encrypted_block
 response = %s"R" destination_id random_dh_pub_key encrypted_block; response received from the destination SMP relay
 check = %s"C"
@@ -119,7 +119,3 @@ The overhead is: 1+8 (corrId) + 1 (command) + 1+8 (acknowledge_corr_id) 4 (relay
 The above assumes that the client can send multiple messages to the same queue without waiting for confirmations they were sent. That requires some capacity/limits management. It also requires holding unconfirmed responses (they will be confirmed via acknowledge_corr_id, assuming they are increasing, so one forward can confirm multiple responses). 
 
 A possible alternative is to reject additional forwards until the first is sent and process forward as a confirmation of receiving `response` by the client, so it will be removed from the proxy.
-
-Unsolved problems:
-
-1. How to prevent correlation of destination IDs, so that proxy cannot observe how many queues the client has on a destination relay. E.g. some way to generate different destination IDs for the same queue that would be recognised by the destination relay but not by the proxy. Possibly, relay would have to include a public key in its address so that the client can encrypt destination ID and include a random public key used to compute DH secret in each block.
