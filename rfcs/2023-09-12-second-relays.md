@@ -73,10 +73,10 @@ Below considers this design.
 
 5. SMP sending relays should implement retry logic and hold messages while they are delivered. They also should push "sent" confirmation to the client. Question: does it mean the third tick? another kind of the first tick (or some other symbol) in the UX?
 
-6. SMP sending relays may also increase utility of the platform by allowing:
+6. SMP sending relays may also increase utility and privacy of the platform:
 
-- schedule sending messages.
 - holding messages and retrying them for the new connections while the receiving queue is not secured yet.
+- add delays in message delivery to make traffic correlation harder.
 
 ## Implementation considerations
 
@@ -86,36 +86,102 @@ Below considers this design.
 
 3. We probably should aim to avoid changing agent/client logic and see it instead as transport concern that can be dynamically decided at a point of sending a message or command, based on the current configuration.
 
-## SMP-proxy protocol: forward block to the destination relay
+## SMP-proxy protocol
 
-The below assumes that some public key of the destination relay is included in its address.
+The flow of the messages will be:
+
+1. Client requests proxy to create session with the relay by sending `server` command with the SMP relay address and optional proxy basic AUTH (below).
+
+2. Proxy connects to SMP relay, negotiating a shared secret in the handshake that will be used to encrypt all sender blocks inside TLS. SMP relay also returns in handshake its temporary DH key to agree e2e encryption with the client.
+
+3. Proxy replies with `server_id` command including relay session ID to identify it in further requests, relay DH key for e2e encryption with the client - this key is signed with the TLS online private key associated with the certificate (its fingerprint is included in the relay address), and the TLS session ID between proxy and relay (this session ID must be used in transmissions, to mitigate replay attacks as before).
+
+A possible attack here is that proxy can use this TLS session to replay commands received from the client. Possibly, it could be mitigated with a bloom filter per proxy/SMP relay connection that would reject the repeated DH keys (that need to be used for replay), and also with DH key expiration (this mitigation should allow some acceptable rate of false positives from the bloom filter).
+
+With 32 bits per key there will be ~1/1,000,000 false positives (see https://en.wikipedia.org/wiki/Bloom_filter), and the filter will use 32mb per each proxy connection if we reset relay key every 1000000 messages or more frequently. Given that the only commands accepted via relay would be SEND, replaying it would be interpreted by the receiving client as duplicate message delivery, so a small number of replayed messages won't cause any problems. But without mitigation it could be used to flood the receiving SMP relay queues with repeated messages, effectively causing DoS on these queues, even in case when SMP relays require basic auth to create queues.
+
+Given that the client chooses proxy it has some trust to, maybe this replay attack risk can be accepted.
+
+4. Now the client sends "forward" to proxy, which it then forwards to SMP relay, applying additional encryption layer, to mitigate traffic correlation inside TLS.
+
+5. SMP replay sends "response" to proxy applying additional encryption layer, which it then forwards to the client removing this additional layer.
+
+Effectively it works as a simplified two hop onion routing with the first relay chosen by the sending client and the second relay chosen by the recipient, not only protecting senders' IP addresses from the recipients' relays, but also preventing recipients relays from correlating senders traffic to different queues, as session is owned by the proxy now. To correlate traffic to sending users, proxy and relay will have to combine their information now. SMP relays are still able to correlate traffic to receiving users via transport session (mitigated by transport isolation).
+
+Sequence diagram for sending the message via SMP proxy:
+
+```
+-------------               -------------                     -------------              -------------
+|  sending  |               |    SMP    |                     |    SMP    |              | receiving |
+|  client   |               |   proxy   |                     |   relay   |              |  client   |
+-------------               -------------                     -------------              -------------
+     |       `server`             |                                 |                          |
+     | -------------------------> |    create session, get keys     |                          |
+     |                            | ------------------------------> |                          |
+     |        `server_id`         |       (if doesn't exist)        |                          |
+     | <------------------------- |                                 |                          |
+     |                            |                                 |                          |
+     | TLS(F:s2r(SEND(e2e(msg)))) |                                 |                          |
+     | -------------------------> | TLS(F:p2r(s2r(SEND(e2e(msg))))) |                          |
+     |                            | ------------------------------> |                          |
+     |                            |                                 |                          |
+     |                            |     TLS(R:p2r(s2r(OK/ERR)))     |                          |
+     |     TLS(R:s2r(OK/ERR))     | <------------------------------ |                          |
+     | <------------------------- |                                 | TLS(r2c(MSG(e2e(msg))))  |
+     |                            |                                 | -----------------------> |
+     |                            |                                 |                          |
+     |                            |                                 |        TLS(ACK)          |
+     |                            |                                 | <----------------------- |
+     |                            |                                 |                          |
+     |                            |                                 |                          |
+
+```
+
+Below diagram shows the encrypttion layers for `forward` and `response` commands:
+
+s2r (added) - encryption between client and SMP relay, with relay key returned in server_id command, with MITM by proxy mitigated by verifying the certificate fingerprint included in the relay address.
+e2e (exists now) - end-to-end encryption per SMP queue, with double ratchet e2e encryption inside it.
+p2r (added) - additional encryption between proxy and SMP relay with key agreed in the handshake, to mitigate traffic correlation inside TLS. This key could also be signed by the same certificate, if we don't want to rely on TLS security.
+r2c (exists now) additional encryption between SMP relay and client to prevent traffic correlation inside TLS.
+
+```
+-----------------             -----------------  -- TLS --  -----------------             -----------------
+|               |  -- TLS --  |               |  -- p2r --  |               |  -- TLS --  |               |
+|               |  -- s2r --  |               |  -- s2r --  |               |  -- r2c --  |               |
+|    sending    |  -- e2e --  |               |  -- e2e --  |               |  -- e2e --  |   receiving   |
+|    client     |     MSG     |   SMP proxy   |     MSG     |   SMP relay   |     MSG     |    client     |
+|               |  -- e2e --  |               |  -- e2e --  |               |  -- e2e --  |               |
+|               |  -- s2r --  |               |  -- s2r --  |               |  -- r2c --  |               |
+|               |  -- TLS --  |               |  -- p2r --  |               |  -- TLS --  |               |
+-----------------             -----------------  -- TLS --  -----------------             -----------------
+```
 
 Alternatively, `server` command may trigger connection to the relay and request it's public DH key that would be signed with the certificate which fingerprint is already included in the address, and server_id response would contain this key. This would allow relays rotating the keys used to encrypt traffic, providing the forward secrecy.
 
 When proxy connects to SMP relay it would indicate that in the handshake and the SMP relay would expect the same `forward` command and reply with `response`.
 
-Below syntax aims to fit in 16kb block as we do have spare capacity in SMP encoding, but we separate destination relay "registration" to achieve it.
+Below syntax aims to fit in 16kb block using spare capacity in SMP protocol.
 
 ```abnf
 proxy_block = padded(proxy_transmission, 16384)
-proxy_transmission = corr_id relay_id proxy_command
+proxy_transmission = corr_id relay_session_id proxy_command
 corr_id = length *8 OCTET
 proxy_command = server / server_id / forward / response / error
-server = "S" address [basic_auth] ; register relay, allows to optionally prevent unauthorised usage
-server_id = "I" relay_id [signed_relay_key] [expiration] ; server IDs/keys can expire
-forward = %s"F" [acknowledge_corr_id] random_dh_pub_key encrypted_block
-response = %s"R" destination_id random_dh_pub_key encrypted_block; response received from the destination SMP relay
-check = %s"C"
-    ; check the status of sending to some relay in case there were no response – the response would be either `response` or `error`
-acknowledge_corr_id = length *8 OCTET ; the last correlation ID the client received response to
-relay_id = 4*4 OCTET
-destination_id = length *32 OCTET
-length = OCTET
+server = "s" address [relay_basic_auth] ; creates transport session between proxy and relay
+server_id = "i" relay_session_id tls_session_id signed_relay_key ;
+    ; session_id is the TLS session ID between proxy and relay, it has to be included inside encrypted block to prevent replay attacks
+forward_client = %s"F" random_dh_pub_key encrypted_block
+forward_proxy = %s"F" random_dh_pub_key proxy_encrypted_block
+response_to_proxy = %s"R" relay_encrypted_block; response received from the destination SMP relay
+response_to_client = %s"R" encrypted_block; response received from the destination SMP relay
+relay_session_id = length *8 OCTET
 error = %s"E" error
 ```
 
-The overhead is: 1+8 (corrId) + 1 (command) + 1+8 (acknowledge_corr_id) 4 (relayId) + 1+32 (destinationId) + 2 (original length) + 16 (auth tag) = 74 bytes. The reserve for sent messages in SMP is ~84 bytes, so it should fit, barely.
+The overhead is: 1+8 (corrId) + 1+8 (relay_session_id) + 1 (command) + 1+32 (random_dh_pub_key) + 2 (original length) + 16 (auth tag for e2e encryption) + 16 (auth tag for proxy to relay encryption) = 86 bytes. The reserve for sent messages in SMP is ~84 bytes, so it might fit if we find missing 2 bytes somewhere.
 
-The above assumes that the client can send multiple messages to the same queue without waiting for confirmations they were sent. That requires some capacity/limits management. It also requires holding unconfirmed responses (they will be confirmed via acknowledge_corr_id, assuming they are increasing, so one forward can confirm multiple responses). 
+Another possible design is to allow mixing sent messages and normal SMP commands in the same transport connection, but it can make fitting in the block harder though.
 
-A possible alternative is to reject additional forwards until the first is sent and process forward as a confirmation of receiving `response` by the client, so it will be removed from the proxy.
+Additional overhead would be: 1 (transmission count) + 2 (transmission size) + 1 (empty signature)
+
+The above assumes that the client can only send one message to an SMP relay and then has to wait for response before sending the next message. Missing the response would cause re-delivery (further improvement is possible when proxy detects these redelieveries and does not send them to relays).
