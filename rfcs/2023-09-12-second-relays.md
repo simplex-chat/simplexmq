@@ -131,7 +131,7 @@ Sequence diagram for sending the message via SMP proxy:
      |                            |                                 |                          |
      |                            |     TLS(R:p2r(s2r(OK/ERR)))     |                          |
      |     TLS(R:s2r(OK/ERR))     | <------------------------------ |                          |
-     | <------------------------- |                                 | TLS(r2c(MSG(e2e(msg))))  |
+     | <------------------------- |                                 | TLS(MSG(r2c(e2e(msg))))  |
      |                            |                                 | -----------------------> |
      |                            |                                 |                          |
      |                            |                                 |        TLS(ACK)          |
