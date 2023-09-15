@@ -1,6 +1,6 @@
 # Protecting IP addresses of the users
 
-# Problem
+## Problem
 
 SMP protocol relays are chosen and can be controlled by the message recipients. It means that the recipients can observe IP addresses of message senders, unless they use VPN or some overlay network. Tor is an audequate solution in most cases to mitigate it, but it requires additional technical knowledge to install and configure (even installing Orbot on Android is seen as "complex" by many users), and reduces usability because of higher latency.
 
@@ -8,7 +8,7 @@ The lack of in-built IP address protection is #1 concerns for many users, partic
 
 Similarly, XFTP protocol relays are chosen by senders, and they can observe file recipients' IP addresses.
 
-# Possible solutions
+## Possible solutions
 
 1. Embed Tor in the client.
 
@@ -59,9 +59,9 @@ This seems an attractive option, both from technical (reasonable complexity) and
 
 Below considers this design.
 
-# SMP/XFTP proxy design
+## SMP/XFTP proxy design
 
-## Design requirements
+### Design requirements
 
 1. To avoid increasing the complexity of self-hosting, we should not create additional server types, and existing SMP and XFTP servers should be extended to provide proxy functions.
 
@@ -80,7 +80,7 @@ Below considers this design.
 - holding messages and retrying them for the new connections while the receiving queue is not secured yet.
 - add delays in message delivery to make traffic correlation harder.
 
-## Implementation considerations
+### Implementation considerations
 
 1. Block size. Possibly, there is not enough spare capacity in the current 16kb block to fit additional headers, any necessary metadata and encryption authentication tags, in which case we cannot send SMP and SMP-proxy traffic in the same transport connection (in case the same server plays both roles). In which case we will need to negotiate role during connection handshake and define a different (sub-)protocol for SMP-proxy.
 
@@ -90,7 +90,7 @@ Below considers this design.
 
 4. Configuration should probably allow to choose between not using proxies (particularly, during testing), using proxies only for unknown relays (extra traffic, but more complex transport correlation), and using proxies for all relays. If we later introduce "provider" information about relays, the client can then aim to always use proxy from another provider.
 
-## SMP-proxy protocol
+### SMP-proxy protocol
 
 The flow of the messages will be:
 
@@ -183,3 +183,51 @@ The overhead is: 1+8 (corrId) + 1+8 (relay_session_id) + 1 (command) + 1+32 (ran
 Another possible design is to allow mixing sent messages and normal SMP commands in the same transport connection, but it can make fitting in the block a bit harder, additional overhead would be: 1 (transmission count) + 2 (transmission size) + 1 (empty signature) = 4 bytes.
 
 The above assumes that the client can only send one message to an SMP relay and then has to wait for response before sending the next message. Missing the response would cause re-delivery (further improvement is possible when proxy detects these redelieveries and not send them to relays but simply reply with the same response).
+
+### Threat model for SMP proxy and changes to threat model for SMP
+
+#### SMP proxy
+
+*can:*
+
+- learn a user's IP address, as long as Tor is not used.
+
+- learn when a user with a given IP address is online.
+
+- know how many messages are sent from a given IP address and to a given destination SMP relay.
+
+- drop all messages from a given IP address or to a given destination relay.
+
+- unless SMP relay detects repeated public DH keys of senders, replay messages to a destination relay within a single session, causing either duplicate message delivery (which will be detected and ignored by the receiving clients), or, when receiving client is not connected to SMP relay, exhausting capacity of destination queues used within the session.
+
+*cannot:*
+
+- perform queue correlation (matching multiple queues to a single user), unless it has additional information from SMP relay.
+
+- undetectably add, duplicate, or corrupt individual messages.
+
+- undetectably drop individual messages, so long as a subsequent message is delivered.
+
+- learn the contents of messages.
+
+- learn the destination queues of messages.
+
+- distinguish noise messages from regular messages except via timing regularities.
+
+- compromise the user's end-to-end encryption with another user via an active attack.
+
+- compromise the user's end-to-end encryption with destination relay via an active attack.
+
+#### SMP relay accessed via SMP proxy
+
+*still can:*
+
+- perform recipients' queue correlation (matching multiple queues to a single recipient) via either a re-used transport connection, user's IP Address, or connection timing regularities
+
+*no longer can:*
+
+- perform senders' queue correlation (matching multiple queues to a single sender) via either a re-used transport connection, user's IP Address, or connection timing regularities, unless it has additional information from SMP proxy.
+
+- learn a sender's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, even if Tor is not used.
+
+The rest of the threat model for SMP relays remains the same as in [overview](../protocol/overview-tjr.md#simplex-messaging-protocol-server).
