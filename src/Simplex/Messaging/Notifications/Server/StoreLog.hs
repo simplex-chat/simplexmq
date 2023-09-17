@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -24,7 +25,7 @@ module Simplex.Messaging.Notifications.Server.StoreLog
 where
 
 import Control.Concurrent.STM
-import Control.Monad (void)
+import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Word (Word16)
@@ -153,6 +154,7 @@ instance StrEncoding NtfSubRec where
 
 logNtfStoreRecord :: StoreLog 'WriteMode -> NtfStoreLogRecord -> IO ()
 logNtfStoreRecord = writeStoreLogRecord
+{-# INLINE logNtfStoreRecord #-}
 
 logCreateToken :: StoreLog 'WriteMode -> NtfTknData -> IO ()
 logCreateToken s tkn = logNtfStoreRecord s . CreateToken =<< atomically (mkTknRec tkn)
@@ -196,9 +198,11 @@ readNtfStore f st = mapM_ addNtfLogRecord . B.lines =<< B.readFile f
         CreateToken r@NtfTknRec {ntfTknId} -> do
           tkn <- mkTknData r
           addNtfToken st ntfTknId tkn
-        TokenStatus tknId status ->
-          getNtfToken st tknId
-            >>= mapM_ (\NtfTknData {tknStatus} -> writeTVar tknStatus status)
+        TokenStatus tknId status -> do
+          tkn_ <- getNtfToken st tknId
+          forM_ tkn_ $ \tkn@NtfTknData {tknStatus} -> do
+            writeTVar tknStatus status
+            when (status == NTActive) $ void $ removeInactiveTokenRegistrations st tkn
         UpdateToken tknId token' tknRegCode ->
           getNtfToken st tknId
             >>= mapM_
@@ -223,7 +227,5 @@ readNtfStore f st = mapM_ addNtfLogRecord . B.lines =<< B.readFile f
 
 writeNtfStore :: StoreLog 'WriteMode -> NtfStore -> IO ()
 writeNtfStore s NtfStore {tokens, subscriptions} = do
-  atomically (readTVar tokens >>= mapM mkTknRec)
-    >>= mapM_ (writeStoreLogRecord s . CreateToken)
-  atomically (readTVar subscriptions >>= mapM mkSubRec)
-    >>= mapM_ (writeStoreLogRecord s . CreateSubscription)
+  mapM_ (logCreateToken s) =<< readTVarIO tokens
+  mapM_ (logCreateSubscription s) =<< readTVarIO subscriptions
