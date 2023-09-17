@@ -25,6 +25,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (SessionId)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
+import Simplex.Messaging.Transport (TLS)
 import UnliftIO.STM
 import UnliftIO.Timeout
 
@@ -78,7 +79,17 @@ getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2C
 getHTTP2Client host port = getVerifiedHTTP2Client Nothing (THDomainName host) port Nothing
 
 getVerifiedHTTP2Client :: Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
-getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2ClientConfig {transportConfig, bufferSize, bodyHeadSize, connTimeout, suportedTLSParams} disconnected =
+getVerifiedHTTP2Client proxyUsername host port keyHash caStore config disconnected = getVerifiedHTTP2ClientWith config host port disconnected setup
+  where
+    setup = runHTTP2Client (suportedTLSParams config) caStore (transportConfig config) (bufferSize config) proxyUsername host port keyHash
+
+attachHTTP2Client :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> Int -> TLS -> IO (Either HTTP2ClientError HTTP2Client)
+attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP2ClientWith config host port disconnected setup
+  where
+    setup = runHTTP2ClientWith bufferSize host ($ tls)
+
+getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((SessionId -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
+getVerifiedHTTP2ClientWith config host port disconnected setup =
   (atomically mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where
@@ -91,11 +102,8 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
     runClient :: HClient -> IO (Either HTTP2ClientError HTTP2Client)
     runClient c = do
       cVar <- newEmptyTMVarIO
-      action <-
-        async $
-          runHTTP2Client suportedTLSParams caStore transportConfig bufferSize proxyUsername host port keyHash (client c cVar)
-            `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
-      c_ <- connTimeout `timeout` atomically (takeTMVar cVar)
+      action <- async $ setup (client c cVar) `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
+      c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
       pure $ case c_ of
         Just (Right c') -> Right c' {action = Just action}
         Just (Left e) -> Left e
@@ -114,7 +122,7 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config@HTTP2Clien
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
       (req, respVar) <- atomically $ readTBQueue reqQ
       sendReq req $ \r -> do
-        respBody <- getHTTP2Body r bodyHeadSize
+        respBody <- getHTTP2Body r (bodyHeadSize config)
         let resp = HTTP2Response {response = r, respBody}
         atomically $ putTMVar respVar resp
         pure resp
@@ -147,8 +155,12 @@ http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
 http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)
 
 runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (SessionId -> H.Client a) -> IO a
-runHTTP2Client tlsParams caStore tcConfig bufferSize proxyUsername host port keyHash client =
-  runTLSTransportClient tlsParams caStore tcConfig proxyUsername host port keyHash $ withHTTP2 bufferSize run
+runHTTP2Client tlsParams caStore tcConfig bufferSize proxyUsername host port keyHash = runHTTP2ClientWith bufferSize host setup
+  where
+    setup = runTLSTransportClient tlsParams caStore tcConfig proxyUsername host port keyHash
+
+runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (SessionId -> H.Client a) -> IO a
+runHTTP2ClientWith bufferSize host setup client = setup $ withHTTP2 bufferSize run
   where
     run :: H.Config -> SessionId -> IO a
     run cfg = H.run (ClientConfig "https" (strEncode host) 20) cfg . client
