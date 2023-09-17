@@ -23,6 +23,7 @@ module Simplex.Messaging.Agent.Client
     ProtocolTestStep (..),
     newAgentClient,
     withConnLock,
+    withConnLocks,
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
@@ -95,6 +96,8 @@ module Simplex.Messaging.Agent.Client
     withStore',
     withStoreCtx,
     withStoreCtx',
+    withStoreBatch,
+    withStoreBatch',
     storeError,
     userServers,
     pickServer,
@@ -641,6 +644,12 @@ cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterru
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
+
+withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
+withConnLocks c connIds name = case connIds of
+  [] -> id
+  [cId] -> withConnLock c cId name
+  (cId : cIds) -> withConnLock c cId name . withConnLocks c cIds name
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
@@ -1278,6 +1287,20 @@ withStoreCtx_ ctx_ c action = do
   where
     handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
     handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
+
+withStoreBatch :: AgentMonad m => AgentClient -> (DB.Connection -> [IO (Either StoreError a)]) -> m [Either AgentErrorType a]
+withStoreBatch c actions = do
+  st <- asks store
+  rs <-
+    liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $
+      withTransaction st $ mapM (`E.catch` handleInternal) . actions
+  pure $ map (first storeError) rs
+  where
+    handleInternal :: E.SomeException -> IO (Either StoreError a)
+    handleInternal = pure . Left . SEInternal . B.pack . show
+
+withStoreBatch' :: AgentMonad m => AgentClient -> (DB.Connection -> [IO a]) -> m [Either AgentErrorType a]
+withStoreBatch' c actions = withStoreBatch c $ map (Right <$>) . actions
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case

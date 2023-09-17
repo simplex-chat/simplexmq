@@ -62,6 +62,7 @@ module Simplex.Messaging.Agent
     resubscribeConnection,
     resubscribeConnections,
     sendMessage,
+    broadcastMessage,
     ackMessage,
     switchConnection,
     abortConnectionSwitch,
@@ -112,6 +113,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::))
+import Data.Either (partitionEithers)
 import Data.Foldable (foldl')
 import Data.Functor (($>))
 import Data.List (find)
@@ -265,6 +267,10 @@ resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c = withAgentEnv c .:. sendMessage' c
+
+-- | Broadcast message to multiple connections (SEND command)
+broadcastMessage :: AgentErrorMonad m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+broadcastMessage c = withAgentEnv c .:. broadcastMessage' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
 ackMessage c = withAgentEnv c .:. ackMessage' c
@@ -837,6 +843,24 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
       when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
       enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
+-- | Broadcast message to multiple connections (SEND command)
+broadcastMessage' :: AgentMonad m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+broadcastMessage' c connIds msgFlags msg = withConnLocks c connIds "sendMessages" $ do
+  (errs, connSQs) <- partitionEithers . zipWith prepare connIds <$> withStoreBatch c (\db -> map (getConn db) connIds)
+  (M.fromList errs `M.union`) <$> enqueueMessageBroadcast c connSQs msgFlags (A_MSG msg)
+  where
+    prepare :: ConnId -> Either AgentErrorType SomeConn -> Either (ConnId, Either AgentErrorType AgentMsgId) (ConnData, NonEmpty SndQueue)
+    prepare connId = \case
+      Left e -> Left (connId, Left e)
+      Right (SomeConn _ conn) -> case conn of
+        DuplexConnection cData _ (sq :| sqs) -> toEnqueue cData (sq :| filter isActiveSndQ sqs)
+        SndConnection cData sq -> toEnqueue cData [sq]
+        _ -> Left (connId, Left $ CONN SIMPLEX)
+    toEnqueue :: ConnData -> NonEmpty SndQueue -> Either (ConnId, Either AgentErrorType AgentMsgId) (ConnData, NonEmpty SndQueue)
+    toEnqueue cData@ConnData {connId} sqs
+      | ratchetSyncSendProhibited cData = Left (connId, Left $ CMD PROHIBITED)
+      | otherwise = Right (cData, sqs)
+
 -- / async command processing v v v
 
 enqueueCommand :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> m ()
@@ -1016,33 +1040,35 @@ enqueueMessages c cData sqs msgFlags aMessage = do
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
 enqueueMessages' c cData (sq :| sqs) msgFlags aMessage = do
   msgId <- enqueueMessage c cData sq msgFlags aMessage
-  mapM_ (enqueueSavedMessage c cData msgId) $
-    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
+  mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
   pure msgId
 
+isActiveSndQ :: SndQueue -> Bool
+isActiveSndQ SndQueue {status} = status == Secured || status == Active
+
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessage c cData@ConnData {connId} sq msgFlags aMessage = do
+enqueueMessage c cData sq msgFlags aMessage = do
   resumeMsgDelivery c cData sq
   aVRange <- asks $ smpAgentVRange . config
-  msgId <- storeSentMsg $ maxVersion aVRange
+  msgId <- withStore c $ \db -> runExceptT $ storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
   queuePendingMsgs c sq [msgId]
   pure $ unId msgId
-  where
-    storeSentMsg :: Version -> m InternalId
-    storeSentMsg agentVersion = withStore c $ \db -> runExceptT $ do
-      internalTs <- liftIO getCurrentTime
-      (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
-      let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
-          agentMsg = AgentMessage privHeader aMessage
-          agentMsgStr = smpEncode agentMsg
-          internalHash = C.sha256Hash agentMsgStr
-      encAgentMessage <- agentRatchetEncrypt db connId agentMsgStr e2eEncUserMsgLength
-      let msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
-          msgType = agentMessageType agentMsg
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash}
-      liftIO $ createSndMsg db connId msgData
-      liftIO $ createSndMsgDelivery db connId sq internalId
-      pure internalId
+
+storeSentMsg :: DB.Connection -> ConnData -> SndQueue -> MsgFlags -> AMessage -> Version -> ExceptT StoreError IO InternalId
+storeSentMsg db ConnData {connId} sq msgFlags aMessage agentVersion = do
+  internalTs <- liftIO getCurrentTime
+  (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
+  let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
+      agentMsg = AgentMessage privHeader aMessage
+      agentMsgStr = smpEncode agentMsg
+      internalHash = C.sha256Hash agentMsgStr
+  encAgentMessage <- agentRatchetEncrypt db connId agentMsgStr e2eEncUserMsgLength
+  let msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
+      msgType = agentMessageType agentMsg
+      msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash}
+  liftIO $ createSndMsg db connId msgData
+  liftIO $ createSndMsgDelivery db connId sq internalId
+  pure internalId
 
 enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
 enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
@@ -1050,6 +1076,25 @@ enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
   let mId = InternalId msgId
   queuePendingMsgs c sq [mId]
   withStore' c $ \db -> createSndMsgDelivery db connId sq mId
+
+enqueueMessageBroadcast :: AgentMonad m => AgentClient -> [(ConnData, NonEmpty SndQueue)] -> MsgFlags -> AMessage -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+enqueueMessageBroadcast c connSQs msgFlags aMessage = do
+  v <- asks $ maxVersion . smpAgentVRange . config
+  (errs, connMsgs) <- partitionEithers . zipWith prepare connSQs <$> withStoreBatch c (\db -> map (storeMsg db v) connSQs)
+  forM_ connMsgs $ \(cData, sqs, msgId) ->
+    forM_ sqs $ \sq -> do
+      resumeMsgDelivery c cData sq
+      queuePendingMsgs c sq [msgId]
+  void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) connMsgs
+  let rs = M.fromList $ map (\(ConnData {connId}, _, msgId) -> (connId, Right $ unId msgId)) connMsgs
+  pure $ rs `M.union` M.fromList errs
+  where
+    prepare :: (ConnData, NonEmpty SndQueue) -> Either AgentErrorType InternalId -> Either (ConnId, Either AgentErrorType AgentMsgId) (ConnData, NonEmpty SndQueue, InternalId)
+    prepare (cData@ConnData {connId}, sqs) = \case
+      Left e -> Left (connId, Left e)
+      Right msgId -> Right (cData, sqs, msgId)
+    storeMsg db v (cData, sq :| _) = runExceptT $ storeSentMsg db cData sq msgFlags aMessage v
+    storeDeliveries db (ConnData {connId}, _ :| sqs, msgId) = map (\sq -> createSndMsgDelivery db connId sq msgId) sqs
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
