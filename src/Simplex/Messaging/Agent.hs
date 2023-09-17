@@ -269,7 +269,7 @@ sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody
 sendMessage c = withAgentEnv c .:. sendMessage' c
 
 -- | Broadcast message to multiple connections (SEND command)
-broadcastMessage :: AgentErrorMonad m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+broadcastMessage :: MonadUnliftIO m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
 broadcastMessage c = withAgentEnv c .:. broadcastMessage' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
@@ -844,7 +844,7 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
       enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
 -- | Broadcast message to multiple connections (SEND command)
-broadcastMessage' :: AgentMonad m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+broadcastMessage' :: AgentMonad' m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
 broadcastMessage' c connIds msgFlags msg = withConnLocks c connIds "sendMessages" $ do
   (errs, connSQs) <- partitionEithers . zipWith prepare connIds <$> withStoreBatch c (\db -> map (getConn db) connIds)
   (M.fromList errs `M.union`) <$> enqueueMessageBroadcast c connSQs msgFlags (A_MSG msg)
@@ -1077,13 +1077,15 @@ enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
   queuePendingMsgs c sq [mId]
   withStore' c $ \db -> createSndMsgDelivery db connId sq mId
 
-enqueueMessageBroadcast :: AgentMonad m => AgentClient -> [(ConnData, NonEmpty SndQueue)] -> MsgFlags -> AMessage -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+enqueueMessageBroadcast :: AgentMonad' m => AgentClient -> [(ConnData, NonEmpty SndQueue)] -> MsgFlags -> AMessage -> m (Map ConnId (Either AgentErrorType AgentMsgId))
 enqueueMessageBroadcast c connSQs msgFlags aMessage = do
   v <- asks $ maxVersion . smpAgentVRange . config
   (errs, connMsgs) <- partitionEithers . zipWith prepare connSQs <$> withStoreBatch c (\db -> map (storeMsg db v) connSQs)
-  forM_ connMsgs $ \(cData, sqs, msgId) ->
+  forM_ connMsgs $ \(cData@ConnData {connId}, sqs, msgId) ->
     forM_ sqs $ \sq -> do
-      resumeMsgDelivery c cData sq
+      runExceptT (resumeMsgDelivery c cData sq `catchAgentError` throwError) >>= \case
+        Left e -> atomically $ writeTBQueue (subQ c) ("", connId, APC SAEConn $ ERR e)
+        Right _ -> pure ()
       queuePendingMsgs c sq [msgId]
   void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) connMsgs
   let rs = M.fromList $ map (\(ConnData {connId}, _, msgId) -> (connId, Right $ unId msgId)) connMsgs

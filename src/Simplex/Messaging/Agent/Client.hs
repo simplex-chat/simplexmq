@@ -1288,7 +1288,7 @@ withStoreCtx_ ctx_ c action = do
     handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
     handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
 
-withStoreBatch :: AgentMonad m => AgentClient -> (DB.Connection -> [IO (Either StoreError a)]) -> m [Either AgentErrorType a]
+withStoreBatch :: AgentMonad' m => AgentClient -> (DB.Connection -> [IO (Either StoreError a)]) -> m [Either AgentErrorType a]
 withStoreBatch c actions = do
   st <- asks store
   rs <-
@@ -1299,7 +1299,7 @@ withStoreBatch c actions = do
     handleInternal :: E.SomeException -> IO (Either StoreError a)
     handleInternal = pure . Left . SEInternal . B.pack . show
 
-withStoreBatch' :: AgentMonad m => AgentClient -> (DB.Connection -> [IO a]) -> m [Either AgentErrorType a]
+withStoreBatch' :: AgentMonad' m => AgentClient -> (DB.Connection -> [IO a]) -> m [Either AgentErrorType a]
 withStoreBatch' c actions = withStoreBatch c $ map (Right <$>) . actions
 
 storeError :: StoreError -> AgentErrorType
