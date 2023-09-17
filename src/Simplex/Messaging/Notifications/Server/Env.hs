@@ -3,11 +3,13 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Env where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
+import Control.Logger.Simple
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
@@ -84,7 +86,9 @@ newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfE
 newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- newTVarIO =<< drgNew
   store <- atomically newNtfStore
+  logInfo "restoring subscriptions..."
   storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
+  logInfo "restored subscriptions"
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile

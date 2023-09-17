@@ -275,12 +275,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     updateSubStatus smpQueue status = do
       st <- asks store
-      atomically (findNtfSubscription st smpQueue)
-        >>= mapM_
-          ( \NtfSubData {ntfSubId, subStatus} -> do
-              atomically $ writeTVar subStatus status
-              withNtfLog $ \sl -> logSubscriptionStatus sl ntfSubId status
-          )
+      atomically (findNtfSubscription st smpQueue) >>= mapM_ update
+      where
+        update NtfSubData {ntfSubId, subStatus} = do
+          old <- atomically $ stateTVar subStatus (,status)
+          when (old /= status) $ withNtfLog $ \sl -> logSubscriptionStatus sl ntfSubId status
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
@@ -292,7 +291,10 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       | status /= NTInvalid && status /= NTExpired ->
         deliverNotification pp tkn ntf >>= \case
           Right _ -> do
-            status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
+            status_ <- atomically $ stateTVar tknStatus $ \case
+              NTActive -> (Nothing, NTActive)
+              NTConfirmed -> (Nothing, NTConfirmed)
+              _ -> (Just NTConfirmed, NTConfirmed)
             forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
           _ -> pure ()
       | otherwise -> logError "bad notification token status"
@@ -309,7 +311,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> M (Either PushProviderError ())
-    deliverNotification pp tkn@NtfTknData {ntfTknId, tknStatus} ntf = do
+    deliverNotification pp tkn ntf = do
       deliver <- liftIO $ getPushClient s pp
       liftIO (runExceptT $ deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
@@ -318,18 +320,19 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPRetryLater -> retryDeliver
           PPCryptoError _ -> err e
           PPResponseError _ _ -> err e
-          PPTokenInvalid -> updateTknStatus NTInvalid >> err e
+          PPTokenInvalid -> updateTknStatus tkn NTInvalid >> err e
           PPPermanentError -> err e
       where
         retryDeliver :: M (Either PushProviderError ())
         retryDeliver = do
           deliver <- liftIO $ newPushClient s pp
           liftIO (runExceptT $ deliver tkn ntf) >>= either err (pure . Right)
-        updateTknStatus :: NtfTknStatus -> M ()
-        updateTknStatus status = do
-          atomically $ writeTVar tknStatus status
-          withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
         err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) $> Left e
+
+updateTknStatus :: NtfTknData -> NtfTknStatus -> M ()
+updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
+  old <- atomically $ stateTVar tknStatus (,status)
+  when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
 runNtfClientTransport :: Transport c => THandle c -> M ()
 runNtfClientTransport th@THandle {sessionId} = do
@@ -462,10 +465,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
               logDebug "TVFY - token verified"
               st <- asks store
-              atomically $ writeTVar tknStatus NTActive
+              updateTknStatus tkn NTActive
               tIds <- atomically $ removeInactiveTokenRegistrations st tkn
               forM_ tIds cancelInvervalNotifications
-              withNtfLog $ \s -> logTokenStatus s tknId NTActive
               incNtfStat tknVerified
               pure NROk
             | otherwise -> do
