@@ -9,7 +9,7 @@ module Simplex.Messaging.Transport.HTTP2.Client where
 import Control.Concurrent.Async
 import Control.Exception (IOException, try)
 import qualified Control.Exception as E
-import Control.Monad.Except
+import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Data.Time (UTCTime, getCurrentTime)

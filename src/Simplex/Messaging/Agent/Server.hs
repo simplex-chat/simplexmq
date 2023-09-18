@@ -11,7 +11,7 @@ module Simplex.Messaging.Agent.Server
 where
 
 import Control.Logger.Simple (logInfo)
-import Control.Monad.Except
+import Control.Monad
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)

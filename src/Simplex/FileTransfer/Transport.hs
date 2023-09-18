@@ -16,7 +16,9 @@ module Simplex.FileTransfer.Transport
 where
 
 import qualified Control.Exception as E
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)

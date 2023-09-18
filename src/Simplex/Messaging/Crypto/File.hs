@@ -21,8 +21,8 @@ module Simplex.Messaging.Crypto.File
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Exception
+import Control.Monad
 import Control.Monad.Except
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
@@ -39,7 +39,7 @@ import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Util (liftEitherWith)
 import System.Directory (getFileSize)
-import UnliftIO (Handle, IOMode (..))
+import UnliftIO (Handle, IOMode (..), liftIO)
 import qualified UnliftIO as IO
 import UnliftIO.STM
 

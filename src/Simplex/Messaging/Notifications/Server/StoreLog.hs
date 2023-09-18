@@ -6,6 +6,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 module Simplex.Messaging.Notifications.Server.StoreLog
   ( StoreLog,
     NtfStoreLogRecord (..),

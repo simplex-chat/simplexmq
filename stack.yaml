@@ -17,7 +17,7 @@
 #
 # resolver: ./custom-snapshot.yaml
 # resolver: https://example.com/snapshots/2018-01-01.yaml
-resolver: lts-18.28
+resolver: nightly-2023-08-22
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -47,15 +47,17 @@ extra-deps:
   - text-short-0.1.5@sha256:962c6228555debdc46f758d0317dea16e5240d01419b42966674b08a5c3d8fa6,3498
   - time-compat-1.9.6.1@sha256:42d8f2e08e965e1718917d54ad69e1d06bd4b87d66c41dc7410f59313dba4ed1,5033
   - github: simplex-chat/aeson
-    commit: 3eb66f9a68f103b5f1489382aad89f5712a64db7
+    commit: 68330dce8208173c6acf5f62b23acb500ab5d873
   - github: kazu-yamamoto/http2
     commit: b5a1b7200cf5bc7044af34ba325284271f6dff25
   # - ../direct-sqlcipher
   - github: simplex-chat/direct-sqlcipher
-    commit: 34309410eb2069b029b8fc1872deb1e0db123294
+    commit: f814ee68b16a9447fbb467ccc8f29bdd3546bfd9
   # - ../sqlcipher-simple
   - github: simplex-chat/sqlcipher-simple
-    commit: 5e154a2aeccc33ead6c243ec07195ab673137221
+    commit: a46bd361a19376c5211f1058908fc0ae6bf42446
+  - github: simplex-chat/network-transport
+    commit: 0013798272a683e35ca38d2fdaf480942311fba8
   # - ../hs-tls/core
   # - github: simplex-chat/hs-tls
   #   commit: f6cc753611f80af300401cfae63846e9d7c40d9e
