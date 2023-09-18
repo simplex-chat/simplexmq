@@ -646,13 +646,16 @@ withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
 
 withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
-withConnLocks c connIds name = case connIds of
-  [] -> id
-  [cId] -> withConnLock c cId name
-  (cId : cIds) -> withConnLock c cId name . withConnLocks c cIds name
+withConnLocks AgentClient {connLocks} connIds name = withLocksMap_ connLocks (filter (not . B.null) connIds) name
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
-withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
+withLockMap_ = withGetLock . getMapLock
+
+withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
+withLocksMap_ = withGetLocks . getMapLock
+
+getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
+getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
   where
     newLock = createLock >>= \l -> TM.insert key l locks $> l
 
