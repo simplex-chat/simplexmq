@@ -10,6 +10,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -110,9 +111,10 @@ where
 import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
-import Control.Concurrent.STM (retry, stateTVar, throwSTM)
+import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..))
 import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -434,7 +436,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           TM.delete tSess smpClients
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
-          let cs = S.fromList $ map qConnId qs
+          let cs = S.fromList $ map (\q -> q.connId) qs
           cs' <- RQ.getConns $ activeSubs c
           pure (qs, S.toList $ cs `S.difference` cs')
 
@@ -831,7 +833,7 @@ mkSMPTransportSession :: (AgentMonad' m, SMPQueueRec q) => AgentClient -> q -> m
 mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
 
 mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
-mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
+mkSMPTSession q = mkTSession q.userId (qServer q) q.connId
 
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig

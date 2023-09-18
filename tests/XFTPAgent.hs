@@ -9,7 +9,9 @@ module XFTPAgent where
 import AgentTests.FunctionalAPITests (get, getSMPAgentClient', rfGet, runRight, runRight_, sfGet)
 import Control.Concurrent (threadDelay)
 import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)

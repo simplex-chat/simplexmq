@@ -15,6 +15,7 @@
 module Simplex.Messaging.Crypto.Ratchet where
 
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
@@ -38,7 +39,6 @@ import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseE, parseE')
-import Simplex.Messaging.Util (tryE)
 import Simplex.Messaging.Version
 
 currentE2EEncryptVersion :: Version

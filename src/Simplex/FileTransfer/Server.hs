@@ -12,6 +12,7 @@
 module Simplex.FileTransfer.Server where
 
 import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader

@@ -17,9 +17,8 @@ module Simplex.Messaging.Transport.Server
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
-import Control.Monad.Except
+import Control.Monad
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
@@ -33,7 +32,7 @@ import qualified Network.TLS as T
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, tshow)
+import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO.Concurrent
@@ -64,6 +63,7 @@ runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -
 runTransportServer started port serverParams cfg server = do
   u <- askUnliftIO
   let tCfg = serverTransportConfig cfg
+  labelMyThread $ "transport server for " <> transportName (TProxy :: TProxy c)
   liftIO . runTCPServer started port $ \conn ->
     E.bracket
       (connectTLS Nothing tCfg serverParams conn >>= getServerConnection tCfg)

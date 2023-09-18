@@ -3,7 +3,7 @@
 module CoreTests.BatchingTests (batchingTests) where
 
 import Control.Concurrent.STM
-import Control.Monad.Except
+import Control.Monad
 import Crypto.Random (MonadRandom(..))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B

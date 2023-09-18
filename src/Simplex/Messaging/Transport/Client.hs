@@ -21,7 +21,6 @@ module Simplex.Messaging.Transport.Client
 where
 
 import Control.Applicative (optional)
-import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A

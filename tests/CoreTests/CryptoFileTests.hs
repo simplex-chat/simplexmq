@@ -4,6 +4,7 @@ module CoreTests.CryptoFileTests (cryptoFileTests) where
 
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Lazy as LB
 import GHC.IO.IOMode (IOMode (..))
