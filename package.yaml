@@ -137,8 +137,8 @@ tests:
     dependencies:
       - simplexmq
       - deepseq == 1.4.*
-      - hspec == 2.7.*
-      - hspec-core == 2.7.*
+      - hspec >= 2.7 && < 2.11
+      - hspec-core >= 2.7 && < 2.11
       - HUnit == 1.6.*
       - QuickCheck == 2.14.*
       - silently == 1.2.*
