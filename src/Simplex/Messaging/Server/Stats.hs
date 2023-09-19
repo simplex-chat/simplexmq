@@ -11,7 +11,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.Time.Calendar.Month.Compat (pattern MonthDay)
+import Data.Time.Calendar.Month (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
 import Simplex.Messaging.Encoding.String
