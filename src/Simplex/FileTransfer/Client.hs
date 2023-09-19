@@ -3,12 +3,14 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Client where
 
+import Control.Monad
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
@@ -108,7 +110,7 @@ xftpClientServer = B.unpack . strEncode . snd3 . transportSession
     snd3 (_, s, _) = s
 
 xftpTransportHost :: XFTPClient -> TransportHost
-xftpTransportHost = (host :: HClient -> TransportHost) . client_ . http2Client
+xftpTransportHost c = c.http2Client.client_.host
 
 xftpSessionTs :: XFTPClient -> UTCTime
 xftpSessionTs = sessionTs . http2Client

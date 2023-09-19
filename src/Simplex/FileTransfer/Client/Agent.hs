@@ -8,6 +8,7 @@
 module Simplex.FileTransfer.Client.Agent where
 
 import Control.Logger.Simple (logInfo)
+import Control.Monad
 import Control.Monad.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
@@ -21,7 +22,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (catchAll_, tryError)
+import Simplex.Messaging.Util (catchAll_)
 import UnliftIO
 
 type XFTPClientVar = TMVar (Either XFTPClientAgentError XFTPClient)

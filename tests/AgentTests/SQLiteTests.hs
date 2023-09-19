@@ -7,6 +7,8 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+
 module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Concurrent.Async (concurrently_)

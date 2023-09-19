@@ -5,10 +5,11 @@ module Simplex.Messaging.Util where
 
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
-import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
+import qualified Data.ByteString as BW
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -19,6 +20,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
+import GHC.Conc
+import Numeric (showHex)
 import UnliftIO.Async
 import qualified UnliftIO.Exception as UE
 
@@ -65,14 +68,6 @@ liftEitherError f a = liftIOEither (first f <$> a)
 liftEitherWith :: (MonadError e' m) => (e -> e') -> Either e a -> m a
 liftEitherWith f = liftEither . first f
 {-# INLINE liftEitherWith #-}
-
-tryError :: MonadError e m => m a -> m (Either e a)
-tryError action = (Right <$> action) `catchError` (pure . Left)
-{-# INLINE tryError #-}
-
-tryE :: Monad m => ExceptT e m a -> ExceptT e m (Either e a)
-tryE m = (Right <$> m) `catchE` (pure . Left)
-{-# INLINE tryE #-}
 
 liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
 liftE f a = ExceptT $ first f <$> runExceptT a
@@ -157,3 +152,6 @@ diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
 
 diffToMilliseconds :: NominalDiffTime -> Int64
 diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
+
+labelMyThread :: MonadIO m => String -> m ()
+labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)

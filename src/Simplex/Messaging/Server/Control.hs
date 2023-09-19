@@ -11,9 +11,12 @@ data ControlProtocol
   | CPResume
   | CPClients
   | CPStats
+  | CPStatsRTS
+  | CPThreads
   | CPSave
   | CPHelp
   | CPQuit
+  | CPSkip
 
 instance StrEncoding ControlProtocol where
   strEncode = \case
@@ -21,16 +24,22 @@ instance StrEncoding ControlProtocol where
     CPResume -> "resume"
     CPClients -> "clients"
     CPStats -> "stats"
+    CPStatsRTS -> "stats-rts"
+    CPThreads -> "threads"
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
+    CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
       "suspend" -> pure CPSuspend
       "resume" -> pure CPResume
       "clients" -> pure CPClients
       "stats" -> pure CPStats
+      "stats-rts" -> pure CPStatsRTS
+      "threads" -> pure CPThreads
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
+      "" -> pure CPSkip
       _ -> fail "bad ControlProtocol command"
