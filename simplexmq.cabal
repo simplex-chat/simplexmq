@@ -189,7 +189,6 @@ library
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -255,7 +254,6 @@ executable ntf-server
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -321,7 +319,6 @@ executable smp-agent
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -387,7 +384,6 @@ executable smp-server
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -453,7 +449,6 @@ executable xftp
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -519,7 +514,6 @@ executable xftp-server
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -620,7 +614,6 @@ test-suite simplexmq-test
     , timeit ==2.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.6.*
-    , unix ==2.8.1.1
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
