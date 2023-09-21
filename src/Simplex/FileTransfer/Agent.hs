@@ -132,9 +132,7 @@ toFSFilePath :: AgentMonad m => FilePath -> m FilePath
 toFSFilePath f = (</> f) <$> getXFTPWorkPath
 
 createEmptyFile :: AgentMonad m => FilePath -> m ()
-createEmptyFile fPath = do
-  h <- openFile fPath AppendMode
-  liftIO $ B.hPut h "" >> hFlush h
+createEmptyFile fPath = liftIO $ B.writeFile fPath ""
 
 addXFTPRcvWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
 addXFTPRcvWorker c = addWorker c xftpRcvWorkers runXFTPRcvWorker runXFTPRcvLocalWorker
