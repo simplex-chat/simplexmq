@@ -15,8 +15,9 @@ import Data.Hourglass (Hours (..), timeAdd)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
 import qualified Data.X509 as X509
-import Data.X509.Validation (Fingerprint, getFingerprint)
+import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import qualified Network.TLS as TLS
+import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Time.System as Hourglass
 
 -- | Generate a certificate chain to be used with TLS fingerprint-pinning
@@ -27,19 +28,19 @@ import qualified Time.System as Hourglass
 --   leaf <- genCertificate (Just ca) (0, 1) "Entity" -- session-signing cert
 --   pure $ tlsCredentials (leaf :| [ca])
 -- @
-tlsCredentials :: NonEmpty Credentials -> (Fingerprint, TLS.Credentials)
-tlsCredentials credentials = (rootFingerprint, TLS.Credentials [creds])
+tlsCredentials :: NonEmpty Credentials -> (KeyHash, TLS.Credentials)
+tlsCredentials credentials = (KeyHash rootFP, TLS.Credentials [creds])
   where
-    rootFingerprint = getFingerprint root X509.HashSHA256
+    Fingerprint rootFP = getFingerprint root X509.HashSHA256
     leafSecret = fst $ NE.head credentials
     root = snd $ NE.last credentials
     creds = (X509.CertificateChain certs, X509.PrivKeyEd25519 leafSecret)
-    certs = map snd $ toList credentials
+    certs = map snd $ NE.toList credentials
 
 type Credentials = (Ed25519.SecretKey, X509.SignedCertificate)
 
 genCredentials :: Maybe Credentials -> (Hours, Hours) -> X509.ASN1CharacterString -> IO Credentials
-genCredentials parent (hoursBefore, hoursAfter) subjectName = do
+genCredentials parent (before, after) subjectName = do
   secret <- Ed25519.generateSecretKey
   let public = Ed25519.toPublic secret
   let (issuerSecret, issuerPublic, issuer) = case parent of
@@ -67,7 +68,7 @@ genCredentials parent (hoursBefore, hoursAfter) subjectName = do
         [ (getObjectID X509.DnCommonName, dnCommonName)
         ]
 
-signCertificate :: Credentials -> X509.Certificate -> X509.SignedCertificate
+signCertificate :: (Ed25519.SecretKey, Ed25519.PublicKey) -> X509.Certificate -> X509.SignedCertificate
 signCertificate (secret, public) = fst . X509.objectToSignedExact f
   where
     f bytes =
