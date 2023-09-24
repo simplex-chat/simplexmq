@@ -710,9 +710,9 @@ rejectContact' c contactConnId invId =
 subscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId = toConnResult connId =<< subscribeConnections' c [connId]
 
-toConnResult :: AgentMonad m => ConnId -> Map ConnId (Either AgentErrorType ()) -> m ()
+toConnResult :: AgentMonad m => ConnId -> Map ConnId (Either AgentErrorType a) -> m a
 toConnResult connId rs = case M.lookup connId rs of
-  Just (Right ()) -> when (M.size rs > 1) $ logError $ T.pack $ "too many results " <> show (M.size rs)
+  Just (Right r) -> r <$ when (M.size rs > 1) (logError $ T.pack $ "too many results " <> show (M.size rs))
   Just (Left e) -> throwError e
   _ -> throwError $ INTERNAL $ "no result for connection " <> B.unpack connId
 
@@ -731,9 +731,7 @@ subscribeConnections' c connIds = do
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs conns
-  let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
-  notifyResultError rs
-  pure rs
+  batchResult c "subscribeConnections" connIds $ M.unions @[] [errs', subRs, rcvRs]
   where
     rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
     rcvQueueOrResult (SomeConn _ conn) = case conn of
@@ -776,12 +774,14 @@ subscribeConnections' c connIds = do
       DuplexConnection cData _ sqs -> Just (cData, sqs)
       SndConnection cData sq -> Just (cData, [sq])
       _ -> Nothing
-    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
-    notifyResultError rs = do
-      let actual = M.size rs
-          expected = length connIds
-      when (actual /= expected) . atomically $
-        writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
+
+batchResult :: AgentMonad' m => AgentClient -> String -> [ConnId] -> Map ConnId (Either AgentErrorType a) -> m (Map ConnId (Either AgentErrorType a))
+batchResult c apiName connIds rs = do
+  let actual = M.size rs
+      expected = length connIds
+  when (actual /= expected) . atomically $
+    writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ apiName <> " result size: " <> show actual <> ", expected " <> show expected)
+  pure rs
 
 resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId = toConnResult connId =<< resubscribeConnections' c [connId]
@@ -834,23 +834,15 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection cData _ sqs -> enqueueMsgs cData sqs
-    SndConnection cData sq -> enqueueMsgs cData [sq]
-    _ -> throwError $ CONN SIMPLEX
-  where
-    enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
-    enqueueMsgs cData sqs = do
-      when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
-      enqueueMessages c cData sqs msgFlags $ A_MSG msg
+sendMessage' c connId msgFlags msg =
+  toConnResult connId =<< broadcastMessage' c [connId] msgFlags msg
 
 -- | Broadcast message to multiple connections (SEND command)
-broadcastMessage' :: AgentMonad' m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
+broadcastMessage' :: forall m. AgentMonad' m => AgentClient -> [ConnId] -> MsgFlags -> MsgBody -> m (Map ConnId (Either AgentErrorType AgentMsgId))
 broadcastMessage' c connIds msgFlags msg = withConnLocks c connIds "sendMessages" $ do
   (errs, connSQs) <- partitionEithers . zipWith prepare connIds <$> withStoreBatch c (\db -> map (getConn db) connIds)
-  (M.fromList errs `M.union`) <$> enqueueMessageBroadcast c connSQs msgFlags (A_MSG msg)
+  rs <- enqueueMessageBroadcast c connSQs msgFlags $ A_MSG msg
+  batchResult c "broadcastMessage" connIds $ M.union (M.fromList errs) rs
   where
     prepare :: ConnId -> Either AgentErrorType SomeConn -> Either (ConnId, Either AgentErrorType AgentMsgId) (ConnData, NonEmpty SndQueue)
     prepare connId = \case
@@ -1510,16 +1502,7 @@ deleteConnections_ _ _ _ [] = pure M.empty
 deleteConnections_ getConnections ntf c connIds = do
   (rs, rqs, _) <- prepareDeleteConnections_ getConnections c connIds
   rcvRs <- deleteConnQueues c ntf rqs
-  let rs' = M.union rs rcvRs
-  notifyResultError rs'
-  pure rs'
-  where
-    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
-    notifyResultError rs = do
-      let actual = M.size rs
-          expected = length connIds
-      when (actual /= expected) . atomically $
-        writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ "deleteConnections result size: " <> show actual <> ", expected " <> show expected)
+  batchResult c "deleteConnections" connIds $ M.union rs rcvRs
 
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = do

@@ -648,7 +648,7 @@ withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
 
 withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
-withConnLocks AgentClient {connLocks} connIds name = withLocksMap_ connLocks (filter (not . B.null) connIds) name
+withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ = withGetLock . getMapLock
