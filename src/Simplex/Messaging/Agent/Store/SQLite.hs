@@ -31,6 +31,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
+    openSQLiteStore,
     sqlString,
     execSQL,
     upMigration, -- used in tests
@@ -275,7 +276,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (onException)
+import UnliftIO.Exception (onException, bracketOnError)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -379,10 +380,9 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop $ connectDB dbFilePath dbKey
-  dbConnVar <- newTMVarIO dbConn
+  dbConnection <- newTMVarIO =<< dbBusyLoop (connectDB dbFilePath dbKey)
   dbEncrypted <- newTVarIO . not $ null dbKey
-  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection = dbConnVar, dbNew}
+  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew}
 
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
@@ -404,7 +404,16 @@ connectDB path key = do
         |]
 
 closeSQLiteStore :: SQLiteStore -> IO ()
-closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
+closeSQLiteStore st = withConnection st DB.close
+
+openSQLiteStore :: SQLiteStore -> String -> IO ()
+openSQLiteStore SQLiteStore {dbConnection, dbFilePath} key =
+  bracketOnError
+    (atomically $ takeTMVar dbConnection)
+    (atomically . tryPutTMVar dbConnection)
+    $ \DB.Connection {slow} -> do
+      DB.Connection {conn} <- connectDB dbFilePath key
+      atomically $ putTMVar dbConnection DB.Connection {conn, slow}
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
