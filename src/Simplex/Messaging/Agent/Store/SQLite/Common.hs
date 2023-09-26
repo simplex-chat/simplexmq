@@ -1,5 +1,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Common
@@ -9,32 +10,62 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
     withTransaction,
     withTransaction',
     withTransactionCtx,
-    dbBusyLoop,
+    sqlString,
   )
 where
 
+import Control.Monad
 import Control.Concurrent (threadDelay)
+import Control.Exception (bracket, onException)
+import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
+import qualified Database.SQLite3 as SQLite3
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.TMap (TMap)
 import Simplex.Messaging.Util (diffToMilliseconds)
-import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
-    dbEncrypted :: TVar Bool,
-    dbConnection :: TMVar DB.Connection,
+    dbKey :: TVar String,
+    dbConnection :: TMVar (Maybe SQL.Connection),
+    dbSlowQueries :: TMap SQL.Query DB.SlowQueryStats,
     dbNew :: Bool
   }
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection SQLiteStore {dbConnection} =
+withConnection SQLiteStore {dbConnection = conn, dbSlowQueries = slow, dbFilePath, dbKey} a =
   bracket
-    (atomically $ takeTMVar dbConnection)
-    (atomically . putTMVar dbConnection)
+    (atomically (takeTMVar conn) >>= maybe (connectDB dbFilePath dbKey) pure)
+    (atomically . putTMVar conn . Just)
+    (a . (`DB.Connection` slow))
+
+connectDB :: FilePath -> TVar String -> IO SQL.Connection
+connectDB path dbKey = dbBusyLoop $ do
+  db <- SQL.open path
+  prepare db `onException` SQL.close db
+  -- _printPragmas db path
+  pure db
+  where
+    prepare db = do
+      key <- readTVarIO dbKey
+      let exec = SQLite3.exec $ SQL.connectionHandle db
+      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
+      exec
+        "PRAGMA busy_timeout = 100;\n\
+        \PRAGMA foreign_keys = ON;\n\
+        \-- PRAGMA trusted_schema = OFF;\n\
+        \PRAGMA secure_delete = ON;\n\
+        \PRAGMA auto_vacuum = FULL;"
+
+sqlString :: String -> Text
+sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
+  where
+    quote = "'"
 
 withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withConnection' st action = withConnection st $ action . DB.conn

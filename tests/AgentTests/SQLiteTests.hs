@@ -60,11 +60,8 @@ createStore = do
 
 removeStore :: SQLiteStore -> IO ()
 removeStore db = do
-  close db
+  closeSQLiteStore db
   removeFile $ dbFilePath db
-  where
-    close :: SQLiteStore -> IO ()
-    close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
 
 storeTests :: Spec
 storeTests = do

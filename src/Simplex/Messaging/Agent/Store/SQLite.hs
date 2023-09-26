@@ -31,7 +31,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
-    sqlString,
     execSQL,
     upMigration, -- used in tests
 
@@ -268,6 +267,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ($>>=), (<$$>))
 import Simplex.Messaging.Version
@@ -275,7 +275,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (onException)
+import UnliftIO.Exception (onException, bracket)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -377,39 +377,20 @@ confirmOrExit s = do
   when (map toLower ok /= "y") exitFailure
 
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
-connectSQLiteStore dbFilePath dbKey = do
+connectSQLiteStore dbFilePath key = do
+  dbKey <- newTVarIO key
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop $ connectDB dbFilePath dbKey
-  dbConnVar <- newTMVarIO dbConn
-  dbEncrypted <- newTVarIO . not $ null dbKey
-  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection = dbConnVar, dbNew}
-
-connectDB :: FilePath -> String -> IO DB.Connection
-connectDB path key = do
-  db <- DB.open path
-  prepare db `onException` DB.close db
-  -- _printPragmas db path
-  pure db
-  where
-    prepare db = do
-      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-      exec . fromQuery $
-        [sql|
-          PRAGMA busy_timeout = 100;
-          PRAGMA foreign_keys = ON;
-          -- PRAGMA trusted_schema = OFF;
-          PRAGMA secure_delete = ON;
-          PRAGMA auto_vacuum = FULL;
-        |]
+  -- dbConn <- dbBusyLoop $ connectDB dbFilePath key
+  dbConnection <- newTMVarIO Nothing
+  dbSlowQueries <- atomically TM.empty
+  pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbSlowQueries, dbNew}
 
 closeSQLiteStore :: SQLiteStore -> IO ()
-closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
-
-sqlString :: String -> Text
-sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
-  where
-    quote = "'"
+closeSQLiteStore SQLiteStore {dbConnection} = 
+  bracket
+    (atomically (takeTMVar dbConnection))
+    (\_ -> atomically $ putTMVar dbConnection Nothing)
+    (mapM_ SQL.close)
 
 -- _printPragmas :: DB.Connection -> FilePath -> IO ()
 -- _printPragmas db path = do

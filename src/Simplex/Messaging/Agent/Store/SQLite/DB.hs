@@ -5,7 +5,6 @@
 module Simplex.Messaging.Agent.Store.SQLite.DB
   ( Connection (..),
     SlowQueryStats (..),
-    open,
     close,
     execute,
     execute_,
@@ -62,12 +61,6 @@ timeIt slow sql a = do
             timeMax = max timeMax diff,
             timeAvg = (timeAvg * count + diff) `div` (count + 1)
           }
-
-open :: String -> IO Connection
-open f = do
-  conn <- SQL.open f
-  slow <- atomically $ TM.empty
-  pure Connection {conn, slow}
 
 close :: Connection -> IO ()
 close = SQL.close . conn
