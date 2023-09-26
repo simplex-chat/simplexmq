@@ -84,6 +84,9 @@ instance StrEncoding TransportHost where
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
+instance FromJSON TransportHost where
+  parseJSON = strParseJSON "TransportHost"
+
 instance ToJSON TransportHost where
   toEncoding = strToJEncoding
   toJSON = strToJSON

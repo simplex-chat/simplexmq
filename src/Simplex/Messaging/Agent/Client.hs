@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -116,7 +117,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random (getRandomBytes)
-import Data.Aeson (ToJSON)
+import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
@@ -726,6 +727,9 @@ data ProtocolTestStep
   | TSDeleteFile
   deriving (Eq, Show, Generic)
 
+instance FromJSON ProtocolTestStep where
+  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TS"
+
 instance ToJSON ProtocolTestStep where
   toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
   toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
@@ -734,11 +738,7 @@ data ProtocolTestFailure = ProtocolTestFailure
   { testStep :: ProtocolTestStep,
     testError :: AgentErrorType
   }
-  deriving (Eq, Show, Generic)
-
-instance ToJSON ProtocolTestFailure where
-  toEncoding = J.genericToEncoding J.defaultOptions
-  toJSON = J.genericToJSON J.defaultOptions
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
@@ -1355,6 +1355,7 @@ withNextSrv c userId usedSrvs initUsed action = do
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show, Generic)
 
+instance FromJSON SubInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 data SubscriptionsInfo = SubscriptionsInfo
@@ -1364,6 +1365,7 @@ data SubscriptionsInfo = SubscriptionsInfo
   }
   deriving (Show, Generic)
 
+instance FromJSON SubscriptionsInfo where parseJSON = J.genericParseJSON J.defaultOptions
 instance ToJSON SubscriptionsInfo where toEncoding = J.genericToEncoding J.defaultOptions
 
 getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo

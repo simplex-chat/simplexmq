@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -471,9 +472,7 @@ instance Encoding NMsgMeta where
 
 -- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
-  deriving (Eq, Show, Generic)
-
-instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 -- this encoding should not become bigger than 7 bytes (currently it is 1 byte)
 instance Encoding MsgFlags where
@@ -737,6 +736,9 @@ instance ProtocolTypeI p => ToJSON (SProtocolType p) where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
+instance FromJSON AProtocolType where
+  parseJSON = strParseJSON "AProtocolType"
+
 instance ToJSON AProtocolType where
   toEncoding = strToJEncoding
   toJSON = strToJSON
@@ -989,6 +991,9 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
 
+instance FromJSON ErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance ToJSON ErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
@@ -1014,6 +1019,9 @@ data CommandError
   | -- | transmission has no required entity ID (e.g. SMP queue)
     NO_ENTITY
   deriving (Eq, Generic, Read, Show)
+
+instance FromJSON CommandError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance ToJSON CommandError where
   toJSON = J.genericToJSON $ sumTypeJSON id

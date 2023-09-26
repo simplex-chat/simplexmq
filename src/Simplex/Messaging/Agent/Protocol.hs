@@ -616,6 +616,7 @@ data RcvQueueInfo = RcvQueueInfo
   }
   deriving (Eq, Show, Generic)
 
+instance FromJSON RcvQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding RcvQueueInfo where
@@ -635,6 +636,7 @@ data SndQueueInfo = SndQueueInfo
   }
   deriving (Eq, Show, Generic)
 
+instance FromJSON SndQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding SndQueueInfo where
@@ -652,7 +654,7 @@ data ConnectionStats = ConnectionStats
     ratchetSyncState :: RatchetSyncState,
     ratchetSyncSupported :: Bool
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 instance StrEncoding ConnectionStats where
   strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
@@ -669,8 +671,6 @@ instance StrEncoding ConnectionStats where
     ratchetSyncSupported <- " sync_supported=" *> strP
     pure ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported}
 
-instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
-
 data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
 
@@ -683,6 +683,9 @@ instance StrEncoding NotificationsMode where
       "PERIODIC" -> pure NMPeriodic
       "INSTANT" -> pure NMInstant
       _ -> fail "bad NotificationsMode"
+
+instance FromJSON NotificationsMode where
+  parseJSON = strParseJSON "NotificationsMode"
 
 instance ToJSON NotificationsMode where
   toEncoding = strToJEncoding
@@ -1045,6 +1048,9 @@ instance StrEncoding MsgReceiptStatus where
       "ok" -> pure MROk
       "badMsgHash" -> pure MRBadMsgHash
       _ -> fail "bad MsgReceiptStatus"
+
+instance FromJSON MsgReceiptStatus where
+  parseJSON = strParseJSON "MsgReceiptStatus"
 
 instance ToJSON MsgReceiptStatus where
   toJSON = strToJSON
@@ -1446,6 +1452,9 @@ data AgentErrorType
     INACTIVE
   deriving (Eq, Generic, Show, Exception)
 
+instance FromJSON AgentErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance ToJSON AgentErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
@@ -1464,6 +1473,9 @@ data CommandErrorType
     LARGE
   deriving (Eq, Generic, Read, Show, Exception)
 
+instance FromJSON CommandErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance ToJSON CommandErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
@@ -1481,6 +1493,9 @@ data ConnectionErrorType
   | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance FromJSON ConnectionErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance ToJSON ConnectionErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
@@ -1501,6 +1516,9 @@ data BrokerErrorType
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance FromJSON BrokerErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance ToJSON BrokerErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
@@ -1536,6 +1554,9 @@ data AgentCryptoError
     RATCHET_SKIPPED Word32
   deriving (Eq, Generic, Read, Show, Exception)
 
+instance FromJSON AgentCryptoError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance ToJSON AgentCryptoError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
@@ -1553,6 +1574,9 @@ instance StrEncoding AgentCryptoError where
     RATCHET_HEADER -> "RATCHET_HEADER"
     RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
     RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
+
+instance FromJSON SMPAgentError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance ToJSON SMPAgentError where
   toJSON = J.genericToJSON $ sumTypeJSON id

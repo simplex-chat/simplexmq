@@ -11,7 +11,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
-import Data.Aeson (FromJSON (..), ToJSON (..), (.=))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -403,6 +403,12 @@ instance StrEncoding DeviceToken where
       hexStringP =
         A.takeWhile (\c -> A.isDigit c || (c >= 'a' && c <= 'f')) >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
+
+instance FromJSON DeviceToken where
+  parseJSON = J.withObject "DeviceToken" $ \o -> do
+    pp <- o .: "pushProvider" >>= either fail pure . strDecode . encodeUtf8
+    t <- encodeUtf8 <$> o .: "token"
+    pure $ DeviceToken pp t
 
 instance ToJSON DeviceToken where
   toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t

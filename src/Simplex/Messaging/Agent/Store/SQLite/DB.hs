@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
@@ -19,8 +20,7 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
-import Data.Aeson (ToJSON (..))
-import qualified Data.Aeson as J
+import Data.Aeson (FromJSON, ToJSON (..))
 import Data.Int (Int64)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
@@ -40,9 +40,7 @@ data SlowQueryStats = SlowQueryStats
     timeMax :: Int64,
     timeAvg :: Int64
   }
-  deriving (Show, Generic)
-
-instance ToJSON SlowQueryStats where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Show, Generic, FromJSON, ToJSON)
 
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
