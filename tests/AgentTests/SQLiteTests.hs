@@ -6,14 +6,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
+import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
 import Crypto.Random (drgNew)
 import Data.ByteString.Char8 (ByteString)
+import Data.List (isInfixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
@@ -49,11 +52,14 @@ withStore2 = before connect2 . after (removeStore . fst)
       pure (s1, s2)
 
 createStore :: IO SQLiteStore
-createStore = do
+createStore = createEncryptedStore ""
+
+createEncryptedStore :: String -> IO SQLiteStore
+createEncryptedStore key = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  Right st <- createSQLiteStore (testDB <> show r) "" Migrations.app MCError
+  Right st <- createSQLiteStore (testDB <> show r) key Migrations.app MCError
   pure st
 
 removeStore :: SQLiteStore -> IO ()
@@ -102,6 +108,9 @@ storeTests = do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs
+  describe "open/close store" $ do
+    it "should close and re-open" testCloseReopenStore
+    it "should close and re-open encrypted store" testCloseReopenEncryptedStore
 
 testConcurrentWrites :: SpecWith (SQLiteStore, SQLiteStore)
 testConcurrentWrites =
@@ -502,3 +511,43 @@ testCreateRcvAndSndMsgs =
       testCreateRcvMsg_ db 2 "rcv_hash_2" connId rcvQueue1 $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
       testCreateSndMsg_ db "snd_hash_1" connId $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
+
+testCloseReopenStore :: IO ()
+testCloseReopenStore = do
+  st <- createStore
+  hasMigrations st
+  closeSQLiteStore st
+  closeSQLiteStore st
+  errorGettingMigrations st
+  openSQLiteStore st ""
+  openSQLiteStore st ""
+  hasMigrations st
+  closeSQLiteStore st
+  errorGettingMigrations st
+  openSQLiteStore st ""
+  hasMigrations st
+
+testCloseReopenEncryptedStore :: IO ()
+testCloseReopenEncryptedStore = do
+  let key = "test_key"
+  st <- createEncryptedStore key
+  hasMigrations st
+  closeSQLiteStore st
+  closeSQLiteStore st
+  errorGettingMigrations st
+  openSQLiteStore st key
+  openSQLiteStore st key
+  hasMigrations st
+  closeSQLiteStore st
+  errorGettingMigrations st
+  openSQLiteStore st key
+  hasMigrations st
+
+getMigrations :: SQLiteStore -> IO Bool
+getMigrations st = not . null <$> withTransaction st (Migrations.getCurrent . DB.conn)
+
+hasMigrations :: SQLiteStore -> Expectation
+hasMigrations st = getMigrations st `shouldReturn` True
+
+errorGettingMigrations :: SQLiteStore -> Expectation
+errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
