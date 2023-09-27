@@ -270,7 +270,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -380,9 +380,12 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConnection <- newTMVarIO =<< dbBusyLoop (connectDB dbFilePath dbKey)
-  dbEncrypted <- newTVarIO . not $ null dbKey
-  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew}
+  dbConn <- dbBusyLoop (connectDB dbFilePath dbKey)
+  atomically $ do
+    dbConnection <- newTMVar dbConn
+    dbEncrypted <- newTVar . not $ null dbKey
+    dbClosed <- newTVar False
+    pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew, dbClosed}
 
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
@@ -404,16 +407,25 @@ connectDB path key = do
         |]
 
 closeSQLiteStore :: SQLiteStore -> IO ()
-closeSQLiteStore st = withConnection st DB.close
+closeSQLiteStore st@SQLiteStore {dbClosed} =
+  ifM (readTVarIO dbClosed) (putStrLn "closeSQLiteStore: already closed") $
+    withConnection st $ \conn -> do
+      DB.close conn
+      atomically $ writeTVar dbClosed True
 
 openSQLiteStore :: SQLiteStore -> String -> IO ()
-openSQLiteStore SQLiteStore {dbConnection, dbFilePath} key =
-  bracketOnError
-    (atomically $ takeTMVar dbConnection)
-    (atomically . tryPutTMVar dbConnection)
-    $ \DB.Connection {slow} -> do
-      DB.Connection {conn} <- connectDB dbFilePath key
-      atomically $ putTMVar dbConnection DB.Connection {conn, slow}
+openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
+  ifM (readTVarIO dbClosed) open (putStrLn "closeSQLiteStore: already opened")
+  where
+    open =
+      bracketOnError
+        (atomically $ takeTMVar dbConnection)
+        (atomically . tryPutTMVar dbConnection)
+        $ \DB.Connection {slow} -> do
+          DB.Connection {conn} <- connectDB dbFilePath key
+          atomically $ do
+            putTMVar dbConnection DB.Connection {conn, slow}
+            writeTVar dbClosed False
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
