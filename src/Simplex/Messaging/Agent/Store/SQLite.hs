@@ -272,7 +272,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, whenM, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
