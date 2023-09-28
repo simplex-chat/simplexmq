@@ -3,13 +3,11 @@
 
 module Simplex.Messaging.Util where
 
-import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Bifunctor (first)
-import qualified Data.ByteString as BW
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -21,7 +19,6 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
 import GHC.Conc
-import Numeric (showHex)
 import UnliftIO.Async
 import qualified UnliftIO.Exception as UE
 
