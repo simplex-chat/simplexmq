@@ -367,7 +367,11 @@ migrateSchema st migrations confirmMigrations = do
     confirm err = confirmOrExit $ migrationErrorDescription err
     run ms = do
       let f = dbFilePath st
+          fWal = f <> "-wal"
+          fShm = f <> "-shm"
       copyFile f (f <> ".bak")
+      whenM (doesFileExist fWal) $ copyFile fWal (f <> ".bak-wal")
+      whenM (doesFileExist fShm) $ copyFile fShm (f <> ".bak-shm")
       Migrations.run st ms
       pure $ Right ()
 
