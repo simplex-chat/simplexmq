@@ -430,9 +430,11 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
             putTMVar dbConnection DB.Connection {conn, slow}
             writeTVar dbClosed False
 
-checkpointSQLiteStore :: SQLiteStore -> IO ()
-checkpointSQLiteStore st =
-  withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
+checkpointSQLiteStore :: SQLiteStore -> Bool -> IO ()
+checkpointSQLiteStore st jmDelete =
+  withConnection st $ \db -> do
+    execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);"
+    when jmDelete $ execSQL_ db "PRAGMA journal_mode = DELETE;"
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
