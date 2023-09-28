@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     closeSQLiteStore,
     openSQLiteStore,
+    checkpointSQLiteStore,
     sqlString,
     execSQL,
     upMigration, -- used in tests
@@ -395,9 +396,8 @@ connectDB path key = do
   pure db
   where
     prepare db = do
-      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-      exec . fromQuery $
+      unless (null key) . execSQL_ db $ "PRAGMA key = " <> sqlString key <> ";"
+      execSQL_ db . fromQuery $
         [sql|
           PRAGMA page_size = 16384;
           PRAGMA journal_mode = WAL;
@@ -411,8 +411,9 @@ connectDB path key = do
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =
   ifM (readTVarIO dbClosed) (putStrLn "closeSQLiteStore: already closed") $
-    withConnection st $ \conn -> do
-      DB.close conn
+    withConnection st $ \db -> do
+      execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);"
+      DB.close db
       atomically $ writeTVar dbClosed True
 
 openSQLiteStore :: SQLiteStore -> String -> IO ()
@@ -428,6 +429,10 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
           atomically $ do
             putTMVar dbConnection DB.Connection {conn, slow}
             writeTVar dbClosed False
+
+checkpointSQLiteStore :: SQLiteStore -> IO ()
+checkpointSQLiteStore st =
+  withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
@@ -445,6 +450,9 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 --   print $ path <> " secure_delete: " <> show secure_delete
 --   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
 --   print $ path <> " auto_vacuum: " <> show auto_vacuum
+
+execSQL_ :: DB.Connection -> Text -> IO ()
+execSQL_ = SQLite3.exec . SQL.connectionHandle . DB.conn
 
 execSQL :: DB.Connection -> Text -> IO [Text]
 execSQL db query = do
