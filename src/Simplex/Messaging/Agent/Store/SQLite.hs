@@ -402,9 +402,10 @@ connectDB path key checkPageSize = do
   where
     prepare db = do
       unless (null key) . execSQL_ db $ "PRAGMA key = " <> sqlString key <> ";"
-      when checkPageSize $ do
-        pageSize :: Maybe Int <- maybeFirstRow fromOnly $ SQL.query_ (DB.conn db) "PRAGMA page_size;"
-        when (pageSize == Just 16384) $ execSQL_ db
+      when checkPageSize $ maybeFirstRow id (SQL.query_ (DB.conn db) "PRAGMA page_size;") >>= \case
+        Nothing -> pure ()
+        Just (Only (16384 :: Int)) -> pure ()
+        Just _ -> execSQL_ db
           "PRAGMA wal_checkpoint(TRUNCATE);\n\
           \PRAGMA journal_mode = DELETE;\n\
           \PRAGMA page_size = 16384;\n\
@@ -416,8 +417,7 @@ connectDB path key checkPageSize = do
         \PRAGMA busy_timeout = 100;\n\
         \PRAGMA foreign_keys = ON;\n\
         \-- PRAGMA trusted_schema = OFF;\n\
-        \PRAGMA secure_delete = ON;\n\
-        \PRAGMA auto_vacuum = FULL;"
+        \PRAGMA secure_delete = ON;"
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =

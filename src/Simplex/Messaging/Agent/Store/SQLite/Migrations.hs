@@ -121,7 +121,7 @@ getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrati
 run :: SQLiteStore -> MigrationsToRun -> IO ()
 run st = \case
   MTRUp [] -> pure ()
-  MTRUp ms -> mapM_ runUp ms >> withConnection' st (`execSQL` "VACUUM;")
+  MTRUp ms -> mapM_ runUp ms >> withConnection' st (`execSQL` "VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
   MTRDown ms -> mapM_ runDown $ reverse ms
   MTRNone -> pure ()
   where

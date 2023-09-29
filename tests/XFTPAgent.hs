@@ -21,7 +21,7 @@ import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disposeAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
@@ -103,7 +103,7 @@ testXFTPAgentSendReceive = withXFTPServer $ do
       runRight_ $ do
         rfId <- testReceive rcp rfd originalFilePath
         xftpDeleteRcvFile rcp rfId
-      disconnectAgentClient rcp
+      disposeAgentClient rcp
 
 testXFTPAgentSendReceiveEncrypted :: HasCallStack => IO ()
 testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
@@ -126,7 +126,7 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
       runRight_ $ do
         rfId <- testReceiveCF rcp rfd cfArgs originalFilePath
         xftpDeleteRcvFile rcp rfId
-      disconnectAgentClient rcp
+      disposeAgentClient rcp
 
 createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = do
@@ -183,7 +183,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
     rfId <- xftpReceiveFile rcp 1 rfd Nothing
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure rfId
-  disconnectAgentClient rcp
+  disposeAgentClient rcp
 
   [prefixDir] <- listDirectory recipientFiles
   let tmpPath = recipientFiles </> prefixDir </> "xftp.encrypted"
@@ -195,7 +195,7 @@ testXFTPAgentReceiveRestore = withGlobalLogging logCfgNoLogs $ do
     runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
     ("", rfId', RFPROG _ _) <- rfGet rcp'
     liftIO $ rfId' `shouldBe` rfId
-    disconnectAgentClient rcp'
+    disposeAgentClient rcp'
 
   threadDelay 100000
 
@@ -231,7 +231,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     rfId <- xftpReceiveFile rcp 1 rfd Nothing
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure rfId
-  disconnectAgentClient rcp
+  disposeAgentClient rcp
 
   [prefixDir] <- listDirectory recipientFiles
   let tmpPath = recipientFiles </> prefixDir </> "xftp.encrypted"
@@ -258,7 +258,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     sfId <- xftpSendFile sndr 1 (CF.plain filePath) 2
     liftIO $ timeout 1000000 (get sndr) `shouldReturn` Nothing -- wait for worker to encrypt and attempt to create file
     pure sfId
-  disconnectAgentClient sndr
+  disposeAgentClient sndr
 
   dirEntries <- listDirectory senderFiles
   let prefixDir = fromJust $ find (isSuffixOf "_snd.xftp") dirEntries
@@ -273,7 +273,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
     ("", sfId', SFPROG _ _) <- sfGet sndr'
     liftIO $ sfId' `shouldBe` sfId
-    disconnectAgentClient sndr'
+    disposeAgentClient sndr'
 
   threadDelay 100000
 
@@ -310,7 +310,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
         (_, _, SFPROG _ _) <- sfGet sndr
         pure ()
       pure sfId
-    disconnectAgentClient sndr
+    disposeAgentClient sndr
     pure sfId
 
   dirEntries <- listDirectory senderFiles
@@ -353,7 +353,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       xftpDeleteSndFileRemote sndr 1 sfId sndDescr
       Nothing <- liftIO $ 100000 `timeout` sfGet sndr
       pure ()
-    disconnectAgentClient rcp1
+    disposeAgentClient rcp1
 
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
@@ -379,8 +379,8 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ $
       void $ testReceive rcp1 rfd1 filePath
-    disconnectAgentClient rcp1
-    disconnectAgentClient sndr
+    disposeAgentClient rcp1
+    disposeAgentClient sndr
     pure (sfId, sndDescr, rfd2)
 
   -- delete file - should not succeed with server down
@@ -389,7 +389,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     xftpStartWorkers sndr (Just senderFiles)
     xftpDeleteSndFileRemote sndr 1 sfId sndDescr
     liftIO $ timeout 300000 (get sndr) `shouldReturn` Nothing -- wait for worker attempt
-  disconnectAgentClient sndr
+  disposeAgentClient sndr
 
   threadDelay 300000
   length <$> listDirectory xftpServerFiles `shouldReturn` 6

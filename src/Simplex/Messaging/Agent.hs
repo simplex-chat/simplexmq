@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent
     SubscriptionsInfo (..),
     getSMPAgentClient,
     disconnectAgentClient,
+    disposeAgentClient,
     resumeAgentClient,
     withConnLock,
     createUser,
@@ -178,6 +179,11 @@ disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAge
   closeNtfSupervisor ns
   closeXFTPAgent xa
   logConnection c False
+
+disposeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+disposeAgentClient c@AgentClient {agentEnv = Env {store}} = do
+  disconnectAgentClient c
+  liftIO $ closeSQLiteStore store
 
 resumeAgentClient :: MonadIO m => AgentClient -> m ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
