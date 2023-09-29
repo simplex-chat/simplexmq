@@ -386,15 +386,15 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop (connectDB dbFilePath dbKey)
+  dbConn <- dbBusyLoop (connectDB dbFilePath dbKey $ not dbNew)
   atomically $ do
     dbConnection <- newTMVar dbConn
     dbEncrypted <- newTVar . not $ null dbKey
     dbClosed <- newTVar False
     pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew, dbClosed}
 
-connectDB :: FilePath -> String -> IO DB.Connection
-connectDB path key = do
+connectDB :: FilePath -> String -> Bool -> IO DB.Connection
+connectDB path key checkPageSize = do
   db <- DB.open path
   prepare db `onException` DB.close db
   -- _printPragmas db path
@@ -402,16 +402,22 @@ connectDB path key = do
   where
     prepare db = do
       unless (null key) . execSQL_ db $ "PRAGMA key = " <> sqlString key <> ";"
-      execSQL_ db . fromQuery $
-        [sql|
-          PRAGMA page_size = 16384;
-          PRAGMA journal_mode = WAL;
-          PRAGMA busy_timeout = 100;
-          PRAGMA foreign_keys = ON;
-          -- PRAGMA trusted_schema = OFF;
-          PRAGMA secure_delete = ON;
-          PRAGMA auto_vacuum = FULL;
-        |]
+      when checkPageSize $ do
+        pageSize :: Maybe Int <- maybeFirstRow fromOnly $ SQL.query_ (DB.conn db) "PRAGMA page_size;"
+        when (pageSize == Just 16384) $ execSQL_ db
+          "PRAGMA wal_checkpoint(TRUNCATE);\n\
+          \PRAGMA journal_mode = DELETE;\n\
+          \PRAGMA page_size = 16384;\n\
+          \VACUUM;\n\
+          \PRAGMA journal_mode = WAL;"
+      execSQL_ db
+        "PRAGMA page_size = 16384;\n\
+        \PRAGMA journal_mode = WAL;\n\
+        \PRAGMA busy_timeout = 100;\n\
+        \PRAGMA foreign_keys = ON;\n\
+        \-- PRAGMA trusted_schema = OFF;\n\
+        \PRAGMA secure_delete = ON;\n\
+        \PRAGMA auto_vacuum = FULL;"
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =
@@ -430,7 +436,7 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
         (atomically $ takeTMVar dbConnection)
         (atomically . tryPutTMVar dbConnection)
         $ \DB.Connection {slow} -> do
-          DB.Connection {conn} <- connectDB dbFilePath key
+          DB.Connection {conn} <- connectDB dbFilePath key False
           atomically $ do
             putTMVar dbConnection DB.Connection {conn, slow}
             writeTVar dbClosed False

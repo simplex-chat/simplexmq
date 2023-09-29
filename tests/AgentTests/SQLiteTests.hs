@@ -526,8 +526,8 @@ testCloseReopenStore = do
   hasMigrations st
   closeSQLiteStore st
   errorGettingMigrations st
-  openSQLiteStore st ""
-  hasMigrations st
+  Right st' <- createSQLiteStore (dbFilePath st) "" Migrations.app MCError
+  hasMigrations st'
 
 testCloseReopenEncryptedStore :: IO ()
 testCloseReopenEncryptedStore = do
@@ -542,8 +542,8 @@ testCloseReopenEncryptedStore = do
   hasMigrations st
   closeSQLiteStore st
   errorGettingMigrations st
-  openSQLiteStore st key
-  hasMigrations st
+  Right st' <- createSQLiteStore (dbFilePath st) key Migrations.app MCError
+  hasMigrations st'
 
 getMigrations :: SQLiteStore -> IO Bool
 getMigrations st = not . null <$> withTransaction st (Migrations.getCurrent . DB.conn)
