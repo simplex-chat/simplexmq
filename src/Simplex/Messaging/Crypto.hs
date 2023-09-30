@@ -40,6 +40,8 @@ module Simplex.Messaging.Crypto
     DhAlgorithm,
     PrivateKey (..),
     PublicKey (..),
+    PrivateKeyEd25519,
+    PublicKeyEd25519,
     PrivateKeyX25519,
     PublicKeyX25519,
     PrivateKeyX448,
@@ -64,6 +66,7 @@ module Simplex.Messaging.Crypto
     generateDhKeyPair,
     privateToX509,
     publicKey,
+    publicToX509,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -134,6 +137,11 @@ module Simplex.Messaging.Crypto
     -- * Message padding / un-padding
     pad,
     unPad,
+
+    -- * X509 Certificates
+    signCertificate,
+    signX509,
+    SignatureAlgorithmX509 (..),
 
     -- * Cryptography error type
     CryptoError (..),
@@ -263,6 +271,8 @@ instance Eq APublicKey where
 
 deriving instance Show APublicKey
 
+type PublicKeyEd25519 = PublicKey Ed25519
+
 type PublicKeyX25519 = PublicKey X25519
 
 type PublicKeyX448 = PublicKey X448
@@ -277,6 +287,12 @@ data PrivateKey (a :: Algorithm) where
 deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
+
+instance StrEncoding (PrivateKey Ed25519) where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
 
 instance StrEncoding (PrivateKey X25519) where
   strEncode = strEncode . encodePrivKey
@@ -295,6 +311,8 @@ instance Eq APrivateKey where
     Nothing -> False
 
 deriving instance Show APrivateKey
+
+type PrivateKeyEd25519 = PrivateKey Ed25519
 
 type PrivateKeyX25519 = PrivateKey X25519
 
@@ -804,6 +822,10 @@ instance StrEncoding KeyHash where
   strEncode = strEncode . unKeyHash
   strP = KeyHash <$> strP
 
+instance ToJSON KeyHash where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 
@@ -966,6 +988,38 @@ sign' (PrivateKeyEd448 pk k) msg = SignatureEd448 $ Ed448.sign pk k msg
 
 sign :: APrivateSignKey -> ByteString -> ASignature
 sign (APrivateSignKey a k) = ASignature a . sign' k
+
+signCertificate :: APrivateSignKey -> Certificate -> SignedCertificate
+signCertificate = signX509
+
+signX509 :: (ASN1Object o, Eq o, Show o) => APrivateSignKey -> o -> SignedExact o
+signX509 key = fst . objectToSignedExact f
+  where
+    f bytes =
+      ( signatureBytes $ sign key bytes,
+        signatureAlgorithmX509 key,
+        ()
+      )
+
+class SignatureAlgorithmX509 a where
+  signatureAlgorithmX509 :: a -> SignatureALG
+
+instance SignatureAlgorithmX509 (SAlgorithm a) where
+  signatureAlgorithmX509 = \case
+    SEd25519 -> SignatureALG_IntrinsicHash PubKeyALG_Ed25519
+    SEd448 -> SignatureALG_IntrinsicHash PubKeyALG_Ed448
+    SX25519 -> SignatureALG_IntrinsicHash PubKeyALG_X25519
+    SX448 -> SignatureALG_IntrinsicHash PubKeyALG_X448
+
+instance SignatureAlgorithmX509 APrivateSignKey where
+  signatureAlgorithmX509 (APrivateSignKey a _) = signatureAlgorithmX509 a
+
+instance SignatureAlgorithmX509 APublicKey where
+  signatureAlgorithmX509 (APublicKey a _) = signatureAlgorithmX509 a
+
+-- | An instance for 'ASignatureKeyPair' / ('PublicKeyType' pk, pk), without touching its type family.
+instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
+  signatureAlgorithmX509 = signatureAlgorithmX509 . snd
 
 -- | Signature verification.
 --
