@@ -366,14 +366,16 @@ migrateSchema st migrations confirmMigrations = do
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
     run ms = do
+      withConnection st $ \db -> execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);" >> backup
+      Migrations.run st ms
+      pure $ Right ()
+    backup = do
       let f = dbFilePath st
           fWal = f <> "-wal"
           fShm = f <> "-shm"
       copyFile f (f <> ".bak")
       whenM (doesFileExist fWal) $ copyFile fWal (f <> ".bak-wal")
       whenM (doesFileExist fShm) $ copyFile fShm (f <> ".bak-shm")
-      Migrations.run st ms
-      pure $ Right ()
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do
@@ -386,38 +388,27 @@ confirmOrExit s = do
 connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop (connectDB dbFilePath dbKey $ not dbNew)
+  dbConn <- dbBusyLoop (connectDB dbFilePath dbKey)
   atomically $ do
     dbConnection <- newTMVar dbConn
     dbEncrypted <- newTVar . not $ null dbKey
     dbClosed <- newTVar False
     pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew, dbClosed}
 
-connectDB :: FilePath -> String -> Bool -> IO DB.Connection
-connectDB path key checkPageSize = do
+connectDB :: FilePath -> String -> IO DB.Connection
+connectDB path key = do
   db <- DB.open path
   prepare db `onException` DB.close db
   -- _printPragmas db path
   pure db
   where
-    prepare db = do
-      unless (null key) . execSQL_ db $ "PRAGMA key = " <> sqlString key <> ";"
-      when checkPageSize $ maybeFirstRow id (SQL.query_ (DB.conn db) "PRAGMA page_size;") >>= \case
-        Nothing -> pure ()
-        Just (Only (16384 :: Int)) -> pure ()
-        Just _ -> execSQL_ db
-          "PRAGMA wal_checkpoint(TRUNCATE);\n\
-          \PRAGMA journal_mode = DELETE;\n\
-          \PRAGMA page_size = 16384;\n\
-          \VACUUM;\n\
-          \PRAGMA journal_mode = WAL;"
-      execSQL_ db
-        "PRAGMA page_size = 16384;\n\
-        \PRAGMA journal_mode = WAL;\n\
-        \PRAGMA busy_timeout = 100;\n\
-        \PRAGMA foreign_keys = ON;\n\
-        \-- PRAGMA trusted_schema = OFF;\n\
-        \PRAGMA secure_delete = ON;"
+    prepare db = execSQL_ db $
+      (if null key then "" else "PRAGMA key = " <> sqlString key <> ";\n") <>
+      "PRAGMA journal_mode = WAL;\n\
+      \PRAGMA busy_timeout = 100;\n\
+      \PRAGMA foreign_keys = ON;\n\
+      \PRAGMA trusted_schema = OFF;\n\
+      \PRAGMA secure_delete = ON;\n"
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =
@@ -436,7 +427,7 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
         (atomically $ takeTMVar dbConnection)
         (atomically . tryPutTMVar dbConnection)
         $ \DB.Connection {slow} -> do
-          DB.Connection {conn} <- connectDB dbFilePath key False
+          DB.Connection {conn} <- connectDB dbFilePath key
           atomically $ do
             putTMVar dbConnection DB.Connection {conn, slow}
             writeTVar dbClosed False
