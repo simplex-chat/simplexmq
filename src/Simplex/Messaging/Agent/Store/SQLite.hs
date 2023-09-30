@@ -33,6 +33,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     closeSQLiteStore,
     openSQLiteStore,
     checkpointSQLiteStore,
+    backupSQLiteStore,
+    restoreSQLiteStore,
+    removeSQLiteStore,
     setSQLiteModeWAL,
     sqlString,
     execSQL,
@@ -272,9 +275,9 @@ import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, s
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, unlessM, whenM, ($>>=), (<$$>))
 import Simplex.Messaging.Version
-import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
@@ -366,16 +369,43 @@ migrateSchema st migrations confirmMigrations = do
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
     run ms = do
-      withConnection st $ \db -> execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);" >> backup
+      withConnection st $ \db -> do
+        execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);"
+        backupSQLiteStore st
       Migrations.run st ms
       pure $ Right ()
-    backup = do
-      let f = dbFilePath st
-          fWal = f <> "-wal"
-          fShm = f <> "-shm"
-      copyFile f (f <> ".bak")
-      whenM (doesFileExist fWal) $ copyFile fWal (f <> ".bak-wal")
-      whenM (doesFileExist fShm) $ copyFile fShm (f <> ".bak-shm")
+
+-- names are chosen to make .bak file a valid database with WAL files
+backupSQLiteStore :: SQLiteStore -> IO ()
+backupSQLiteStore st = do
+  let f = dbFilePath st
+      fBak = f <> ".bak"
+  copyWhenExists f fBak
+  copyWhenExists (f <> "-wal") (fBak <> "-wal")
+  copyWhenExists (f <> "-shm") (fBak <> "-shm")
+  
+restoreSQLiteStore :: SQLiteStore -> IO ()
+restoreSQLiteStore st = do
+  let f = dbFilePath st
+      fBak = f <> ".bak"
+  copyWhenExists fBak f
+  copyWhenExists (fBak <> "-wal") (f <> "-wal")
+  copyWhenExists (fBak <> "-shm") (f <> "-shm")
+
+copyWhenExists :: FilePath -> FilePath -> IO ()
+copyWhenExists f f' = whenM (doesFileExist f) $ copyFile f f'
+
+removeSQLiteStore :: SQLiteStore -> IO ()
+removeSQLiteStore st = do
+  let f = dbFilePath st
+  removeDB f
+  removeDB (f <> ".bak")
+  where
+    removeDB f = do
+      remove f
+      remove (f <> "-wal")
+      remove (f <> "-shm")
+    remove f = whenM (doesFileExist f) $ removeFile f
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do
@@ -398,11 +428,11 @@ connectSQLiteStore dbFilePath dbKey = do
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
-  prepare db `onException` DB.close db
+  execSQL_ db openSQL `onException` DB.close db
   -- _printPragmas db path
   pure db
   where
-    prepare db = execSQL_ db $
+    openSQL =
       (if null key then "" else "PRAGMA key = " <> sqlString key <> ";\n") <>
       "PRAGMA journal_mode = WAL;\n\
       \PRAGMA busy_timeout = 100;\n\
@@ -414,7 +444,6 @@ closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =
   ifM (readTVarIO dbClosed) (putStrLn "closeSQLiteStore: already closed") $
     withConnection st $ \db -> do
-      execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);"
       DB.close db
       atomically $ writeTVar dbClosed True
 
@@ -433,7 +462,7 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
             writeTVar dbClosed False
 
 checkpointSQLiteStore :: SQLiteStore -> IO ()
-checkpointSQLiteStore st =
+checkpointSQLiteStore st = unlessM (readTVarIO $ dbClosed st) $
   withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
 
 setSQLiteModeWAL :: SQLiteStore -> Bool -> IO ()
