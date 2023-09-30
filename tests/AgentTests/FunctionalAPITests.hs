@@ -199,7 +199,7 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
-    xdescribe "Ratchet synchronization" $ do
+    describe "Ratchet synchronization" $ do
       it "should report ratchet de-synchronization, synchronize ratchets" $
         testRatchetSync t
       it "should synchronize ratchets after server being offline" $
