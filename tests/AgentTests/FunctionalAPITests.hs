@@ -48,10 +48,10 @@ import Data.Type.Equality
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, )
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
-import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
+import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), checkpointSQLiteStore)
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -837,7 +837,9 @@ setupDesynchronizedRatchet alice bob = do
     get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
     ackMessage alice bobId 5 Nothing
 
-    liftIO $ copyFile testDB2 (testDB2 <> ".bak")
+    liftIO $ do
+      checkpointSQLiteStore $ agentClientStore bob
+      copyFile testDB2 (testDB2 <> ".bak")
 
     6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
     get alice ##> ("", bobId, SENT 6)
