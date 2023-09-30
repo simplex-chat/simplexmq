@@ -29,19 +29,17 @@ import qualified Time.System as Hourglass
 --   pure $ tlsCredentials (leaf :| [ca])
 -- @
 tlsCredentials :: NonEmpty Credentials -> (C.KeyHash, TLS.Credentials)
-tlsCredentials credentials = (C.KeyHash rootFP, TLS.Credentials [(X509.CertificateChain certs, C.toPrivKey privateToTls $ snd leafKey)])
+tlsCredentials credentials = (C.KeyHash rootFP, TLS.Credentials [(X509.CertificateChain certs, privateToTls $ snd leafKey)])
   where
     Fingerprint rootFP = getFingerprint root X509.HashSHA256
     leafKey = fst $ NE.head credentials
     root = snd $ NE.last credentials
     certs = map snd $ NE.toList credentials
 
-privateToTls :: C.PrivateKey a -> TLS.PrivKey
-privateToTls = \case
+privateToTls :: C.APrivateSignKey -> TLS.PrivKey
+privateToTls (C.APrivateSignKey _ k) = case k of
   C.PrivateKeyEd25519 secret _ -> TLS.PrivKeyEd25519 secret
   C.PrivateKeyEd448 secret _ -> TLS.PrivKeyEd448 secret
-  C.PrivateKeyX25519 secret _ -> TLS.PrivKeyX25519 secret
-  C.PrivateKeyX448 secret _ -> TLS.PrivKeyX448 secret
 
 type Credentials = (C.ASignatureKeyPair, X509.SignedCertificate)
 

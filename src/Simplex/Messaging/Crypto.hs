@@ -1004,18 +1004,16 @@ signX509 key = fst . objectToSignedExact f
 class SignatureAlgorithmX509 a where
   signatureAlgorithmX509 :: a -> SignatureALG
 
-instance SignatureAlgorithmX509 (SAlgorithm a) where
+instance SignatureAlgorithm a => SignatureAlgorithmX509 (SAlgorithm a) where
   signatureAlgorithmX509 = \case
     SEd25519 -> SignatureALG_IntrinsicHash PubKeyALG_Ed25519
     SEd448 -> SignatureALG_IntrinsicHash PubKeyALG_Ed448
-    SX25519 -> SignatureALG_IntrinsicHash PubKeyALG_X25519
-    SX448 -> SignatureALG_IntrinsicHash PubKeyALG_X448
 
 instance SignatureAlgorithmX509 APrivateSignKey where
   signatureAlgorithmX509 (APrivateSignKey a _) = signatureAlgorithmX509 a
 
-instance SignatureAlgorithmX509 APublicKey where
-  signatureAlgorithmX509 (APublicKey a _) = signatureAlgorithmX509 a
+instance SignatureAlgorithmX509 APublicVerifyKey where
+  signatureAlgorithmX509 (APublicVerifyKey a _) = signatureAlgorithmX509 a
 
 -- | An instance for 'ASignatureKeyPair' / ('PublicKeyType' pk, pk), without touching its type family.
 instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
