@@ -66,6 +66,7 @@ module Simplex.Messaging.Crypto
     generateDhKeyPair,
     privateToX509,
     publicKey,
+    signatureKeyPair,
     publicToX509,
 
     -- * key encoding/decoding
@@ -561,6 +562,10 @@ publicKey = \case
   PrivateKeyEd448 _ k -> PublicKeyEd448 k
   PrivateKeyX25519 _ k -> PublicKeyX25519 k
   PrivateKeyX448 _ k -> PublicKeyX448 k
+
+-- | Expand signature private key to a key pair.
+signatureKeyPair :: APrivateSignKey -> ASignatureKeyPair
+signatureKeyPair ak@(APrivateSignKey a k) = (APublicVerifyKey a (publicKey k), ak)
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
