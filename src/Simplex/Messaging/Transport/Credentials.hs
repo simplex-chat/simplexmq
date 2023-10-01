@@ -11,9 +11,12 @@ module Simplex.Messaging.Transport.Credentials
 where
 
 import Data.ASN1.Types (getObjectID)
+import Data.ASN1.Types.String (ASN1StringEncoding (UTF8))
 import Data.Hourglass (Hours (..), timeAdd)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
+import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import qualified Network.TLS as TLS
@@ -43,7 +46,7 @@ privateToTls (C.APrivateSignKey _ k) = case k of
 
 type Credentials = (C.ASignatureKeyPair, X509.SignedCertificate)
 
-genCredentials :: Maybe Credentials -> (Hours, Hours) -> X509.ASN1CharacterString -> IO Credentials
+genCredentials :: Maybe Credentials -> (Hours, Hours) -> Text -> IO Credentials
 genCredentials parent (before, after) subjectName = do
   subjectKeys <- C.generateSignatureKeyPair C.SEd25519
   let (issuerKeys, issuer) = case parent of
@@ -65,7 +68,7 @@ genCredentials parent (before, after) subjectName = do
             }
   pure (subjectKeys, signed)
   where
-    subject = dn subjectName
+    subject = dn $ X509.ASN1CharacterString {X509.characterEncoding = UTF8, X509.getCharacterStringRawData = encodeUtf8 subjectName}
     dn dnCommonName =
       X509.DistinguishedName
         [ (getObjectID X509.DnCommonName, dnCommonName)

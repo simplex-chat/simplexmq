@@ -139,9 +139,14 @@ module Simplex.Messaging.Crypto
     unPad,
 
     -- * X509 Certificates
+    SignedCertificate,
+    Certificate,
     signCertificate,
     signX509,
+    certificateFingerprint,
+    signedFingerprint,
     SignatureAlgorithmX509 (..),
+    SignedObject (..),
 
     -- * Cryptography error type
     CryptoError (..),
@@ -164,7 +169,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256, SHA512, hash)
+import Crypto.Hash (Digest, SHA256 (..), SHA512, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -191,6 +196,7 @@ import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
 import Data.X509
+import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
@@ -1001,6 +1007,15 @@ signX509 key = fst . objectToSignedExact f
         ()
       )
 
+-- XXX: By now, 'KeyHash' really, really isn't...
+certificateFingerprint :: SignedCertificate -> KeyHash
+certificateFingerprint = signedFingerprint
+
+signedFingerprint :: (ASN1Object o, Eq o, Show o) => SignedExact o -> KeyHash
+signedFingerprint o = KeyHash fp
+  where
+    Fingerprint fp = getFingerprint o HashSHA256
+
 class SignatureAlgorithmX509 a where
   signatureAlgorithmX509 :: a -> SignatureALG
 
@@ -1018,6 +1033,15 @@ instance SignatureAlgorithmX509 APublicVerifyKey where
 -- | An instance for 'ASignatureKeyPair' / ('PublicKeyType' pk, pk), without touching its type family.
 instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
   signatureAlgorithmX509 = signatureAlgorithmX509 . snd
+
+-- | A wrapper to marshall signed ASN1 objects, like certificates.
+newtype SignedObject a = SignedObject (SignedExact a)
+
+instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+  fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
+
+instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
+  toField (SignedObject s) = toField $ encodeSignedObject s
 
 -- | Signature verification.
 --
