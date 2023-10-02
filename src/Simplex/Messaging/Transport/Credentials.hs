@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -57,19 +58,16 @@ genCredentials parent (before, after) subjectName = do
         C.signCertificate
           (snd issuerKeys)
           X509.Certificate
-            { X509.certVersion = 2,
-              X509.certSerial = 1,
-              X509.certSignatureAlg = C.signatureAlgorithmX509 issuerKeys,
-              X509.certIssuerDN = issuer,
-              X509.certValidity = (timeAdd today (-before), timeAdd today after),
-              X509.certSubjectDN = subject,
-              X509.certPubKey = C.toPubKey C.publicToX509 $ fst subjectKeys,
-              X509.certExtensions = X509.Extensions Nothing
+            { certVersion = 2,
+              certSerial = 1,
+              certSignatureAlg = C.signatureAlgorithmX509 issuerKeys,
+              certIssuerDN = issuer,
+              certValidity = (timeAdd today (-before), timeAdd today after),
+              certSubjectDN = subject,
+              certPubKey = C.toPubKey C.publicToX509 $ fst subjectKeys,
+              certExtensions = X509.Extensions Nothing
             }
   pure (subjectKeys, signed)
   where
-    subject = dn $ X509.ASN1CharacterString {X509.characterEncoding = UTF8, X509.getCharacterStringRawData = encodeUtf8 subjectName}
-    dn dnCommonName =
-      X509.DistinguishedName
-        [ (getObjectID X509.DnCommonName, dnCommonName)
-        ]
+    subject = dn $ X509.ASN1CharacterString {characterEncoding = UTF8, getCharacterStringRawData = encodeUtf8 subjectName}
+    dn dnCommonName = X509.DistinguishedName [(getObjectID X509.DnCommonName, dnCommonName)]
