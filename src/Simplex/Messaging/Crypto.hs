@@ -1010,7 +1010,6 @@ signX509 key = fst . objectToSignedExact f
         ()
       )
 
--- XXX: By now, 'KeyHash' really, really isn't...
 certificateFingerprint :: SignedCertificate -> KeyHash
 certificateFingerprint = signedFingerprint
 
