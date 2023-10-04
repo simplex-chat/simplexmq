@@ -27,6 +27,7 @@ data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
     dbEncrypted :: TVar Bool,
     dbConnection :: TMVar DB.Connection,
+    dbClosed :: TVar Bool,
     dbNew :: Bool
   }
 

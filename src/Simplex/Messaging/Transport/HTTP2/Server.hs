@@ -12,7 +12,7 @@ import qualified Network.HTTP2.Server as H
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Transport (SessionId)
+import Simplex.Messaging.Transport (SessionId, TLS)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
 
@@ -60,7 +60,11 @@ closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
 runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.ServerParams -> TransportServerConfig -> HTTP2ServerFunc -> IO ()
-runHTTP2Server started port bufferSize serverParams transportConfig http2Server =
-  runTransportServer started port serverParams transportConfig $ withHTTP2 bufferSize run
+runHTTP2Server started port bufferSize serverParams transportConfig = runHTTP2ServerWith bufferSize setup
+  where
+    setup = runTransportServer started port serverParams transportConfig
+
+runHTTP2ServerWith :: BufferSize -> ((TLS -> IO ()) -> a) -> (SessionId -> Request -> (Response -> IO ()) -> IO ()) -> a
+runHTTP2ServerWith bufferSize setup http2Server = setup $ withHTTP2 bufferSize run
   where
     run cfg sessId = H.run cfg $ \req _aux sendResp -> http2Server sessId req (`sendResp` [])
