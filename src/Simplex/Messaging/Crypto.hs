@@ -835,6 +835,9 @@ instance ToJSON KeyHash where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
+instance FromJSON KeyHash where
+  parseJSON = strParseJSON "KeyHash"
+
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 

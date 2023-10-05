@@ -727,19 +727,21 @@ data ProtocolTestStep
   | TSDeleteFile
   deriving (Eq, Show, Generic)
 
-instance FromJSON ProtocolTestStep where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TS"
-
 instance ToJSON ProtocolTestStep where
   toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
   toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
+
+instance FromJSON ProtocolTestStep where
+  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TS"
 
 data ProtocolTestFailure = ProtocolTestFailure
   { testStep :: ProtocolTestStep,
     testError :: AgentErrorType
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromJSON)
 
+instance ToJSON ProtocolTestFailure where toEncoding = J.genericToEncoding J.defaultOptions
+  
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
@@ -1355,8 +1357,9 @@ withNextSrv c userId usedSrvs initUsed action = do
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show, Generic)
 
-instance FromJSON SubInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+instance FromJSON SubInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 
 data SubscriptionsInfo = SubscriptionsInfo
   { activeSubscriptions :: [SubInfo],
@@ -1365,8 +1368,9 @@ data SubscriptionsInfo = SubscriptionsInfo
   }
   deriving (Show, Generic)
 
-instance FromJSON SubscriptionsInfo where parseJSON = J.genericParseJSON J.defaultOptions
 instance ToJSON SubscriptionsInfo where toEncoding = J.genericToEncoding J.defaultOptions
+
+instance FromJSON SubscriptionsInfo where parseJSON = J.genericParseJSON J.defaultOptions
 
 getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo
 getAgentSubscriptions c = do

@@ -302,10 +302,12 @@ instance ToJSON MigrationError where
   toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
 
 data UpMigration = UpMigration {upName :: String, withDown :: Bool}
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromJSON)
 
 upMigration :: Migration -> UpMigration
 upMigration Migration {name, down} = UpMigration name $ isJust down
+
+instance ToJSON UpMigration where toEncoding = J.genericToEncoding J.defaultOptions
 
 data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
   deriving (Eq, Show)

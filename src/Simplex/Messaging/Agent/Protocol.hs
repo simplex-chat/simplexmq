@@ -616,8 +616,9 @@ data RcvQueueInfo = RcvQueueInfo
   }
   deriving (Eq, Show, Generic)
 
-instance FromJSON RcvQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+instance FromJSON RcvQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding RcvQueueInfo where
   strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch} =
@@ -636,8 +637,9 @@ data SndQueueInfo = SndQueueInfo
   }
   deriving (Eq, Show, Generic)
 
-instance FromJSON SndQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+instance FromJSON SndQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
 
 instance StrEncoding SndQueueInfo where
   strEncode SndQueueInfo {sndServer, sndSwitchStatus} =
@@ -654,7 +656,9 @@ data ConnectionStats = ConnectionStats
     ratchetSyncState :: RatchetSyncState,
     ratchetSyncSupported :: Bool
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
 instance StrEncoding ConnectionStats where
   strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
@@ -684,12 +688,12 @@ instance StrEncoding NotificationsMode where
       "INSTANT" -> pure NMInstant
       _ -> fail "bad NotificationsMode"
 
-instance FromJSON NotificationsMode where
-  parseJSON = strParseJSON "NotificationsMode"
-
 instance ToJSON NotificationsMode where
   toEncoding = strToJEncoding
   toJSON = strToJSON
+
+instance FromJSON NotificationsMode where
+  parseJSON = strParseJSON "NotificationsMode"
 
 instance ToField NotificationsMode where toField = toField . strEncode
 
@@ -1049,12 +1053,12 @@ instance StrEncoding MsgReceiptStatus where
       "badMsgHash" -> pure MRBadMsgHash
       _ -> fail "bad MsgReceiptStatus"
 
-instance FromJSON MsgReceiptStatus where
-  parseJSON = strParseJSON "MsgReceiptStatus"
-
 instance ToJSON MsgReceiptStatus where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance FromJSON MsgReceiptStatus where
+  parseJSON = strParseJSON "MsgReceiptStatus"
 
 type MsgReceiptInfo = ByteString
 
@@ -1452,12 +1456,12 @@ data AgentErrorType
     INACTIVE
   deriving (Eq, Generic, Show, Exception)
 
-instance FromJSON AgentErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON AgentErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON AgentErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 -- | SMP agent protocol command or response error.
 data CommandErrorType
@@ -1473,12 +1477,12 @@ data CommandErrorType
     LARGE
   deriving (Eq, Generic, Read, Show, Exception)
 
-instance FromJSON CommandErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON CommandErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON CommandErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 -- | Connection error.
 data ConnectionErrorType
@@ -1494,12 +1498,12 @@ data ConnectionErrorType
     NOT_AVAILABLE
   deriving (Eq, Generic, Read, Show, Exception)
 
-instance FromJSON ConnectionErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON ConnectionErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON ConnectionErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 -- | SMP server errors.
 data BrokerErrorType
@@ -1517,12 +1521,12 @@ data BrokerErrorType
     TIMEOUT
   deriving (Eq, Generic, Read, Show, Exception)
 
-instance FromJSON BrokerErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON BrokerErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON BrokerErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 -- | Errors of another SMP agent.
 data SMPAgentError
@@ -1554,12 +1558,12 @@ data AgentCryptoError
     RATCHET_SKIPPED Word32
   deriving (Eq, Generic, Read, Show, Exception)
 
-instance FromJSON AgentCryptoError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON AgentCryptoError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON AgentCryptoError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance StrEncoding AgentCryptoError where
   strP =
@@ -1575,12 +1579,12 @@ instance StrEncoding AgentCryptoError where
     RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
     RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
 
-instance FromJSON SMPAgentError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON SMPAgentError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON SMPAgentError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance StrEncoding AgentErrorType where
   strP =

@@ -357,12 +357,12 @@ data XFTPErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
 
-instance FromJSON XFTPErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON XFTPErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON XFTPErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance StrEncoding XFTPErrorType where
   strEncode = \case

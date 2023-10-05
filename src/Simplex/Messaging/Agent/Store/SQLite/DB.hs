@@ -20,7 +20,8 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
-import Data.Aeson (FromJSON, ToJSON (..))
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import Data.Int (Int64)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
@@ -40,7 +41,9 @@ data SlowQueryStats = SlowQueryStats
     timeMax :: Int64,
     timeAvg :: Int64
   }
-  deriving (Show, Generic, FromJSON, ToJSON)
+  deriving (Show, Generic, FromJSON)
+
+instance ToJSON SlowQueryStats where toEncoding = J.genericToEncoding J.defaultOptions
 
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do

@@ -286,12 +286,12 @@ data TransportError
     TEHandshake {handshakeErr :: HandshakeError}
   deriving (Eq, Generic, Read, Show, Exception)
 
-instance FromJSON TransportError where
-  parseJSON = J.genericParseJSON . sumTypeJSON $ dropPrefix "TE"
-
 instance ToJSON TransportError where
   toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "TE"
   toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "TE"
+
+instance FromJSON TransportError where
+  parseJSON = J.genericParseJSON . sumTypeJSON $ dropPrefix "TE"
 
 -- | Transport handshake error.
 data HandshakeError
@@ -303,12 +303,12 @@ data HandshakeError
     IDENTITY
   deriving (Eq, Generic, Read, Show, Exception)
 
-instance FromJSON HandshakeError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON HandshakeError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON HandshakeError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
 

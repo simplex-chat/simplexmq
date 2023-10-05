@@ -472,7 +472,9 @@ instance Encoding NMsgMeta where
 
 -- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
 
 -- this encoding should not become bigger than 7 bytes (currently it is 1 byte)
 instance Encoding MsgFlags where
@@ -736,12 +738,15 @@ instance ProtocolTypeI p => ToJSON (SProtocolType p) where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
-instance FromJSON AProtocolType where
-  parseJSON = strParseJSON "AProtocolType"
+instance ProtocolTypeI p => FromJSON (SProtocolType p) where
+  parseJSON = strParseJSON "SProtocolType"
 
 instance ToJSON AProtocolType where
   toEncoding = strToJEncoding
   toJSON = strToJSON
+
+instance FromJSON AProtocolType where
+  parseJSON = strParseJSON "AProtocolType"
 
 checkProtocolType :: forall t p p'. (ProtocolTypeI p, ProtocolTypeI p') => t p' -> Either String (t p)
 checkProtocolType p = case testEquality (protocolTypeI @p) (protocolTypeI @p') of
@@ -919,6 +924,9 @@ instance ToJSON CorrId where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance FromJSON CorrId where
+  parseJSON = strParseJSON "CorrId"
+
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
@@ -991,12 +999,12 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Generic, Read, Show)
 
-instance FromJSON ErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON ErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON ErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance StrEncoding ErrorType where
   strEncode = \case
@@ -1020,12 +1028,12 @@ data CommandError
     NO_ENTITY
   deriving (Eq, Generic, Read, Show)
 
-instance FromJSON CommandError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
 instance ToJSON CommandError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON CommandError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 

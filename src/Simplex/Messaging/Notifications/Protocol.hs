@@ -404,15 +404,15 @@ instance StrEncoding DeviceToken where
         A.takeWhile (\c -> A.isDigit c || (c >= 'a' && c <= 'f')) >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
-instance FromJSON DeviceToken where
-  parseJSON = J.withObject "DeviceToken" $ \o -> do
-    pp <- o .: "pushProvider" >>= either fail pure . strDecode . encodeUtf8
-    t <- encodeUtf8 <$> o .: "token"
-    pure $ DeviceToken pp t
-
 instance ToJSON DeviceToken where
   toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
   toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
+
+instance FromJSON DeviceToken where
+  parseJSON = J.withObject "DeviceToken" $ \o -> do
+    pp <- strDecode . encodeUtf8 <$?> o .: "pushProvider"
+    t <- encodeUtf8 <$> o .: "token"
+    pure $ DeviceToken pp t
 
 type NtfEntityId = ByteString
 
