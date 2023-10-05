@@ -40,6 +40,8 @@ module Simplex.Messaging.Crypto
     DhAlgorithm,
     PrivateKey (..),
     PublicKey (..),
+    PrivateKeyEd25519,
+    PublicKeyEd25519,
     PrivateKeyX25519,
     PublicKeyX25519,
     PrivateKeyX448,
@@ -64,6 +66,8 @@ module Simplex.Messaging.Crypto
     generateDhKeyPair,
     privateToX509,
     publicKey,
+    signatureKeyPair,
+    publicToX509,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -135,6 +139,16 @@ module Simplex.Messaging.Crypto
     pad,
     unPad,
 
+    -- * X509 Certificates
+    SignedCertificate,
+    Certificate,
+    signCertificate,
+    signX509,
+    certificateFingerprint,
+    signedFingerprint,
+    SignatureAlgorithmX509 (..),
+    SignedObject (..),
+
     -- * Cryptography error type
     CryptoError (..),
 
@@ -155,7 +169,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256, SHA512, hash)
+import Crypto.Hash (Digest, SHA256 (..), SHA512, hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -182,6 +196,7 @@ import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
 import Data.X509
+import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
@@ -262,6 +277,8 @@ instance Eq APublicKey where
 
 deriving instance Show APublicKey
 
+type PublicKeyEd25519 = PublicKey Ed25519
+
 type PublicKeyX25519 = PublicKey X25519
 
 type PublicKeyX448 = PublicKey X448
@@ -277,6 +294,10 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
+-- XXX: Do not enable, may acidentally leak key data
+-- instance StrEncoding (PrivateKey Ed25519) where
+
+-- XXX: used in notification store log
 instance StrEncoding (PrivateKey X25519) where
   strEncode = strEncode . encodePrivKey
   {-# INLINE strEncode #-}
@@ -294,6 +315,8 @@ instance Eq APrivateKey where
     Nothing -> False
 
 deriving instance Show APrivateKey
+
+type PrivateKeyEd25519 = PrivateKey Ed25519
 
 type PrivateKeyX25519 = PrivateKey X25519
 
@@ -536,6 +559,10 @@ publicKey = \case
   PrivateKeyEd448 _ k -> PublicKeyEd448 k
   PrivateKeyX25519 _ k -> PublicKeyX25519 k
   PrivateKeyX448 _ k -> PublicKeyX448 k
+
+-- | Expand signature private key to a key pair.
+signatureKeyPair :: APrivateSignKey -> ASignatureKeyPair
+signatureKeyPair ak@(APrivateSignKey a k) = (APublicVerifyKey a (publicKey k), ak)
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
@@ -803,6 +830,10 @@ instance StrEncoding KeyHash where
   strEncode = strEncode . unKeyHash
   strP = KeyHash <$> strP
 
+instance ToJSON KeyHash where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 
@@ -965,6 +996,53 @@ sign' (PrivateKeyEd448 pk k) msg = SignatureEd448 $ Ed448.sign pk k msg
 
 sign :: APrivateSignKey -> ByteString -> ASignature
 sign (APrivateSignKey a k) = ASignature a . sign' k
+
+signCertificate :: APrivateSignKey -> Certificate -> SignedCertificate
+signCertificate = signX509
+
+signX509 :: (ASN1Object o, Eq o, Show o) => APrivateSignKey -> o -> SignedExact o
+signX509 key = fst . objectToSignedExact f
+  where
+    f bytes =
+      ( signatureBytes $ sign key bytes,
+        signatureAlgorithmX509 key,
+        ()
+      )
+
+certificateFingerprint :: SignedCertificate -> KeyHash
+certificateFingerprint = signedFingerprint
+
+signedFingerprint :: (ASN1Object o, Eq o, Show o) => SignedExact o -> KeyHash
+signedFingerprint o = KeyHash fp
+  where
+    Fingerprint fp = getFingerprint o HashSHA256
+
+class SignatureAlgorithmX509 a where
+  signatureAlgorithmX509 :: a -> SignatureALG
+
+instance SignatureAlgorithm a => SignatureAlgorithmX509 (SAlgorithm a) where
+  signatureAlgorithmX509 = \case
+    SEd25519 -> SignatureALG_IntrinsicHash PubKeyALG_Ed25519
+    SEd448 -> SignatureALG_IntrinsicHash PubKeyALG_Ed448
+
+instance SignatureAlgorithmX509 APrivateSignKey where
+  signatureAlgorithmX509 (APrivateSignKey a _) = signatureAlgorithmX509 a
+
+instance SignatureAlgorithmX509 APublicVerifyKey where
+  signatureAlgorithmX509 (APublicVerifyKey a _) = signatureAlgorithmX509 a
+
+-- | An instance for 'ASignatureKeyPair' / ('PublicKeyType' pk, pk), without touching its type family.
+instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
+  signatureAlgorithmX509 = signatureAlgorithmX509 . snd
+
+-- | A wrapper to marshall signed ASN1 objects, like certificates.
+newtype SignedObject a = SignedObject (SignedExact a)
+
+instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+  fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
+
+instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
+  toField (SignedObject s) = toField $ encodeSignedObject s
 
 -- | Signature verification.
 --
