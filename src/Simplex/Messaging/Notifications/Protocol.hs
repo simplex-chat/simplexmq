@@ -11,7 +11,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
-import Data.Aeson (FromJSON (..), ToJSON (..), (.=))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -408,6 +408,12 @@ instance ToJSON DeviceToken where
   toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
   toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
 
+instance FromJSON DeviceToken where
+  parseJSON = J.withObject "DeviceToken" $ \o -> do
+    pp <- strDecode . encodeUtf8 <$?> o .: "pushProvider"
+    t <- encodeUtf8 <$> o .: "token"
+    pure $ DeviceToken pp t
+
 type NtfEntityId = ByteString
 
 type NtfSubscriptionId = NtfEntityId
@@ -510,6 +516,9 @@ instance ToJSON NtfTknStatus where
   toEncoding = JE.text . decodeLatin1 . smpEncode
   toJSON = J.String . decodeLatin1 . smpEncode
 
+instance FromJSON NtfTknStatus where
+  parseJSON = J.withText "NtfTknStatus" $ either fail pure . smpDecode . encodeUtf8
+    
 checkEntity :: forall t e e'. (NtfEntityI e, NtfEntityI e') => t e' -> Either String (t e)
 checkEntity c = case testEquality (sNtfEntity @e) (sNtfEntity @e') of
   Just Refl -> Right c

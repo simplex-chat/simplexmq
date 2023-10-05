@@ -63,7 +63,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
-import Data.Aeson (ToJSON)
+import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
@@ -219,7 +219,7 @@ instance Transport TLS where
   cGet :: TLS -> Int -> IO ByteString
   cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
-      
+
   cPut :: TLS -> ByteString -> IO ()
   cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
     withTimedErr t_ . T.sendData tlsContext $ BL.fromStrict s
@@ -290,6 +290,9 @@ instance ToJSON TransportError where
   toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "TE"
   toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "TE"
 
+instance FromJSON TransportError where
+  parseJSON = J.genericParseJSON . sumTypeJSON $ dropPrefix "TE"
+
 -- | Transport handshake error.
 data HandshakeError
   = -- | parsing error
@@ -303,6 +306,9 @@ data HandshakeError
 instance ToJSON HandshakeError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON HandshakeError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
 
