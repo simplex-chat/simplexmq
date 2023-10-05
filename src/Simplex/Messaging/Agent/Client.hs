@@ -280,7 +280,7 @@ data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
-  deriving (Show, Generic)
+  deriving (Show, Generic, FromJSON)
 
 instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
 

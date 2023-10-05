@@ -516,6 +516,9 @@ instance ToJSON NtfTknStatus where
   toEncoding = JE.text . decodeLatin1 . smpEncode
   toJSON = J.String . decodeLatin1 . smpEncode
 
+instance FromJSON NtfTknStatus where
+  parseJSON = J.withText "NtfTknStatus" $ either fail pure . smpDecode . encodeUtf8
+    
 checkEntity :: forall t e e'. (NtfEntityI e, NtfEntityI e') => t e' -> Either String (t e)
 checkEntity c = case testEquality (sNtfEntity @e) (sNtfEntity @e') of
   Just Refl -> Right c
