@@ -361,6 +361,9 @@ instance ToJSON XFTPErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance FromJSON XFTPErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance StrEncoding XFTPErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e

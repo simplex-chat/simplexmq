@@ -89,6 +89,9 @@ instance ToJSON TransportHost where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
+instance FromJSON TransportHost where
+  parseJSON = strParseJSON "TransportHost"
+
 newtype TransportHosts = TransportHosts {thList :: NonEmpty TransportHost}
 
 instance StrEncoding TransportHosts where

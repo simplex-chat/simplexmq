@@ -294,10 +294,10 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
--- XXX: Do not enable, may acidentally leak key data
+-- Do not enable, to avoid leaking key data
 -- instance StrEncoding (PrivateKey Ed25519) where
 
--- XXX: used in notification store log
+-- Used in notification store log
 instance StrEncoding (PrivateKey X25519) where
   strEncode = strEncode . encodePrivKey
   {-# INLINE strEncode #-}
@@ -833,6 +833,9 @@ instance StrEncoding KeyHash where
 instance ToJSON KeyHash where
   toEncoding = strToJEncoding
   toJSON = strToJSON
+
+instance FromJSON KeyHash where
+  parseJSON = strParseJSON "KeyHash"
 
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP

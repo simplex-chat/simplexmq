@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
@@ -19,7 +20,7 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
-import Data.Aeson (ToJSON (..))
+import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.Int (Int64)
 import Data.Time (diffUTCTime, getCurrentTime)
@@ -40,7 +41,7 @@ data SlowQueryStats = SlowQueryStats
     timeMax :: Int64,
     timeAvg :: Int64
   }
-  deriving (Show, Generic)
+  deriving (Show, Generic, FromJSON)
 
 instance ToJSON SlowQueryStats where toEncoding = J.genericToEncoding J.defaultOptions
 

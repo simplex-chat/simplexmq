@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -471,7 +472,7 @@ instance Encoding NMsgMeta where
 
 -- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Generic, FromJSON)
 
 instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
 
@@ -737,9 +738,15 @@ instance ProtocolTypeI p => ToJSON (SProtocolType p) where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
+instance ProtocolTypeI p => FromJSON (SProtocolType p) where
+  parseJSON = strParseJSON "SProtocolType"
+
 instance ToJSON AProtocolType where
   toEncoding = strToJEncoding
   toJSON = strToJSON
+
+instance FromJSON AProtocolType where
+  parseJSON = strParseJSON "AProtocolType"
 
 checkProtocolType :: forall t p p'. (ProtocolTypeI p, ProtocolTypeI p') => t p' -> Either String (t p)
 checkProtocolType p = case testEquality (protocolTypeI @p) (protocolTypeI @p') of
@@ -917,6 +924,9 @@ instance ToJSON CorrId where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance FromJSON CorrId where
+  parseJSON = strParseJSON "CorrId"
+
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
@@ -993,6 +1003,9 @@ instance ToJSON ErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance FromJSON ErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance StrEncoding ErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
@@ -1018,6 +1031,9 @@ data CommandError
 instance ToJSON CommandError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON CommandError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
