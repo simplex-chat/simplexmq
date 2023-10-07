@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.35.1.
+-- This file has been generated from package.yaml by hpack version 0.35.2.
 --
 -- see: https://github.com/sol/hpack
 
@@ -146,7 +146,7 @@ library
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
   build-depends:
       QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -211,7 +211,7 @@ executable ntf-server
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -277,7 +277,7 @@ executable smp-agent
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -343,7 +343,7 @@ executable smp-server
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -409,7 +409,7 @@ executable xftp
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -475,7 +475,7 @@ executable xftp-server
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -570,7 +570,7 @@ test-suite simplexmq-test
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*
-    , aeson ==2.0.*
+    , aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
