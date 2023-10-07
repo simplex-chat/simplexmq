@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Parsers where
 
@@ -13,6 +14,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum, toLower)
+import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
@@ -107,17 +109,21 @@ enumJSON tagModifier =
       J.allNullaryToStringTag = True
     }
 
+-- used in platform-specific encoding, includes tag for single-field encoding of sum types to allow conversion to tagged objects
 sumTypeJSON :: (String -> String) -> J.Options
 #if defined(darwin_HOST_OS) && defined(swiftJSON)
-sumTypeJSON = singleFieldJSON
+sumTypeJSON = singleFieldJSON_ $ Just SingleFieldJSONTag
 #else
 sumTypeJSON = taggedObjectJSON
 #endif
 
+pattern SingleFieldJSONTag :: (Eq a, IsString a) => a
+pattern SingleFieldJSONTag = "_owsf"
+
 taggedObjectJSON :: (String -> String) -> J.Options
 taggedObjectJSON tagModifier =
   J.defaultOptions
-    { J.sumEncoding = J.TaggedObject "type" "data",
+    { J.sumEncoding = J.TaggedObject TaggedObjectJSONTag TaggedObjectJSONData,
       J.tagSingleConstructors = True,
       J.constructorTagModifier = tagModifier,
       J.allNullaryToStringTag = False,
@@ -125,10 +131,20 @@ taggedObjectJSON tagModifier =
       J.omitNothingFields = True
     }
 
+pattern TaggedObjectJSONTag :: (Eq a, IsString a) => a
+pattern TaggedObjectJSONTag = "type"
+
+pattern TaggedObjectJSONData :: (Eq a, IsString a) => a
+pattern TaggedObjectJSONData = "data"
+
+-- used in platform independent encoding, doesn't include tag for single-field encoding of sum types
 singleFieldJSON :: (String -> String) -> J.Options
-singleFieldJSON tagModifier =
+singleFieldJSON = singleFieldJSON_ Nothing
+
+singleFieldJSON_ :: Maybe String -> (String -> String) -> J.Options
+singleFieldJSON_ objectTag tagModifier =
   J.defaultOptions
-    { J.sumEncoding = J.ObjectWithSingleField,
+    { J.sumEncoding = J.ObjectWithSingleField objectTag,
       J.tagSingleConstructors = True,
       J.constructorTagModifier = tagModifier,
       J.allNullaryToStringTag = False,

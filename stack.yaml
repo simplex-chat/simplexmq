@@ -47,7 +47,7 @@ extra-deps:
   - text-short-0.1.5@sha256:962c6228555debdc46f758d0317dea16e5240d01419b42966674b08a5c3d8fa6,3498
   - time-compat-1.9.6.1@sha256:42d8f2e08e965e1718917d54ad69e1d06bd4b87d66c41dc7410f59313dba4ed1,5033
   - github: simplex-chat/aeson
-    commit: 68330dce8208173c6acf5f62b23acb500ab5d873
+    commit: aab7b5a14d6c5ea64c64dcaee418de1bb00dcc2b
   - github: kazu-yamamoto/http2
     commit: b5a1b7200cf5bc7044af34ba325284271f6dff25
   # - ../direct-sqlcipher

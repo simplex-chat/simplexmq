@@ -618,6 +618,8 @@ data RcvQueueInfo = RcvQueueInfo
 
 instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
+instance FromJSON RcvQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
+
 instance StrEncoding RcvQueueInfo where
   strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch} =
     "srv=" <> strEncode rcvServer
@@ -637,6 +639,8 @@ data SndQueueInfo = SndQueueInfo
 
 instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
+instance FromJSON SndQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
+
 instance StrEncoding SndQueueInfo where
   strEncode SndQueueInfo {sndServer, sndSwitchStatus} =
     "srv=" <> strEncode sndServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) sndSwitchStatus
@@ -652,7 +656,9 @@ data ConnectionStats = ConnectionStats
     ratchetSyncState :: RatchetSyncState,
     ratchetSyncSupported :: Bool
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
 instance StrEncoding ConnectionStats where
   strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
@@ -668,8 +674,6 @@ instance StrEncoding ConnectionStats where
     ratchetSyncState <- " sync=" *> strP
     ratchetSyncSupported <- " sync_supported=" *> strP
     pure ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported}
-
-instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
 data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
@@ -687,6 +691,9 @@ instance StrEncoding NotificationsMode where
 instance ToJSON NotificationsMode where
   toEncoding = strToJEncoding
   toJSON = strToJSON
+
+instance FromJSON NotificationsMode where
+  parseJSON = strParseJSON "NotificationsMode"
 
 instance ToField NotificationsMode where toField = toField . strEncode
 
@@ -1049,6 +1056,9 @@ instance StrEncoding MsgReceiptStatus where
 instance ToJSON MsgReceiptStatus where
   toJSON = strToJSON
   toEncoding = strToJEncoding
+
+instance FromJSON MsgReceiptStatus where
+  parseJSON = strParseJSON "MsgReceiptStatus"
 
 type MsgReceiptInfo = ByteString
 
@@ -1450,6 +1460,9 @@ instance ToJSON AgentErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance FromJSON AgentErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 -- | SMP agent protocol command or response error.
 data CommandErrorType
   = -- | command is prohibited in this context
@@ -1468,6 +1481,9 @@ instance ToJSON CommandErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance FromJSON CommandErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 -- | Connection error.
 data ConnectionErrorType
   = -- | connection is not in the database
@@ -1485,6 +1501,9 @@ data ConnectionErrorType
 instance ToJSON ConnectionErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON ConnectionErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 -- | SMP server errors.
 data BrokerErrorType
@@ -1505,6 +1524,9 @@ data BrokerErrorType
 instance ToJSON BrokerErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON BrokerErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 -- | Errors of another SMP agent.
 data SMPAgentError
@@ -1540,6 +1562,9 @@ instance ToJSON AgentCryptoError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
 
+instance FromJSON AgentCryptoError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
+
 instance StrEncoding AgentCryptoError where
   strP =
     "DECRYPT_AES" $> DECRYPT_AES
@@ -1557,6 +1582,9 @@ instance StrEncoding AgentCryptoError where
 instance ToJSON SMPAgentError where
   toJSON = J.genericToJSON $ sumTypeJSON id
   toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance FromJSON SMPAgentError where
+  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance StrEncoding AgentErrorType where
   strP =
