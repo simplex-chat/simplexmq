@@ -107,12 +107,16 @@ enumJSON tagModifier =
       J.allNullaryToStringTag = True
     }
 
+-- used in platform-specific encoding, includes tag for single-field encoding of sum types to allow conversion to tagged objects
 sumTypeJSON :: (String -> String) -> J.Options
 #if defined(darwin_HOST_OS) && defined(swiftJSON)
-sumTypeJSON = singleFieldJSON
+sumTypeJSON = singleFieldJSON_ $ Just singleFieldJSONTag
 #else
 sumTypeJSON = taggedObjectJSON
 #endif
+
+singleFieldJSONTag :: String
+singleFieldJSONTag = "_owsf"
 
 taggedObjectJSON :: (String -> String) -> J.Options
 taggedObjectJSON tagModifier =
@@ -125,10 +129,14 @@ taggedObjectJSON tagModifier =
       J.omitNothingFields = True
     }
 
+-- used in platform independent encoding, doesn't include tag for single-field encoding of sum types
 singleFieldJSON :: (String -> String) -> J.Options
-singleFieldJSON tagModifier =
+singleFieldJSON = singleFieldJSON_ Nothing
+
+singleFieldJSON_ :: Maybe String -> (String -> String) -> J.Options
+singleFieldJSON_ objectTag tagModifier =
   J.defaultOptions
-    { J.sumEncoding = J.ObjectWithSingleField,
+    { J.sumEncoding = J.ObjectWithSingleField objectTag,
       J.tagSingleConstructors = True,
       J.constructorTagModifier = tagModifier,
       J.allNullaryToStringTag = False,
