@@ -29,6 +29,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     MigrationConfirmation (..),
     MigrationError (..),
     UpMigration (..),
+    SQLiteJournalMode (..),
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
@@ -37,7 +38,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     backupSQLiteStore,
     restoreSQLiteStore,
     removeSQLiteStore,
-    setSQLiteModeWAL,
+    setSQLiteJournalMode,
+    getSQLiteJournalMode,
     sqlString,
     execSQL,
     upMigration, -- used in tests
@@ -232,6 +234,7 @@ import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
@@ -330,6 +333,33 @@ instance StrEncoding MigrationConfirmation where
       "console" -> pure MCConsole
       "error" -> pure MCError
       _ -> fail "invalid MigrationConfirmation"
+
+data SQLiteJournalMode = SQLModeWAL | SQLModeDelete | SQLMode Text
+  deriving (Show)
+
+instance StrEncoding SQLiteJournalMode where
+  strEncode = \case
+    SQLModeWAL -> "wal"
+    SQLModeDelete -> "delete"
+    SQLMode s -> encodeUtf8 s
+  strP = do
+    s <- A.takeTill (== ' ')
+    pure $ case s of
+      "wal" -> SQLModeWAL
+      "WAL" -> SQLModeWAL
+      "delete" -> SQLModeDelete
+      "DELETE" -> SQLModeDelete
+      _ -> SQLMode $ decodeLatin1 s
+
+decodeJournalMode :: Text -> SQLiteJournalMode
+decodeJournalMode s = fromRight (SQLMode s) $ strDecode $ encodeUtf8 s
+
+instance ToJSON SQLiteJournalMode where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON SQLiteJournalMode where
+  parseJSON = strParseJSON "SQLiteJournalMode"
 
 createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
@@ -464,13 +494,20 @@ checkpointSQLiteStore :: SQLiteStore -> IO ()
 checkpointSQLiteStore st = unlessM (readTVarIO $ dbClosed st) $
   withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
 
-setSQLiteModeWAL :: SQLiteStore -> Bool -> IO ()
-setSQLiteModeWAL st walMode =
+setSQLiteJournalMode :: SQLiteStore -> SQLiteJournalMode -> IO ()
+setSQLiteJournalMode st mode =
   withConnection st (`execSQL_` q)
   where
-    q
-      | walMode = "PRAGMA journal_mode = WAL;"
-      | otherwise = "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;"
+    q = case mode of
+      SQLModeWAL -> "PRAGMA journal_mode = WAL;"
+      SQLModeDelete -> "PRAGMA journal_mode = DELETE;"
+      SQLMode s -> "PRAGMA journal_mode = " <> s <> ";"
+
+getSQLiteJournalMode :: SQLiteStore -> IO SQLiteJournalMode
+getSQLiteJournalMode st =
+  withConnection st $ \db -> do
+    [Only mode] <- DB.query_ db "PRAGMA journal_mode;" :: IO [Only Text]
+    pure $ decodeJournalMode mode
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
