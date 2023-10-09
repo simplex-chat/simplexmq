@@ -177,7 +177,6 @@ import Data.Word (Word32)
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
-import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
@@ -213,7 +212,6 @@ import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTra
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
-import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception (Exception)
 
@@ -1619,18 +1617,6 @@ instance StrEncoding AgentErrorType where
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
-
-instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
-
-instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
-
-instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
-
-instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
-
-instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
-
-instance Arbitrary AgentCryptoError where arbitrary = genericArbitraryU
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case

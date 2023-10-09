@@ -172,7 +172,6 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.Generics (Generic)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
-import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -182,7 +181,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
-import Test.QuickCheck (Arbitrary (..))
 
 currentSMPClientVersion :: Version
 currentSMPClientVersion = 2
@@ -1034,10 +1032,6 @@ instance ToJSON CommandError where
 
 instance FromJSON CommandError where
   parseJSON = J.genericParseJSON $ sumTypeJSON id
-
-instance Arbitrary ErrorType where arbitrary = genericArbitraryU
-
-instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
 -- | SMP transmission parser.
 transmissionP :: Parser RawTransmission

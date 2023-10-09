@@ -76,7 +76,6 @@ import Data.Functor (($>))
 import Data.Version (showVersion)
 import GHC.Generics (Generic)
 import GHC.IO.Handle.Internals (ioe_EOF)
-import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
@@ -87,7 +86,6 @@ import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
-import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -309,10 +307,6 @@ instance ToJSON HandshakeError where
 
 instance FromJSON HandshakeError where
   parseJSON = J.genericParseJSON $ sumTypeJSON id
-
-instance Arbitrary TransportError where arbitrary = genericArbitraryU
-
-instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
 
 -- | SMP encrypted transport error parser.
 transportErrorP :: Parser TransportError
