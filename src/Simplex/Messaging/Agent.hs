@@ -581,7 +581,7 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData subMode srv = do
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-  let crData = ConnReqUriData simplexChat smpAgentVRange [qUri] clientData
+  let crData = ConnReqUriData CRSSimplex smpAgentVRange [qUri] clientData
   case cMode of
     SCMContact -> pure (connId, CRContactUri crData)
     SCMInvitation -> do
