@@ -38,9 +38,9 @@ WORKDIR /final
 
 # Strip the binary from debug symbols to reduce size
 RUN bin=$(find /project/dist-newstyle -name "$APP" -type f -executable) && \
-    mv "$bin" ./ && \
-    strip ./"$APP" &&\
-    mv /project/scripts/docker/entrypoint-"$APP" ./entrypoint
+    install --strip -t . "$bin" && \
+    install -m 'a=r' -t . /project/scripts/docker/*.sh && \
+    install -T /project/scripts/docker/entrypoint-"$APP" ./entrypoint
 
 ### Final stage
 FROM ubuntu:${TAG}

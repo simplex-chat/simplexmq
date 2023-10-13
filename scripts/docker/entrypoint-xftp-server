@@ -2,23 +2,22 @@
 confd='/etc/opt/simplex-xftp'
 logd='/var/opt/simplex-xftp'
 
+# Avoid a search of PATH
+_shd="$(dirname "$0")"
+: "${_shd:=/usr/local/bin}"
+. "${_shd}/functions.sh"
+unset -v _shd
+
 # Check if server has been initialized
 if [ ! -f "${confd}/file-server.ini" ]; then
   # If not, determine ip or domain
-  case "${ADDR}" in
-    '') printf 'Please specify $ADDR environment variable.\n'; exit 1 ;;
-    *[a-zA-Z]*)
-      case "${ADDR}" in
-        *:*) set -- --ip "${ADDR}" ;;
-        *) set -- -n "${ADDR}" ;;
-      esac
-      ;;
-    *) set -- --ip "${ADDR}" ;;
-  esac
+  _arg1="$(print_arg_from_env_addr)" || exit 1
+  set -- "${_arg1}" "${ADDR}"
+  unset -v _arg1
 
   # Set quota
   case "${QUOTA}" in
-    '') printf 'Please specify $QUOTA environment variable.\n'; exit 1 ;;
+    '') print_to_stderr 'Please specify $QUOTA environment variable.'; exit 1 ;;
     *) set -- "$@" --quota "${QUOTA}" ;;
   esac
 
@@ -28,19 +27,8 @@ fi
 
 # Backup store log just in case
 #
-# Uses the UTC (universal) time zone and this
-# format: YYYY-mm-dd'T'HH:MM:SS
-# year, month, day, letter T, hour, minute, second
-#
 # This is the ISO 8601 format without the time zone at the end.
-#
-_file="${logd}/file-server-store.log"
-if [ -f "${_file}" ]; then
-  _backup_extension="$(date -u '+%Y-%m-%dT%H:%M:%S')"
-  cp -v -p "${_file}" "${_file}.${_backup_extension:-date-failed}"
-  unset -v _backup_extension
-fi
-unset -v _file
+backup_file_iso8601 "${logd}/file-server-store.log"
 
 # Finally, run xftp-sever. Notice that "exec" here is important:
 # smp-server replaces our helper script, so that it can catch INT signal
