@@ -1128,13 +1128,13 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
 instance StrEncoding AConnectionRequestUri where
   strEncode (ACR _ cr) = strEncode cr
   strP = do
-    crScheme <- strP
+    _crScheme :: ConnReqScheme <- strP
     crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
     let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData}
+    let crData = ConnReqUriData {crScheme = CRSSimplex, crAgentVRange, crSmpQueues, crClientData}
     case crMode of
       CMInvitation -> do
         crE2eParams <- queryParam "e2e" query
