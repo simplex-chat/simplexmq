@@ -20,6 +20,9 @@ category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
   - CHANGELOG.md
+  - cbits/sntrup761.c
+  - cbits/sntrup761.h
+  - cbits/sha512.h
 
 dependencies:
   - aeson == 2.2.*
@@ -89,6 +92,12 @@ when:
 
 library:
   source-dirs: src
+  c-sources:        cbits/sntrup761.c
+  install-includes: sntrup761.h, sntrup761.h, sha512.h
+  include-dirs:     .
+  include-dirs:     cbits
+  cc-options: -DSNTRUP761_H
+  extra-libraries: crypto
 
 executables:
   smp-server:
