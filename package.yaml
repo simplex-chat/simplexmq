@@ -43,7 +43,7 @@ dependencies:
   - filepath == 1.4.*
   - hourglass == 0.2.*
   - http-types == 0.12.*
-  - http2 == 4.1.*
+  - http2 >= 4.1.4 && < 4.2
   - generic-random == 1.5.*
   - ini == 0.4.1
   - iproute == 1.7.*
