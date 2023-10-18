@@ -27,7 +27,6 @@ import Simplex.FileTransfer.Protocol (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Version
-import Simplex.Messaging.Transport.HTTP2 (defaultHTTP2BufferSize)
 import Simplex.Messaging.Transport.HTTP2.File
 import System.IO (Handle, IOMode (..), withFile)
 
@@ -40,9 +39,6 @@ data XFTPRcvChunkSpec = XFTPRcvChunkSpec
 
 supportedFileServerVRange :: VersionRange
 supportedFileServerVRange = mkVersionRange 1 1
-
-fileBlockSize :: Int
-fileBlockSize = defaultHTTP2BufferSize
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go
