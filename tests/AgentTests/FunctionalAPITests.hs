@@ -311,7 +311,7 @@ functionalAPITests t = do
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
-    fit "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
+    it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
