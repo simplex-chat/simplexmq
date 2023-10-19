@@ -1938,13 +1938,13 @@ testDeliveryReceiptsConcurrent =
     liftIO $ noMessages b "nothing else should be delivered to bob"
   where
     runClient :: String -> AgentClient -> ConnId -> IO ()
-    runClient cname client connId = do
+    runClient cName client connId = do
       concurrently_ send receive
       where
         send = runRight_ $
           replicateM_ 1000 $ do
             void $ sendMessage client connId SMP.noMsgFlags "hello"
-            liftIO $ print $ cname <> ": sendMessage"
+            liftIO $ print $ cName <> ": sendMessage"
             liftIO $ threadDelay 100000
         receive = runRight_ $
           -- for each sent message: 1 SENT, 1 RCVD, 1 OK for acknowledging RCVD
@@ -1957,16 +1957,16 @@ testDeliveryReceiptsConcurrent =
           r <- getWithTimeout
           case r of
             (_, _, SENT _) -> do
-              liftIO $ print $ cname <> ": SENT"
+              liftIO $ print $ cName <> ": SENT"
               pure ()
             (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) -> do
-              liftIO $ print $ cname <> ": MSG " <> show msgId
+              liftIO $ print $ cName <> ": MSG " <> show msgId
               ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
             (_, _, RCVD MsgMeta {recipient = (msgId, _), integrity = MsgOk} _) -> do
-              liftIO $ print $ cname <> ": RCVD " <> show msgId
+              liftIO $ print $ cName <> ": RCVD " <> show msgId
               ackMessageAsync client (B.pack . show $ n) connId msgId Nothing
             (_, _, OK) -> do
-              liftIO $ print $ cname <> ": OK"
+              liftIO $ print $ cName <> ": OK"
               pure ()
             r' -> error $ "unexpected event: " <> show r'
           receiveLoop (n - 1)
