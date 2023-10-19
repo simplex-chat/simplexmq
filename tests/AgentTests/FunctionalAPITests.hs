@@ -1933,30 +1933,47 @@ testDeliveryReceiptsConcurrent :: IO ()
 testDeliveryReceiptsConcurrent =
   withAgentClients2 $ \a b -> do
     (aId, bId) <- runRight $ makeConnection a b
-    concurrently_ (runClient a bId) (runClient b aId)
+    concurrently_ (runClient "a" a bId) (runClient "b" b aId)
     liftIO $ noMessages a "nothing else should be delivered to alice"
     liftIO $ noMessages b "nothing else should be delivered to bob"
   where
-    runClient :: AgentClient -> ConnId -> IO ()
-    runClient client connId = do
+    runClient :: String -> AgentClient -> ConnId -> IO ()
+    runClient cname client connId = do
       concurrently_ send receive
       where
         send = runRight_ $
-          replicateM_ 1000 $
-            sendMessage client connId SMP.noMsgFlags "hello"
+          replicateM_ 1000 $ do
+            void $ sendMessage client connId SMP.noMsgFlags "hello"
+            liftIO $ print $ cname <> ": sendMessage"
+            liftIO $ threadDelay 100000
         receive = runRight_ $
+          -- for each sent message: 1 SENT, 1 RCVD, 1 OK for acknowledging RCVD
+          -- for each contact message: 1 MSG, 1 OK for acknowledging MSG
           receiveLoop 5000
         receiveLoop :: Int -> ExceptT AgentErrorType IO ()
         receiveLoop 0 = pure ()
         receiveLoop n = do
-          r <- get client
+          -- r <- get client
+          r <- getWithTimeout
           case r of
-            (_, _, SENT _) -> pure ()
-            (_, _, MSG MsgMeta {recipient = (msgId, _)} _ _) -> ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
-            (_, _, RCVD MsgMeta {recipient = (msgId, _)} _) -> ackMessageAsync client (B.pack . show $ n) connId msgId Nothing
-            (_, _, OK) -> pure ()
+            (_, _, SENT _) -> do
+              liftIO $ print $ cname <> ": SENT"
+              pure ()
+            (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) -> do
+              liftIO $ print $ cname <> ": MSG " <> show msgId
+              ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
+            (_, _, RCVD MsgMeta {recipient = (msgId, _), integrity = MsgOk} _) -> do
+              liftIO $ print $ cname <> ": RCVD " <> show msgId
+              ackMessageAsync client (B.pack . show $ n) connId msgId Nothing
+            (_, _, OK) -> do
+              liftIO $ print $ cname <> ": OK"
+              pure ()
             r' -> error $ "unexpected event: " <> show r'
           receiveLoop (n - 1)
+        getWithTimeout = do
+          1000000 `timeout` get client >>= \case
+            Just r -> pure r
+            _ -> error "timeout"
 
 testTwoUsers :: HasCallStack => IO ()
 testTwoUsers = withAgentClients2 $ \a b -> do
