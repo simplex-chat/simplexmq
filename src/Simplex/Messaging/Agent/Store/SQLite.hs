@@ -980,7 +980,7 @@ updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
 getPendingMsgs db connId SndQueue {dbQueueId} =
   map fromOnly
-    <$> DB.query db "SELECT internal_id FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
+    <$> DB.query db "SELECT internal_id FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? ORDER BY internal_id ASC" (connId, dbQueueId)
 
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deletePendingMsgs db connId SndQueue {dbQueueId} =
