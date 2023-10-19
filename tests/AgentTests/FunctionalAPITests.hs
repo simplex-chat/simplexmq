@@ -1937,7 +1937,7 @@ testDeliveryReceiptsConcurrent =
     t1 <- liftIO getCurrentTime
     concurrently_ (runClient "a" a bId) (runClient "b" b aId)
     t2 <- liftIO getCurrentTime
-    diffUTCTime t2 t1 `shouldSatisfy` (< 150)
+    diffUTCTime t2 t1 `shouldSatisfy` (< 90)
     liftIO $ noMessages a "nothing else should be delivered to alice"
     liftIO $ noMessages b "nothing else should be delivered to bob"
   where
@@ -1949,7 +1949,7 @@ testDeliveryReceiptsConcurrent =
           replicateM_ 1000 $ do
             void $ sendMessage client connId SMP.noMsgFlags "hello"
             liftIO $ print $ cName <> ": sendMessage"
-            liftIO $ threadDelay 100000
+            liftIO $ threadDelay 50000
         receive = runRight_ $
           -- for each sent message: 1 SENT, 1 RCVD, 1 OK for acknowledging RCVD
           -- for each contact message: 1 MSG, 1 OK for acknowledging MSG
