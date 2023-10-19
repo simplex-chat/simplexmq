@@ -310,6 +310,7 @@ functionalAPITests t = do
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
+    fit "send delivery receipts concurrently with messages" $ withSmpServer t testDeliveryReceiptsConcurrent
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -1927,6 +1928,35 @@ testDeliveryReceiptsVersion t = do
       ackMessage b' aId 11 Nothing
     disconnectAgentClient a'
     disconnectAgentClient b'
+
+testDeliveryReceiptsConcurrent :: IO ()
+testDeliveryReceiptsConcurrent =
+  withAgentClients2 $ \a b -> do
+    (aId, bId) <- runRight $ makeConnection a b
+    concurrently_ (runClient a bId) (runClient b aId)
+    liftIO $ noMessages a "nothing else should be delivered to alice"
+    liftIO $ noMessages b "nothing else should be delivered to bob"
+  where
+    runClient :: AgentClient -> ConnId -> IO ()
+    runClient client connId = do
+      concurrently_ send receive
+      where
+        send = runRight_ $
+          replicateM_ 1000 $
+            sendMessage client connId SMP.noMsgFlags "hello"
+        receive = runRight_ $
+          receiveLoop 5000
+        receiveLoop :: Int -> ExceptT AgentErrorType IO ()
+        receiveLoop 0 = pure ()
+        receiveLoop n = do
+          r <- get client
+          case r of
+            (_, _, SENT _) -> pure ()
+            (_, _, MSG MsgMeta {recipient = (msgId, _)} _ _) -> ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
+            (_, _, RCVD MsgMeta {recipient = (msgId, _)} _) -> ackMessageAsync client (B.pack . show $ n) connId msgId Nothing
+            (_, _, OK) -> pure ()
+            r' -> error $ "unexpected event: " <> show r'
+          receiveLoop (n - 1)
 
 testTwoUsers :: HasCallStack => IO ()
 testTwoUsers = withAgentClients2 $ \a b -> do
