@@ -1935,30 +1935,131 @@ testDeliveryReceiptsConcurrent =
   withAgentClients2 $ \a b -> do
     (aId, bId) <- runRight $ makeConnection a b
     t1 <- liftIO getCurrentTime
+    concurrently_ (runClient1 "a" a bId) (runClient2 "b" b aId)
+    t2 <- liftIO getCurrentTime
+    -- diffUTCTime t2 t1 `shouldSatisfy` (< 30)
+    liftIO $ noMessages a "nothing else should be delivered to alice"
+    liftIO $ noMessages b "nothing else should be delivered to bob"
+  where
+    numSndMsgs1 = 1000
+    numSndMsgs2 = 100
+    -- sends 1000 messages without delays, constantly exhausts quota
+    runClient1 :: String -> AgentClient -> ConnId -> IO ()
+    runClient1 cName client connId = do
+      concurrently_ send receive
+      where
+        send = runRight_ $
+          replicateM_ numSndMsgs1 $ do
+            void $ sendMessage client connId SMP.noMsgFlags "hello"
+            liftIO $ threadDelay 10000
+            liftIO $ print $ cName <> ": sendMessage"
+        receive =
+          runRight_ $
+            -- for each sent message: 1 SENT, 1 RCVD, 1 OK for acknowledging RCVD
+            -- for each received message: 1 MSG, 1 OK for acknowledging MSG
+            -- total events: 1000 * 3 + 100 * 2
+            receiveLoop cName client connId (numSndMsgs1 * 3 + numSndMsgs2 * 2)
+    -- sends 100 messages with delays, doesn't exhaust quota, sends QCONT to client 1
+    runClient2 :: String -> AgentClient -> ConnId -> IO ()
+    runClient2 cName client connId = do
+      concurrently_ send receive
+      where
+        send = runRight_ $
+          replicateM_ numSndMsgs2 $ do
+            void $ sendMessage client connId SMP.noMsgFlags "hello"
+            liftIO $ threadDelay 200000
+            liftIO $ print $ cName <> ": sendMessage"
+        receive =
+          runRight_ $
+            -- total events: 100 * 3 + 1000 * 2
+            receiveLoop cName client connId (numSndMsgs2 * 3 + numSndMsgs1 * 2)
+    -- runReceivingClient :: String -> AgentClient -> ConnId -> IO ()
+    -- runReceivingClient cName client connId = do
+    --   runRight_ $
+    --     -- for each received message: 1 MSG, 1 OK for acknowledging MSG
+    --     receiveLoop cName client connId (numMsgs * 2)
+    receiveLoop :: String -> AgentClient -> ConnId -> Int -> ExceptT AgentErrorType IO ()
+    receiveLoop _ _ _ 0 = pure ()
+    receiveLoop cName client connId n = do
+      -- r <- get client
+      r <- getWithTimeout client
+      case r of
+        (_, _, SENT _) -> do
+          liftIO $ print $ cName <> ": SENT"
+          pure ()
+        (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) -> do
+          liftIO $ print $ cName <> ": MSG " <> show msgId
+          ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
+        (_, _, RCVD MsgMeta {recipient = (msgId, _), integrity = MsgOk} _) -> do
+          liftIO $ print $ cName <> ": RCVD " <> show msgId
+          ackMessageAsync client (B.pack . show $ n) connId msgId Nothing
+        (_, _, OK) -> do
+          liftIO $ print $ cName <> ": OK"
+          pure ()
+        r' -> error $ "unexpected event: " <> show r'
+      receiveLoop cName client connId (n - 1)
+    getWithTimeout :: AgentClient -> ExceptT AgentErrorType IO (AEntityTransmission 'AEConn)
+    getWithTimeout client = do
+      1000000 `timeout` get client >>= \case
+        Just r -> pure r
+        _ -> error "timeout"
+
+testDeliveryReceiptsConcurrent2 :: IO ()
+testDeliveryReceiptsConcurrent2 =
+  withAgentClients2 $ \a b -> do
+    (aId, bId) <- runRight $ makeConnection a b
+    t1 <- liftIO getCurrentTime
     concurrently_ (runClient "a" a bId) (runClient "b" b aId)
+    -- concurrently_ (runClient "a" a bId) (runClient2 "b" b aId)
     t2 <- liftIO getCurrentTime
     diffUTCTime t2 t1 `shouldSatisfy` (< 90)
     liftIO $ noMessages a "nothing else should be delivered to alice"
     liftIO $ noMessages b "nothing else should be delivered to bob"
   where
+    runClient2 :: String -> AgentClient -> ConnId -> IO ()
+    runClient2 cName client connId = do
+      runRight_ $
+        -- for each contact message: 1 MSG, 1 OK for acknowledging MSG
+        receiveLoop 2000
+      where
+        receiveLoop :: Int -> ExceptT AgentErrorType IO ()
+        receiveLoop 0 = pure ()
+        receiveLoop n = do
+          r <- get client
+          -- r <- getWithTimeout
+          case r of
+            (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) -> do
+              liftIO $ print $ cName <> ": MSG " <> show msgId
+              ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
+            (_, _, OK) -> do
+              liftIO $ print $ cName <> ": OK"
+              pure ()
+            r' -> error $ "unexpected event: " <> show r'
+          receiveLoop (n - 1)
+        getWithTimeout :: ExceptT AgentErrorType IO (AEntityTransmission 'AEConn)
+        getWithTimeout = do
+          1000000 `timeout` get client >>= \case
+            Just r -> pure r
+            _ -> error "timeout"
     runClient :: String -> AgentClient -> ConnId -> IO ()
     runClient cName client connId = do
       concurrently_ send receive
       where
+        numMsgs = 20
         send = runRight_ $
-          replicateM_ 1000 $ do
+          replicateM_ numMsgs $ do
             void $ sendMessage client connId SMP.noMsgFlags "hello"
             liftIO $ print $ cName <> ": sendMessage"
-            liftIO $ threadDelay 50000
+            -- liftIO $ threadDelay 10000
         receive = runRight_ $
           -- for each sent message: 1 SENT, 1 RCVD, 1 OK for acknowledging RCVD
           -- for each contact message: 1 MSG, 1 OK for acknowledging MSG
-          receiveLoop 5000
+          receiveLoop (numMsgs * 5)
         receiveLoop :: Int -> ExceptT AgentErrorType IO ()
         receiveLoop 0 = pure ()
         receiveLoop n = do
-          -- r <- get client
-          r <- getWithTimeout
+          r <- get client
+          -- r <- getWithTimeout
           case r of
             (_, _, SENT _) -> do
               liftIO $ print $ cName <> ": SENT"
