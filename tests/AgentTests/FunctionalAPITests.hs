@@ -43,6 +43,7 @@ import Data.Int (Int64)
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Set as S
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import SMPAgentClient
@@ -1933,7 +1934,10 @@ testDeliveryReceiptsConcurrent :: IO ()
 testDeliveryReceiptsConcurrent =
   withAgentClients2 $ \a b -> do
     (aId, bId) <- runRight $ makeConnection a b
+    t1 <- liftIO getCurrentTime
     concurrently_ (runClient "a" a bId) (runClient "b" b aId)
+    t2 <- liftIO getCurrentTime
+    diffUTCTime t2 t1 `shouldSatisfy` (< 150)
     liftIO $ noMessages a "nothing else should be delivered to alice"
     liftIO $ noMessages b "nothing else should be delivered to bob"
   where
