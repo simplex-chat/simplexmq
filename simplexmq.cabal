@@ -133,6 +133,7 @@ library
       Simplex.Messaging.Transport.Credentials
       Simplex.Messaging.Transport.HTTP2
       Simplex.Messaging.Transport.HTTP2.Client
+      Simplex.Messaging.Transport.HTTP2.File
       Simplex.Messaging.Transport.HTTP2.Server
       Simplex.Messaging.Transport.KeepAlive
       Simplex.Messaging.Transport.Server
