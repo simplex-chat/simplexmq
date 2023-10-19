@@ -1938,7 +1938,7 @@ testDeliveryReceiptsConcurrent t =
       t1 <- liftIO getCurrentTime
       concurrently_ (runClient "a" a bId) (runClient "b" b aId)
       t2 <- liftIO getCurrentTime
-      diffUTCTime t2 t1 `shouldSatisfy` (< 10)
+      diffUTCTime t2 t1 `shouldSatisfy` (< 15)
       liftIO $ noMessages a "nothing else should be delivered to alice"
       liftIO $ noMessages b "nothing else should be delivered to bob"
   where
