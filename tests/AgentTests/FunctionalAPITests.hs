@@ -1974,6 +1974,7 @@ testDeliveryReceiptsConcurrent =
               pure ()
             r' -> error $ "unexpected event: " <> show r'
           receiveLoop (n - 1)
+        getWithTimeout :: ExceptT AgentErrorType IO (AEntityTransmission 'AEConn)
         getWithTimeout = do
           1000000 `timeout` get client >>= \case
             Just r -> pure r
