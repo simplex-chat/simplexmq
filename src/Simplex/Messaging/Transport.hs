@@ -354,9 +354,9 @@ smpServerHandshake c kh smpVRange = do
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       | keyHash /= kh ->
-        throwE $ TEHandshake IDENTITY
+          throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` smpVRange -> do
-        pure $ smpThHandle th smpVersion
+          pure $ smpThHandle th smpVersion
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.

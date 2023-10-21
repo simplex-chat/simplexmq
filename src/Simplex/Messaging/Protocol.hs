@@ -135,7 +135,7 @@ module Simplex.Messaging.Protocol
     noAuthSrv,
 
     -- * TCP transport functions
-    TransportBatch(..),
+    TransportBatch (..),
     tPut,
     tPutLog,
     tGet,
@@ -309,17 +309,19 @@ instance StrEncoding SubscriptionMode where
     SMSubscribe -> "subscribe"
     SMOnlyCreate -> "only-create"
   strP =
-    (A.string "subscribe" $> SMSubscribe) <|> (A.string "only-create" $> SMOnlyCreate)
-      <?> "SubscriptionMode"
+    (A.string "subscribe" $> SMSubscribe)
+      <|> (A.string "only-create" $> SMOnlyCreate)
+        <?> "SubscriptionMode"
 
 instance Encoding SubscriptionMode where
   smpEncode = \case
     SMSubscribe -> "S"
     SMOnlyCreate -> "C"
-  smpP = A.anyChar >>= \case
-    'S' -> pure SMSubscribe
-    'C' -> pure SMOnlyCreate
-    _ -> fail "bad SubscriptionMode"
+  smpP =
+    A.anyChar >>= \case
+      'S' -> pure SMSubscribe
+      'C' -> pure SMOnlyCreate
+      _ -> fail "bad SubscriptionMode"
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
@@ -1306,7 +1308,7 @@ tPutLog th s = do
   pure r
 
 -- ByteString does not include length byte, it is added by tEncodeBatch
-data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString |  TBLargeTransmission
+data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString | TBLargeTransmission
 
 -- | encodes and batches transmissions into blocks,
 batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
@@ -1319,22 +1321,22 @@ batchTransmissions batch bSize
       let (n, s, ts_) = encodeBatch 0 "" ts
           r = if n == 0 then TBLargeTransmission else TBTransmissions n s
           rs' = r : rs
-      in case ts_ of
-          Just ts' -> mkBatch rs' ts'
-          _ -> rs'
+       in case ts_ of
+            Just ts' -> mkBatch rs' ts'
+            _ -> rs'
     mkBatch1 :: ByteString -> TransportBatch
     mkBatch1 s = if B.length s > bSize - 2 then TBLargeTransmission else TBTransmission s
     encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
     encodeBatch n s ts@(t :| ts_)
       | n == 255 = (n, s, Just ts)
       | otherwise =
-        let s' = s <> smpEncode (Large t)
-            n' = n + 1
-         in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
-              then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
-              else case L.nonEmpty ts_ of
-                Just ts' -> encodeBatch n' s' ts'
-                _ -> (n', s', Nothing)
+          let s' = s <> smpEncode (Large t)
+              n' = n + 1
+           in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
+                then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
+                else case L.nonEmpty ts_ of
+                  Just ts' -> encodeBatch n' s' ts'
+                  _ -> (n', s', Nothing)
 
 tEncode :: SentRawTransmission -> ByteString
 tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
@@ -1373,8 +1375,8 @@ tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => SessionId ->
 tDecodeParseValidate sessionId v = \case
   Right RawTransmission {signature, signed, sessId, corrId, entityId, command}
     | sessId == sessionId ->
-      let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
-       in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
+        let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
+         in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
     | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
   Left _ -> tError ""
   where

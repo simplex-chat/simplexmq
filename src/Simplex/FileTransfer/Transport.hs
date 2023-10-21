@@ -1,7 +1,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Transport
@@ -26,8 +25,8 @@ import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
-import Simplex.Messaging.Version
 import Simplex.Messaging.Transport.HTTP2.File
+import Simplex.Messaging.Version
 import System.IO (Handle, IOMode (..), withFile)
 
 data XFTPRcvChunkSpec = XFTPRcvChunkSpec
@@ -64,8 +63,8 @@ receiveEncFile getBody = receiveFile_ . receive
       ch <- getBody fileBlockSize
       let chSize = fromIntegral $ B.length ch
       if
-          | chSize > sz + authSz -> pure $ Left SIZE
-          | chSize > 0 -> do
+        | chSize > sz + authSz -> pure $ Left SIZE
+        | chSize > 0 -> do
             let (ch', rest) = B.splitAt (fromIntegral sz) ch
                 (decCh, sbState') = LC.sbDecryptChunk sbState ch'
                 sz' = sz - fromIntegral (B.length ch')
@@ -78,7 +77,7 @@ receiveEncFile getBody = receiveFile_ . receive
                     tag = LC.sbAuth sbState'
                 tag'' <- if tagSz == C.authTagSize then pure tag' else (tag' <>) <$> getBody (C.authTagSize - tagSz)
                 pure $ if BA.constEq tag'' tag then Right () else Left CRYPTO
-          | otherwise -> pure $ Left SIZE
+        | otherwise -> pure $ Left SIZE
     authSz = fromIntegral C.authTagSize
 
 receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()

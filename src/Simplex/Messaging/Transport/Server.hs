@@ -46,10 +46,11 @@ data TransportServerConfig = TransportServerConfig
   deriving (Eq, Show)
 
 defaultTransportServerConfig :: TransportServerConfig
-defaultTransportServerConfig = TransportServerConfig
-  { logTLSErrors = True,
-    transportTimeout = 40000000
-  }
+defaultTransportServerConfig =
+  TransportServerConfig
+    { logTLSErrors = True,
+      transportTimeout = 40000000
+    }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
 serverTransportConfig TransportServerConfig {logTLSErrors} =

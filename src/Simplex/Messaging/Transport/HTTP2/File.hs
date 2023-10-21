@@ -1,11 +1,10 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 
 module Simplex.Messaging.Transport.HTTP2.File where
 
-import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.ByteString.Builder (Builder, byteString)
 import Data.Int (Int64)
 import Data.Word (Word32)
 import GHC.IO.Handle.Internals (ioe_EOF)
@@ -22,9 +21,9 @@ hReceiveFile getBody h size = get $ fromIntegral size
       ch <- getBody fileBlockSize
       let chSize = fromIntegral $ B.length ch
       if
-          | chSize > sz -> pure (chSize - sz)
-          | chSize > 0 -> B.hPut h ch >> get (sz - chSize)
-          | otherwise -> pure (- fromIntegral sz)
+        | chSize > sz -> pure (chSize - sz)
+        | chSize > 0 -> B.hPut h ch >> get (sz - chSize)
+        | otherwise -> pure (-fromIntegral sz)
 
 hSendFile :: Handle -> (Builder -> IO ()) -> Word32 -> IO ()
 hSendFile h send = go
