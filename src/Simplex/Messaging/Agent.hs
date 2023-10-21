@@ -2226,9 +2226,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           ereadyMsg rcPrev (DuplexConnection cData'@ConnData {lastExternalSndId} _ sqs) = do
             let CR.Ratchet {rcSnd} = rcPrev
             -- if ratchet was initialized as receiving, it means EREADY wasn't sent on key negotiation
-            when (isNothing rcSnd) $
-              void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $
-                EREADY lastExternalSndId
+            when (isNothing rcSnd) . void $
+              enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} (EREADY lastExternalSndId)
 
           smpInvitation :: Connection c -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
           smpInvitation conn' connReq@(CRInvitationUri crData _) cInfo = do
