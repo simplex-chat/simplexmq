@@ -205,7 +205,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               Just err -> (subs, oks, err : errs) -- permanent error, log and don't retry subscription
               Nothing -> (sub : subs, oks, errs) -- temporary error, retry subscription
 
-    -- \| Subscribe to queues. The list of results can have a different order.
+    -- | Subscribe to queues. The list of results can have a different order.
     subscribeQueues :: SMPServer -> NonEmpty NtfSubData -> IO (NonEmpty (NtfSubData, Either SMPClientError ()))
     subscribeQueues srv subs =
       L.zipWith (\s r -> (s, snd r)) subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
