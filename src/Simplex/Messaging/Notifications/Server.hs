@@ -208,7 +208,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     -- \| Subscribe to queues. The list of results can have a different order.
     subscribeQueues :: SMPServer -> NonEmpty NtfSubData -> IO (NonEmpty (NtfSubData, Either SMPClientError ()))
     subscribeQueues srv subs =
-      L.zipWith (curry $ second snd) subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
+      L.zipWith (\s r -> (s, snd r)) subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
       where
         sub NtfSubData {smpQueue = SMPQueueNtf {notifierId}, notifierKey} = (notifierId, notifierKey)
 
