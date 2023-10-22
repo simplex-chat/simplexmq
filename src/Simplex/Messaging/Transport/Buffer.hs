@@ -8,8 +8,8 @@ import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import GHC.IO.Exception (IOErrorType (..), IOException (..), ioException)
 import System.Timeout (timeout)
-import GHC.IO.Exception (ioException, IOException (..), IOErrorType (..))
 
 data TBuffer = TBuffer
   { buffer :: TVar ByteString,
@@ -41,9 +41,9 @@ getBuffered tb@TBuffer {buffer} n t_ getChunk = withBufferLock tb $ do
     readChunks firstChunk b
       | B.length b >= n = pure b
       | otherwise =
-        get >>= \case
-          "" -> pure b
-          s -> readChunks False $ b <> s
+          get >>= \case
+            "" -> pure b
+            s -> readChunks False $ b <> s
       where
         get
           | firstChunk = getChunk

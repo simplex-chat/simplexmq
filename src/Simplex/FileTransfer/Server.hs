@@ -169,17 +169,17 @@ processRequest :: HTTP2Request -> M ()
 processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
   | otherwise = do
-    case xftpDecodeTransmission sessionId bodyHead of
-      Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
-        case cmdOrErr of
-          Right cmd -> do
-            verifyXFTPTransmission sig_ signed fId cmd >>= \case
-              VRVerified req -> uncurry send =<< processXFTPRequest body req
-              VRFailed -> send (FRErr AUTH) Nothing
-          Left e -> send (FRErr e) Nothing
-        where
-          send resp = sendXFTPResponse (corrId, fId, resp)
-      Left e -> sendXFTPResponse ("", "", FRErr e) Nothing
+      case xftpDecodeTransmission sessionId bodyHead of
+        Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
+          case cmdOrErr of
+            Right cmd -> do
+              verifyXFTPTransmission sig_ signed fId cmd >>= \case
+                VRVerified req -> uncurry send =<< processXFTPRequest body req
+                VRFailed -> send (FRErr AUTH) Nothing
+            Left e -> send (FRErr e) Nothing
+          where
+            send resp = sendXFTPResponse (corrId, fId, resp)
+        Left e -> sendXFTPResponse ("", "", FRErr e) Nothing
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do

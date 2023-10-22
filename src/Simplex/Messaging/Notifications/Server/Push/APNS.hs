@@ -356,15 +356,15 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
     result status reason'
       | status == Just N.ok200 = pure ()
       | status == Just N.badRequest400 =
-        case reason' of
-          "BadDeviceToken" -> throwError PPTokenInvalid
-          "DeviceTokenNotForTopic" -> throwError PPTokenInvalid
-          "TopicDisallowed" -> throwError PPPermanentError
-          _ -> err status reason'
+          case reason' of
+            "BadDeviceToken" -> throwError PPTokenInvalid
+            "DeviceTokenNotForTopic" -> throwError PPTokenInvalid
+            "TopicDisallowed" -> throwError PPPermanentError
+            _ -> err status reason'
       | status == Just N.forbidden403 = case reason' of
-        "ExpiredProviderToken" -> throwError PPPermanentError -- there should be no point retrying it as the token was refreshed
-        "InvalidProviderToken" -> throwError PPPermanentError
-        _ -> err status reason'
+          "ExpiredProviderToken" -> throwError PPPermanentError -- there should be no point retrying it as the token was refreshed
+          "InvalidProviderToken" -> throwError PPPermanentError
+          _ -> err status reason'
       | status == Just N.gone410 = throwError PPTokenInvalid
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
       -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token

@@ -64,7 +64,7 @@ flushMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
 flushMsgQueue st rId = TM.lookupDelete rId st >>= maybe (pure []) (flushTQueue . msgQueue)
 
 snapshotMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
-snapshotMsgQueue st rId  = TM.lookup rId st >>= maybe (pure []) (snapshotTQueue . msgQueue)
+snapshotMsgQueue st rId = TM.lookup rId st >>= maybe (pure []) (snapshotTQueue . msgQueue)
   where
     snapshotTQueue q = do
       msgs <- flushTQueue q

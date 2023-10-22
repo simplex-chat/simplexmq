@@ -1,6 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.ProtocolErrorTests where
@@ -10,11 +9,11 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Protocol (XFTPErrorType)
-import Simplex.Messaging.Protocol (CommandError, ErrorType)
-import Simplex.Messaging.Transport (HandshakeError, TransportError)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol (CommandError, ErrorType)
+import Simplex.Messaging.Transport (HandshakeError, TransportError)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck

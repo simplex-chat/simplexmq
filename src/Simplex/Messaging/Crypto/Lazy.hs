@@ -1,7 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -90,10 +89,10 @@ unPad = fmap snd . splitLen
 splitLen :: LazyByteString -> Either CryptoError (Int64, LazyByteString)
 splitLen padded
   | LB.length lenStr == 8 = case smpDecode $ LB.toStrict lenStr of
-    Right len
-      | len < 0 -> Left CryptoInvalidMsgError
-      | otherwise -> Right (len, LB.take len rest)
-    Left _ -> Left CryptoInvalidMsgError
+      Right len
+        | len < 0 -> Left CryptoInvalidMsgError
+        | otherwise -> Right (len, LB.take len rest)
+      Left _ -> Left CryptoInvalidMsgError
   | otherwise = Left CryptoInvalidMsgError
   where
     (lenStr, rest) = LB.splitAt 8 padded
@@ -112,10 +111,10 @@ sbDecrypt :: SbKey -> CbNonce -> LazyByteString -> Either CryptoError LazyByteSt
 sbDecrypt (SbKey key) (CbNonce nonce) packet
   | LB.length tag' < 16 = Left CBDecryptError
   | otherwise = case secretBox sbDecryptChunk key nonce c of
-    Right (tag :| cs)
-      | BA.constEq (LB.toStrict tag') tag -> unPad $ LB.fromChunks cs
-      | otherwise -> Left CBDecryptError
-    Left e -> Left e
+      Right (tag :| cs)
+        | BA.constEq (LB.toStrict tag') tag -> unPad $ LB.fromChunks cs
+        | otherwise -> Left CBDecryptError
+      Left e -> Left e
   where
     (tag', c) = LB.splitAt 16 packet
 

@@ -112,11 +112,11 @@ x3dh v (sk1, rk1) dh1 dh2 dh3 =
     (hk, nhk, sk)
       -- for backwards compatibility with clients using agent version before 3.4.0
       | v == 1 =
-        let (hk', rest) = B.splitAt 32 dhs
-         in uncurry (hk',,) $ B.splitAt 32 rest
+          let (hk', rest) = B.splitAt 32 dhs
+           in uncurry (hk',,) $ B.splitAt 32 rest
       | otherwise =
-        let salt = B.replicate 64 '\0'
-         in hkdf3 salt dhs "SimpleXX3DH"
+          let salt = B.replicate 64 '\0'
+           in hkdf3 salt dhs "SimpleXX3DH"
 
 type RatchetX448 = Ratchet 'X448
 
@@ -428,9 +428,9 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
       | rcNr + maxSkip < untilN = Left $ CERatchetTooManySkipped (untilN + 1 - rcNr)
       | rcNr == untilN = Right (r, M.empty)
       | otherwise =
-        let (rcCKr', rcNr', mks) = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr M.empty
-            r' = r {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr'}
-         in Right (r', M.singleton rcHKr mks)
+          let (rcCKr', rcNr', mks) = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr M.empty
+              r' = r {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr'}
+           in Right (r', M.singleton rcHKr mks)
     advanceRcvRatchet :: Word32 -> RatchetKey -> Word32 -> SkippedHdrMsgKeys -> (RatchetKey, Word32, SkippedHdrMsgKeys)
     advanceRcvRatchet 0 ck msgNs mks = (ck, msgNs, mks)
     advanceRcvRatchet n ck msgNs mks =

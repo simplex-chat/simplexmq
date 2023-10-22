@@ -109,7 +109,7 @@ lenP = fromIntegral . c2w <$> A.anyChar
 {-# INLINE lenP #-}
 
 instance Encoding a => Encoding (Maybe a) where
-  smpEncode s = maybe "0" (("1" <>) . smpEncode) s
+  smpEncode = maybe "0" (("1" <>) . smpEncode)
   {-# INLINE smpEncode #-}
   smpP =
     smpP >>= \case

@@ -7,7 +7,6 @@
 
 module Simplex.Messaging.Notifications.Server.Main where
 
-import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
@@ -92,7 +91,7 @@ ntfServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
-      let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
+      let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@NtfServerConfig {transports, storeLogFile} = serverConfig
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing

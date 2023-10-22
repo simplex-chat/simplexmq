@@ -9,7 +9,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Description
@@ -242,9 +241,9 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
 
-instance (FromField a) => FromField (FileSize a) where fromField f = FileSize <$> fromField f
+instance FromField a => FromField (FileSize a) where fromField f = FileSize <$> fromField f
 
-instance (ToField a) => ToField (FileSize a) where toField (FileSize s) = toField s
+instance ToField a => ToField (FileSize a) where toField (FileSize s) = toField s
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [[FileServerReplica]]
 groupReplicasByServer defChunkSize =

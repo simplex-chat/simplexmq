@@ -620,7 +620,7 @@ instance FromJSON RcvQueueInfo where parseJSON = J.genericParseJSON J.defaultOpt
 
 instance StrEncoding RcvQueueInfo where
   strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch} =
-    "srv=" <> strEncode rcvServer
+    ("srv=" <> strEncode rcvServer)
       <> maybe "" (\switch -> ";switch=" <> strEncode switch) rcvSwitchStatus
       <> (";can_abort_switch=" <> strEncode canAbortSwitch)
   strP = do
@@ -660,7 +660,7 @@ instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.default
 
 instance StrEncoding ConnectionStats where
   strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
-    "agent_version=" <> strEncode connAgentVersion
+    ("agent_version=" <> strEncode connAgentVersion)
       <> (" rcv=" <> strEncodeList rcvQueuesInfo)
       <> (" snd=" <> strEncodeList sndQueuesInfo)
       <> (" sync=" <> strEncode ratchetSyncState)
@@ -1046,7 +1046,7 @@ instance StrEncoding MsgReceiptStatus where
     MROk -> "ok"
     MRBadMsgHash -> "badMsgHash"
   strP =
-    A.takeWhile1 (/= ' ') >>= \ case
+    A.takeWhile1 (/= ' ') >>= \case
       "ok" -> pure MROk
       "badMsgHash" -> pure MRBadMsgHash
       _ -> fail "bad MsgReceiptStatus"
@@ -1126,13 +1126,13 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
 instance StrEncoding AConnectionRequestUri where
   strEncode (ACR _ cr) = strEncode cr
   strP = do
-    crScheme <- strP
+    _crScheme :: ConnReqScheme <- strP
     crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
     let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData}
+    let crData = ConnReqUriData {crScheme = CRSSimplex, crAgentVRange, crSmpQueues, crClientData}
     case crMode of
       CMInvitation -> do
         crE2eParams <- queryParam "e2e" query

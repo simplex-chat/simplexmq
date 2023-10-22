@@ -19,7 +19,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defFileExpirationHours)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
@@ -143,9 +143,10 @@ xftpServerCLI cfgPath logPath = do
               allowNewFiles = fromMaybe True $ iniOnOff "AUTH" "new_files" ini,
               newFileBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
               fileExpiration =
-                Just defaultFileExpiration
-                  { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
-                  },
+                Just
+                  defaultFileExpiration
+                    { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
+                    },
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,

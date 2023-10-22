@@ -139,7 +139,6 @@ testNotificationSubscription (ATransport t) =
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
-          pure ()
           -- replace token
           let tkn' = DeviceToken PPApnsTest "efgh"
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
