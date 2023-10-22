@@ -1161,7 +1161,7 @@ testBatchedSubscriptions nCreate nDel t = do
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- forM [1 .. nCreate :: Int] . const $ makeConnection a b
+    conns <- replicateM (nCreate :: Int) $ makeConnection a b
     forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
     let (aIds', bIds') = unzip $ take nDel conns
     delete a bIds'
