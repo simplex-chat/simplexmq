@@ -22,10 +22,9 @@ import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Transport (SessionId)
+import Simplex.Messaging.Transport (SessionId, TLS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport (TLS)
 import UnliftIO.STM
 import UnliftIO.Timeout
 

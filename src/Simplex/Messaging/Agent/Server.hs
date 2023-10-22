@@ -23,7 +23,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), simplexMQVersion)
-import Simplex.Messaging.Transport.Server (loadTLSServerParams, runTransportServer, defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, loadTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (bshow)
 import UnliftIO.Async (race_)
 import qualified UnliftIO.Exception as E

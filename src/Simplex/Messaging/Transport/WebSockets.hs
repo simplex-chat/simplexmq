@@ -15,9 +15,9 @@ import qualified Network.WebSockets.Stream as S
 import Simplex.Messaging.Transport
   ( TProxy,
     Transport (..),
+    TransportConfig (..),
     TransportError (..),
     TransportPeer (..),
-    TransportConfig (..),
     closeTLS,
     smpBlockSize,
     withTlsUnique,

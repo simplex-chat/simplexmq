@@ -108,7 +108,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
-import Control.Concurrent.STM (retry, stateTVar, throwSTM)
+import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..))
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -739,7 +739,7 @@ data ProtocolTestFailure = ProtocolTestFailure
   deriving (Eq, Show, Generic, FromJSON)
 
 instance ToJSON ProtocolTestFailure where toEncoding = J.genericToEncoding J.defaultOptions
-  
+
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
@@ -899,8 +899,8 @@ subscribeQueues c qs = do
     subscribeQueues_ u smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
-      when (any temporaryClientError . lefts . map snd $ L.toList rs) $
-        unliftIO u $ reconnectServer c $ transportSession' smp
+      when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
+        reconnectServer c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
@@ -987,7 +987,7 @@ sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, 
     mkInvitation = do
       let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
       agentCbEncryptOnce v dhPublicKey . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+        SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
 
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
@@ -1322,7 +1322,7 @@ userServers c = case protocolTypeI @p of
   SPSMP -> smpServers c
   SPXFTP -> xftpServers c
 
-pickServer :: forall p m. (AgentMonad' m) => NonEmpty (ProtoServerWithAuth p) -> m (ProtoServerWithAuth p)
+pickServer :: forall p m. AgentMonad' m => NonEmpty (ProtoServerWithAuth p) -> m (ProtoServerWithAuth p)
 pickServer = \case
   srv :| [] -> pure srv
   servers -> do
@@ -1341,7 +1341,7 @@ withUserServers c userId action =
     Just srvs -> action srvs
     _ -> throwError $ INTERNAL "unknown userId - no user servers"
 
-withNextSrv :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> ((ProtoServerWithAuth p) -> m a) -> m a
+withNextSrv :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> (ProtoServerWithAuth p -> m a) -> m a
 withNextSrv c userId usedSrvs initUsed action = do
   used <- readTVarIO usedSrvs
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
@@ -1380,6 +1380,6 @@ getAgentSubscriptions c = do
     getSubs sel = map (`subInfo` Nothing) . M.keys <$> readTVarIO (getRcvQueues $ sel c)
     getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
-    subInfo (uId, srv, rId) err  = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
+    subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode

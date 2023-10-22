@@ -679,9 +679,9 @@ instance CryptoSignature ASignature where
   signatureBytes (ASignature _ sig) = signatureBytes sig
   decodeSignature s
     | B.length s == Ed25519.signatureSize =
-      ASignature SEd25519 . SignatureEd25519 <$> ed Ed25519.signature s
+        ASignature SEd25519 . SignatureEd25519 <$> ed Ed25519.signature s
     | B.length s == Ed448.signatureSize =
-      ASignature SEd448 . SignatureEd448 <$> ed Ed448.signature s
+        ASignature SEd448 . SignatureEd448 <$> ed Ed448.signature s
     | otherwise = Left "bad signature size"
     where
       ed alg = first show . CE.eitherCryptoError . alg

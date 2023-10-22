@@ -24,7 +24,6 @@ module Simplex.FileTransfer.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
@@ -320,8 +319,8 @@ runXFTPSndPrepareWorker c doWork = do
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
           then do
             fsEncPath <- toFSFilePath $ sndFileEncPath ppath
-            when (status == SFSEncrypting) $
-              whenM (doesFileExist fsEncPath) $ removeFile fsEncPath
+            when (status == SFSEncrypting) . whenM (doesFileExist fsEncPath) $
+              removeFile fsEncPath
             withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
             (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
             withStore c $ \db -> do
@@ -439,11 +438,11 @@ runXFTPSndWorker c srv doWork = do
           | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
-            maxRecipients <- asks $ xftpMaxRecipientsPerRequest . config
-            let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
-            rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
-            cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
-            addRecipients ch cr'
+              maxRecipients <- asks $ xftpMaxRecipientsPerRequest . config
+              let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
+              rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
+              cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
+              addRecipients ch cr'
         sndFileToDescrs :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
         sndFileToDescrs SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"
         sndFileToDescrs SndFile {chunks = []} = throwError $ INTERNAL "snd file has no chunks"
@@ -571,7 +570,7 @@ runXFTPDelWorker c srv doWork = do
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
-            retryDone e = delWorkerInternalError c deletedSndChunkReplicaId e
+            retryDone = delWorkerInternalError c deletedSndChunkReplicaId
     deleteChunkReplica :: DeletedSndChunkReplica -> m ()
     deleteChunkReplica replica@DeletedSndChunkReplica {userId, deletedSndChunkReplicaId} = do
       agentXFTPDeleteChunk c userId replica

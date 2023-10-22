@@ -16,13 +16,12 @@ import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.Reader
-import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intercalate, sort)
-import Data.List.NonEmpty (NonEmpty(..))
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -205,10 +204,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               Just err -> (subs, oks, err : errs) -- permanent error, log and don't retry subscription
               Nothing -> (sub : subs, oks, errs) -- temporary error, retry subscription
 
-    -- | Subscribe to queues. The list of results can have a different order.
+    -- \| Subscribe to queues. The list of results can have a different order.
     subscribeQueues :: SMPServer -> NonEmpty NtfSubData -> IO (NonEmpty (NtfSubData, Either SMPClientError ()))
     subscribeQueues srv subs =
-      L.map (second snd) . L.zip subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
+      L.zipWith (\s r -> (s, snd r)) subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
       where
         sub NtfSubData {smpQueue = SMPQueueNtf {notifierId}, notifierKey} = (notifierId, notifierKey)
 
@@ -248,10 +247,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             forM errs (\((_, ntfId), err) -> handleSubError (SMPQueueNtf srv ntfId) err)
               >>= logSubErrors srv . catMaybes . L.toList
 
-    logSubStatus srv event n = when (n > 0) $
-      logInfo $ "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subscriptions)"
+    logSubStatus srv event n =
+      when (n > 0) . logInfo $
+        "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subscriptions)"
 
-    logSubErrors :: SMPServer -> [NtfSubStatus] -> M ()        
+    logSubErrors :: SMPServer -> [NtfSubStatus] -> M ()
     logSubErrors srv errs = forM_ (L.group $ sort errs) $ \errs' -> do
       logError $ "SMP subscription errors on server " <> showServer' srv <> ": " <> tshow (L.head errs') <> " (" <> tshow (length errs') <> " errors)"
 
@@ -289,14 +289,14 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   case ntf of
     PNVerification _
       | status /= NTInvalid && status /= NTExpired ->
-        deliverNotification pp tkn ntf >>= \case
-          Right _ -> do
-            status_ <- atomically $ stateTVar tknStatus $ \case
-              NTActive -> (Nothing, NTActive)
-              NTConfirmed -> (Nothing, NTConfirmed)
-              _ -> (Just NTConfirmed, NTConfirmed)
-            forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-          _ -> pure ()
+          deliverNotification pp tkn ntf >>= \case
+            Right _ -> do
+              status_ <- atomically $ stateTVar tknStatus $ \case
+                NTActive -> (Nothing, NTActive)
+                NTConfirmed -> (Nothing, NTConfirmed)
+                _ -> (Just NTConfirmed, NTConfirmed)
+              forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+            _ -> pure ()
       | otherwise -> logError "bad notification token status"
     PNCheckMessages -> checkActiveTkn status $ do
       void $ deliverNotification pp tkn ntf
@@ -345,7 +345,8 @@ runNtfClientTransport th@THandle {sessionId} = do
   raceAny_ ([liftIO $ send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
-    disconnectThread_ c expCfg = maybe [] ((: []) . liftIO . disconnectTransport th c activeAt) expCfg
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th c activeAt expCfg]
+    disconnectThread_ _ _ = []
 
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
@@ -463,16 +464,16 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
-              logDebug "TVFY - token verified"
-              st <- asks store
-              updateTknStatus tkn NTActive
-              tIds <- atomically $ removeInactiveTokenRegistrations st tkn
-              forM_ tIds cancelInvervalNotifications
-              incNtfStat tknVerified
-              pure NROk
+                logDebug "TVFY - token verified"
+                st <- asks store
+                updateTknStatus tkn NTActive
+                tIds <- atomically $ removeInactiveTokenRegistrations st tkn
+                forM_ tIds cancelInvervalNotifications
+                incNtfStat tknVerified
+                pure NROk
             | otherwise -> do
-              logDebug "TVFY - incorrect code or token status"
-              pure $ NRErr AUTH
+                logDebug "TVFY - incorrect code or token status"
+                pure $ NRErr AUTH
           TCHK -> do
             logDebug "TCHK"
             pure $ NRTkn status
@@ -509,16 +510,16 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
-              logDebug "TCRN"
-              atomically $ writeTVar tknCronInterval int
-              atomically (TM.lookup tknId intervalNotifiers) >>= \case
-                Nothing -> runIntervalNotifier int
-                Just IntervalNotifier {interval, action} ->
-                  unless (interval == int) $ do
-                    uninterruptibleCancel action
-                    runIntervalNotifier int
-              withNtfLog $ \s -> logTokenCron s tknId int
-              pure NROk
+                logDebug "TCRN"
+                atomically $ writeTVar tknCronInterval int
+                atomically (TM.lookup tknId intervalNotifiers) >>= \case
+                  Nothing -> runIntervalNotifier int
+                  Just IntervalNotifier {interval, action} ->
+                    unless (interval == int) $ do
+                      uninterruptibleCancel action
+                      runIntervalNotifier int
+                withNtfLog $ \s -> logTokenCron s tknId int
+                pure NROk
             where
               runIntervalNotifier interval = do
                 action <- async . intervalNotifier $ fromIntegral interval * 1000000 * 60

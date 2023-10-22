@@ -62,7 +62,7 @@ liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) 
 liftEitherError f a = liftIOEither (first f <$> a)
 {-# INLINE liftEitherError #-}
 
-liftEitherWith :: (MonadError e' m) => (e -> e') -> Either e a -> m a
+liftEitherWith :: MonadError e' m => (e -> e') -> Either e a -> m a
 liftEitherWith f = liftEither . first f
 {-# INLINE liftEitherWith #-}
 
@@ -110,7 +110,7 @@ catchAllErrors err action handle = tryAllErrors err action >>= either handle pur
 {-# INLINE catchAllErrors #-}
 
 catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
-catchThrow action err  = catchAllErrors err action throwError
+catchThrow action err = catchAllErrors err action throwError
 {-# INLINE catchThrow #-}
 
 allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m b -> m a
@@ -123,12 +123,12 @@ eitherToMaybe = either (const Nothing) Just
 
 groupOn :: Eq k => (a -> k) -> [a] -> [[a]]
 groupOn = groupBy . eqOn
-  -- it is equivalent to groupBy ((==) `on` f),
-  -- but it redefines `on` to avoid duplicate computation for most values.
-  -- source: https://hackage.haskell.org/package/extra-1.7.13/docs/src/Data.List.Extra.html#groupOn
-  -- the on2 in this package is specialized to only use `==` as the function, `eqOn f` is equivalent to `(==) `on` f`
   where
-    eqOn f = \x -> let fx = f x in \y -> fx == f y
+    -- it is equivalent to groupBy ((==) `on` f),
+    -- but it redefines `on` to avoid duplicate computation for most values.
+    -- source: https://hackage.haskell.org/package/extra-1.7.13/docs/src/Data.List.Extra.html#groupOn
+    -- the on2 in this package is specialized to only use `==` as the function, `eqOn f` is equivalent to `(==) `on` f`
+    eqOn f x = let fx = f x in \y -> fx == f y
 
 groupAllOn :: Ord k => (a -> k) -> [a] -> [[a]]
 groupAllOn f = groupOn f . sortOn f
@@ -137,7 +137,7 @@ toChunks :: Int -> [a] -> [NonEmpty a]
 toChunks _ [] = []
 toChunks n xs =
   let (ys, xs') = splitAt n xs
-  in maybe id (:) (L.nonEmpty ys) (toChunks n xs')
+   in maybe id (:) (L.nonEmpty ys) (toChunks n xs')
 
 safeDecodeUtf8 :: ByteString -> Text
 safeDecodeUtf8 = decodeUtf8With onError

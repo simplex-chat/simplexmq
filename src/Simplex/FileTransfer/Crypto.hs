@@ -45,12 +45,12 @@ encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
     encryptChunks_ get w (!sb, !len)
       | len == 0 = pure sb
       | otherwise = do
-        let chSize = min len 65536
-        ch <- liftIO $ get chSize
-        when (B.length ch /= fromIntegral chSize) $ throwError $ FTCEFileIOError "encrypting file: unexpected EOF"
-        let (ch', sb') = LC.sbEncryptChunk sb ch
-        liftIO $ B.hPut w ch'
-        encryptChunks_ get w (sb', len - chSize)
+          let chSize = min len 65536
+          ch <- liftIO $ get chSize
+          when (B.length ch /= fromIntegral chSize) $ throwError $ FTCEFileIOError "encrypting file: unexpected EOF"
+          let (ch', sb') = LC.sbEncryptChunk sb ch
+          liftIO $ B.hPut w ch'
+          encryptChunks_ get w (sb', len - chSize)
 
 decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO CryptoFile) -> ExceptT FTCryptoError IO CryptoFile
 decryptChunks _ [] _ _ _ = throwError $ FTCEInvalidHeader "empty"

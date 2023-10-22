@@ -832,7 +832,6 @@ testRestoreExpireMessages at@(ATransport t) =
     msgs'' <- B.readFile testStoreMsgsFile
     length (B.lines msgs'') `shouldBe` 2
     B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
-
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
