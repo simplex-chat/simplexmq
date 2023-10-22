@@ -6,8 +6,8 @@ import Control.Exception (Exception, SomeException, throwIO)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Data.IORef
-import Simplex.Messaging.Util
 import Simplex.Messaging.Client.Agent ()
+import Simplex.Messaging.Util
 import Test.Hspec
 import qualified UnliftIO.Exception as UE
 

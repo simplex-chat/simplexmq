@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -8,6 +7,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -116,9 +116,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   restoreServerMessages
   restoreServerStats
   raceAny_
-    ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub :
-      serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ()) :
-      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+    ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
+        : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
+        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock (savingLock s) "final" (saveServer False)
   where
@@ -148,7 +148,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
           (qId, clnt) <- readTQueue $ subQ s
-          let clientToBeNotified = \c' ->
+          let clientToBeNotified c' =
                 if sameClientSession clnt c'
                   then pure Nothing
                   else do
@@ -277,9 +277,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h $ "Clients: " <> show (length clients)
                 forM_ (M.toList clients) $ \(cid, Client {sessionId, connected, activeAt, subscriptions}) -> do
                   hPutStrLn h . B.unpack $ "Client " <> encode cid <> " $" <> encode sessionId
-                  readTVarIO connected >>= hPutStrLn h . ("  connected: " <>)  . show
-                  readTVarIO activeAt >>= hPutStrLn h . ("  activeAt: " <>)  . B.unpack . strEncode
-                  readTVarIO subscriptions >>= hPutStrLn h . ("  subscriptions: " <>)  . show . M.size
+                  readTVarIO connected >>= hPutStrLn h . ("  connected: " <>) . show
+                  readTVarIO activeAt >>= hPutStrLn h . ("  activeAt: " <>) . B.unpack . strEncode
+                  readTVarIO subscriptions >>= hPutStrLn h . ("  subscriptions: " <>) . show . M.size
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -666,27 +666,27 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
         sendMessage qr msgFlags msgBody
           | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = case status qr of
-            QueueOff -> return $ err AUTH
-            QueueActive ->
-              case C.maxLenBS msgBody of
-                Left _ -> pure $ err LARGE_MSG
-                Right body -> do
-                  msg_ <- time "SEND" $ do
-                    q <- getStoreMsgQueue "SEND" $ recipientId qr
-                    expireMessages q
-                    atomically . writeMsg q =<< mkMessage body
-                  case msg_ of
-                    Nothing -> pure $ err QUOTA
-                    Just msg -> time "SEND ok" $ do
-                      stats <- asks serverStats
-                      when (notification msgFlags) $ do
-                        atomically . trySendNotification msg =<< asks idsDrg
-                        atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
-                        atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
-                      atomically $ modifyTVar' (msgSent stats) (+ 1)
-                      atomically $ modifyTVar' (msgCount stats) (subtract 1)
-                      atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
-                      pure ok
+              QueueOff -> return $ err AUTH
+              QueueActive ->
+                case C.maxLenBS msgBody of
+                  Left _ -> pure $ err LARGE_MSG
+                  Right body -> do
+                    msg_ <- time "SEND" $ do
+                      q <- getStoreMsgQueue "SEND" $ recipientId qr
+                      expireMessages q
+                      atomically . writeMsg q =<< mkMessage body
+                    case msg_ of
+                      Nothing -> pure $ err QUOTA
+                      Just msg -> time "SEND ok" $ do
+                        stats <- asks serverStats
+                        when (notification msgFlags) $ do
+                          atomically . trySendNotification msg =<< asks idsDrg
+                          atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
+                          atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
+                        atomically $ modifyTVar' (msgSent stats) (+ 1)
+                        atomically $ modifyTVar' (msgCount stats) (subtract 1)
+                        atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                        pure ok
           where
             mkMessage :: C.MaxLenBS MaxMessageLen -> m Message
             mkMessage body = do
@@ -767,7 +767,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             msgTs' = msg.msgTs
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) $ msg.msgId
+        setDelivered s msg = tryPutTMVar (delivered s) msg.msgId
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do

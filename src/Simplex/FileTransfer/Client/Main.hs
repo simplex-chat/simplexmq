@@ -9,7 +9,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Client.Main
@@ -527,8 +526,8 @@ prepareChunkSizes size' = prepareSizes size'
     (smallSize, bigSize)
       | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
       | otherwise = (chunkSize1, chunkSize2)
-      --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
-      --  | otherwise = (chunkSize0, chunkSize1)
+    --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+    --  | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size
@@ -571,11 +570,11 @@ withRetry retryCount = withRetry' retryCount . withExceptT (CLIError . show)
 removeFD :: Bool -> FilePath -> IO ()
 removeFD yes fd
   | yes = do
-    removeFile fd
-    putStrLn $ "\nFile description " <> fd <> " is deleted."
+      removeFile fd
+      putStrLn $ "\nFile description " <> fd <> " is deleted."
   | otherwise = do
-    y <- liftIO . getConfirmation $ "\nFile description " <> fd <> " can't be used again. Delete it"
-    when y $ removeFile fd
+      y <- liftIO . getConfirmation $ "\nFile description " <> fd <> " can't be used again. Delete it"
+      when y $ removeFile fd
 
 getConfirmation :: String -> IO Bool
 getConfirmation prompt = do

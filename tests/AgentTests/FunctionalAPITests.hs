@@ -1930,7 +1930,7 @@ testDeliveryReceiptsVersion t = do
     disconnectAgentClient a'
     disconnectAgentClient b'
 
-testDeliveryReceiptsConcurrent :: (HasCallStack) => ATransport -> IO ()
+testDeliveryReceiptsConcurrent :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsConcurrent t =
   withSmpServerConfigOn t cfg {msgQueueQuota = 128} testPort $ \_ -> do
     withAgentClients2 $ \a b -> do

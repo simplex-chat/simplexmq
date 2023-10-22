@@ -20,9 +20,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
-
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
@@ -277,7 +276,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (onException, bracketOnError)
+import UnliftIO.Exception (bracketOnError, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -347,10 +346,10 @@ migrateSchema st migrations confirmMigrations = do
     Right ms@(MTRUp ums)
       | dbNew st -> Migrations.run st ms $> Right ()
       | otherwise -> case confirmMigrations of
-        MCYesUp -> run ms
-        MCYesUpDown -> run ms
-        MCConsole -> confirm err >> run ms
-        MCError -> pure $ Left err
+          MCYesUp -> run ms
+          MCYesUpDown -> run ms
+          MCConsole -> confirm err >> run ms
+          MCError -> pure $ Left err
       where
         err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
@@ -1079,12 +1078,12 @@ countPendingSndDeliveries_ db connId msgId = do
 
 deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRcvMsgHashesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM encrypted_rcv_message_hashes WHERE created_at < ?" (Only cutoffTs)
 
 deleteSndMsgsExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteSndMsgsExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute
     db
     "DELETE FROM messages WHERE internal_ts < ? AND internal_snd_id IS NOT NULL"
@@ -1163,7 +1162,7 @@ getSkippedMsgKeys :: DB.Connection -> ConnId -> IO SkippedMsgKeys
 getSkippedMsgKeys db connId =
   skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
   where
-    skipped ms = foldl' addSkippedKey M.empty ms
+    skipped = foldl' addSkippedKey M.empty
     addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
       where
         addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
@@ -1734,15 +1733,15 @@ getAnyConn deleted' dbConn connId =
     Just (cData@ConnData {deleted}, cMode)
       | deleted /= deleted' -> pure $ Left SEConnNotFound
       | otherwise -> do
-        rQ <- getRcvQueuesByConnId_ dbConn connId
-        sQ <- getSndQueuesByConnId_ dbConn connId
-        pure $ case (rQ, sQ, cMode) of
-          (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
-          (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
-          (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
-          (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
-          (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
-          _ -> Left SEConnNotFound
+          rQ <- getRcvQueuesByConnId_ dbConn connId
+          sQ <- getSndQueuesByConnId_ dbConn connId
+          pure $ case (rQ, sQ, cMode) of
+            (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
+            (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
+            (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
+            (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
+            (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
+            _ -> Left SEConnNotFound
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
@@ -1804,7 +1803,7 @@ checkRatchetKeyHashExists db connId hash = do
 
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRatchetKeyHashesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM processed_ratchet_key_hashes WHERE created_at < ?" (Only cutoffTs)
 
 -- | returns all connection queues, the first queue is the primary one
@@ -2253,7 +2252,7 @@ deleteRcvFile' db rcvFileId =
 
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe RcvFileChunk)
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   maybeFirstRow toChunk $
     DB.query
       db
@@ -2290,7 +2289,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
 
 getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Maybe RcvFile)
 getNextRcvFileToDecrypt db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   fileId_ :: Maybe DBRcvFileId <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2308,7 +2307,7 @@ getNextRcvFileToDecrypt db ttl = do
 
 getPendingRcvFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingRcvFilesServers db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   map toXFTPServer
     <$> DB.query
       db
@@ -2350,7 +2349,7 @@ getCleanupRcvFilesDeleted db =
 
 getRcvFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBRcvFileId, RcvFileId, FilePath)]
 getRcvFilesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.query
     db
     [sql|
@@ -2458,7 +2457,7 @@ getChunkReplicaRecipients_ db replicaId =
 
 getNextSndFileToPrepare :: DB.Connection -> NominalDiffTime -> IO (Maybe SndFile)
 getNextSndFileToPrepare db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   fileId_ :: Maybe DBSndFileId <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2539,7 +2538,7 @@ createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, re
 
 getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe SndFileChunk)
 getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   chunk_ <-
     maybeFirstRow toChunk $
       DB.query
@@ -2608,7 +2607,7 @@ updateSndChunkReplicaStatus db replicaId status = do
 
 getPendingSndFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingSndFilesServers db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   map toXFTPServer
     <$> DB.query
       db
@@ -2647,7 +2646,7 @@ getCleanupSndFilesDeleted db =
 
 getSndFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBSndFileId, SndFileId, Maybe FilePath)]
 getSndFilesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.query
     db
     [sql|
@@ -2687,7 +2686,7 @@ getDeletedSndChunkReplica db deletedSndChunkReplicaId =
 
 getNextDeletedSndChunkReplica :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe DeletedSndChunkReplica)
 getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   replicaId_ :: Maybe Int64 <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2716,7 +2715,7 @@ deleteDeletedSndChunkReplica db deletedSndChunkReplicaId =
 
 getPendingDelFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingDelFilesServers db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   map toXFTPServer
     <$> DB.query
       db
@@ -2731,5 +2730,5 @@ getPendingDelFilesServers db ttl = do
 
 deleteDeletedSndChunkReplicasExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteDeletedSndChunkReplicasExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM deleted_snd_chunk_replicas WHERE created_at < ?" (Only cutoffTs)

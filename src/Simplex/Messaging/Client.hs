@@ -429,11 +429,11 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
       where
         response entityId
           | entityId == entId =
-            case respOrErr of
-              Left e -> Left $ PCEResponseError e
-              Right r -> case protocolError r of
-                Just e -> Left $ PCEProtocolError e
-                _ -> Right r
+              case respOrErr of
+                Left e -> Left $ PCEResponseError e
+                Right r -> case protocolError r of
+                  Just e -> Left $ PCEProtocolError e
+                  _ -> Right r
           | otherwise = Left . PCEUnexpectedResponse $ bshow respOrErr
         sendMsg :: Either err msg -> IO ()
         sendMsg = \case
@@ -661,13 +661,13 @@ sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
     validate rs
       | diff == 0 = pure $ L.fromList rs
       | diff > 0 = do
-        putStrLn "send error: fewer responses than expected"
-        pure $ L.fromList $ rs <> replicate diff (Response "" $ Left $ PCETransportError TEBadBlock)
+          putStrLn "send error: fewer responses than expected"
+          pure $ L.fromList $ rs <> replicate diff (Response "" $ Left $ PCETransportError TEBadBlock)
       | otherwise = do
-        putStrLn "send error: more responses than expected"
-        pure $ L.fromList $ take (L.length cs) rs
-        where
-          diff = L.length cs - length rs
+          putStrLn "send error: more responses than expected"
+          pure $ L.fromList $ take (L.length cs) rs
+      where
+        diff = L.length cs - length rs
 
 streamProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
 streamProtocolCommands c@ProtocolClient {batch, blockSize} cs cb = do
@@ -688,8 +688,8 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       (: []) <$> getResponse c r
 
 data ClientBatch err msg
-  -- ByteString in CBTransmissions does not include count byte, it is added by tEncodeBatch
-  = CBTransmissions ByteString Int [Request err msg]
+  = -- ByteString in CBTransmissions does not include count byte, it is added by tEncodeBatch
+    CBTransmissions ByteString Int [Request err msg]
   | CBTransmission ByteString (Request err msg)
   | CBLargeTransmission (Request err msg)
 
@@ -713,9 +713,9 @@ batchClientTransmissions batch blkSize
     encodeBatch :: ByteString -> Int -> [Request err msg] -> NonEmpty (PCTransmission err msg) -> (ClientBatch err msg, Maybe (NonEmpty (PCTransmission err msg)))
     encodeBatch s n rs ts@((t, r) :| ts_)
       | B.length s' <= blkSize - 3 && n < 255 =
-        case L.nonEmpty ts_ of
-          Just ts' -> encodeBatch s' n' rs' ts'
-          Nothing -> (CBTransmissions s' n' (reverse rs'), Nothing)
+          case L.nonEmpty ts_ of
+            Just ts' -> encodeBatch s' n' rs' ts'
+            Nothing -> (CBTransmissions s' n' (reverse rs'), Nothing)
       | n == 0 = (CBLargeTransmission r, L.nonEmpty ts_)
       | otherwise = (CBTransmissions s n (reverse rs), Just ts)
       where

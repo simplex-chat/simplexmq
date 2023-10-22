@@ -7,7 +7,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module AgentTests.SQLiteTests (storeTests) where
