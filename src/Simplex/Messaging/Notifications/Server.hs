@@ -16,7 +16,6 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -205,7 +204,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               Just err -> (subs, oks, err : errs) -- permanent error, log and don't retry subscription
               Nothing -> (sub : subs, oks, errs) -- temporary error, retry subscription
 
-    -- | Subscribe to queues. The list of results can have a different order.
+    -- \| Subscribe to queues. The list of results can have a different order.
     subscribeQueues :: SMPServer -> NonEmpty NtfSubData -> IO (NonEmpty (NtfSubData, Either SMPClientError ()))
     subscribeQueues srv subs =
       L.zipWith (\s r -> (s, snd r)) subs <$> subscribeQueuesNtfs ca srv (L.map sub subs)
@@ -346,7 +345,8 @@ runNtfClientTransport th@THandle {sessionId} = do
   raceAny_ ([liftIO $ send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
-    disconnectThread_ c expCfg = maybe [] ((: []) . liftIO . disconnectTransport th c activeAt) expCfg
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th c activeAt expCfg]
+    disconnectThread_ _ _ = []
 
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
