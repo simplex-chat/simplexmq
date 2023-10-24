@@ -34,6 +34,7 @@ import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Util (liftEitherWith)
 import System.Directory (getFileSize)
 import UnliftIO (Handle, IOMode (..), liftIO)
@@ -116,6 +117,6 @@ getFileContentsSize (CryptoFile path cfArgs) = do
   size <- getFileSize path
   pure $ if isJust cfArgs then size - fromIntegral C.authTagSize else size
 
-$(J.deriveJSON J.defaultOptions ''CryptoFileArgs)
+$(J.deriveJSON defaultJSON ''CryptoFileArgs)
 
-$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''CryptoFile)
+$(J.deriveJSON defaultJSON ''CryptoFile)

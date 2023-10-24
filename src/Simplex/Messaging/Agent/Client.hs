@@ -162,7 +162,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (dropPrefix, enumJSON, parse)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -1365,12 +1365,12 @@ getAgentSubscriptions c = do
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
 
-$(J.deriveJSON J.defaultOptions ''AgentLocks)
+$(J.deriveJSON defaultJSON ''AgentLocks)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
-$(J.deriveJSON J.defaultOptions ''ProtocolTestFailure)
+$(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
-$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''SubInfo)
+$(J.deriveJSON defaultJSON ''SubInfo)
 
-$(J.deriveJSON J.defaultOptions ''SubscriptionsInfo)
+$(J.deriveJSON defaultJSON ''SubscriptionsInfo)

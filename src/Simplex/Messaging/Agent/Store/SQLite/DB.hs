@@ -25,6 +25,7 @@ import Data.Int (Int64)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds)
@@ -97,4 +98,4 @@ queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
 {-# INLINE queryNamed #-}
 
-$(J.deriveJSON J.defaultOptions ''SlowQueryStats)
+$(J.deriveJSON defaultJSON ''SlowQueryStats)

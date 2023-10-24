@@ -9,6 +9,7 @@ module Simplex.Messaging.Transport.KeepAlive where
 import qualified Data.Aeson.TH as J
 import Foreign.C (CInt (..))
 import Network.Socket
+import Simplex.Messaging.Parsers (defaultJSON)
 
 data KeepAliveOpts = KeepAliveOpts
   { keepIdle :: Int,
@@ -65,4 +66,4 @@ setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPINTVL) keepIntvl
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPCNT) keepCnt
 
-$(J.deriveJSON J.defaultOptions ''KeepAliveOpts)
+$(J.deriveJSON defaultJSON ''KeepAliveOpts)

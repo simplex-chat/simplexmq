@@ -264,7 +264,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, sumTypeJSON)
+import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, fromTextField_, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -2725,6 +2725,6 @@ deleteDeletedSndChunkReplicasExpired db ttl = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM deleted_snd_chunk_replicas WHERE created_at < ?" (Only cutoffTs)
 
-$(J.deriveJSON J.defaultOptions ''UpMigration)
+$(J.deriveJSON defaultJSON ''UpMigration)
 
 $(J.deriveToJSON (sumTypeJSON $ dropPrefix "ME") ''MigrationError)

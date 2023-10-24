@@ -101,7 +101,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (dropPrefix, enumJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -750,4 +750,4 @@ $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
 
-$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''NetworkConfig)
+$(J.deriveJSON defaultJSON ''NetworkConfig)

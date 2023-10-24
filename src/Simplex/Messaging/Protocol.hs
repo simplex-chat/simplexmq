@@ -1365,7 +1365,7 @@ tDecodeParseValidate sessionId v = \case
       let cmd = parseProtocol @err @cmd v command >>= checkCredentials t
        in (sig, signed, (CorrId corrId, entityId, cmd))
 
-$(J.deriveJSON J.defaultOptions ''MsgFlags)
+$(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 

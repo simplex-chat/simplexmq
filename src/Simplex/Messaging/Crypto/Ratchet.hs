@@ -38,7 +38,7 @@ import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (blobFieldDecoder, parseE, parseE')
+import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Version
 
 currentE2EEncryptVersion :: Version
@@ -481,21 +481,21 @@ hkdf3 salt ikm info = (s1, s2, s3)
     (s1, rest) = B.splitAt 32 out
     (s2, s3) = B.splitAt 32 rest
 
-$(JQ.deriveJSON J.defaultOptions ''RcvRatchet)
+$(JQ.deriveJSON defaultJSON ''RcvRatchet)
 
 instance AlgorithmI a => ToJSON (SndRatchet a) where
-  toEncoding = $(JQ.mkToEncoding J.defaultOptions ''SndRatchet)
-  toJSON = $(JQ.mkToJSON J.defaultOptions ''SndRatchet)
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''SndRatchet)
+  toJSON = $(JQ.mkToJSON defaultJSON ''SndRatchet)
 
 instance AlgorithmI a => FromJSON (SndRatchet a) where
-  parseJSON = $(JQ.mkParseJSON J.defaultOptions ''SndRatchet)
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''SndRatchet)
 
 instance AlgorithmI a => ToJSON (Ratchet a) where
-  toEncoding = $(JQ.mkToEncoding J.defaultOptions ''Ratchet)
-  toJSON = $(JQ.mkToJSON J.defaultOptions ''Ratchet)
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''Ratchet)
+  toJSON = $(JQ.mkToJSON defaultJSON ''Ratchet)
 
 instance AlgorithmI a => FromJSON (Ratchet a) where
-  parseJSON = $(JQ.mkParseJSON J.defaultOptions ''Ratchet)
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''Ratchet)
 
 instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
 

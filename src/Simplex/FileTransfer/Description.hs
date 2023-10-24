@@ -57,7 +57,7 @@ import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Util (bshow, groupAllOn, (<$?>))
 
@@ -169,9 +169,9 @@ data FileServerReplica = FileServerReplica
 newtype FileSize a = FileSize {unFileSize :: a}
   deriving (Eq, Show)
 
-$(J.deriveJSON J.defaultOptions ''YAMLServerReplicas)
+$(J.deriveJSON defaultJSON ''YAMLServerReplicas)
 
-$(J.deriveJSON J.defaultOptions ''YAMLFileDescription)
+$(J.deriveJSON defaultJSON ''YAMLFileDescription)
 
 instance FilePartyI p => StrEncoding (ValidFileDescription p) where
   strEncode (ValidFD fd) = strEncode fd

@@ -50,6 +50,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -79,9 +80,9 @@ mkJWTToken hdr iss = do
 
 type SignedJWTToken = ByteString
 
-$(JQ.deriveToJSON J.defaultOptions ''JWTHeader)
+$(JQ.deriveToJSON defaultJSON ''JWTHeader)
 
-$(JQ.deriveToJSON J.defaultOptions ''JWTClaims)
+$(JQ.deriveToJSON defaultJSON ''JWTClaims)
 
 signedJWTToken :: EC.PrivateKey -> JWTToken -> IO SignedJWTToken
 signedJWTToken pk (JWTToken hdr claims) = do
@@ -296,7 +297,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
 
 $(JQ.deriveToJSON apnsJSONOptions ''APNSNotificationBody)
 
-$(JQ.deriveToJSON J.defaultOptions {J.omitNothingFields = True} ''APNSNotification)
+$(JQ.deriveToJSON defaultJSON ''APNSNotification)
 
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
 apnsRequest c tkn ntf@APNSNotification {aps} = do
@@ -331,7 +332,7 @@ type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProvider
 -- this is not a newtype on purpose to have a correct JSON encoding as a record
 data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 
-$(JQ.deriveFromJSON J.defaultOptions ''APNSErrorResponse)
+$(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
 apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do

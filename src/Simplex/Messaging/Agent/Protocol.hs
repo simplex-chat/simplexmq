@@ -1877,11 +1877,11 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
             pure body
           Nothing -> return . Left $ CMD SYNTAX
 
-$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''RcvQueueInfo)
+$(J.deriveJSON defaultJSON ''RcvQueueInfo)
 
-$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''SndQueueInfo)
+$(J.deriveJSON defaultJSON ''SndQueueInfo)
 
-$(J.deriveJSON J.defaultOptions ''ConnectionStats)
+$(J.deriveJSON defaultJSON ''ConnectionStats)
 
 $(J.deriveJSON (sumTypeJSON fstToLower) ''MsgErrorType)
 
