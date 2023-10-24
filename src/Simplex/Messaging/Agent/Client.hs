@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Client
     ProtocolTestStep (..),
     newAgentClient,
     withConnLock,
+    withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
@@ -247,6 +248,8 @@ data AgentClient = AgentClient
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
+    -- locks to prevent concurrent operations with connection request invitations
+    invLocks :: TMap String Lock,
     -- lock to prevent concurrency between periodic and async connection deletions
     deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
@@ -277,7 +280,12 @@ data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
-data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
+data AgentLocks = AgentLocks
+  { connLocks :: Map String String,
+    invLocks :: Map String String,
+    srvLocks :: Map String String,
+    delLock :: Maybe String
+  }
   deriving (Show, Generic, FromJSON)
 
 instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
@@ -323,6 +331,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   agentState <- newTVar ASForeground
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
+  invLocks <- TM.empty
   deleteLock <- createLock
   reconnectLocks <- TM.empty
   reconnections <- newTAsyncs
@@ -360,6 +369,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         agentState,
         getMsgLocks,
         connLocks,
+        invLocks,
         deleteLock,
         reconnectLocks,
         reconnections,
@@ -642,6 +652,9 @@ cancelActions as = atomically (swapTVar as mempty) >>= mapM_ (forkIO . uninterru
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
+
+withInvLock :: MonadUnliftIO m => AgentClient -> String -> String -> m a -> m a
+withInvLock AgentClient {invLocks} = withLockMap_ invLocks
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
