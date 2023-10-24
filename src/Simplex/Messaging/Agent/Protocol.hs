@@ -1256,9 +1256,6 @@ data SMPQueueAddress = SMPQueueAddress
   }
   deriving (Eq, Show)
 
-instance Ord SMPQueueAddress where
-  compare addr1 addr2 = compare (smpServer addr1, senderId addr1) (smpServer addr2, senderId addr2)
-
 instance SMPQueue SMPQueueUri where
   qServer SMPQueueUri {queueAddress} = qServer queueAddress
   {-# INLINE qServer #-}
