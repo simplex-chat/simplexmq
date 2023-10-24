@@ -1,12 +1,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -20,8 +20,9 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as JQ
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -33,7 +34,6 @@ import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import GHC.Generics
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
@@ -135,29 +135,20 @@ data Ratchet a = Ratchet
     rcNHKs :: HeaderKey,
     rcNHKr :: HeaderKey
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance AlgorithmI a => ToJSON (Ratchet a) where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
     rcCKs :: RatchetKey,
     rcHKs :: HeaderKey
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance AlgorithmI a => ToJSON (SndRatchet a) where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data RcvRatchet = RcvRatchet
   { rcCKr :: RatchetKey,
     rcHKr :: HeaderKey
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON RcvRatchet where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 type SkippedMsgKeys = Map HeaderKey SkippedHdrMsgKeys
 
@@ -203,10 +194,6 @@ instance ToJSON RatchetKey where
 
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
-
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
-
-instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
 instance ToField MessageKey where toField = toField . smpEncode
 
@@ -493,3 +480,23 @@ hkdf3 salt ikm info = (s1, s2, s3)
     out = H.expand prk info 96
     (s1, rest) = B.splitAt 32 out
     (s2, s3) = B.splitAt 32 rest
+
+$(JQ.deriveJSON J.defaultOptions ''RcvRatchet)
+
+instance AlgorithmI a => ToJSON (SndRatchet a) where
+  toEncoding = $(JQ.mkToEncoding J.defaultOptions ''SndRatchet)
+  toJSON = $(JQ.mkToJSON J.defaultOptions ''SndRatchet)
+
+instance AlgorithmI a => FromJSON (SndRatchet a) where
+  parseJSON = $(JQ.mkParseJSON J.defaultOptions ''SndRatchet)
+
+instance AlgorithmI a => ToJSON (Ratchet a) where
+  toEncoding = $(JQ.mkToEncoding J.defaultOptions ''Ratchet)
+  toJSON = $(JQ.mkToJSON J.defaultOptions ''Ratchet)
+
+instance AlgorithmI a => FromJSON (Ratchet a) where
+  parseJSON = $(JQ.mkParseJSON J.defaultOptions ''Ratchet)
+
+instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+
+instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'

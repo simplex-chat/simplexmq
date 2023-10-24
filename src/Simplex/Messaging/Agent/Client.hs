@@ -2,7 +2,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -15,6 +14,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
@@ -117,8 +117,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random (getRandomBytes)
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -137,7 +136,6 @@ import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Word (Word16)
-import GHC.Generics (Generic)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -280,9 +278,7 @@ data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
-  deriving (Show, Generic, FromJSON)
-
-instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Show)
 
 data AgentStatsKey = AgentStatsKey
   { userId :: UserId,
@@ -725,22 +721,13 @@ data ProtocolTestStep
   | TSDownloadFile
   | TSCompareFile
   | TSDeleteFile
-  deriving (Eq, Show, Generic)
-
-instance ToJSON ProtocolTestStep where
-  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
-  toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
-
-instance FromJSON ProtocolTestStep where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TS"
+  deriving (Eq, Show)
 
 data ProtocolTestFailure = ProtocolTestFailure
   { testStep :: ProtocolTestStep,
     testError :: AgentErrorType
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON ProtocolTestFailure where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
@@ -1355,22 +1342,14 @@ withNextSrv c userId usedSrvs initUsed action = do
   action srvAuth
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
-  deriving (Show, Generic)
-
-instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
-
-instance FromJSON SubInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
+  deriving (Show)
 
 data SubscriptionsInfo = SubscriptionsInfo
   { activeSubscriptions :: [SubInfo],
     pendingSubscriptions :: [SubInfo],
     removedSubscriptions :: [SubInfo]
   }
-  deriving (Show, Generic)
-
-instance ToJSON SubscriptionsInfo where toEncoding = J.genericToEncoding J.defaultOptions
-
-instance FromJSON SubscriptionsInfo where parseJSON = J.genericParseJSON J.defaultOptions
+  deriving (Show)
 
 getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo
 getAgentSubscriptions c = do
@@ -1385,3 +1364,13 @@ getAgentSubscriptions c = do
     subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
+
+$(J.deriveJSON J.defaultOptions ''AgentLocks)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
+
+$(J.deriveJSON J.defaultOptions ''ProtocolTestFailure)
+
+$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''SubInfo)
+
+$(J.deriveJSON J.defaultOptions ''SubscriptionsInfo)

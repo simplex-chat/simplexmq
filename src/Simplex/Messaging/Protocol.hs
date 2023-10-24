@@ -1,7 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -17,6 +16,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
@@ -155,7 +155,7 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -170,7 +170,6 @@ import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
-import GHC.Generics (Generic)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -472,9 +471,7 @@ instance Encoding NMsgMeta where
 
 -- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 -- this encoding should not become bigger than 7 bytes (currently it is 1 byte)
 instance Encoding MsgFlags where
@@ -997,14 +994,7 @@ data ErrorType
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
-  deriving (Eq, Generic, Read, Show)
-
-instance ToJSON ErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON ErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show)
 
 instance StrEncoding ErrorType where
   strEncode = \case
@@ -1026,14 +1016,7 @@ data CommandError
     HAS_AUTH
   | -- | transmission has no required entity ID (e.g. SMP queue)
     NO_ENTITY
-  deriving (Eq, Generic, Read, Show)
-
-instance ToJSON CommandError where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON CommandError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show)
 
 -- | SMP transmission parser.
 transmissionP :: Parser RawTransmission
@@ -1381,3 +1364,9 @@ tDecodeParseValidate sessionId v = \case
     tParseValidate signed t@(sig, corrId, entityId, command) =
       let cmd = parseProtocol @err @cmd v command >>= checkCredentials t
        in (sig, signed, (CorrId corrId, entityId, cmd))
+
+$(J.deriveJSON J.defaultOptions ''MsgFlags)
+
+$(J.deriveJSON (sumTypeJSON id) ''CommandError)
+
+$(J.deriveJSON (sumTypeJSON id) ''ErrorType)

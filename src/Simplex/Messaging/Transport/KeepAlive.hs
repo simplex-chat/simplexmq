@@ -1,15 +1,13 @@
 {-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Transport.KeepAlive where
 
-import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Foreign.C (CInt (..))
-import GHC.Generics (Generic)
 import Network.Socket
 
 data KeepAliveOpts = KeepAliveOpts
@@ -17,9 +15,7 @@ data KeepAliveOpts = KeepAliveOpts
     keepIntvl :: Int,
     keepCnt :: Int
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON KeepAliveOpts where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 defaultKeepAliveOpts :: KeepAliveOpts
 defaultKeepAliveOpts =
@@ -68,3 +64,5 @@ setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPIDLE) keepIdle
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPINTVL) keepIntvl
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPCNT) keepCnt
+
+$(J.deriveJSON J.defaultOptions ''KeepAliveOpts)

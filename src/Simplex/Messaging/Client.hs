@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -10,6 +9,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -86,8 +86,7 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
-import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -97,7 +96,6 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
-import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -190,14 +188,7 @@ data HostMode
     HMOnion
   | -- | prefer (or require) public hosts
     HMPublic
-  deriving (Eq, Show, Generic)
-
-instance FromJSON HostMode where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "HM"
-
-instance ToJSON HostMode where
-  toJSON = J.genericToJSON . enumJSON $ dropPrefix "HM"
-  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "HM"
+  deriving (Eq, Show)
 
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
@@ -223,21 +214,10 @@ data NetworkConfig = NetworkConfig
     smpPingCount :: Int,
     logTLSErrors :: Bool
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON NetworkConfig where
-  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
-  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+  deriving (Eq, Show)
 
 data TransportSessionMode = TSMUser | TSMEntity
-  deriving (Eq, Show, Generic)
-
-instance ToJSON TransportSessionMode where
-  toJSON = J.genericToJSON . enumJSON $ dropPrefix "TSM"
-  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TSM"
-
-instance FromJSON TransportSessionMode where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TSM"
+  deriving (Eq, Show)
 
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
@@ -765,3 +745,9 @@ mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCo
       r <- Request entId <$> newEmptyTMVar
       TM.insert corrId r sentCommands
       pure r
+
+$(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
+
+$(J.deriveJSON J.defaultOptions {J.omitNothingFields = True} ''NetworkConfig)

@@ -1,7 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -17,6 +16,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -219,8 +219,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
@@ -246,7 +245,6 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
-import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
@@ -286,7 +284,7 @@ data MigrationError
   = MEUpgrade {upMigrations :: [UpMigration]}
   | MEDowngrade {downMigrations :: [String]}
   | MigrationError {mtrError :: MTRError}
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show)
 
 migrationErrorDescription :: MigrationError -> String
 migrationErrorDescription = \case
@@ -296,17 +294,11 @@ migrationErrorDescription = \case
     "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " dms
   MigrationError err -> mtrErrorDescription err
 
-instance ToJSON MigrationError where
-  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "ME"
-  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
-
 data UpMigration = UpMigration {upName :: String, withDown :: Bool}
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show)
 
 upMigration :: Migration -> UpMigration
 upMigration Migration {name, down} = UpMigration name $ isJust down
-
-instance ToJSON UpMigration where toEncoding = J.genericToEncoding J.defaultOptions
 
 data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
   deriving (Eq, Show)
@@ -2732,3 +2724,7 @@ deleteDeletedSndChunkReplicasExpired :: DB.Connection -> NominalDiffTime -> IO (
 deleteDeletedSndChunkReplicasExpired db ttl = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM deleted_snd_chunk_replicas WHERE created_at < ?" (Only cutoffTs)
+
+$(J.deriveJSON J.defaultOptions ''UpMigration)
+
+$(J.deriveToJSON (sumTypeJSON $ dropPrefix "ME") ''MigrationError)
