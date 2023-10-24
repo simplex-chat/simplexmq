@@ -481,7 +481,7 @@ newConnNoQueues c userId connId enableNtfs cMode = do
 
 joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
 joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange} _) cInfo subMode = do
-  withInvLock c (B.unpack . strEncode $ cReqUri) "joinConnAsync" $ do
+  withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
     aVRange <- asks $ smpAgentVRange . config
     case crAgentVRange `compatibleVersion` aVRange of
       Just (Compatible connAgentVersion) -> do
@@ -617,7 +617,7 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
 
 joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> m ConnId
 joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv =
-  withInvLock c (B.unpack . strEncode $ inv) "joinConnSrv" $ do
+  withInvLock c (strEncode inv) "joinConnSrv" $ do
     (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
     g <- asks idsDrg
     connId' <- withStore c $ \db -> runExceptT $ do
