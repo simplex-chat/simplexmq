@@ -480,8 +480,8 @@ newConnNoQueues c userId connId enableNtfs cMode = do
   withStore c $ \db -> createNewConn db g cData cMode
 
 joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
-joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues} _) cInfo subMode = do
-  withInvLock c crSmpQueues "joinConnAsync" $ do
+joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange} _) cInfo subMode = do
+  withInvLock c (B.unpack . strEncode $ cReqUri) "joinConnAsync" $ do
     aVRange <- asks $ smpAgentVRange . config
     case crAgentVRange `compatibleVersion` aVRange of
       Just (Compatible connAgentVersion) -> do
@@ -616,24 +616,25 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
     _ -> throwError $ AGENT A_VERSION
 
 joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> m ConnId
-joinConnSrv c userId connId enableNtfs inv@(CRInvitationUri ConnReqUriData {crSmpQueues} _) cInfo subMode srv = withInvLock c crSmpQueues "joinConnSrv" $ do
-  (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
-  g <- asks idsDrg
-  connId' <- withStore c $ \db -> runExceptT $ do
-    connId' <- ExceptT $ createSndConn db g cData q
-    liftIO $ createRatchet db connId' rc
-    pure connId'
-  let sq = (q :: SndQueue) {connId = connId'}
-      cData' = (cData :: ConnData) {connId = connId'}
-      duplexHS = connAgentVersion /= 1
-  tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
-    Right _ -> do
-      unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv =
+  withInvLock c (B.unpack . strEncode $ inv) "joinConnSrv" $ do
+    (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
+    g <- asks idsDrg
+    connId' <- withStore c $ \db -> runExceptT $ do
+      connId' <- ExceptT $ createSndConn db g cData q
+      liftIO $ createRatchet db connId' rc
       pure connId'
-    Left e -> do
-      -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
-      withStore' c (`deleteConn` connId')
-      throwError e
+    let sq = (q :: SndQueue) {connId = connId'}
+        cData' = (cData :: ConnData) {connId = connId'}
+        duplexHS = connAgentVersion /= 1
+    tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
+      Right _ -> do
+        unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
+        pure connId'
+      Left e -> do
+        -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
+        withStore' c (`deleteConn` connId')
+        throwError e
 joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) cInfo subMode srv = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config

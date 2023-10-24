@@ -1249,9 +1249,6 @@ instance VersionRangeI SMPQueueUri where
 data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRange, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
-instance Ord SMPQueueUri where
-  compare SMPQueueUri {queueAddress = qa1} SMPQueueUri {queueAddress = qa2} = compare qa1 qa2
-
 data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,

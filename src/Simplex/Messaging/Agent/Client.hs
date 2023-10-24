@@ -251,7 +251,7 @@ data AgentClient = AgentClient
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
     -- locks to prevent concurrent operations with connection request invitations
-    invLocks :: TMap (NonEmpty SMPQueueUri) Lock,
+    invLocks :: TMap String Lock,
     -- lock to prevent concurrency between periodic and async connection deletions
     deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
@@ -655,7 +655,7 @@ withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
 
-withInvLock :: MonadUnliftIO m => AgentClient -> NonEmpty SMPQueueUri -> String -> m a -> m a
+withInvLock :: MonadUnliftIO m => AgentClient -> String -> String -> m a -> m a
 withInvLock AgentClient {invLocks} = withLockMap_ invLocks
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
