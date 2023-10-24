@@ -42,6 +42,7 @@ module Simplex.Messaging.Agent
     disconnectAgentClient,
     resumeAgentClient,
     withConnLock,
+    withInvLock,
     createUser,
     deleteUser,
     createConnectionAsync,
@@ -479,17 +480,18 @@ newConnNoQueues c userId connId enableNtfs cMode = do
   withStore c $ \db -> createNewConn db g cData cMode
 
 joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
-joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange} _) cInfo subMode = do
-  aVRange <- asks $ smpAgentVRange . config
-  case crAgentVRange `compatibleVersion` aVRange of
-    Just (Compatible connAgentVersion) -> do
-      g <- asks idsDrg
-      let duplexHS = connAgentVersion /= 1
-          cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
-      connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-      enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ JOIN enableNtfs (ACR sConnectionMode cReqUri) subMode cInfo
-      pure connId
-    _ -> throwError $ AGENT A_VERSION
+joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues} _) cInfo subMode = do
+  withInvLock c crSmpQueues "joinConnAsync" $ do
+    aVRange <- asks $ smpAgentVRange . config
+    case crAgentVRange `compatibleVersion` aVRange of
+      Just (Compatible connAgentVersion) -> do
+        g <- asks idsDrg
+        let duplexHS = connAgentVersion /= 1
+            cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
+        connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
+        enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ JOIN enableNtfs (ACR sConnectionMode cReqUri) subMode cInfo
+        pure connId
+      _ -> throwError $ AGENT A_VERSION
 joinConnAsync _c _userId _corrId _enableNtfs (CRContactUri _) _subMode _cInfo =
   throwError $ CMD PROHIBITED
 
@@ -614,7 +616,7 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
     _ -> throwError $ AGENT A_VERSION
 
 joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> m ConnId
-joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv = do
+joinConnSrv c userId connId enableNtfs inv@(CRInvitationUri ConnReqUriData {crSmpQueues} _) cInfo subMode srv = withInvLock c crSmpQueues "joinConnSrv" $ do
   (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
   g <- asks idsDrg
   connId' <- withStore c $ \db -> runExceptT $ do
@@ -1742,11 +1744,12 @@ getAgentMigrations' :: AgentMonad m => AgentClient -> m [UpMigration]
 getAgentMigrations' c = map upMigration <$> withStore' c (Migrations.getCurrent . DB.conn)
 
 debugAgentLocks' :: AgentMonad' m => AgentClient -> m AgentLocks
-debugAgentLocks' AgentClient {connLocks = cs, reconnectLocks = rs, deleteLock = d} = do
+debugAgentLocks' AgentClient {connLocks = cs, invLocks = is, reconnectLocks = rs, deleteLock = d} = do
   connLocks <- getLocks cs
+  invLocks <- getLocks is
   srvLocks <- getLocks rs
   delLock <- atomically $ tryReadTMVar d
-  pure AgentLocks {connLocks, srvLocks, delLock}
+  pure AgentLocks {connLocks, invLocks, srvLocks, delLock}
   where
     getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 

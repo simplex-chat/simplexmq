@@ -1247,7 +1247,7 @@ instance VersionRangeI SMPQueueUri where
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
 data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRange, queueAddress :: SMPQueueAddress}
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
@@ -1255,6 +1255,9 @@ data SMPQueueAddress = SMPQueueAddress
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
+
+instance Ord SMPQueueAddress where
+  compare addr1 addr2 = compare (smpServer addr1, senderId addr1) (smpServer addr2, senderId addr2)
 
 instance SMPQueue SMPQueueUri where
   qServer SMPQueueUri {queueAddress} = qServer queueAddress

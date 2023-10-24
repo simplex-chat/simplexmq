@@ -42,7 +42,7 @@ data VersionRange = VRange
   { minVersion :: Version,
     maxVersion :: Version
   }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 -- | construct valid version range, to be used in constants
 mkVersionRange :: Version -> Version -> VersionRange
