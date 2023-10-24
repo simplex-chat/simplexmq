@@ -561,14 +561,14 @@ createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, dupl
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
-  ifM (liftIO $ checkSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
+  ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
     createConn_ gVar cData $ \connId -> do
       serverKeyHash_ <- createServer_ db server
       DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
       void $ insertSndQueue_ db connId q serverKeyHash_
 
-checkSndQueueExists_ :: DB.Connection -> SndQueue -> IO Bool
-checkSndQueueExists_ db SndQueue {server, sndId} = do
+checkConfirmedSndQueueExists_ :: DB.Connection -> SndQueue -> IO Bool
+checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
   fromMaybe False
     <$> maybeFirstRow
       fromOnly
