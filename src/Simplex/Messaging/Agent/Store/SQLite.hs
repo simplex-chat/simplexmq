@@ -560,6 +560,7 @@ createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, dupl
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
+  -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkSndQueueExists_ db q) (pure $ Left SESndQueueAlreadyExists) $
     createConn_ gVar cData $ \connId -> do
       serverKeyHash_ <- createServer_ db server
