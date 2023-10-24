@@ -26,7 +26,6 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
 where
 
 import Control.Monad (forM_, when)
-import Data.Aeson (ToJSON)
 import qualified Data.Aeson.TH as J
 import Data.List (intercalate, sortOn)
 import Data.List.NonEmpty (NonEmpty)
