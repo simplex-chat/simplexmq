@@ -559,16 +559,12 @@ createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, dupl
     void $ insertRcvQueue_ db connId q serverKeyHash_
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
-createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} = do
-  queueExists <- liftIO $ checkSndQueueExists_ db q
-  if queueExists
-    then
-      pure $ Left SESndQueueAlreadyExists
-    else
-      createConn_ gVar cData $ \connId -> do
-        serverKeyHash_ <- createServer_ db server
-        DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
-        void $ insertSndQueue_ db connId q serverKeyHash_
+createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
+  ifM (liftIO $ checkSndQueueExists_ db q) (pure $ Left SESndQueueAlreadyExists) $
+    createConn_ gVar cData $ \connId -> do
+      serverKeyHash_ <- createServer_ db server
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
+      void $ insertSndQueue_ db connId q serverKeyHash_
 
 checkSndQueueExists_ :: DB.Connection -> SndQueue -> IO Bool
 checkSndQueueExists_ db SndQueue {server, sndId} = do
