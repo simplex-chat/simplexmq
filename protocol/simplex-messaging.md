@@ -364,9 +364,9 @@ The clients can optionally instruct a dedicated push notification server to subs
 
 [`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recepient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
 
-## SMP Transmission andtransport block structure
+## SMP Transmission and transport block structure
 
-Each transport block (SMP transmission) has a fixed size of 16384 bytes for traffic uniformity.
+Each transport block has a fixed size of 16384 bytes for traffic uniformity.
 
 From SMP version 4 each block can contain multiple transmissions, version 3 blocks have 1 transmission.
 Some parts of SMP transmission are padded to a fixed size; this padding is uniformly added as a word16 encoded in network byte order - see `paddedString` syntax.
@@ -387,17 +387,17 @@ Each transmission/block for SMP v3 between the client and the server must have t
 
 ```abnf
 paddedTransmission = <padded(transmission), 16384>
-transmission = [signature] SP signed
-signed = sessionIdentifier SP [corrId] SP [queueId] SP smpCommand
+transmission = signature signed
+signed = sessionIdentifier corrId queueId smpCommand
 ; corrId is required in client commands and server responses,
 ; it is empty in server notifications.
-corrId = 1*32(%x21-7F) ; any characters other than control/whitespace
-queueId = encoded ; max 32 bytes when decoded (24 bytes is used),
+corrId = length *OCTET
+queueId = length *OCTET
 ; empty queue ID is used with "create" command and in some server responses
-signature = encoded
+signature = length *OCTET
 ; empty signature can be used with "send" before the queue is secured with secure command
 ; signature is always empty with "ping" and "serverMsg"
-encoded = <base64 encoded binary>
+length = 1*1 OCTET
 ```
 
 `base64` encoding should be used with padding, as defined in section 4 of [RFC 4648][9]
