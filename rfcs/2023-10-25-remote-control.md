@@ -21,6 +21,7 @@ Service discovery and remote control protocols known to us are vulnerable to spo
 - Protection against replay attacks, both during discovery and during control session.
 - Additional encryption layer inside TLS.
 - Protect host device from unauthorized access in case of controller compromise.
+- Have post-compromised security - that is, even if long term secrets were copied from the controller, and host device was made to connect to malicious controller device, prevent malicious controller from accessing the host device data.
 - Support general high-level interactions common for many applications:
   - RPC pattern for commands executed by the host application.
   - Events sent by host to update controller UI.
@@ -31,129 +32,220 @@ This design is quite close to how SimpleX Chat UI interacts with SimpleX Chat co
 ## Protocol phases
 
 Protocol consists of four phases:
-- optional controller discovery.
-- controller authentication via out-of-band communication.
-- establishing TLS / HTTP2 connection between controller and host devices.
-- controller/host session operation.
+- controller session announcement
+- establishing session TLS connection
+- session authentication and protocol negotiation
+- session operation
 
-Out-of-band authentication is only required during the first controller/host agreement, and can be repeated to rotate long term keys identifying controller.
+### Session announcement
 
-### Controller discovery
+The first session between host and controller pair MUST be announced out-of-band, to establish a long term identity keys/certificates of the controller to host device.
 
-Initially posted [here](https://github.com/simplex-chat/simplex-chat/blob/remote-desktop/docs/rfcs/2023-10-24-robust-discovery.md).
+The subsequent sessions will be announced via an application-defined site-local multicast group, e.g. `224.0.0.251` (also used in mDNS/bonjour) and an application-defined port (SimpleX Chat uses 5227).
 
-Controller discovery allows to connect to the known controller on the same local network without out-of-band communication. This step is optional, as the session can be initiated with the new or known controller via out-of-band communication.
+The session announcement contains this data:
+- supported version range for remote control protocol
+- application name
+- device name
+- session start time in seconds since epoch
+- if multicast is used, counter of announce packets sent by controller
+- network address (ipv4 address and port) of the controller
+- CA TLS certificate fingerprint of the controller - this is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
+- Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
+- Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
+- Session X25519 DH key to agree session encryption (both for multicast announcement and for commands and responses in TLS). The new key is used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The initial out-of-band announcement is always unencrypted. This DH key is always sent unencrypted. NaCL Cryptobox is used for encryption.
 
-Discovery uses an application-defined site-local multicast group, e.g. `224.0.0.251` (also used in mDNS/bonjour) and an application-defined port (SimpleX Chat uses 5227).
+Host device decrypts (except the first session) and validates the announcement:
+- Session signature is valid.
+- Timestamp is within some window from the current time.
+- Long-term key signature is valid.
+- Long-term CA and key are the same as in the first session.
+- Some version in the range can be supported.
 
-The process of discovery has these steps:
-
-1. Controller initiates UDP broadcast sending `identify` packets to confirm its own IP address and network support. Receiving this packet confirms to controller its network source address that will be used for further broadcast, without relying on some other logic to determine it via network interfaces.
-2. Controller validates the source address of the received packets with matching random string against the list of network interfaces, ignoring unknown addresses. If after several packets the source addresses are not found among the network interfaces, terminates the session.
-3. Controller obtains a free TCP port for remote control session and starts listening on it.
-4. Controller generates a set of credentials (for the new host connection - long term CA key pair and long term signing key pair; for each session - DH key and and TLS key) for a particular host device and starts broadcasting `announce` packets with public credentials.
-5. In parallel, if this is a connection to a new device Controller provides to the end user a QR code/link for out-of-band authentication from the host device.
-6. Host device starts listening to the same multicast group and port - this MUST be initiated by the user action.
-7. Having received `announce` packet with the valid signature, the host either initiates connection to the controller (if it is a known controller and credentials match host records), or offers the end user to authenticate this controller via out-of-band communication.
-
-`identify` packet:
-
-```abnf
-identify = versionRange %s"I" systemSeconds counter randomBytes
-counter = 2*2 OCTET ; counter of identify packets sent by controller
-versionRange = version version ; version range for the remote control protocol itself
-systemSeconds = 8*8 OCTET ; session start system time in seconds since epoch
-randomBytes = length *OCTET ; random bytes to confirm source address
-length = 1*1 OCTET
-```
-
-`announce` packet:
+OOB announcement is a URI with this syntax:
 
 ```abnf
-announce = versionRange %s"A" systemSeconds counter serviceAddress
-           caFingerprint sigPubKey signature
-counter = 2*2 OCTET ; counter of announce packets sent by controller
-serviceAddress = ipv4 port ; address of the controller
-ipv4 = 4*4 OCTET
-port = 2*2 OCTET
-caFingerprint = length *OCTET ; SHA256 fingerprint of controller CA certificate (unique per host device)
-sigPubKey = length x509encoded
-signature = length *OCTET ; signs the preceding announcement packet
-length = 1*1 OCTET
-```
-
-### Controller authentication
-
-Controller authentication is done via link/scanning QR code - in most cases the user of both devices will be in the same location (and discovery process assumes it is the same network).
-
-The format for the link is the following:
-
-```abnf
-sessionAddress = "xrcp://" encodedCAFingerprint ":" controllerBasicAuth "@" host ":" port "#/?" qsParams
+sessionAddressUri = "xrcp://" encodedCAFingerprint "@" host ":" port "#/?" qsParams
 encodedCAFingerprint = base64url
-controllerBasicAuth = 1*(ALPHA / DIGIT / "-" / "_") ; MUST be included in `hello` response from the host
 qsParams = param *("&" param)
-param = versionRangeParam / appNameParam / sigPubKeyParam / deviceNameParam / signatureParam
+param = versionRangeParam / appNameParam / appVerionRangeParam / deviceNameParam / sessionTsParam /
+        sessPubKeyParam / idPubKeyParam / dhPubKeyParam / sessSignatureParam / idSignatureParam
 versionRangeParam = "v=" (versionParam / (versionParam "-" versionParam))
 versionParam = 1*DIGIT
-appNameParam = "app=" 1*(ALPHA / DIGIT / "-" / "_")
-sigPubKeyParam = "key=" base64url ; required
-deviceNameParam = "device=" base64url ; optional
-signatureParam = "sig=" base64url ; required, signs the URI with this param removed
+appNameParam = "app=" 1*(ALPHA / DIGIT / "-" / "_") ; optional
+appVerionRangeParam = "appv=" (versionParam / (versionParam "-" versionParam)) ; optional
+deviceNameParam = "device=" 1*(ALPHA / DIGIT / "-" / "_") ; optional
+sessionTsParam = "ts=" 1*DIGIT
+sessPubKeyParam = "skey=" base64url ; required
+idPubKeyParam = "idkey=" base64url ; required
+dhPubKeyParam = "dh=" base64url ; required
+sessSignatureParam = "ssig=" base64url ; required, signs the URI with this and idSignatureParam param removed
+idSignatureParam = "idsig=" base64url ; required, signs the URI with this param removed
 base64url = <base64url encoded binary> ; RFC4648, section 5
 ```
 
-In case the controller was "discovered", the parameters in session address should be the same as in `announce` packet:
-- serviceAddress = host:port
-- caFingerprint = encodedCAFingerprint
-- sigPubKey = sigPubKeyParam
-- dhPubKey = dhPubKeyParam
+Multicast announcement is a binary encoded packet with this syntax:
 
-The host MUST validate the signature (having removed signature parameter from URI).
+```abnf
+sessionAddressPacket = %s"xrcp" dhPubKeyParam length encrypted(serviceAddress) sessSignature idSignature
+dhPubKeyParam = length x509encoded
+serviceAddress = length addressJSON
+sessSignature = length *OCTET ; signs the preceding announcement packet
+idSignature = length *OCTET ; signs the preceding announcement packet including sessSignature
+```
 
-### Controller connection
+addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
 
-Host connects to controller via TCP session and validates CA credentials during TLS handshake. Controller acts as a TCP server in this connection, to avoid host device listening on a port, which might create an attack vector. During TLS handshake the controller's TCP server presents a self-signed two-certificate chain where the fingerprint of the first certificate MUST be the same as in `announce` packet and in the session address.
+```json
+{
+  "definitions": {
+    "versionRange": {
+      "type": "string",
+      "metadata": {
+        "format": "[0-9]+(-[0-9]+)?"
+      }
+    },
+    "base64url": {
+      "type": "string",
+      "metadata": {
+        "format": "base64url"
+      }
+    }
+  },
+  "properties": {
+    "ca": {"ref": "base64url"},
+    "host": {"type": "string"},
+    "port": {"type": "uint16"},
+    "v": {"ref": "versionRange"},
+    "ts": {"type": "uint64"},
+    "skey": {"ref": "base64url"},
+    "idkey": {"ref": "base64url"},
+    "dh": {"ref": "base64url"}
+  },
+  "optionalProperties": {
+    "app": {"type": "string"},
+    "appv": {"ref": "versionRange"},
+    "device": {"type": "string"}
+  },
+  "additionalProperties": true
+}
+```
 
-During the first connection:
-- the controller maintains the port available for the new connections until the valid auth token is presented in `hello` response in the next phase, to protect from other devices trying to connect to the same port.
-- the host generates client CA certificate for TLS, and the controller will save it as a trusted certificate for this host device once `hello` with the valid auth token is received.
+### Establishing session TLS connection
 
-During subsequent connections:
-- the controller validates presented client certificate against trusted CA certificate for this host device, and if it is not valid terminates the connection. Once the valid host connects the controller stops accepting the new connections.
-- the host still must present valid auth token in hello.
+Host connects to controller via TCP session and validates CA credentials during TLS handshake. Controller acts as a TCP server in this connection, to avoid host device listening on a port, which might create an attack vector. During TLS handshake the controller's TCP server presents a self-signed two-certificate chain where the fingerprint of the first certificate MUST be the same as in the announcement.
 
-For remote control session HTTP2 encoding is used, with the HTTP2 server started on host device (acting as TCP client). This matches remote control semantics better than making controller a server, but requires the implementation to connect HTTP2 server to the TLS connection of the TCP client.
+Host device presents its own client certificate chain with CA representing a long-term identity of the host device.
 
-Once connection is established, the controller and host device communicate using control protocol.
+Once TLS session is established, the host device sends "hello" block to the controller. ALPN TLS extension is not used to obtain tlsunique prior to sending any packets.
+
+Hello block must contain:
+- new session DH key - used to compute new shared secret with the controller key from the announcement.
+- encrypted part of hello block (JSON object), containing:
+  - chosen protocol version.
+  - host CA TLS certificate fingerprint - part of host long term identity - must match the one presented in TLS handshake and the previous sessions, otherwise the connection is terminated.
+  - host device name
+  - chosen application version.
+  - additional application specific parameters, e.g settings or JSON encoding format.
+
+Controller decrypts (including the first session) and validates the received hello block:
+- Chosen versions are supported (must be within offered ranges).
+- CA fingerprint matches the one presented in TLS handshake and the previous sessions - in subsequent sessions TLS connection should be rejected if the fingerprint is different.
+
+JTD schema for the encrypted part of hello block:
+
+```json
+{
+  "definitions": {
+    "version": {
+      "type": "string",
+      "metadata": {
+        "format": "[0-9]+"
+      }
+    },
+    "base64url": {
+      "type": "string",
+      "metadata": {
+        "format": "base64url"
+      }
+    }
+  },
+  "properties": {
+    "v": {"ref": "version"},
+    "ca": {"ref": "base64url"},
+  },
+  "optionalProperties": {
+    "device": {"type": "string"},
+    "appv": {"ref": "version"}
+  },
+  "additionalProperties": true
+}
+```
 
 ### controller/host session operation
 
-The protocol for the session consists of variable size HTTP2 requests and responses. HTTP2 REST semantics are not used to allow additional encryption layer inside TLS. All requests are sent as POST to the path "/" of the host device HTTP2 server.
+The protocol for communication during the session is out of scope of this protocol.
 
-Body of the requests and responses has this format:
+SimpleX Chat will use HTTP2 encoding, where host device acts as a server and controller acts as a client (these roles are reversed compared with TLS connection).
 
-```abnf
-request = signature signed [largeLength attachment]
-response = %x00 signed [largeLength attachment]
-body = sessionIdentifier corrId hostId cmdResp
-; corrId is required in controller commands and host responses,
-; it is empty in server notifications.
-corrId = length *OCTET
-hostId = length *OCTET ; will be %x01 %x01 – reserved for future use
-; empty queue ID is used with "create" command and in some server responses
-cmdResp = largeLength hello / largeLength encrypted(rcCommand / rhResponse)
-hello = <json> ; rcHello / rhHello
-rcCommand = <json> ; send / recv / storeFile / getFile
-rhResponse = <json> ; resp / event / fileStored / file / error
-signature = length *OCTET
-largeLength = 4*4 OCTET ; length of JSON or of attachment
-; empty signature can be used with "send" before the queue is secured with secure command
-; signature is always empty with "ping" and "serverMsg"
-```
+Payloads in the protocol must be encrypted using NaCL cryptobox using the shared secret agreed during session establishment.
 
-Commands and responses (rcCommand / rhResponse) are encoded as JSON to simplify extensibility. The schema for the commands is described by JTD (RFC 8927) in [rc-command.schema.json](./remote-control/rc-command.schema.json) and for responses - in [rc-response.schema.json](./remote-control/rc-response.schema.json).
+Commands of the controller must be signed after the encryption using the controller's session and long term Ed25519 keys.
 
-The first command sent by the controller and accepted by host MUST be hello, this is sent without additional encryption, the response contains the DH key of the host.
+tlsunique channel binding from TLS session MUST be included in commands (included in the signed body).
 
-`sessionIdentifier` MUST be tlsunique channel binding from TLS session - this prevents replay attacks.
+## Threat model
+
+#### A passive network adversary able to monitor the site-local traffic:
+
+*can:*
+- observe session times, duration and volume of the transmitted data between host and controller.
+
+*cannot:*
+- observe the content of the transmitted data.
+- substitute the transmitted commands or responses.
+- replay transmitted commands or events from the hosts.
+
+#### An active network adversary able to intercept and substitute the site-local traffic:
+
+*can:*
+- prevent host and controller devices from establishing the session
+
+*cannot:*
+- same as passive adversary, provided that user visually verified session code out-of-band.
+
+#### An active adversary with the access to the network:
+
+*can:*
+- spam controller device.
+
+*cannot:*
+- compromise host or controller devices.
+
+#### An active adversary with the access to the network who also observed OOB announcement:
+
+*can:*
+- connect to controller instead of the host.
+- present incorrect data to the controller.
+
+*cannot:*
+- connect to the host or make host connect to itself.
+
+#### Compromised controller device:
+
+*can:*
+- observe the content of the transmitted data.
+- access any data of the controlled host application, within the capabilities of the provided API.
+
+*cannot:*
+- access other data on the host device.
+- compromise host device.
+
+#### Compromised host device:
+
+*can:*
+- present incorrect data to the controller.
+- incorrectly interpret controller commands.
+
+*cannot:*
+- access controller data, even related to this host device.
