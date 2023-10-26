@@ -34,7 +34,7 @@ This design is quite close to how SimpleX Chat UI interacts with SimpleX Chat co
 Protocol consists of four phases:
 - controller session announcement
 - establishing session TLS connection
-- session authentication and protocol negotiation
+- session verification and protocol negotiation
 - session operation
 
 ### Session announcement
@@ -54,6 +54,7 @@ The session announcement contains this data:
 - Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
 - Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
 - Session X25519 DH key to agree session encryption (both for multicast announcement and for commands and responses in TLS). The new key is used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The initial out-of-band announcement is always unencrypted. This DH key is always sent unencrypted. NaCL Cryptobox is used for encryption.
+- additional application specific parameters, e.g controller settings.
 
 Host device decrypts (except the first session) and validates the announcement:
 - Session signature is valid.
@@ -137,7 +138,11 @@ Host connects to controller via TCP session and validates CA credentials during 
 
 Host device presents its own client certificate chain with CA representing a long-term identity of the host device.
 
-Once TLS session is established, the host device sends "hello" block to the controller. ALPN TLS extension is not used to obtain tlsunique prior to sending any packets.
+### Session verification and protocol negotiation
+
+Once TLS session is established, both the host and controller device present a "session security code" to the user who must visually match them and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established.
+
+Once the session is confirmed by the user, the host device sends "hello" block to the controller. ALPN TLS extension is not used to obtain tlsunique prior to sending any packets.
 
 Hello block must contain:
 - new session DH key - used to compute new shared secret with the controller key from the announcement.
@@ -146,7 +151,7 @@ Hello block must contain:
   - host CA TLS certificate fingerprint - part of host long term identity - must match the one presented in TLS handshake and the previous sessions, otherwise the connection is terminated.
   - host device name
   - chosen application version.
-  - additional application specific parameters, e.g settings or JSON encoding format.
+  - additional application specific parameters, e.g host settings or JSON encoding format.
 
 Controller decrypts (including the first session) and validates the received hello block:
 - Chosen versions are supported (must be within offered ranges).
@@ -182,7 +187,7 @@ JTD schema for the encrypted part of hello block:
 }
 ```
 
-### controller/host session operation
+### Сontroller/host session operation
 
 The protocol for communication during the session is out of scope of this protocol.
 
