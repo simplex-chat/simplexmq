@@ -1,9 +1,9 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 {-# HLINT ignore "Use newtype instead of data" #-}
@@ -21,15 +21,15 @@ import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding (DER (..))
 import Data.ASN1.Encoding
 import Data.ASN1.Types
-import Data.Aeson (FromJSON, ToJSON, (.=))
+import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
+import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
-import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Maybe (isNothing)
@@ -38,8 +38,7 @@ import qualified Data.Text as T
 import Data.Time.Clock.System
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
-import GHC.Generics (Generic)
-import Network.HTTP.Types (HeaderName, Status)
+import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
@@ -47,7 +46,9 @@ import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -59,17 +60,13 @@ data JWTHeader = JWTHeader
   { alg :: Text, -- key algorithm, ES256 for APNS
     kid :: Text -- key ID
   }
-  deriving (Show, Generic)
-
-instance ToJSON JWTHeader where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Show)
 
 data JWTClaims = JWTClaims
   { iss :: Text, -- issuer, team ID for APNS
     iat :: Int64 -- issue time, seconds from epoch
   }
-  deriving (Show, Generic)
-
-instance ToJSON JWTClaims where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Show)
 
 data JWTToken = JWTToken JWTHeader JWTClaims
   deriving (Show)
@@ -80,6 +77,10 @@ mkJWTToken hdr iss = do
   pure $ JWTToken hdr JWTClaims {iss, iat}
 
 type SignedJWTToken = ByteString
+
+$(JQ.deriveToJSON defaultJSON ''JWTHeader)
+
+$(JQ.deriveToJSON defaultJSON ''JWTClaims)
 
 signedJWTToken :: EC.PrivateKey -> JWTToken -> IO SignedJWTToken
 signedJWTToken pk (JWTToken hdr claims) = do
@@ -120,24 +121,13 @@ instance StrEncoding PNMessageData where
     pure PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
-  deriving (Show, Generic)
-
-instance ToJSON APNSNotification where
-  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
-  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+  deriving (Show)
 
 data APNSNotificationBody
   = APNSBackground {contentAvailable :: Int}
   | APNSMutableContent {mutableContent :: Int, alert :: APNSAlertBody, category :: Maybe Text}
   | APNSAlert {alert :: APNSAlertBody, badge :: Maybe Int, sound :: Maybe Text, category :: Maybe Text}
-  deriving (Show, Generic)
-
-apnsJSONOptions :: J.Options
-apnsJSONOptions = J.defaultOptions {J.omitNothingFields = True, J.sumEncoding = J.UntaggedValue, J.fieldLabelModifier = J.camelTo2 '-'}
-
-instance ToJSON APNSNotificationBody where
-  toJSON = J.genericToJSON apnsJSONOptions
-  toEncoding = J.genericToEncoding apnsJSONOptions
+  deriving (Show)
 
 type APNSNotificationData = Map Text Text
 
@@ -303,6 +293,10 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
 
 -- apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
 
+$(JQ.deriveToJSON apnsJSONOptions ''APNSNotificationBody)
+
+$(JQ.deriveToJSON defaultJSON ''APNSNotification)
+
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
 apnsRequest c tkn ntf@APNSNotification {aps} = do
   signedJWT <- getApnsJWTToken c
@@ -335,7 +329,8 @@ type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProvider
 
 -- this is not a newtype on purpose to have a correct JSON encoding as a record
 data APNSErrorResponse = APNSErrorResponse {reason :: Text}
-  deriving (Generic, FromJSON)
+
+$(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
 apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
@@ -370,12 +365,3 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
     err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     err s r = throwError $ PPResponseError s r
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a
-
-hApnsTopic :: HeaderName
-hApnsTopic = CI.mk "apns-topic"
-
-hApnsPushType :: HeaderName
-hApnsPushType = CI.mk "apns-push-type"
-
-hApnsPriority :: HeaderName
-hApnsPriority = CI.mk "apns-priority"

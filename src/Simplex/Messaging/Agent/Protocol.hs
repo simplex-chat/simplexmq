@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -13,6 +12,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -149,7 +149,7 @@ import Control.Monad (unless)
 import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class
 import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -174,7 +174,6 @@ import Data.Typeable ()
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
-import GHC.Generics (Generic)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
@@ -610,11 +609,7 @@ data RcvQueueInfo = RcvQueueInfo
     rcvSwitchStatus :: Maybe RcvSwitchStatus,
     canAbortSwitch :: Bool
   }
-  deriving (Eq, Show, Generic)
-
-instance ToJSON RcvQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
-
-instance FromJSON RcvQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
+  deriving (Eq, Show)
 
 instance StrEncoding RcvQueueInfo where
   strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch} =
@@ -631,11 +626,7 @@ data SndQueueInfo = SndQueueInfo
   { sndServer :: SMPServer,
     sndSwitchStatus :: Maybe SndSwitchStatus
   }
-  deriving (Eq, Show, Generic)
-
-instance ToJSON SndQueueInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
-
-instance FromJSON SndQueueInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
+  deriving (Eq, Show)
 
 instance StrEncoding SndQueueInfo where
   strEncode SndQueueInfo {sndServer, sndSwitchStatus} =
@@ -652,9 +643,7 @@ data ConnectionStats = ConnectionStats
     ratchetSyncState :: RatchetSyncState,
     ratchetSyncSupported :: Bool
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 instance StrEncoding ConnectionStats where
   strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
@@ -1386,7 +1375,7 @@ type AgentMsgId = Int64
 
 -- | Result of received message integrity validation.
 data MsgIntegrity = MsgOk | MsgError {errorInfo :: MsgErrorType}
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show)
 
 instance StrEncoding MsgIntegrity where
   strP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> strP)
@@ -1394,20 +1383,13 @@ instance StrEncoding MsgIntegrity where
     MsgOk -> "OK"
     MsgError e -> "ERR " <> strEncode e
 
-instance ToJSON MsgIntegrity where
-  toJSON = J.genericToJSON $ sumTypeJSON fstToLower
-  toEncoding = J.genericToEncoding $ sumTypeJSON fstToLower
-
-instance FromJSON MsgIntegrity where
-  parseJSON = J.genericParseJSON $ sumTypeJSON fstToLower
-
 -- | Error of message integrity validation.
 data MsgErrorType
   = MsgSkipped {fromMsgId :: AgentMsgId, toMsgId :: AgentMsgId}
   | MsgBadId {msgId :: AgentMsgId}
   | MsgBadHash
   | MsgDuplicate
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show)
 
 instance StrEncoding MsgErrorType where
   strP =
@@ -1421,13 +1403,6 @@ instance StrEncoding MsgErrorType where
     MsgBadId aMsgId -> "ID " <> bshow aMsgId
     MsgBadHash -> "HASH"
     MsgDuplicate -> "DUPLICATE"
-
-instance ToJSON MsgErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON fstToLower
-  toEncoding = J.genericToEncoding $ sumTypeJSON fstToLower
-
-instance FromJSON MsgErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON fstToLower
 
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
@@ -1449,14 +1424,7 @@ data AgentErrorType
     INTERNAL {internalErr :: String}
   | -- | agent inactive
     INACTIVE
-  deriving (Eq, Generic, Show, Exception)
-
-instance ToJSON AgentErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON AgentErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Show, Exception)
 
 -- | SMP agent protocol command or response error.
 data CommandErrorType
@@ -1470,14 +1438,7 @@ data CommandErrorType
     SIZE
   | -- | message does not fit in SMP block
     LARGE
-  deriving (Eq, Generic, Read, Show, Exception)
-
-instance ToJSON CommandErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON CommandErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show, Exception)
 
 -- | Connection error.
 data ConnectionErrorType
@@ -1491,14 +1452,7 @@ data ConnectionErrorType
     NOT_ACCEPTED
   | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
-  deriving (Eq, Generic, Read, Show, Exception)
-
-instance ToJSON ConnectionErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON ConnectionErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show, Exception)
 
 -- | SMP server errors.
 data BrokerErrorType
@@ -1514,14 +1468,7 @@ data BrokerErrorType
     TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout
     TIMEOUT
-  deriving (Eq, Generic, Read, Show, Exception)
-
-instance ToJSON BrokerErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON BrokerErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show, Exception)
 
 -- | Errors of another SMP agent.
 data SMPAgentError
@@ -1538,7 +1485,7 @@ data SMPAgentError
     A_DUPLICATE
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
-  deriving (Eq, Generic, Read, Show, Exception)
+  deriving (Eq, Read, Show, Exception)
 
 data AgentCryptoError
   = -- | AES decryption error
@@ -1551,14 +1498,7 @@ data AgentCryptoError
     RATCHET_EARLIER Word32
   | -- | too many skipped messages
     RATCHET_SKIPPED Word32
-  deriving (Eq, Generic, Read, Show, Exception)
-
-instance ToJSON AgentCryptoError where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON AgentCryptoError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show, Exception)
 
 instance StrEncoding AgentCryptoError where
   strP =
@@ -1573,13 +1513,6 @@ instance StrEncoding AgentCryptoError where
     RATCHET_HEADER -> "RATCHET_HEADER"
     RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
     RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
-
-instance ToJSON SMPAgentError where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON SMPAgentError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
 
 instance StrEncoding AgentErrorType where
   strP =
@@ -1940,3 +1873,25 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
             unless (B.null s) $ throwError $ CMD SIZE
             pure body
           Nothing -> return . Left $ CMD SYNTAX
+
+$(J.deriveJSON defaultJSON ''RcvQueueInfo)
+
+$(J.deriveJSON defaultJSON ''SndQueueInfo)
+
+$(J.deriveJSON defaultJSON ''ConnectionStats)
+
+$(J.deriveJSON (sumTypeJSON fstToLower) ''MsgErrorType)
+
+$(J.deriveJSON (sumTypeJSON fstToLower) ''MsgIntegrity)
+
+$(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
+
+$(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
+
+$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
+
+$(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
+
+$(J.deriveJSON (sumTypeJSON id) ''SMPAgentError)
+
+$(J.deriveJSON (sumTypeJSON id) ''AgentErrorType)
