@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
   ( Connection (..),
@@ -20,13 +20,12 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
-import GHC.Generics (Generic)
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds)
@@ -41,9 +40,7 @@ data SlowQueryStats = SlowQueryStats
     timeMax :: Int64,
     timeAvg :: Int64
   }
-  deriving (Show, Generic, FromJSON)
-
-instance ToJSON SlowQueryStats where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Show)
 
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
@@ -100,3 +97,5 @@ query_ Connection {conn, slow} sql = timeIt slow sql $ SQL.query_ conn sql
 queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
 {-# INLINE queryNamed #-}
+
+$(J.deriveJSON defaultJSON ''SlowQueryStats)

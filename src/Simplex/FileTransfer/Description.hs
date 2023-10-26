@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -9,6 +8,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Description
@@ -37,7 +37,7 @@ where
 import Control.Applicative (optional)
 import Control.Monad ((<=<))
 import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -53,12 +53,11 @@ import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import GHC.Generics (Generic)
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Util (bshow, groupAllOn, (<$?>))
 
@@ -149,21 +148,13 @@ data YAMLFileDescription = YAMLFileDescription
     chunkSize :: String,
     replicas :: [YAMLServerReplicas]
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON YAMLFileDescription where
-  toJSON = J.genericToJSON J.defaultOptions
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data YAMLServerReplicas = YAMLServerReplicas
   { server :: XFTPServer,
     chunks :: [String]
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON YAMLServerReplicas where
-  toJSON = J.genericToJSON J.defaultOptions
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data FileServerReplica = FileServerReplica
   { chunkNo :: Int,
@@ -174,6 +165,13 @@ data FileServerReplica = FileServerReplica
     chunkSize :: Maybe (FileSize Word32)
   }
   deriving (Show)
+
+newtype FileSize a = FileSize {unFileSize :: a}
+  deriving (Eq, Show)
+
+$(J.deriveJSON defaultJSON ''YAMLServerReplicas)
+
+$(J.deriveJSON defaultJSON ''YAMLFileDescription)
 
 instance FilePartyI p => StrEncoding (ValidFileDescription p) where
   strEncode (ValidFD fd) = strEncode fd
@@ -215,9 +213,6 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
       chunkSize = B.unpack $ strEncode chunkSize,
       replicas = encodeFileReplicas chunkSize chunks
     }
-
-newtype FileSize a = FileSize {unFileSize :: a}
-  deriving (Eq, Show)
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)

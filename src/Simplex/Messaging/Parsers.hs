@@ -151,3 +151,6 @@ singleFieldJSON_ objectTag tagModifier =
       J.nullaryToObject = True,
       J.omitNothingFields = True
     }
+
+defaultJSON :: J.Options
+defaultJSON = J.defaultOptions {J.omitNothingFields = True}
