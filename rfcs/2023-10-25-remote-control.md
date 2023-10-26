@@ -1,14 +1,14 @@
 # SimpleX Remote Control protocol
 
-## Problem
-
 Using profiles in SimpleX Chat mobile app from desktop app with minimal risk to the security model of SimpleX protocols.
 
-## Solution
+## Problem
 
 Synchronizing profiles that use double ratchet for e2e encryption is effectively impossible in a way that tolerates partitioning between devices.
 
 We are not considering replacing double ratchet to allow profile synchronization, as some other messengers did. We are also not considering Signal model, when profile is known to the server and adding devices results in changing security code and no visibility of conversation history, as it would be substantially different from the current model.
+
+## Solution
 
 The proposed option is remote access/control protocol, when the application on host device (usually mobile) acts as a server, and application on another device (usually desktop) acts as a controller usually running in the same local network.
 
