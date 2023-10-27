@@ -5,10 +5,13 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport.Server
-  ( runTransportServer,
-    runTCPServer,
-    TransportServerConfig (..),
+  ( TransportServerConfig (..),
     defaultTransportServerConfig,
+    runTransportServer,
+    runTransportServerWith,
+    runTCPServer,
+    runTCPServerWith,
+    startTCPServer,
     loadSupportedTLSServerParams,
     loadTLSServerParams,
     loadFingerprint,
@@ -61,11 +64,15 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 --
 -- All accepted connections are passed to the passed function.
 runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
-runTransportServer started port serverParams cfg server = do
+runTransportServer started port = runTransportServerWith (startTCPServer started port) started (transportName (TProxy :: TProxy c))
+
+-- | Run a transport server with provided connection setup and handler.
+runTransportServerWith :: (MonadUnliftIO m, T.TLSParams p, Transport a) => IO Socket -> TMVar Bool -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
+runTransportServerWith getSocket started threadLabel serverParams cfg server = do
   u <- askUnliftIO
   let tCfg = serverTransportConfig cfg
-  labelMyThread $ "transport server for " <> transportName (TProxy :: TProxy c)
-  liftIO . runTCPServer started port $ \conn ->
+  labelMyThread $ "transport server for " <> threadLabel
+  liftIO . runTCPServerWith getSocket started $ \conn ->
     E.bracket
       (connectTLS Nothing tCfg serverParams conn >>= getServerConnection tCfg)
       closeConnection
@@ -73,11 +80,15 @@ runTransportServer started port serverParams cfg server = do
 
 -- | Run TCP server without TLS
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
-runTCPServer started port server = do
+runTCPServer started port = runTCPServerWith (startTCPServer started port) started
+
+-- | Wrap socket provider in a TCP server bracket.
+runTCPServerWith :: IO Socket -> TMVar Bool -> (Socket -> IO ()) -> IO ()
+runTCPServerWith getSocket started server = do
   clients <- atomically TM.empty
   clientId <- newTVarIO 0
   E.bracket
-    (startTCPServer started port)
+    getSocket
     (closeServer started clients)
     $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       -- catchAll_ is needed here in case the connection was closed earlier
