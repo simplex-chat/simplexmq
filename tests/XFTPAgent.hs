@@ -292,8 +292,8 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
 
     -- receive file
     rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
-    runRight_ $
-      void $ testReceive rcp rfd1 filePath
+    runRight_ . void $
+      testReceive rcp rfd1 filePath
 
 testXFTPAgentSendCleanup :: HasCallStack => IO ()
 testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
@@ -342,8 +342,8 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
 
     -- receive file
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB2
-    runRight_ $
-      void $ testReceive rcp1 rfd1 filePath
+    runRight_ . void $
+      testReceive rcp1 rfd1 filePath
 
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
@@ -377,8 +377,8 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
 
     -- receive file
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB2
-    runRight_ $
-      void $ testReceive rcp1 rfd1 filePath
+    runRight_ . void $
+      testReceive rcp1 rfd1 filePath
     disconnectAgentClient rcp1
     disconnectAgentClient sndr
     pure (sfId, sndDescr, rfd2)

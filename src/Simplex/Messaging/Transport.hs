@@ -1,7 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -10,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- |
@@ -63,8 +63,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
@@ -74,9 +73,7 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
-import GHC.Generics (Generic)
 import GHC.IO.Handle.Internals (ioe_EOF)
-import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
@@ -87,7 +84,6 @@ import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
-import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -284,14 +280,7 @@ data TransportError
     TEBadSession
   | -- | transport handshake error
     TEHandshake {handshakeErr :: HandshakeError}
-  deriving (Eq, Generic, Read, Show, Exception)
-
-instance ToJSON TransportError where
-  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "TE"
-  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "TE"
-
-instance FromJSON TransportError where
-  parseJSON = J.genericParseJSON . sumTypeJSON $ dropPrefix "TE"
+  deriving (Eq, Read, Show, Exception)
 
 -- | Transport handshake error.
 data HandshakeError
@@ -301,18 +290,7 @@ data HandshakeError
     VERSION
   | -- | incorrect server identity
     IDENTITY
-  deriving (Eq, Generic, Read, Show, Exception)
-
-instance ToJSON HandshakeError where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON HandshakeError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
-instance Arbitrary TransportError where arbitrary = genericArbitraryU
-
-instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
+  deriving (Eq, Read, Show, Exception)
 
 -- | SMP encrypted transport error parser.
 transportErrorP :: Parser TransportError
@@ -354,9 +332,9 @@ smpServerHandshake c kh smpVRange = do
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       | keyHash /= kh ->
-        throwE $ TEHandshake IDENTITY
+          throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` smpVRange -> do
-        pure $ smpThHandle th smpVersion
+          pure $ smpThHandle th smpVersion
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
@@ -385,3 +363,7 @@ getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock t
 
 smpTHandle :: Transport c => c -> THandle c
 smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, batch = False}
+
+$(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "TE") ''TransportError)

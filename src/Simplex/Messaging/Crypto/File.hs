@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Crypto.File
   ( CryptoFile (..),
@@ -24,19 +23,18 @@ where
 import Control.Exception
 import Control.Monad
 import Control.Monad.Except
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isJust)
-import GHC.Generics (Generic)
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Util (liftEitherWith)
 import System.Directory (getFileSize)
 import UnliftIO (Handle, IOMode (..), liftIO)
@@ -45,16 +43,10 @@ import UnliftIO.STM
 
 -- Possibly encrypted local file
 data CryptoFile = CryptoFile {filePath :: FilePath, cryptoArgs :: Maybe CryptoFileArgs}
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON CryptoFile where
-  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
-  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
+  deriving (Eq, Show)
 
 data CryptoFileArgs = CFArgs {fileKey :: C.SbKey, fileNonce :: C.CbNonce}
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON CryptoFileArgs where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data CryptoFileHandle = CFHandle Handle (Maybe (TVar LC.SbState))
 
@@ -124,3 +116,7 @@ getFileContentsSize :: CryptoFile -> IO Integer
 getFileContentsSize (CryptoFile path cfArgs) = do
   size <- getFileSize path
   pure $ if isJust cfArgs then size - fromIntegral C.authTagSize else size
+
+$(J.deriveJSON defaultJSON ''CryptoFileArgs)
+
+$(J.deriveJSON defaultJSON ''CryptoFile)

@@ -11,7 +11,6 @@ module Simplex.Messaging.Server.Main where
 import Control.Monad (void)
 import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
@@ -24,7 +23,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration, defMsgExpirationDays)
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -60,15 +59,15 @@ smpServerCLI cfgPath logPath =
     initializeServer opts
       | scripted opts = initialize opts
       | otherwise = do
-        putStrLn "Use `smp-server init -h` for available options."
-        void $ withPrompt "SMP server will be initialized (press Enter)" getLine
-        enableStoreLog <- onOffPrompt "Enable store log to restore queues and messages on server restart" True
-        logStats <- onOffPrompt "Enable logging daily statistics" False
-        putStrLn "Require a password to create new messaging queues?"
-        password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
-        let host = fromMaybe (ip opts) (fqdn opts)
-        host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-        initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn opts else Just host', password}
+          putStrLn "Use `smp-server init -h` for available options."
+          void $ withPrompt "SMP server will be initialized (press Enter)" getLine
+          enableStoreLog <- onOffPrompt "Enable store log to restore queues and messages on server restart" True
+          logStats <- onOffPrompt "Enable logging daily statistics" False
+          putStrLn "Require a password to create new messaging queues?"
+          password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
+          let host = fromMaybe (ip opts) (fqdn opts)
+          host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
+          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn opts else Just host', password}
       where
         serverPassword =
           getLine >>= \case
@@ -121,8 +120,8 @@ smpServerCLI cfgPath logPath =
                    \# The password will not be shared with the connecting contacts, you must share it only\n\
                    \# with the users who you want to allow creating messaging queues on your server.\n"
                 <> ( case basicAuth of
-                       Just auth -> "create_password: " <> T.unpack (safeDecodeUtf8 $ strEncode auth)
-                       _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
+                      Just auth -> "create_password: " <> T.unpack (safeDecodeUtf8 $ strEncode auth)
+                      _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
                    )
                 <> "\n\n\
                    \[TRANSPORT]\n\
@@ -141,7 +140,7 @@ smpServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
-      let host = fromRight "<hostnames>" $ T.unpack <$> lookupValue "TRANSPORT" "host" ini
+      let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@ServerConfig {transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
@@ -186,9 +185,10 @@ smpServerCLI cfgPath logPath =
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
               messageExpiration =
-                Just defaultMessageExpiration
-                  { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
-                  },
+                Just
+                  defaultMessageExpiration
+                    { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
+                    },
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig

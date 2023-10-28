@@ -38,6 +38,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
@@ -186,9 +187,15 @@ instance FromJSON APNSAlertBody where
   parseJSON (J.String v) = pure $ APNSAlertText v
   parseJSON invalid = JT.prependFailure "parsing Coord failed, " (JT.typeMismatch "Object" invalid)
 
+deriving instance Generic APNSNotificationBody
+
 instance FromJSON APNSNotificationBody where parseJSON = J.genericParseJSON apnsJSONOptions {J.rejectUnknownFields = True}
 
+deriving instance Generic APNSNotification
+
 deriving instance FromJSON APNSNotification
+
+deriving instance Generic APNSErrorResponse
 
 deriving instance ToJSON APNSErrorResponse
 

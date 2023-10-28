@@ -1,12 +1,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -20,8 +20,9 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as JQ
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -33,12 +34,11 @@ import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import GHC.Generics
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (blobFieldDecoder, parseE, parseE')
+import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Version
 
 currentE2EEncryptVersion :: Version
@@ -112,11 +112,11 @@ x3dh v (sk1, rk1) dh1 dh2 dh3 =
     (hk, nhk, sk)
       -- for backwards compatibility with clients using agent version before 3.4.0
       | v == 1 =
-        let (hk', rest) = B.splitAt 32 dhs
-         in uncurry (hk',,) $ B.splitAt 32 rest
+          let (hk', rest) = B.splitAt 32 dhs
+           in uncurry (hk',,) $ B.splitAt 32 rest
       | otherwise =
-        let salt = B.replicate 64 '\0'
-         in hkdf3 salt dhs "SimpleXX3DH"
+          let salt = B.replicate 64 '\0'
+           in hkdf3 salt dhs "SimpleXX3DH"
 
 type RatchetX448 = Ratchet 'X448
 
@@ -135,29 +135,20 @@ data Ratchet a = Ratchet
     rcNHKs :: HeaderKey,
     rcNHKr :: HeaderKey
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance AlgorithmI a => ToJSON (Ratchet a) where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
     rcCKs :: RatchetKey,
     rcHKs :: HeaderKey
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance AlgorithmI a => ToJSON (SndRatchet a) where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 data RcvRatchet = RcvRatchet
   { rcCKr :: RatchetKey,
     rcHKr :: HeaderKey
   }
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON RcvRatchet where
-  toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 type SkippedMsgKeys = Map HeaderKey SkippedHdrMsgKeys
 
@@ -203,10 +194,6 @@ instance ToJSON RatchetKey where
 
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
-
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
-
-instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
 instance ToField MessageKey where toField = toField . smpEncode
 
@@ -428,9 +415,9 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
       | rcNr + maxSkip < untilN = Left $ CERatchetTooManySkipped (untilN + 1 - rcNr)
       | rcNr == untilN = Right (r, M.empty)
       | otherwise =
-        let (rcCKr', rcNr', mks) = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr M.empty
-            r' = r {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr'}
-         in Right (r', M.singleton rcHKr mks)
+          let (rcCKr', rcNr', mks) = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr M.empty
+              r' = r {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr'}
+           in Right (r', M.singleton rcHKr mks)
     advanceRcvRatchet :: Word32 -> RatchetKey -> Word32 -> SkippedHdrMsgKeys -> (RatchetKey, Word32, SkippedHdrMsgKeys)
     advanceRcvRatchet 0 ck msgNs mks = (ck, msgNs, mks)
     advanceRcvRatchet n ck msgNs mks =
@@ -493,3 +480,23 @@ hkdf3 salt ikm info = (s1, s2, s3)
     out = H.expand prk info 96
     (s1, rest) = B.splitAt 32 out
     (s2, s3) = B.splitAt 32 rest
+
+$(JQ.deriveJSON defaultJSON ''RcvRatchet)
+
+instance AlgorithmI a => ToJSON (SndRatchet a) where
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''SndRatchet)
+  toJSON = $(JQ.mkToJSON defaultJSON ''SndRatchet)
+
+instance AlgorithmI a => FromJSON (SndRatchet a) where
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''SndRatchet)
+
+instance AlgorithmI a => ToJSON (Ratchet a) where
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''Ratchet)
+  toJSON = $(JQ.mkToJSON defaultJSON ''Ratchet)
+
+instance AlgorithmI a => FromJSON (Ratchet a) where
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''Ratchet)
+
+instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+
+instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'

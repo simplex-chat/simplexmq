@@ -45,42 +45,42 @@ agentTests (ATransport t) = do
   describe "Migration tests" migrationTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
-    it "should connect via one server and one agent" $
+    it "should connect via one server and one agent" $ do
       smpAgentTest2_1_1 $ testDuplexConnection t
-    it "should connect via one server and one agent (random IDs)" $
+    it "should connect via one server and one agent (random IDs)" $ do
       smpAgentTest2_1_1 $ testDuplexConnRandomIds t
-    it "should connect via one server and 2 agents" $
+    it "should connect via one server and 2 agents" $ do
       smpAgentTest2_2_1 $ testDuplexConnection t
-    it "should connect via one server and 2 agents (random IDs)" $
+    it "should connect via one server and 2 agents (random IDs)" $ do
       smpAgentTest2_2_1 $ testDuplexConnRandomIds t
-    it "should connect via 2 servers and 2 agents" $
+    it "should connect via 2 servers and 2 agents" $ do
       smpAgentTest2_2_2 $ testDuplexConnection t
-    it "should connect via 2 servers and 2 agents (random IDs)" $
+    it "should connect via 2 servers and 2 agents (random IDs)" $ do
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
   describe "Establishing connections via `contact connection`" $ do
-    it "should connect via contact connection with one server and 3 agents" $
+    it "should connect via contact connection with one server and 3 agents" $ do
       smpAgentTest3 $ testContactConnection t
-    it "should connect via contact connection with one server and 2 agents (random IDs)" $
+    it "should connect via contact connection with one server and 2 agents (random IDs)" $ do
       smpAgentTest2_2_1 $ testContactConnRandomIds t
-    it "should support rejecting contact request" $
+    it "should support rejecting contact request" $ do
       smpAgentTest2_2_1 $ testRejectContactRequest t
   describe "Connection subscriptions" $ do
-    it "should connect via one server and one agent" $
+    it "should connect via one server and one agent" $ do
       smpAgentTest3_1_1 $ testSubscription t
-    it "should send notifications to client when server disconnects" $
+    it "should send notifications to client when server disconnects" $ do
       smpAgentServerTest $ testSubscrNotification t
   describe "Message delivery and server reconnection" $ do
-    it "should deliver messages after losing server connection and re-connecting" $
+    it "should deliver messages after losing server connection and re-connecting" $ do
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
-    it "should connect to the server when server goes up if it initially was down" $
+    it "should connect to the server when server goes up if it initially was down" $ do
       smpAgentTestN [] $ testServerConnectionAfterError t
-    it "should deliver pending messages after agent restarting" $
+    it "should deliver pending messages after agent restarting" $ do
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
-    it "should concurrently deliver messages to connections without blocking" $
+    it "should concurrently deliver messages to connections without blocking" $ do
       smpAgentTest2_2_1 $ testConcurrentMsgDelivery t
-    it "should deliver messages if one of connections has quota exceeded" $
+    it "should deliver messages if one of connections has quota exceeded" $ do
       smpAgentTest2_2_1 $ testMsgDeliveryQuotaExceeded t
-    it "should resume delivering messages after exceeding quota once all messages are received" $
+    it "should resume delivering messages after exceeding quota once all messages are received" $ do
       smpAgentTest2_2_1 $ testResumeDeliveryQuotaExceeded t
 
 type AEntityTransmission p e = (ACorrId, ConnId, ACommand p e)

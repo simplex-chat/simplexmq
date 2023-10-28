@@ -195,7 +195,7 @@ testAESGCM = it "should encrypt / decrypt string with a random symmetric key" $ 
   cipher `shouldNotBe` plain
   s `shouldBe` plain
 
-testEncoding :: (C.AlgorithmI a) => C.SAlgorithm a -> Spec
+testEncoding :: C.AlgorithmI a => C.SAlgorithm a -> Spec
 testEncoding alg = it "should encode / decode key" . ioProperty $ do
   (k, pk) <- C.generateKeyPair alg
   pure $ \(_ :: Int) ->

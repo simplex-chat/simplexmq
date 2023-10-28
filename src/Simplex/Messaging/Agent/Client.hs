@@ -2,7 +2,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -15,6 +14,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
@@ -25,6 +25,7 @@ module Simplex.Messaging.Agent.Client
     ProtocolTestStep (..),
     newAgentClient,
     withConnLock,
+    withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
@@ -117,8 +118,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random (getRandomBytes)
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -137,7 +137,6 @@ import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Word (Word16)
-import GHC.Generics (Generic)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -164,7 +163,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (dropPrefix, enumJSON, parse)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -249,6 +248,8 @@ data AgentClient = AgentClient
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
+    -- locks to prevent concurrent operations with connection request invitations
+    invLocks :: TMap ByteString Lock,
     -- lock to prevent concurrency between periodic and async connection deletions
     deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
@@ -279,10 +280,13 @@ data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
-data AgentLocks = AgentLocks {connLocks :: Map String String, srvLocks :: Map String String, delLock :: Maybe String}
-  deriving (Show, Generic, FromJSON)
-
-instance ToJSON AgentLocks where toEncoding = J.genericToEncoding J.defaultOptions
+data AgentLocks = AgentLocks
+  { connLocks :: Map String String,
+    invLocks :: Map String String,
+    srvLocks :: Map String String,
+    delLock :: Maybe String
+  }
+  deriving (Show)
 
 data AgentStatsKey = AgentStatsKey
   { userId :: UserId,
@@ -325,6 +329,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   agentState <- newTVar ASForeground
   getMsgLocks <- TM.empty
   connLocks <- TM.empty
+  invLocks <- TM.empty
   deleteLock <- createLock
   reconnectLocks <- TM.empty
   reconnections <- newTAsyncs
@@ -362,6 +367,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         agentState,
         getMsgLocks,
         connLocks,
+        invLocks,
         deleteLock,
         reconnectLocks,
         reconnections,
@@ -645,6 +651,9 @@ withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
 
+withInvLock :: MonadUnliftIO m => AgentClient -> ByteString -> String -> m a -> m a
+withInvLock AgentClient {invLocks} = withLockMap_ invLocks
+
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
   where
@@ -725,23 +734,14 @@ data ProtocolTestStep
   | TSDownloadFile
   | TSCompareFile
   | TSDeleteFile
-  deriving (Eq, Show, Generic)
-
-instance ToJSON ProtocolTestStep where
-  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "TS"
-  toJSON = J.genericToJSON . enumJSON $ dropPrefix "TS"
-
-instance FromJSON ProtocolTestStep where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "TS"
+  deriving (Eq, Show)
 
 data ProtocolTestFailure = ProtocolTestFailure
   { testStep :: ProtocolTestStep,
     testError :: AgentErrorType
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show)
 
-instance ToJSON ProtocolTestFailure where toEncoding = J.genericToEncoding J.defaultOptions
-  
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
@@ -901,8 +901,8 @@ subscribeQueues c qs = do
     subscribeQueues_ u smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
-      when (any temporaryClientError . lefts . map snd $ L.toList rs) $
-        unliftIO u $ reconnectServer c $ transportSession' smp
+      when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
+        reconnectServer c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
@@ -989,7 +989,7 @@ sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, 
     mkInvitation = do
       let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
       agentCbEncryptOnce v dhPublicKey . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+        SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
 
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
@@ -1324,7 +1324,7 @@ userServers c = case protocolTypeI @p of
   SPSMP -> smpServers c
   SPXFTP -> xftpServers c
 
-pickServer :: forall p m. (AgentMonad' m) => NonEmpty (ProtoServerWithAuth p) -> m (ProtoServerWithAuth p)
+pickServer :: forall p m. AgentMonad' m => NonEmpty (ProtoServerWithAuth p) -> m (ProtoServerWithAuth p)
 pickServer = \case
   srv :| [] -> pure srv
   servers -> do
@@ -1343,7 +1343,7 @@ withUserServers c userId action =
     Just srvs -> action srvs
     _ -> throwError $ INTERNAL "unknown userId - no user servers"
 
-withNextSrv :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> ((ProtoServerWithAuth p) -> m a) -> m a
+withNextSrv :: forall p m a. (ProtocolTypeI p, UserProtocol p, AgentMonad m) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> (ProtoServerWithAuth p -> m a) -> m a
 withNextSrv c userId usedSrvs initUsed action = do
   used <- readTVarIO usedSrvs
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
@@ -1355,22 +1355,14 @@ withNextSrv c userId usedSrvs initUsed action = do
   action srvAuth
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
-  deriving (Show, Generic)
-
-instance ToJSON SubInfo where toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
-
-instance FromJSON SubInfo where parseJSON = J.genericParseJSON J.defaultOptions {J.omitNothingFields = True}
+  deriving (Show)
 
 data SubscriptionsInfo = SubscriptionsInfo
   { activeSubscriptions :: [SubInfo],
     pendingSubscriptions :: [SubInfo],
     removedSubscriptions :: [SubInfo]
   }
-  deriving (Show, Generic)
-
-instance ToJSON SubscriptionsInfo where toEncoding = J.genericToEncoding J.defaultOptions
-
-instance FromJSON SubscriptionsInfo where parseJSON = J.genericParseJSON J.defaultOptions
+  deriving (Show)
 
 getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo
 getAgentSubscriptions c = do
@@ -1382,6 +1374,16 @@ getAgentSubscriptions c = do
     getSubs sel = map (`subInfo` Nothing) . M.keys <$> readTVarIO (getRcvQueues $ sel c)
     getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
-    subInfo (uId, srv, rId) err  = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
+    subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
+
+$(J.deriveJSON defaultJSON ''AgentLocks)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
+
+$(J.deriveJSON defaultJSON ''ProtocolTestFailure)
+
+$(J.deriveJSON defaultJSON ''SubInfo)
+
+$(J.deriveJSON defaultJSON ''SubscriptionsInfo)
