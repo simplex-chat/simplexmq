@@ -1,5 +1,7 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.ProtocolErrorTests where
@@ -7,13 +9,14 @@ module CoreTests.ProtocolErrorTests where
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Simplex.FileTransfer.Protocol (XFTPErrorType)
+import Simplex.FileTransfer.Protocol (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CommandError, ErrorType)
-import Simplex.Messaging.Transport (HandshakeError, TransportError)
+import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..))
+import Simplex.Messaging.Transport (HandshakeError (..), TransportError (..))
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -32,6 +35,28 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
       BROKER srv _ -> hasSpaces srv
       _ -> False
     hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
+
+deriving instance Generic AgentErrorType
+
+deriving instance Generic CommandErrorType
+
+deriving instance Generic ConnectionErrorType
+
+deriving instance Generic BrokerErrorType
+
+deriving instance Generic SMPAgentError
+
+deriving instance Generic AgentCryptoError
+
+deriving instance Generic ErrorType
+
+deriving instance Generic CommandError
+
+deriving instance Generic TransportError
+
+deriving instance Generic HandshakeError
+
+deriving instance Generic XFTPErrorType
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 
