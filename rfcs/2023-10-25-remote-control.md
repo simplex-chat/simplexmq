@@ -181,7 +181,7 @@ JTD schema for the encrypted part of hello block:
   },
   "optionalProperties": {
     "device": {"type": "string"},
-    "appv": {"ref": "version"}
+    "appVersion": {"ref": "version"}
   },
   "additionalProperties": true
 }
@@ -198,6 +198,43 @@ Payloads in the protocol must be encrypted using NaCL cryptobox using the shared
 Commands of the controller must be signed after the encryption using the controller's session and long term Ed25519 keys.
 
 tlsunique channel binding from TLS session MUST be included in commands (included in the signed body).
+
+## Other options
+
+The proposed design has these pros/cons:
+
+Pros:
+- mobile host that has sensitive data doesn't act as TLS server.
+- multicast is optional - all sessions can happen via QR code only.
+
+Cons:
+- reversing of client/server roles between TLS and HTTP2.
+- in the first session mobile host TLS client credentials are verified after TLS connection is accepted.
+- cannot be used with host that runs in VM.
+
+The alternative design will use mobile host device as TLS server. The session negotiation process:
+
+- desktop shares its initial credentials via QR code, only for the first session
+- mobile sends encrypted multicast with session address, TLS CA fingerprint, DH key in clear text
+- desktop connects to mobile
+- session tlsunique presented to users on both devices - either user would have to confirm session on both devices or the mobile would have to send an additional "ready" block.
+
+Pros:
+- no reversing server role between TLS and HTTP2
+- TLS credentials are exchanged before TLS, so invalid credentials can be rejected during the handshake of the first session.
+- if some other way to pass data from host to controller is added, then it can be used with host running in VM. 
+
+Cons:
+- multicast is mandatory, as there is no efficient way to communicate from mobile to desktop.
+- still needs hello or confirmation on both devices
+- mobile is now acting as TLS server creating additional attack vector
+
+In both proposed and alternative design mobile host has chat data, acts as HTTP2 server, commands are signed with desktop key presented out-of–band, and both commands and responses are encrypted inside TLS session.
+
+Other considered options:
+- SSH - more work integrating it.
+- use SMP connection to negotiate TLS session - it seems wrong to require Internet connection to negotiate a local network connection between desktop and mobile.
+- other multicast service discovery protocols - quite insecure.
 
 ## Threat model
 
