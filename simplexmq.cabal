@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.35.2.
+-- This file has been generated from package.yaml by hpack version 0.36.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -26,8 +26,9 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
-    cbits/sntrup761.h
     cbits/sha512.h
+    cbits/sntrup761.h
+    cbits/sxcrandom.h
 
 flag swift
   description: Enable swift JSON format
@@ -102,7 +103,9 @@ library
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
-      Simplex.Messaging.Crypto.SNTRUP761.Bindings.Types
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
@@ -151,8 +154,9 @@ library
   include-dirs:
       cbits
   c-sources:
-      cbits/sntrup761.c
       cbits/sha512.c
+      cbits/sntrup761.c
+      cbits/sxcrandom.c
   extra-libraries:
       crypto
   build-depends:
