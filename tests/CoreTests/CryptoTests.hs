@@ -16,7 +16,7 @@ import qualified Data.Text.Lazy.Encoding as LE
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (dummyRNG)
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -203,8 +203,8 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
 
 testSNTRUP761 :: IO ()
-testSNTRUP761 = do
-  let rng = dummyRNG
+testSNTRUP761 = withHaskellRNG $ \rng -> do
+  -- let rng = dummyRNG
   (pk, sk) <- sntrup761KeypairWith rng
   (c, k) <- sntrup761EncWith rng pk
   sntrup761Dec c sk `shouldReturn` k
