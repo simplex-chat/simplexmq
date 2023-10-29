@@ -95,7 +95,7 @@ library:
     - cbits/sntrup761.c
     - cbits/sxcrandom.c
   include-dirs: cbits
-  extra-libraries: crypto
+  extra-libraries: ssl crypto
 
 executables:
   smp-server:

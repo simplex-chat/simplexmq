@@ -160,7 +160,7 @@ library
       cbits/sntrup761.c
       cbits/sxcrandom.c
   extra-libraries:
-      crypto
+      ssl crypto
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
