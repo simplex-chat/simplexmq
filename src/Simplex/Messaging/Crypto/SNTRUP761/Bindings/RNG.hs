@@ -1,26 +1,27 @@
 {-# LANGUAGE NamedFieldPuns #-}
+
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
-  ( RNG (..)
-  , dummyRNG
-  , withHaskellRNG
-  , startHaskellRNG
-  , stopHaskellRNG
-  , RNGContext
-  , RNGFunc
-  , mkRNGFunc
+  ( RNG (..),
+    dummyRNG,
+    withHaskellRNG,
+    startHaskellRNG,
+    stopHaskellRNG,
+    RNGContext,
+    RNGFunc,
+    mkRNGFunc,
   ) where
 
 import Foreign
 import Foreign.C
 
-import Crypto.Random (getRandomBytes, drgNew, randomBytesGenerate)
-import Data.ByteArray (Bytes, ByteArrayAccess (copyByteArrayToPtr))
+import Crypto.Random (drgNew, randomBytesGenerate)
+import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr), Bytes)
+import Data.IORef (atomicModifyIORef', newIORef)
 import UnliftIO (bracket)
-import Data.IORef (newIORef, atomicModifyIORef')
 
 data RNG = RNG
-  { rngContext :: RNGContext
-  , rngFunc :: FunPtr RNGFunc
+  { rngContext :: RNGContext,
+    rngFunc :: FunPtr RNGFunc
   }
 
 dummyRNG :: RNG
