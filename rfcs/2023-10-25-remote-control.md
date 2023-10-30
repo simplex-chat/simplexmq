@@ -158,7 +158,8 @@ Hello block must contain:
 Hello block syntax:
   
 ```abnf
-helloBlock = %s"xrcp" dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
+helloBlock = unpaddedSize %s"xrcp" dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
+unpaddedSize = 2*2 OCTET
 pad = <pad block size to 16384 bytes>
 kemCiphertext = length base64url
 ```
