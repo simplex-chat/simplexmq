@@ -26,8 +26,20 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
+    cbits/cryptonite_align.h
+    cbits/cryptonite_bitfn.h
+    cbits/cryptonite_chacha.h
+    cbits/cryptonite_hash_prefix.h
+    cbits/cryptonite_sha512.h
     cbits/sntrup761.h
-    cbits/sxcrandom.h
+    cbits/sntrup_random.h
+    cbits/sntrup_sha512.h
+    cbits/cryptonite_chacha.c
+    cbits/cryptonite_hash_prefix.c
+    cbits/cryptonite_sha512.c
+    cbits/sntrup761.c
+    cbits/sntrup_random.c
+    cbits/sntrup_sha512.c
 
 flag swift
   description: Enable swift JSON format
@@ -155,10 +167,11 @@ library
   include-dirs:
       cbits
   c-sources:
+      cbits/cryptonite_chacha.c
+      cbits/cryptonite_sha512.c
+      cbits/sntrup_random.c
+      cbits/sntrup_sha512.c
       cbits/sntrup761.c
-      cbits/sxcrandom.c
-  extra-libraries:
-      crypto
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12

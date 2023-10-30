@@ -2,7 +2,7 @@
 
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
   ( RNG (..),
-    dummyRNG,
+    -- dummyRNG,
     withHaskellRNG,
     startHaskellRNG,
     stopHaskellRNG,
@@ -23,9 +23,6 @@ data RNG = RNG
   { rngContext :: RNGContext,
     rngFunc :: FunPtr RNGFunc
   }
-
-dummyRNG :: RNG
-dummyRNG = RNG {rngContext = nullPtr, rngFunc = randomDummy}
 
 withHaskellRNG :: (RNG -> IO c) -> IO c
 withHaskellRNG = bracket startHaskellRNG stopHaskellRNG
@@ -48,8 +45,11 @@ type RNGContext = Ptr RNG
 -- typedef void random_func (void *ctx, size_t length, uint8_t *dst);
 type RNGFunc = Ptr RNGContext -> CSize -> Ptr Word8 -> IO ()
 
-foreign import ccall "&sxcrandom_dummy"
-  randomDummy :: FunPtr RNGFunc
-
 foreign import ccall "wrapper"
   mkRNGFunc :: RNGFunc -> IO (FunPtr RNGFunc)
+
+-- dummyRNG :: RNG
+-- dummyRNG = RNG {rngContext = nullPtr, rngFunc = randomDummy}
+
+-- foreign import ccall "&sxcrandom_dummy"
+--   randomDummy :: FunPtr RNGFunc

@@ -11,7 +11,7 @@
 
 #include <string.h>
 #include <stdint.h>
-#include "sxcrandom.h"
+#include "sntrup_random.h"
 
 #define SNTRUP761_SECRETKEY_SIZE 1763
 #define SNTRUP761_PUBLICKEY_SIZE 1158
