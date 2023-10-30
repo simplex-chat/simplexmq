@@ -6,7 +6,7 @@
  * - Christine van Vredendaal
  */
 
-#include "sha512.h"
+#include <openssl/sha.h>
 #include "sntrup761.h"
 #include "sxcrandom.h"
 
@@ -676,7 +676,7 @@ Hash_prefix (unsigned char *out, int b, const unsigned char *in, int inlen)
   x[0] = b;
   for (i = 0; i < inlen; ++i)
     x[i + 1] = in[i];
-  crypto_hash_sha512 (h, x, inlen + 1);
+  SHA512 (x, inlen + 1, h);
   for (i = 0; i < 32; ++i)
     out[i] = h[i];
 }

@@ -26,7 +26,6 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
-    cbits/sha512.h
     cbits/sntrup761.h
     cbits/sxcrandom.h
 
@@ -156,11 +155,10 @@ library
   include-dirs:
       cbits
   c-sources:
-      cbits/sha512.c
       cbits/sntrup761.c
       cbits/sxcrandom.c
   extra-libraries:
-      ssl crypto
+      crypto
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
