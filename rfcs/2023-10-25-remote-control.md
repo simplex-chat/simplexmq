@@ -90,11 +90,8 @@ base64url = <base64url encoded binary> ; RFC4648, section 5
 Multicast announcement is a binary encoded packet with this syntax:
 
 ```abnf
-sessionAddressPacket = %s"xrcp" kemEncKeyParam dhPubKeyParam
-                       length encrypted(serviceAddress)
-                       sessSignature idSignature
-kemEncKeyParam = length base64url ; can we have x509encoded?
-dhPubKeyParam = length x509encoded
+sessionAddressPacket = %s"xrcp" dhPubKey length encrypted(serviceAddress sessSignature idSignature)
+dhPubKey = length x509encoded
 serviceAddress = length addressJSON
 sessSignature = length *OCTET ; signs the preceding announcement packet
 idSignature = length *OCTET ; signs the preceding announcement packet including sessSignature
@@ -126,8 +123,7 @@ addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
     "ts": {"type": "uint64"},
     "skey": {"ref": "base64url"},
     "idkey": {"ref": "base64url"},
-    "kem": {"ref": "base64url"},
-    "dh": {"ref": "base64url"}
+    "kem": {"ref": "base64url"}
   },
   "optionalProperties": {
     "app": {"type": "string"},
@@ -158,6 +154,13 @@ Hello block must contain:
   - host device name
   - chosen application version.
   - additional application specific parameters, e.g host settings or JSON encoding format.
+
+Hello block syntax:
+  
+```abnf
+helloBlock = %s"xrcp" dhPubKey kemCiphertext length encrypted(length helloBlockJSON)
+kemCiphertext = length base64url
+```
 
 Controller decrypts (including the first session) and validates the received hello block:
 - Chosen versions are supported (must be within offered ranges).
@@ -213,6 +216,38 @@ responseBody = length encrypted(tlsunique counter length response) ; should matc
 tlsunique = length 1*OCTET
 counter = 8*8 OCTET ; int64
 ```
+
+## Key agreement for announcement packet and for session
+
+Initial announcement is shared out-of-band, and it is not encrypted.
+
+This announcement contains DH and KEM keys, which are used to agree session encryption keys - the HELLO block will containt DH key and KEM ciphertext with encapsulated secret that will be used to determine the shared secret (using SHA512 over concatenated DH shared secret and KEM encapsulated secret).
+
+During the next session we send announcement via encrypted multicast block. The shared key for this secret is determined using the KEM shared secred from the previous session and DH shared secret computed using the host DH key from the previous session and the new controller DH key from the announcement.
+
+For the session, the shared secred is computed again using the KEM shared secret encapsulated using the new KEM key from the announcement and DH shared secret computed using the host DH key from HELLO block and the new controller DH key from the announcement.
+
+To describe it in pseudocode:
+
+```
+// session 1
+sessionSecret(1) = sha512(dhSecret(1) || kemSecret(1)) // to encrypt session 1 data, incl. hello
+dhSecret(1) = dh(hostHelloDhKey(1), controllerAnnouncementDhKey(1))
+kemCiphertext(1) = enc(kemSecret(1), kemEncKey(1))
+kemSecret(1) = dec(kemCiphertext(1), kemDecKey(1))
+
+// announcement for session n
+announcementSecret(n) = sha512(dhSecret(n') || kemSecret(n - 1))
+dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerAnnouncementDhKey(n))
+
+// session n
+sessionSecret(n) = sha512(dhSecret(n) || kemSecret(n))
+dhSecret(n) = dh(hostHelloDhKey(n), controllerAnnouncementDhKey(n))
+kemCiphertext(n) = enc(kemSecret(n), kemEncKey(n))
+kemSecret(n) = dec(kemCiphertext(n), kemDecKey(n))
+```
+
+If controller fails to store the new host DH key after receiving HELLO block, the encryption will become out of sync and the host won't be able to decrypt the next announcement. To mitigate it, the host should keep the last session DH key and also previous session DH key to try to decrypt the next announcement computing shared secret using both keys (first the new one, and in case it fails - the previous).
 
 ## Other options
 
