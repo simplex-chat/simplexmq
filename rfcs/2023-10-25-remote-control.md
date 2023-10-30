@@ -53,7 +53,7 @@ The session announcement contains this data:
 - CA TLS certificate fingerprint of the controller - this is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
 - Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
 - Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
-- Session X25519 DH key to agree session encryption (both for multicast announcement and for commands and responses in TLS). The new key is used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The initial out-of-band announcement is always unencrypted. This DH key is always sent unencrypted. NaCL Cryptobox is used for encryption.
+- Session X25519 DH key and sntrup761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The initial out-of-band announcement is always unencrypted. These DH and KEM key are always sent unencrypted. NaCL Cryptobox is used for encryption.
 - additional application specific parameters, e.g controller settings.
 
 Host device decrypts (except the first session) and validates the announcement:
@@ -70,7 +70,8 @@ sessionAddressUri = "xrcp://" encodedCAFingerprint "@" host ":" port "#/?" qsPar
 encodedCAFingerprint = base64url
 qsParams = param *("&" param)
 param = versionRangeParam / appNameParam / appVerionRangeParam / deviceNameParam / sessionTsParam /
-        sessPubKeyParam / idPubKeyParam / dhPubKeyParam / sessSignatureParam / idSignatureParam
+        sessPubKeyParam / idPubKeyParam / kemEncKeyParam / dhPubKeyParam /
+        sessSignatureParam / idSignatureParam
 versionRangeParam = "v=" (versionParam / (versionParam "-" versionParam))
 versionParam = 1*DIGIT
 appNameParam = "app=" 1*(ALPHA / DIGIT / "-" / "_") ; optional
@@ -79,6 +80,7 @@ deviceNameParam = "device=" 1*(ALPHA / DIGIT / "-" / "_") ; optional
 sessionTsParam = "ts=" 1*DIGIT
 sessPubKeyParam = "skey=" base64url ; required
 idPubKeyParam = "idkey=" base64url ; required
+kemEncKeyParam = "kem=" base64url ; required, can we have x509encoded?
 dhPubKeyParam = "dh=" base64url ; required
 sessSignatureParam = "ssig=" base64url ; required, signs the URI with this and idSignatureParam param removed
 idSignatureParam = "idsig=" base64url ; required, signs the URI with this param removed
@@ -88,7 +90,10 @@ base64url = <base64url encoded binary> ; RFC4648, section 5
 Multicast announcement is a binary encoded packet with this syntax:
 
 ```abnf
-sessionAddressPacket = %s"xrcp" dhPubKeyParam length encrypted(serviceAddress) sessSignature idSignature
+sessionAddressPacket = %s"xrcp" kemEncKeyParam dhPubKeyParam
+                       length encrypted(serviceAddress)
+                       sessSignature idSignature
+kemEncKeyParam = length base64url ; can we have x509encoded?
 dhPubKeyParam = length x509encoded
 serviceAddress = length addressJSON
 sessSignature = length *OCTET ; signs the preceding announcement packet
@@ -121,6 +126,7 @@ addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
     "ts": {"type": "uint64"},
     "skey": {"ref": "base64url"},
     "idkey": {"ref": "base64url"},
+    "kem": {"ref": "base64url"},
     "dh": {"ref": "base64url"}
   },
   "optionalProperties": {
@@ -140,12 +146,12 @@ Host device presents its own client certificate chain with CA representing a lon
 
 ### Session verification and protocol negotiation
 
-Once TLS session is established, both the host and controller device present a "session security code" to the user who must visually match them and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established.
+Once TLS session is established, both the host and controller device present a "session security code" to the user who must match them (e.g., visually or via QR code scan) and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established.
 
 Once the session is confirmed by the user, the host device sends "hello" block to the controller. ALPN TLS extension is not used to obtain tlsunique prior to sending any packets.
 
 Hello block must contain:
-- new session DH key - used to compute new shared secret with the controller key from the announcement.
+- KEM ciphertext with encapsulated secret and new session DH key - used to compute new shared secret with the controller keys from the announcement.
 - encrypted part of hello block (JSON object), containing:
   - chosen protocol version.
   - host CA TLS certificate fingerprint - part of host long term identity - must match the one presented in TLS handshake and the previous sessions, otherwise the connection is terminated.
@@ -198,6 +204,15 @@ Payloads in the protocol must be encrypted using NaCL cryptobox using the shared
 Commands of the controller must be signed after the encryption using the controller's session and long term Ed25519 keys.
 
 tlsunique channel binding from TLS session MUST be included in commands (included in the signed body).
+
+The syntax for encrypted command and response body encoding:
+
+```
+commandBody = length encrypted(tlsunique counter length command) sessSignature idSignature
+responseBody = length encrypted(tlsunique counter length response) ; should match counter in the command
+tlsunique = length 1*OCTET
+counter = 8*8 OCTET ; int64
+```
 
 ## Other options
 
