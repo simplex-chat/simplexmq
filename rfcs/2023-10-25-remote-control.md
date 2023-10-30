@@ -159,7 +159,7 @@ Hello block syntax:
   
 ```abnf
 helloBlock = %s"xrcp" dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
-pad = <pad block size to 16kb>
+pad = <pad block size to 16384 bytes>
 kemCiphertext = length base64url
 ```
 
