@@ -14,6 +14,7 @@ import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
 import NtfServerTests (ntfServerTests)
+import RemoteControlTests (remoteControlTests)
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -56,4 +57,5 @@ main = do
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
           describe "XFTP agent" xftpAgentTests
+        fdescribe "Remote Control Protocol" remoteControlTests
         describe "Server CLIs" cliTests
