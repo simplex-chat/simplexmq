@@ -142,13 +142,7 @@ library
       Simplex.Messaging.Util
       Simplex.Messaging.Version
       Simplex.RemoteControl.Discovery
-      Simplex.RemoteControl.Discovery.Controller
-      Simplex.RemoteControl.Discovery.Host
       Simplex.RemoteControl.Discovery.Multicast
-      Simplex.RemoteControl.Protocol
-      Simplex.RemoteControl.Transport
-      Simplex.RemoteControl.Transport.Controller
-      Simplex.RemoteControl.Transport.Host
       Simplex.RemoteControl.Types
   other-modules:
       Paths_simplexmq
