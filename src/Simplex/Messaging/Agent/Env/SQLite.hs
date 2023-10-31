@@ -35,6 +35,7 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.Int (Int64)
+import Data.IORef (IORef, newIORef)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
@@ -178,7 +179,7 @@ defaultAgentConfig =
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
-    chaChaDrg :: TVar ChaChaDRG,
+    random :: IORef ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
@@ -187,12 +188,12 @@ data Env = Env
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config@AgentConfig {initialClientId} store = do
-  idsDrg <- newTVarIO =<< liftIO drgNew
+  random <- newIORef =<< drgNew
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
-  pure Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
+  pure Env {config, store, random, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
 createAgentStore :: FilePath -> String -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
