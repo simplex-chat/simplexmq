@@ -1,7 +1,5 @@
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines where
 
-import Foreign.C
-
 #include "sntrup761.h"
 
 c_SNTRUP761_SECRETKEY_SIZE :: Int

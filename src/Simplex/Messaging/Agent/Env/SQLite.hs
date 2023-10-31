@@ -178,7 +178,7 @@ defaultAgentConfig =
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
-    idsDrg :: TVar ChaChaDRG,
+    chaChaDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,

@@ -101,6 +101,7 @@ library
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Crypto.SNTRUP761
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI

@@ -15,7 +15,7 @@ type SecretKey = ScrubbedBytes
 
 type Ciphertext = ByteString
 
-type Key = ScrubbedBytes
+type SharedKey = ScrubbedBytes
 
 sntrup761Keypair :: RNG -> IO (PublicKey, SecretKey)
 sntrup761Keypair RNG {rngContext, rngFunc} = do
@@ -23,14 +23,14 @@ sntrup761Keypair RNG {rngContext, rngFunc} = do
     BA.alloc c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
       c_sntrup761_keypair pkPtr skPtr rngContext rngFunc
 
-sntrup761Enc :: RNG -> PublicKey -> IO (Ciphertext, Key)
+sntrup761Enc :: RNG -> PublicKey -> IO (Ciphertext, SharedKey)
 sntrup761Enc RNG {rngContext, rngFunc} pk =
   BA.withByteArray pk $ \pkPtr ->
     BA.allocRet c_SNTRUP761_SIZE $ \kPtr ->
       BA.alloc c_SNTRUP761_CIPHERTEXT_SIZE $ \cPtr ->
         c_sntrup761_enc cPtr kPtr pkPtr rngContext rngFunc
 
-sntrup761Dec :: Ciphertext -> SecretKey -> IO Key
+sntrup761Dec :: Ciphertext -> SecretKey -> IO SharedKey
 sntrup761Dec c sk =
   BA.withByteArray sk $ \skPtr ->
     BA.withByteArray c $ \cPtr ->
