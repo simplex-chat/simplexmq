@@ -90,7 +90,7 @@ cryptoTests = do
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
   describe "sntrup761" $
-    fit "should enc/dec key" testSNTRUP761
+    it "should enc/dec key" testSNTRUP761
 
 testPadUnpadFile :: IO ()
 testPadUnpadFile = do
