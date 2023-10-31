@@ -6,7 +6,7 @@
  * - Christine van Vredendaal
  */
 
-#include <openssl/sha.h>
+#include "sha512.h"
 #include "sntrup761.h"
 
 /* from supercop-20201130/crypto_sort/int32/portable4/int32_minmax.inc */
@@ -675,7 +675,7 @@ Hash_prefix (unsigned char *out, int b, const unsigned char *in, int inlen)
   x[0] = b;
   for (i = 0; i < inlen; ++i)
     x[i + 1] = in[i];
-  SHA512 (x, inlen + 1, h);
+  crypto_hash_sha512 (h, x, inlen + 1);
   for (i = 0; i < 32; ++i)
     out[i] = h[i];
 }
