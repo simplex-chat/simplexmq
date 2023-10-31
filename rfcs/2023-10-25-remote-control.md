@@ -146,6 +146,8 @@ Once TLS session is established, both the host and controller device present a "
 
 Once the session is confirmed by the user, the host device sends "hello" block to the controller. ALPN TLS extension is not used to obtain tlsunique prior to sending any packets.
 
+Block size should be 16384 bytes.
+
 Hello block must contain:
 - KEM ciphertext with encapsulated secret and new session DH key - used to compute new shared secret with the controller keys from the announcement.
 - encrypted part of hello block (JSON object), containing:
@@ -158,7 +160,7 @@ Hello block must contain:
 Hello block syntax:
   
 ```abnf
-helloBlock = unpaddedSize %s"xrcp" dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
+helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
 unpaddedSize = 2*2 OCTET
 pad = <pad block size to 16384 bytes>
 kemCiphertext = length base64url
@@ -196,6 +198,13 @@ JTD schema for the encrypted part of hello block:
   },
   "additionalProperties": true
 }
+```
+
+Controller should reply with with `ok` or `err` block:
+
+```
+ok = unpaddedSize %s"OK" pad
+err = unpaddedSize %s"ERR " length error pad
 ```
 
 ### Сontroller/host session operation
