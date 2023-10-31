@@ -200,17 +200,15 @@ newSMPAgentEnv config@AgentConfig {initialClientId} store = do
 
 createAgentStore :: FilePath -> String -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey cfg = do
-  withHaskellRNG $ \rng -> do
-    (pk, sk) <- sntrup761KeypairWith rng
-    (c, k) <- sntrup761EncWith rng pk
+  withRNG $ \rng -> do
+    (pk, sk) <- sntrup761Keypair rng
+    (c, k) <- sntrup761Enc rng pk
     k' <- sntrup761Dec c sk
-    if k /= k' then
-      fail "sntrup761 smoke test failed"
-    else
-      putStrLn "sntrup761 smoke test passed"
+    if k /= k'
+      then fail "sntrup761 smoke test failed"
+      else putStrLn "sntrup761 smoke test passed"
 
   createSQLiteStore dbFilePath dbKey Migrations.app cfg
-
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),

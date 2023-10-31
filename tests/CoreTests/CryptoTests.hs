@@ -203,8 +203,7 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
 
 testSNTRUP761 :: IO ()
-testSNTRUP761 = withHaskellRNG $ \rng -> do
-  -- let rng = dummyRNG
-  (pk, sk) <- sntrup761KeypairWith rng
-  (c, k) <- sntrup761EncWith rng pk
+testSNTRUP761 = withRNG $ \rng -> do
+  (pk, sk) <- sntrup761Keypair rng
+  (c, k) <- sntrup761Enc rng pk
   sntrup761Dec c sk `shouldReturn` k

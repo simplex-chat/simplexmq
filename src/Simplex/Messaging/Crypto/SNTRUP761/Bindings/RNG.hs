@@ -2,9 +2,9 @@
 
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
   ( RNG (..),
-    withHaskellRNG,
-    startHaskellRNG,
-    stopHaskellRNG,
+    withRNG,
+    createRNG,
+    freeRNG,
     RNGContext,
     RNGFunc,
     mkRNGFunc,
@@ -23,11 +23,11 @@ data RNG = RNG
     rngFunc :: FunPtr RNGFunc
   }
 
-withHaskellRNG :: (RNG -> IO c) -> IO c
-withHaskellRNG = bracket startHaskellRNG stopHaskellRNG
+withRNG :: (RNG -> IO c) -> IO c
+withRNG = bracket createRNG freeRNG
 
-startHaskellRNG :: IO RNG
-startHaskellRNG = do
+createRNG :: IO RNG
+createRNG = do
   chachaState <- drgNew >>= newIORef -- XXX: ctxPtr could be used to store drg state, but cryptonite doesn't provide ByteAccess for ChaChaDRG
   rngFunc <- mkRNGFunc $ \_ctxPtr sz buf -> do
     bs <- atomicModifyIORef' chachaState $ swap . randomBytesGenerate (fromIntegral sz) :: IO Bytes
@@ -36,8 +36,8 @@ startHaskellRNG = do
   where
     swap (a, b) = (b, a)
 
-stopHaskellRNG :: RNG -> IO ()
-stopHaskellRNG RNG {rngFunc} = freeHaskellFunPtr rngFunc
+freeRNG :: RNG -> IO ()
+freeRNG RNG {rngFunc} = freeHaskellFunPtr rngFunc
 
 type RNGContext = Ptr RNG
 
