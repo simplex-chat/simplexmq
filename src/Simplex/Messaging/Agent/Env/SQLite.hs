@@ -30,10 +30,6 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
--- iOS FunPtr smoke test
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
-
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -199,16 +195,7 @@ newSMPAgentEnv config@AgentConfig {initialClientId} store = do
   pure Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor, xftpAgent}
 
 createAgentStore :: FilePath -> String -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
-createAgentStore dbFilePath dbKey cfg = do
-  withRNG $ \rng -> do
-    (pk, sk) <- sntrup761Keypair rng
-    (c, k) <- sntrup761Enc rng pk
-    k' <- sntrup761Dec c sk
-    if k /= k'
-      then fail "sntrup761 smoke test failed"
-      else putStrLn "sntrup761 smoke test passed"
-
-  createSQLiteStore dbFilePath dbKey Migrations.app cfg
+createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
