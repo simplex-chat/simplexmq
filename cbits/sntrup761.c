@@ -6,8 +6,9 @@
  * - Christine van Vredendaal
  */
 
-#include "sha512.h"
 #include "sntrup761.h"
+
+#include "sha512.h"
 
 /* from supercop-20201130/crypto_sort/int32/portable4/int32_minmax.inc */
 #define int32_MINMAX(a,b) \

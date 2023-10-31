@@ -93,7 +93,7 @@ library:
     - cbits/sha512.c
     - cbits/sntrup761.c
   include-dirs: cbits
-  extra-libraries: ssl crypto
+  extra-libraries: crypto
 
 executables:
   smp-server:
