@@ -26,6 +26,8 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
+    cbits/sha512.h
+    cbits/sntrup761.h
 
 flag swift
   description: Enable swift JSON format
@@ -99,6 +101,10 @@ library
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
@@ -149,6 +155,13 @@ library
   hs-source-dirs:
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
+  include-dirs:
+      cbits
+  c-sources:
+      cbits/sha512.c
+      cbits/sntrup761.c
+  extra-libraries:
+      crypto
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12

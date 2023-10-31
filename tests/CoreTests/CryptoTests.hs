@@ -15,6 +15,8 @@ import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -87,6 +89,8 @@ cryptoTests = do
     describe "Ed448" $ testEncoding C.SEd448
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
+  describe "sntrup761" $
+    it "should enc/dec key" testSNTRUP761
 
 testPadUnpadFile :: IO ()
 testPadUnpadFile = do
@@ -197,3 +201,9 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
   pure $ \(_ :: Int) ->
     C.decodePubKey (C.encodePubKey k) == Right k
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
+
+testSNTRUP761 :: IO ()
+testSNTRUP761 = withRNG $ \rng -> do
+  (pk, sk) <- sntrup761Keypair rng
+  (c, k) <- sntrup761Enc rng pk
+  sntrup761Dec c sk `shouldReturn` k
