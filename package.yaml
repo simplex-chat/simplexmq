@@ -22,7 +22,6 @@ extra-source-files:
   - CHANGELOG.md
   # - cbits/sha512.h
   - cbits/sntrup761.h
-  - cbits/sxcrandom.h
 
 dependencies:
   - aeson == 2.2.*
@@ -93,7 +92,6 @@ library:
   c-sources:
     # - cbits/sha512.c
     - cbits/sntrup761.c
-    - cbits/sxcrandom.c
   include-dirs: cbits
   extra-libraries: crypto
 

@@ -27,7 +27,6 @@ extra-source-files:
     README.md
     CHANGELOG.md
     cbits/sntrup761.h
-    cbits/sxcrandom.h
 
 flag swift
   description: Enable swift JSON format
@@ -156,7 +155,6 @@ library
       cbits
   c-sources:
       cbits/sntrup761.c
-      cbits/sxcrandom.c
   extra-libraries:
       crypto
   build-depends:

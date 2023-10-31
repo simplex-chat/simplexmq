@@ -8,7 +8,6 @@
 
 #include <openssl/sha.h>
 #include "sntrup761.h"
-#include "sxcrandom.h"
 
 /* from supercop-20201130/crypto_sort/int32/portable4/int32_minmax.inc */
 #define int32_MINMAX(a,b) \
@@ -684,7 +683,7 @@ Hash_prefix (unsigned char *out, int b, const unsigned char *in, int inlen)
 /* ----- higher-level randomness */
 
 static uint32_t
-urandom32 (void *random_ctx, random_func * random)
+urandom32 (void *random_ctx, sntrup761_random_func * random)
 {
   unsigned char c[4];
   uint32_t out[4];
@@ -698,7 +697,7 @@ urandom32 (void *random_ctx, random_func * random)
 }
 
 static void
-Short_random (small * out, void *random_ctx, random_func * random)
+Short_random (small * out, void *random_ctx, sntrup761_random_func * random)
 {
   uint32_t L[p];
   int i;
@@ -709,7 +708,7 @@ Short_random (small * out, void *random_ctx, random_func * random)
 }
 
 static void
-Small_random (small * out, void *random_ctx, random_func * random)
+Small_random (small * out, void *random_ctx, sntrup761_random_func * random)
 {
   int i;
 
@@ -722,7 +721,7 @@ Small_random (small * out, void *random_ctx, random_func * random)
 /* h,(f,ginv) = KeyGen() */
 static void
 KeyGen (Fq * h, small * f, small * ginv, void *random_ctx,
-        random_func * random)
+        sntrup761_random_func * random)
 {
   small g[p];
   Fq finv[p];
@@ -886,7 +885,7 @@ typedef small Inputs[p];        /* passed by reference */
 /* pk,sk = ZKeyGen() */
 static void
 ZKeyGen (unsigned char *pk, unsigned char *sk, void *random_ctx,
-         random_func * random)
+         sntrup761_random_func * random)
 {
   Fq h[p];
   small f[p], v[p];
@@ -962,7 +961,7 @@ HashSession (unsigned char *k, int b, const unsigned char *y,
 /* pk,sk = KEM_KeyGen() */
 void
 sntrup761_keypair (unsigned char *pk, unsigned char *sk, void *random_ctx,
-                   random_func * random)
+                   sntrup761_random_func * random)
 {
   int i;
 
@@ -989,7 +988,7 @@ Hide (unsigned char *c, unsigned char *r_enc, const Inputs r,
 /* c,k = Encap(pk) */
 void
 sntrup761_enc (unsigned char *c, unsigned char *k, const unsigned char *pk,
-               void *random_ctx, random_func * random)
+               void *random_ctx, sntrup761_random_func * random)
 {
   Inputs r;
   unsigned char r_enc[Inputs_bytes];
