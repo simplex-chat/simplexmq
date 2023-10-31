@@ -104,7 +104,7 @@ closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
 
 xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
 xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfArgs = do
-  g <- asks idsDrg
+  g <- asks random
   prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
@@ -283,7 +283,7 @@ notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntit
 
 xftpSendFile' :: AgentMonad m => AgentClient -> UserId -> CryptoFile -> Int -> m SndFileId
 xftpSendFile' c userId file numRecipients = do
-  g <- asks idsDrg
+  g <- asks random
   prefixPath <- getPrefixPath "snd.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
