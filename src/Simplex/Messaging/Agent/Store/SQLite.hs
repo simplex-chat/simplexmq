@@ -218,7 +218,7 @@ where
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
-import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
@@ -510,7 +510,7 @@ deleteUsersWithoutConns db = do
   pure userIds
 
 createConn_ ::
-  TVar ChaChaDRG ->
+  IORef ChaChaDRG ->
   ConnData ->
   (ByteString -> IO ()) ->
   IO (Either StoreError ByteString)
@@ -518,7 +518,7 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId = ""} -> createWithRandomId gVar create
   ConnData {connId} -> create connId $> Right connId
 
-createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
+createNewConn :: DB.Connection -> IORef ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
 createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode =
   createConn_ gVar cData $ \connId -> do
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
@@ -543,14 +543,14 @@ updateNewConnSnd db connId sq =
     updateConn :: IO (Either StoreError Int64)
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
-createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
+createRcvConn :: DB.Connection -> IORef ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
 createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
     void $ insertRcvQueue_ db connId q serverKeyHash_
 
-createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
+createSndConn :: DB.Connection -> IORef ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
@@ -769,7 +769,7 @@ smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersi
       smpClientVersion = fromMaybe 1 smpClientVersion_
     }
 
-createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
+createConfirmation :: DB.Connection -> IORef ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
 createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues, smpClientVersion}, ratchetState} =
   createWithRandomId gVar $ \confirmationId ->
     DB.execute
@@ -847,7 +847,7 @@ setHandshakeVersion :: DB.Connection -> ConnId -> Version -> Bool -> IO ()
 setHandshakeVersion db connId aVersion duplexHS =
   DB.execute db "UPDATE connections SET smp_agent_version = ?, duplex_handshake = ? WHERE conn_id = ?" (aVersion, duplexHS, connId)
 
-createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
+createInvitation :: DB.Connection -> IORef ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
 createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
   createWithRandomId gVar $ \invitationId ->
     DB.execute
@@ -2074,7 +2074,7 @@ updateHashSnd_ dbConn connId SndMsgData {..} =
     ]
 
 -- create record with a random ID
-createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
+createWithRandomId :: IORef ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
 createWithRandomId gVar create = tryCreate 3
   where
     tryCreate :: Int -> IO (Either StoreError ByteString)
@@ -2087,8 +2087,8 @@ createWithRandomId gVar create = tryCreate 3
           | SQL.sqlError e == SQL.ErrorConstraint -> tryCreate (n - 1)
           | otherwise -> pure . Left . SEInternal $ bshow e
 
-randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+randomId :: IORef ChaChaDRG -> Int -> IO ByteString
+randomId gVar n = U.encode <$> C.pseudoRandomBytes' n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
@@ -2109,7 +2109,7 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
   firstRow fromOnly SEXFTPServerNotFound $
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> IO (Either StoreError RcvFileId)
+createRcvFile :: DB.Connection -> IORef ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> IO (Either StoreError RcvFileId)
 createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath (CryptoFile savePath cfArgs) = runExceptT $ do
   (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile fd
   liftIO $
@@ -2364,7 +2364,7 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> IO (Either StoreError SndFileId)
+createSndFile :: DB.Connection -> IORef ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> IO (Either StoreError SndFileId)
 createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce =
   createWithRandomId gVar $ \sndFileEntityId ->
     DB.execute
