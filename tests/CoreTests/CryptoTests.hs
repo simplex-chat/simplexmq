@@ -3,8 +3,9 @@
 
 module CoreTests.CryptoTests (cryptoTests) where
 
+import Control.Concurrent.STM
 import Control.Monad.Except
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (drgNew, getRandomBytes)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
@@ -16,7 +17,6 @@ import qualified Data.Text.Lazy.Encoding as LE
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -203,7 +203,9 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
 
 testSNTRUP761 :: IO ()
-testSNTRUP761 = withRNG $ \rng -> do
-  (pk, sk) <- sntrup761Keypair rng
-  (c, k) <- sntrup761Enc rng pk
-  sntrup761Dec c sk `shouldReturn` k
+testSNTRUP761 = do
+  drg <- newTVarIO =<< drgNew
+  (pk, sk) <- sntrup761Keypair drg
+  (c, KEMSharedKey k) <- sntrup761Enc drg pk
+  KEMSharedKey k' <- sntrup761Dec c sk
+  k' `shouldBe` k

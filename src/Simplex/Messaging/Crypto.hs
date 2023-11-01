@@ -115,6 +115,8 @@ module Simplex.Messaging.Crypto
     cbEncrypt,
     cbEncryptMaxLenBS,
     cbDecrypt,
+    sbDecrypt_,
+    sbEncrypt_,
     cbNonce,
     randomCbNonce,
     pseudoRandomCbNonce,
