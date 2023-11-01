@@ -1,10 +1,10 @@
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
 
+import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import Data.IORef (IORef)
 import Foreign (nullPtr)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
@@ -18,14 +18,14 @@ type Ciphertext = ByteString
 
 type SharedKey = ScrubbedBytes
 
-sntrup761Keypair :: IORef ChaChaDRG -> IO (PublicKey, SecretKey)
+sntrup761Keypair :: TVar ChaChaDRG -> IO (PublicKey, SecretKey)
 sntrup761Keypair drg =
   withDRG drg $ \rngFunc ->
     BA.allocRet c_SNTRUP761_SECRETKEY_SIZE $ \skPtr ->
       BA.alloc c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
         c_sntrup761_keypair pkPtr skPtr nullPtr rngFunc
 
-sntrup761Enc :: IORef ChaChaDRG -> PublicKey -> IO (Ciphertext, SharedKey)
+sntrup761Enc :: TVar ChaChaDRG -> PublicKey -> IO (Ciphertext, SharedKey)
 sntrup761Enc drg pk =
   withDRG drg $ \rngFunc ->
     BA.withByteArray pk $ \pkPtr ->

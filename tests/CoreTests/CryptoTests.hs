@@ -3,12 +3,12 @@
 
 module CoreTests.CryptoTests (cryptoTests) where
 
+import Control.Concurrent.STM
 import Control.Monad.Except
 import Crypto.Random (drgNew, getRandomBytes)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
-import Data.IORef (newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -204,7 +204,7 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do
-  drg <- newIORef =<< drgNew
+  drg <- newTVarIO =<< drgNew
   (pk, sk) <- sntrup761Keypair drg
   (c, k) <- sntrup761Enc drg pk
   sntrup761Dec c sk `shouldReturn` k
