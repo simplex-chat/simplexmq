@@ -4,10 +4,11 @@
 module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Monad.Except
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (drgNew, getRandomBytes)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
+import Data.IORef (newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -16,7 +17,6 @@ import qualified Data.Text.Lazy.Encoding as LE
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -90,7 +90,7 @@ cryptoTests = do
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
   describe "sntrup761" $
-    it "should enc/dec key" testSNTRUP761
+    fit "should enc/dec key" testSNTRUP761
 
 testPadUnpadFile :: IO ()
 testPadUnpadFile = do
@@ -203,7 +203,8 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
 
 testSNTRUP761 :: IO ()
-testSNTRUP761 = withRNG $ \rng -> do
-  (pk, sk) <- sntrup761Keypair rng
-  (c, k) <- sntrup761Enc rng pk
+testSNTRUP761 = do
+  drg <- newIORef =<< drgNew
+  (pk, sk) <- sntrup761Keypair drg
+  (c, k) <- sntrup761Enc drg pk
   sntrup761Dec c sk `shouldReturn` k

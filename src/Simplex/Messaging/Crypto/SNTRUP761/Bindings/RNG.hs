@@ -1,48 +1,31 @@
-{-# LANGUAGE NamedFieldPuns #-}
-
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
-  ( RNG (..),
-    withRNG,
-    createRNG,
-    freeRNG,
+  ( withDRG,
     RNGContext,
     RNGFunc,
-    mkRNGFunc,
   ) where
 
+import Control.Exception (bracket)
+import Crypto.Random (ChaChaDRG)
+import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr))
+import Data.IORef (IORef)
+import Data.Void (Void)
 import Foreign
 import Foreign.C
+import qualified Simplex.Messaging.Crypto as C
 
-import Crypto.Random (drgNew, randomBytesGenerate)
-import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr), Bytes)
-import Data.IORef (atomicModifyIORef', newIORef)
-import UnliftIO (bracket)
+withDRG :: IORef ChaChaDRG -> (FunPtr RNGFunc -> IO a) -> IO a
+withDRG drg = bracket (createRNGFunc drg) freeHaskellFunPtr
 
-data RNG = RNG
-  { rngContext :: RNGContext,
-    rngFunc :: FunPtr RNGFunc
-  }
-
-withRNG :: (RNG -> IO c) -> IO c
-withRNG = bracket createRNG freeRNG
-
-createRNG :: IO RNG
-createRNG = do
-  chachaState <- drgNew >>= newIORef -- XXX: ctxPtr could be used to store drg state, but cryptonite doesn't provide ByteAccess for ChaChaDRG
-  rngFunc <- mkRNGFunc $ \_ctxPtr sz buf -> do
-    bs <- atomicModifyIORef' chachaState $ swap . randomBytesGenerate (fromIntegral sz) :: IO Bytes
+createRNGFunc :: IORef ChaChaDRG -> IO (FunPtr RNGFunc)
+createRNGFunc drg =
+  mkRNGFunc $ \_ctx sz buf -> do
+    bs <- C.pseudoRandomBytes' (fromIntegral sz) drg
     copyByteArrayToPtr bs buf
-  pure RNG {rngContext = nullPtr, rngFunc}
-  where
-    swap (a, b) = (b, a)
 
-freeRNG :: RNG -> IO ()
-freeRNG RNG {rngFunc} = freeHaskellFunPtr rngFunc
-
-type RNGContext = Ptr RNG
+type RNGContext = Ptr Void
 
 -- typedef void random_func (void *ctx, size_t length, uint8_t *dst);
-type RNGFunc = Ptr RNGContext -> CSize -> Ptr Word8 -> IO ()
+type RNGFunc = RNGContext -> CSize -> Ptr Word8 -> IO ()
 
 foreign import ccall "wrapper"
   mkRNGFunc :: RNGFunc -> IO (FunPtr RNGFunc)
