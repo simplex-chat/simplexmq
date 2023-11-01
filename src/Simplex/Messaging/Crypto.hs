@@ -132,7 +132,6 @@ module Simplex.Messaging.Crypto
 
     -- * pseudo-random bytes
     pseudoRandomBytes,
-    pseudoRandomBytes',
 
     -- * digests
     sha256Hash,
@@ -194,10 +193,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
-import Data.IORef (IORef, atomicModifyIORef')
 import Data.Kind (Constraint, Type)
 import Data.String
-import Data.Tuple (swap)
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
@@ -1148,9 +1145,6 @@ pseudoRandomCbNonce gVar = CryptoBoxNonce <$> pseudoRandomBytes 24 gVar
 
 pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
-
-pseudoRandomBytes' :: Int -> IORef ChaChaDRG -> IO ByteString
-pseudoRandomBytes' n gVar = atomicModifyIORef' gVar $ swap . randomBytesGenerate n
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce
