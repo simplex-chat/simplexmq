@@ -8,7 +8,6 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr))
-import Data.Void (Void)
 import Foreign
 import Foreign.C
 import qualified Simplex.Messaging.Crypto as C
@@ -22,10 +21,10 @@ createRNGFunc drg =
     bs <- atomically $ C.pseudoRandomBytes (fromIntegral sz) drg
     copyByteArrayToPtr bs buf
 
-type RNGContext = Ptr Void
+type RNGContext = ()
 
 -- typedef void random_func (void *ctx, size_t length, uint8_t *dst);
-type RNGFunc = RNGContext -> CSize -> Ptr Word8 -> IO ()
+type RNGFunc = Ptr RNGContext -> CSize -> Ptr Word8 -> IO ()
 
 foreign import ccall "wrapper"
   mkRNGFunc :: RNGFunc -> IO (FunPtr RNGFunc)
