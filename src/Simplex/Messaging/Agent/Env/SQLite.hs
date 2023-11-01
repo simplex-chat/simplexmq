@@ -35,7 +35,6 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.Int (Int64)
-import Data.IORef (IORef, newIORef)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
@@ -179,7 +178,7 @@ defaultAgentConfig =
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
-    random :: IORef ChaChaDRG,
+    random :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
@@ -188,7 +187,7 @@ data Env = Env
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config@AgentConfig {initialClientId} store = do
-  random <- newIORef =<< drgNew
+  random <- newTVarIO =<< drgNew
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
