@@ -25,26 +25,24 @@ newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
 
 sntrup761Keypair :: TVar ChaChaDRG -> IO (KEMPublicKey, KEMSecretKey)
 sntrup761Keypair drg =
-  withDRG drg $ \rngFunc ->
-    bimap KEMPublicKey KEMSecretKey
-      <$> BA.allocRet
-        c_SNTRUP761_SECRETKEY_SIZE
-        ( \skPtr ->
-            BA.alloc c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
-              c_sntrup761_keypair pkPtr skPtr nullPtr rngFunc
-        )
+  bimap KEMPublicKey KEMSecretKey
+    <$> BA.allocRet
+      c_SNTRUP761_SECRETKEY_SIZE
+      ( \skPtr ->
+          BA.alloc c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
+            withDRG drg $ c_sntrup761_keypair pkPtr skPtr nullPtr
+      )
 
 sntrup761Enc :: TVar ChaChaDRG -> KEMPublicKey -> IO (KEMCiphertext, KEMSharedKey)
 sntrup761Enc drg (KEMPublicKey pk) =
-  withDRG drg $ \rngFunc ->
-    BA.withByteArray pk $ \pkPtr ->
-      bimap KEMCiphertext KEMSharedKey
-        <$> BA.allocRet
-          c_SNTRUP761_SIZE
-          ( \kPtr ->
-              BA.alloc c_SNTRUP761_CIPHERTEXT_SIZE $ \cPtr ->
-                c_sntrup761_enc cPtr kPtr pkPtr nullPtr rngFunc
-          )
+  BA.withByteArray pk $ \pkPtr ->
+    bimap KEMCiphertext KEMSharedKey
+      <$> BA.allocRet
+        c_SNTRUP761_SIZE
+        ( \kPtr ->
+            BA.alloc c_SNTRUP761_CIPHERTEXT_SIZE $ \cPtr ->
+              withDRG drg $ c_sntrup761_enc cPtr kPtr pkPtr nullPtr
+        )
 
 sntrup761Dec :: KEMCiphertext -> KEMSecretKey -> IO KEMSharedKey
 sntrup761Dec (KEMCiphertext c) (KEMSecretKey sk) =
