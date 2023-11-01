@@ -13,6 +13,7 @@ import Network.HPACK (BufferSize)
 import Network.HTTP2.Client (Config (..), defaultPositionReadMaker, freeSimpleConfig)
 import qualified Network.HTTP2.Client as HC
 import qualified Network.HTTP2.Server as HS
+import Network.Socket (SockAddr (..))
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import Simplex.Messaging.Transport (SessionId, TLS (tlsUniq), Transport (cGet, cPut))
@@ -36,7 +37,9 @@ allocHTTP2Config c sz = do
         confSendAll = cPut c,
         confReadN = cGet c,
         confPositionReadMaker = defaultPositionReadMaker,
-        confTimeoutManager = tm
+        confTimeoutManager = tm,
+        confMySockAddr = SockAddrInet 0 0,
+        confPeerSockAddr = SockAddrInet 0 0
       }
 
 http2TLSParams :: T.Supported
