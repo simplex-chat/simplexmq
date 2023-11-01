@@ -206,5 +206,6 @@ testSNTRUP761 :: IO ()
 testSNTRUP761 = do
   drg <- newTVarIO =<< drgNew
   (pk, sk) <- sntrup761Keypair drg
-  (c, k) <- sntrup761Enc drg pk
-  sntrup761Dec c sk `shouldReturn` k
+  (c, KEMSharedKey k) <- sntrup761Enc drg pk
+  KEMSharedKey k' <- sntrup761Dec c sk
+  k' `shouldBe` k
