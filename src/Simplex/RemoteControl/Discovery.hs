@@ -52,7 +52,7 @@ startSession :: MonadIO m => Maybe Text -> (N.HostAddress, Word16) -> C.KeyHash 
 startSession deviceName serviceAddress caFingerprint = liftIO $ do
   sessionStart <- getSystemTime
   dh@(C.APublicDhKey C.SX25519 sessionDH, _) <- C.generateDhKeyPair C.SX25519
-  (C.APublicVerifyKey C.SEd25519 sigPubKey, C.APrivateSignKey C.SEd25519 sigSecretKey) <- C.generateSignatureKeyPair C.SEd25519
+  sig@(C.APublicVerifyKey C.SEd25519 sigPubKey, C.APrivateSignKey C.SEd25519 sigSecretKey) <- C.generateSignatureKeyPair C.SEd25519
   let
     announce =
       Announce
@@ -101,13 +101,12 @@ mkIpProbe = do
 -- | Announce tls server, wait for connection and attach http2 client to it.
 --
 -- Announcer is started when TLS server is started and stopped when a connection is made.
-announceCtrl :: MonadUnliftIO m => (MVar () -> MVar rc -> Transport.TLS -> IO ()) -> Tasks -> (C.PrivateKeyEd25519, Announce) -> TLS.Credentials -> m () -> m rc
-announceCtrl runCtrl tasks (sigKey, announce@Announce {caFingerprint, serviceAddress=(host, _port)}) credentials finishAction = do
+announceCtrl :: MonadUnliftIO m => (MVar () -> MVar rc -> Transport.TLS -> IO ()) -> Tasks -> TMVar (Maybe N.PortNumber) -> (C.PrivateKeyEd25519, Announce) -> TLS.Credentials -> m () -> m rc
+announceCtrl runCtrl tasks started (sigKey, announce@Announce {caFingerprint, serviceAddress=(host, _port)}) credentials finishAction = do
   ctrlStarted <- newEmptyMVar
-  started <- newEmptyTMVarIO
   ctrlFinished <- newEmptyMVar
   _ <- forkIO $ readMVar ctrlFinished >> finishAction -- attach external cleanup action to session lock
-  announcer <- async . liftIO $ atomically (takeTMVar started) >>= \case
+  announcer <- async . liftIO $ atomically (readTMVar started) >>= \case
     Nothing -> pure () -- TLS server failed to start, skipping announcer
     Just givenPort -> do
       logInfo $ "Starting announcer for " <> ident <> " at " <> tshow (host, givenPort)
