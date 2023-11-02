@@ -150,7 +150,7 @@ library
       Simplex.Messaging.Version
       Simplex.RemoteControl.Discovery
       Simplex.RemoteControl.Discovery.Multicast
-      Simplex.RemoteControl.Invite
+      Simplex.RemoteControl.Invitation
       Simplex.RemoteControl.Types
   other-modules:
       Paths_simplexmq
