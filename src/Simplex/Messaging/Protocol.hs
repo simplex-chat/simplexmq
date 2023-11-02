@@ -1,7 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -17,6 +16,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
@@ -135,7 +135,7 @@ module Simplex.Messaging.Protocol
     noAuthSrv,
 
     -- * TCP transport functions
-    TransportBatch(..),
+    TransportBatch (..),
     tPut,
     tPutLog,
     tGet,
@@ -155,7 +155,7 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -170,9 +170,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
-import GHC.Generics (Generic)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
-import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -182,7 +180,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
-import Test.QuickCheck (Arbitrary (..))
 
 currentSMPClientVersion :: Version
 currentSMPClientVersion = 2
@@ -309,17 +306,19 @@ instance StrEncoding SubscriptionMode where
     SMSubscribe -> "subscribe"
     SMOnlyCreate -> "only-create"
   strP =
-    (A.string "subscribe" $> SMSubscribe) <|> (A.string "only-create" $> SMOnlyCreate)
-      <?> "SubscriptionMode"
+    (A.string "subscribe" $> SMSubscribe)
+      <|> (A.string "only-create" $> SMOnlyCreate)
+        <?> "SubscriptionMode"
 
 instance Encoding SubscriptionMode where
   smpEncode = \case
     SMSubscribe -> "S"
     SMOnlyCreate -> "C"
-  smpP = A.anyChar >>= \case
-    'S' -> pure SMSubscribe
-    'C' -> pure SMOnlyCreate
-    _ -> fail "bad SubscriptionMode"
+  smpP =
+    A.anyChar >>= \case
+      'S' -> pure SMSubscribe
+      'C' -> pure SMOnlyCreate
+      _ -> fail "bad SubscriptionMode"
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
@@ -472,9 +471,7 @@ instance Encoding NMsgMeta where
 
 -- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
-  deriving (Eq, Show, Generic, FromJSON)
-
-instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
+  deriving (Eq, Show)
 
 -- this encoding should not become bigger than 7 bytes (currently it is 1 byte)
 instance Encoding MsgFlags where
@@ -997,14 +994,7 @@ data ErrorType
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
-  deriving (Eq, Generic, Read, Show)
-
-instance ToJSON ErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON ErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show)
 
 instance StrEncoding ErrorType where
   strEncode = \case
@@ -1026,18 +1016,7 @@ data CommandError
     HAS_AUTH
   | -- | transmission has no required entity ID (e.g. SMP queue)
     NO_ENTITY
-  deriving (Eq, Generic, Read, Show)
-
-instance ToJSON CommandError where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON CommandError where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
-
-instance Arbitrary ErrorType where arbitrary = genericArbitraryU
-
-instance Arbitrary CommandError where arbitrary = genericArbitraryU
+  deriving (Eq, Read, Show)
 
 -- | SMP transmission parser.
 transmissionP :: Parser RawTransmission
@@ -1306,7 +1285,7 @@ tPutLog th s = do
   pure r
 
 -- ByteString does not include length byte, it is added by tEncodeBatch
-data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString |  TBLargeTransmission
+data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString | TBLargeTransmission
 
 -- | encodes and batches transmissions into blocks,
 batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
@@ -1319,22 +1298,22 @@ batchTransmissions batch bSize
       let (n, s, ts_) = encodeBatch 0 "" ts
           r = if n == 0 then TBLargeTransmission else TBTransmissions n s
           rs' = r : rs
-      in case ts_ of
-          Just ts' -> mkBatch rs' ts'
-          _ -> rs'
+       in case ts_ of
+            Just ts' -> mkBatch rs' ts'
+            _ -> rs'
     mkBatch1 :: ByteString -> TransportBatch
     mkBatch1 s = if B.length s > bSize - 2 then TBLargeTransmission else TBTransmission s
     encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
     encodeBatch n s ts@(t :| ts_)
       | n == 255 = (n, s, Just ts)
       | otherwise =
-        let s' = s <> smpEncode (Large t)
-            n' = n + 1
-         in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
-              then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
-              else case L.nonEmpty ts_ of
-                Just ts' -> encodeBatch n' s' ts'
-                _ -> (n', s', Nothing)
+          let s' = s <> smpEncode (Large t)
+              n' = n + 1
+           in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
+                then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
+                else case L.nonEmpty ts_ of
+                  Just ts' -> encodeBatch n' s' ts'
+                  _ -> (n', s', Nothing)
 
 tEncode :: SentRawTransmission -> ByteString
 tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
@@ -1373,8 +1352,8 @@ tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => SessionId ->
 tDecodeParseValidate sessionId v = \case
   Right RawTransmission {signature, signed, sessId, corrId, entityId, command}
     | sessId == sessionId ->
-      let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
-       in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
+        let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
+         in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
     | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
   Left _ -> tError ""
   where
@@ -1385,3 +1364,9 @@ tDecodeParseValidate sessionId v = \case
     tParseValidate signed t@(sig, corrId, entityId, command) =
       let cmd = parseProtocol @err @cmd v command >>= checkCredentials t
        in (sig, signed, (CorrId corrId, entityId, cmd))
+
+$(J.deriveJSON defaultJSON ''MsgFlags)
+
+$(J.deriveJSON (sumTypeJSON id) ''CommandError)
+
+$(J.deriveJSON (sumTypeJSON id) ''ErrorType)

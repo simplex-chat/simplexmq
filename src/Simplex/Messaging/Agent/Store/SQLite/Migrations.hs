@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -27,8 +26,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
 where
 
 import Control.Monad (forM_, when)
-import Data.Aeson (ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import Data.List (intercalate, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
@@ -40,7 +38,6 @@ import Database.SQLite.Simple (Connection, Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
-import GHC.Generics (Generic)
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
@@ -169,11 +166,7 @@ data MigrationsToRun = MTRUp [Migration] | MTRDown [DownMigration] | MTRNone
 data MTRError
   = MTRENoDown {dbMigrations :: [String]}
   | MTREDifferent {appMigration :: String, dbMigration :: String}
-  deriving (Eq, Show, Generic)
-
-instance ToJSON MTRError where
-  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "MTRE"
-  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "MTRE"
+  deriving (Eq, Show)
 
 mtrErrorDescription :: MTRError -> String
 mtrErrorDescription = \case
@@ -192,3 +185,5 @@ migrationsToRun [] dbMs
 migrationsToRun (a : as) (d : ds)
   | name a == name d = migrationsToRun as ds
   | otherwise = Left $ MTREDifferent (name a) (name d)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "MTRE") ''MTRError)

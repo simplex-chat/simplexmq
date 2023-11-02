@@ -1,7 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -17,12 +16,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
-
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
@@ -226,9 +225,8 @@ where
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
-import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import Crypto.Random (ChaChaDRG)
+import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
@@ -255,7 +253,6 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
-import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
@@ -275,7 +272,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (blobFieldParser, dropPrefix, fromTextField_, sumTypeJSON)
+import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, fromTextField_, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -285,7 +282,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, remo
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (onException, bracketOnError)
+import UnliftIO.Exception (bracketOnError, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -295,7 +292,7 @@ data MigrationError
   = MEUpgrade {upMigrations :: [UpMigration]}
   | MEDowngrade {downMigrations :: [String]}
   | MigrationError {mtrError :: MTRError}
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show)
 
 migrationErrorDescription :: MigrationError -> String
 migrationErrorDescription = \case
@@ -305,17 +302,11 @@ migrationErrorDescription = \case
     "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " dms
   MigrationError err -> mtrErrorDescription err
 
-instance ToJSON MigrationError where
-  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "ME"
-  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "ME"
-
 data UpMigration = UpMigration {upName :: String, withDown :: Bool}
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show)
 
 upMigration :: Migration -> UpMigration
 upMigration Migration {name, down} = UpMigration name $ isJust down
-
-instance ToJSON UpMigration where toEncoding = J.genericToEncoding J.defaultOptions
 
 data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
   deriving (Eq, Show)
@@ -382,10 +373,10 @@ migrateSchema st migrations confirmMigrations = do
     Right ms@(MTRUp ums)
       | dbNew st -> Migrations.run st ms $> Right ()
       | otherwise -> case confirmMigrations of
-        MCYesUp -> run ms
-        MCYesUpDown -> run ms
-        MCConsole -> confirm err >> run ms
-        MCError -> pure $ Left err
+          MCYesUp -> run ms
+          MCYesUpDown -> run ms
+          MCConsole -> confirm err >> run ms
+          MCError -> pure $ Left err
       where
         err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
@@ -647,10 +638,23 @@ createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, dupl
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
-  createConn_ gVar cData $ \connId -> do
-    serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
-    void $ insertSndQueue_ db connId q serverKeyHash_
+  -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
+  ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
+    createConn_ gVar cData $ \connId -> do
+      serverKeyHash_ <- createServer_ db server
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
+      void $ insertSndQueue_ db connId q serverKeyHash_
+
+checkConfirmedSndQueueExists_ :: DB.Connection -> SndQueue -> IO Bool
+checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
+  fromMaybe False
+    <$> maybeFirstRow
+      fromOnly
+      ( DB.query
+          db
+          "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
+          (host server, port server, sndId, New)
+      )
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))
 getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
@@ -1066,7 +1070,7 @@ updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
 getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
 getPendingMsgs db connId SndQueue {dbQueueId} =
   map fromOnly
-    <$> DB.query db "SELECT internal_id FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
+    <$> DB.query db "SELECT internal_id FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? ORDER BY internal_id ASC" (connId, dbQueueId)
 
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deletePendingMsgs db connId SndQueue {dbQueueId} =
@@ -1165,12 +1169,12 @@ countPendingSndDeliveries_ db connId msgId = do
 
 deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRcvMsgHashesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM encrypted_rcv_message_hashes WHERE created_at < ?" (Only cutoffTs)
 
 deleteSndMsgsExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteSndMsgsExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute
     db
     "DELETE FROM messages WHERE internal_ts < ? AND internal_snd_id IS NOT NULL"
@@ -1249,7 +1253,7 @@ getSkippedMsgKeys :: DB.Connection -> ConnId -> IO SkippedMsgKeys
 getSkippedMsgKeys db connId =
   skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
   where
-    skipped ms = foldl' addSkippedKey M.empty ms
+    skipped = foldl' addSkippedKey M.empty
     addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
       where
         addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
@@ -1820,15 +1824,15 @@ getAnyConn deleted' dbConn connId =
     Just (cData@ConnData {deleted}, cMode)
       | deleted /= deleted' -> pure $ Left SEConnNotFound
       | otherwise -> do
-        rQ <- getRcvQueuesByConnId_ dbConn connId
-        sQ <- getSndQueuesByConnId_ dbConn connId
-        pure $ case (rQ, sQ, cMode) of
-          (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
-          (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
-          (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
-          (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
-          (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
-          _ -> Left SEConnNotFound
+          rQ <- getRcvQueuesByConnId_ dbConn connId
+          sQ <- getSndQueuesByConnId_ dbConn connId
+          pure $ case (rQ, sQ, cMode) of
+            (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
+            (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
+            (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
+            (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
+            (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
+            _ -> Left SEConnNotFound
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
@@ -1890,7 +1894,7 @@ checkRatchetKeyHashExists db connId hash = do
 
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRatchetKeyHashesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM processed_ratchet_key_hashes WHERE created_at < ?" (Only cutoffTs)
 
 -- | returns all connection queues, the first queue is the primary one
@@ -2170,7 +2174,7 @@ createWithRandomId gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+randomId gVar n = atomically $ U.encode <$> C.pseudoRandomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
@@ -2339,7 +2343,7 @@ deleteRcvFile' db rcvFileId =
 
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe RcvFileChunk)
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   maybeFirstRow toChunk $
     DB.query
       db
@@ -2376,7 +2380,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
 
 getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Maybe RcvFile)
 getNextRcvFileToDecrypt db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   fileId_ :: Maybe DBRcvFileId <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2394,7 +2398,7 @@ getNextRcvFileToDecrypt db ttl = do
 
 getPendingRcvFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingRcvFilesServers db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   map toXFTPServer
     <$> DB.query
       db
@@ -2436,7 +2440,7 @@ getCleanupRcvFilesDeleted db =
 
 getRcvFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBRcvFileId, RcvFileId, FilePath)]
 getRcvFilesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.query
     db
     [sql|
@@ -2544,7 +2548,7 @@ getChunkReplicaRecipients_ db replicaId =
 
 getNextSndFileToPrepare :: DB.Connection -> NominalDiffTime -> IO (Maybe SndFile)
 getNextSndFileToPrepare db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   fileId_ :: Maybe DBSndFileId <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2625,7 +2629,7 @@ createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, re
 
 getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe SndFileChunk)
 getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   chunk_ <-
     maybeFirstRow toChunk $
       DB.query
@@ -2694,7 +2698,7 @@ updateSndChunkReplicaStatus db replicaId status = do
 
 getPendingSndFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingSndFilesServers db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   map toXFTPServer
     <$> DB.query
       db
@@ -2733,7 +2737,7 @@ getCleanupSndFilesDeleted db =
 
 getSndFilesExpired :: DB.Connection -> NominalDiffTime -> IO [(DBSndFileId, SndFileId, Maybe FilePath)]
 getSndFilesExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.query
     db
     [sql|
@@ -2773,7 +2777,7 @@ getDeletedSndChunkReplica db deletedSndChunkReplicaId =
 
 getNextDeletedSndChunkReplica :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe DeletedSndChunkReplica)
 getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   replicaId_ :: Maybe Int64 <-
     maybeFirstRow fromOnly $
       DB.query
@@ -2802,7 +2806,7 @@ deleteDeletedSndChunkReplica db deletedSndChunkReplicaId =
 
 getPendingDelFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingDelFilesServers db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   map toXFTPServer
     <$> DB.query
       db
@@ -2817,5 +2821,9 @@ getPendingDelFilesServers db ttl = do
 
 deleteDeletedSndChunkReplicasExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteDeletedSndChunkReplicasExpired db ttl = do
-  cutoffTs <- addUTCTime (- ttl) <$> getCurrentTime
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM deleted_snd_chunk_replicas WHERE created_at < ?" (Only cutoffTs)
+
+$(J.deriveJSON defaultJSON ''UpMigration)
+
+$(J.deriveToJSON (sumTypeJSON $ dropPrefix "ME") ''MigrationError)

@@ -1,5 +1,4 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -7,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
@@ -14,8 +14,7 @@
 module Simplex.FileTransfer.Protocol where
 
 import Control.Applicative ((<|>))
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
@@ -25,8 +24,6 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import GHC.Generics (Generic)
-import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -59,7 +56,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (SessionId, TransportError (..))
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
-import Test.QuickCheck (Arbitrary (..))
 
 currentXFTPVersion :: Version
 currentXFTPVersion = 1
@@ -69,14 +65,7 @@ xftpBlockSize = 16384
 
 -- | File protocol clients
 data FileParty = FRecipient | FSender
-  deriving (Eq, Show, Generic)
-
-instance FromJSON FileParty where
-  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "F"
-
-instance ToJSON FileParty where
-  toJSON = J.genericToJSON . enumJSON $ dropPrefix "F"
-  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "F"
+  deriving (Eq, Show)
 
 data SFileParty :: FileParty -> Type where
   SFRecipient :: SFileParty FRecipient
@@ -355,22 +344,13 @@ data XFTPErrorType
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
-  deriving (Eq, Generic, Read, Show)
-
-instance ToJSON XFTPErrorType where
-  toJSON = J.genericToJSON $ sumTypeJSON id
-  toEncoding = J.genericToEncoding $ sumTypeJSON id
-
-instance FromJSON XFTPErrorType where
-  parseJSON = J.genericParseJSON $ sumTypeJSON id
+  deriving (Eq, Read, Show)
 
 instance StrEncoding XFTPErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     e -> bshow e
   strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
-
-instance Arbitrary XFTPErrorType where arbitrary = genericArbitraryU
 
 instance Encoding XFTPErrorType where
   smpEncode = \case
@@ -435,3 +415,7 @@ xftpDecodeTransmission sessionId t = do
   case tParse True t' of
     t'' :| [] -> Right $ tDecodeParseValidate sessionId currentXFTPVersion t''
     _ -> Left BLOCK
+
+$(J.deriveJSON (enumJSON $ dropPrefix "F") ''FileParty)
+
+$(J.deriveJSON (sumTypeJSON id) ''XFTPErrorType)

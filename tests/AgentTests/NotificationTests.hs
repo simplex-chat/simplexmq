@@ -504,7 +504,7 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- forM [1 .. n :: Int] . const $ makeConnection a b
+    conns <- replicateM (n :: Int) $ makeConnection a b
     _ <- registerTestToken a "abcd" NMInstant apnsQ
     liftIO $ threadDelay 1500000
     forM_ conns $ \(aliceId, bobId) -> do

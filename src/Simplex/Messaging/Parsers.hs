@@ -85,7 +85,7 @@ blobFieldDecoder dec = \case
       Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
   f -> returnError ConversionFailed f "expecting SQLBlob column type"
 
-fromTextField_ :: (Typeable a) => (Text -> Maybe a) -> Field -> Ok a
+fromTextField_ :: Typeable a => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
   f@(Field (SQLText t) _) ->
     case fromText t of
@@ -151,3 +151,6 @@ singleFieldJSON_ objectTag tagModifier =
       J.nullaryToObject = True,
       J.omitNothingFields = True
     }
+
+defaultJSON :: J.Options
+defaultJSON = J.defaultOptions {J.omitNothingFields = True}

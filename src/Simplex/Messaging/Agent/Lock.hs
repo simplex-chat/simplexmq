@@ -1,5 +1,3 @@
-{-# LANGUAGE NamedFieldPuns #-}
-
 module Simplex.Messaging.Agent.Lock where
 
 import Control.Monad (void)

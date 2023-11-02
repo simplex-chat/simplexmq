@@ -50,9 +50,9 @@ ntfServerHandshake c kh ntfVRange = do
   getHandshake th >>= \case
     NtfClientHandshake {ntfVersion, keyHash}
       | keyHash /= kh ->
-        throwError $ TEHandshake IDENTITY
-      | ntfVersion `isCompatible` ntfVRange -> do
-        pure (th :: THandle c) {thVersion = ntfVersion}
+          throwError $ TEHandshake IDENTITY
+      | ntfVersion `isCompatible` ntfVRange ->
+          pure (th :: THandle c) {thVersion = ntfVersion}
       | otherwise -> throwError $ TEHandshake VERSION
 
 -- | Notifcations server client transport handshake.

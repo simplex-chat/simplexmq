@@ -49,6 +49,7 @@ import Simplex.Messaging.Transport (supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
+import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
 import UnliftIO
 import UnliftIO.Directory
@@ -153,7 +154,7 @@ sendXFTPCommand XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}}
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
         withFile filePath ReadMode $ \h -> do
           hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-          sendFile h send $ fromIntegral chunkSize
+          hSendFile h send $ fromIntegral chunkSize
       done
 
 createXFTPChunk ::

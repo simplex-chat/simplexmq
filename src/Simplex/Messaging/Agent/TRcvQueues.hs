@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 module Simplex.Messaging.Agent.TRcvQueues
   ( TRcvQueues (getRcvQueues),
     empty,

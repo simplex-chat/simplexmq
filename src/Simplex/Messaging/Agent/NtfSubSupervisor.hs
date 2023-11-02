@@ -5,7 +5,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
@@ -100,14 +99,14 @@ processNtfSub c (connId, cmd) = do
               Just (action, _)
                 -- subscription was marked for deletion / is being deleted
                 | isDeleteNtfSubAction action -> do
-                  if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
-                    then resetSubscription
-                    else withNtfServer c $ \ntfServer -> do
-                      withStore' c $ \db -> supervisorUpdateNtfSub db sub {ntfServer} (NtfSubNTFAction NSACreate)
-                      addNtfNTFWorker ntfServer
+                    if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
+                      then resetSubscription
+                      else withNtfServer c $ \ntfServer -> do
+                        withStore' c $ \db -> supervisorUpdateNtfSub db sub {ntfServer} (NtfSubNTFAction NSACreate)
+                        addNtfNTFWorker ntfServer
                 | otherwise -> case action of
-                  NtfSubNTFAction _ -> addNtfNTFWorker subNtfServer
-                  NtfSubSMPAction _ -> addNtfSMPWorker smpServer
+                    NtfSubNTFAction _ -> addNtfNTFWorker subNtfServer
+                    NtfSubSMPAction _ -> addNtfSMPWorker smpServer
             rotate :: m ()
             rotate = do
               withStore' c $ \db -> supervisorUpdateNtfSub db sub (NtfSubNTFAction NSARotate)
@@ -291,11 +290,11 @@ rescheduleAction :: AgentMonad' m => TMVar () -> UTCTime -> UTCTime -> m Bool
 rescheduleAction doWork ts actionTs
   | actionTs <= ts = pure False
   | otherwise = do
-    void . atomically $ tryTakeTMVar doWork
-    void . forkIO $ do
-      liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
-      void . atomically $ tryPutTMVar doWork ()
-    pure True
+      void . atomically $ tryTakeTMVar doWork
+      void . forkIO $ do
+        liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
+        void . atomically $ tryPutTMVar doWork ()
+      pure True
 
 retryOnError :: AgentMonad' m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
 retryOnError c name loop done e = do
