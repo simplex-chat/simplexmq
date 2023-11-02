@@ -226,6 +226,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
@@ -403,7 +404,7 @@ backupSQLiteStore st = do
   copyWhenExists f fBak
   copyWhenExists (f <> "-wal") (fBak <> "-wal")
   copyWhenExists (f <> "-shm") (fBak <> "-shm")
-  
+
 restoreSQLiteStore :: SQLiteStore -> IO ()
 restoreSQLiteStore st = do
   let f = dbFilePath st
@@ -453,12 +454,12 @@ connectDB path key = do
   pure db
   where
     openSQL =
-      (if null key then "" else "PRAGMA key = " <> sqlString key <> ";\n") <>
-      "PRAGMA journal_mode = WAL;\n\
-      \PRAGMA busy_timeout = 100;\n\
-      \PRAGMA foreign_keys = ON;\n\
-      \PRAGMA trusted_schema = OFF;\n\
-      \PRAGMA secure_delete = ON;\n"
+      (if null key then "" else "PRAGMA key = " <> sqlString key <> ";\n")
+        <> "PRAGMA journal_mode = WAL;\n\
+           \PRAGMA busy_timeout = 100;\n\
+           \PRAGMA foreign_keys = ON;\n\
+           \PRAGMA trusted_schema = OFF;\n\
+           \PRAGMA secure_delete = ON;\n"
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =
@@ -482,8 +483,9 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
             writeTVar dbClosed False
 
 checkpointSQLiteStore :: SQLiteStore -> IO ()
-checkpointSQLiteStore st = unlessM (readTVarIO $ dbClosed st) $
-  withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
+checkpointSQLiteStore st =
+  unlessM (readTVarIO $ dbClosed st) $
+    withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
 
 setSQLiteJournalMode :: SQLiteStore -> SQLiteJournalMode -> IO ()
 setSQLiteJournalMode st mode =
