@@ -188,5 +188,20 @@ recvAnnounce sock = liftIO $ do
   (invite, UDP.ClientSockAddr source _cmsg) <- UDP.recvFrom sock
   pure (source, invite)
 
-connectTLSClient :: MonadUnliftIO m => (TransportHost, Word16) -> C.KeyHash -> (Transport.TLS -> m a) -> m a
-connectTLSClient (host, port) caFingerprint = runTransportClient defaultTransportClientConfig Nothing host (show port) (Just caFingerprint)
+data HostSessionKeys = HostSessionKeys
+  { ca :: C.KeyHash
+  }
+
+data HostCryptoHandle = HostCryptoHandle
+
+connectTLSClient ::
+  MonadUnliftIO m =>
+  (TransportHost, Word16) ->
+  HostSessionKeys ->
+  (HostCryptoHandle -> Transport.TLS -> m a) ->
+  m a
+connectTLSClient (host, port) HostSessionKeys {ca} client =
+  runTransportClient defaultTransportClientConfig Nothing host (show port) (Just ca) $ \tls -> do
+    -- TODO: set up host side using
+    let hch = HostCryptoHandle
+    client hch tls
