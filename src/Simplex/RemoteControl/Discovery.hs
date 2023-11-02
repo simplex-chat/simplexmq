@@ -32,7 +32,6 @@ import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, runTran
 import Simplex.Messaging.Util (ifM, tshow)
 import Simplex.Messaging.Version (VersionRange)
 import Simplex.RemoteControl.Discovery.Multicast (setMembership)
-import Simplex.RemoteControl.Invitation (CtrlSessionKeys (..))
 import Simplex.RemoteControl.Types
 import UnliftIO
 import UnliftIO.Concurrent
