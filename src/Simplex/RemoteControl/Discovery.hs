@@ -65,10 +65,6 @@ mkIpProbe = do
   randomNonce <- liftIO $ getRandomBytes 32
   pure IpProbe {versionRange = ipProbeVersionRange, randomNonce}
 
-data CtrlCryptoHandle = CtrlCryptoHandle
-
--- TODO: add initial keys
-
 -- | Announce tls server, wait for connection and attach http2 client to it.
 --
 -- Announcer is started when TLS server is started and stopped when a connection is made.
@@ -187,12 +183,6 @@ recvAnnounce :: MonadIO m => UDP.ListenSocket -> m (N.SockAddr, ByteString)
 recvAnnounce sock = liftIO $ do
   (invite, UDP.ClientSockAddr source _cmsg) <- UDP.recvFrom sock
   pure (source, invite)
-
-data HostSessionKeys = HostSessionKeys
-  { ca :: C.KeyHash
-  }
-
-data HostCryptoHandle = HostCryptoHandle
 
 connectTLSClient ::
   MonadUnliftIO m =>
