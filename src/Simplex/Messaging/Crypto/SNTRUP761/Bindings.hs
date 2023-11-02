@@ -4,10 +4,12 @@ module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
 
 import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)
+import qualified Data.Aeson as J
 import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Foreign (nullPtr)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
@@ -62,3 +64,11 @@ instance StrEncoding KEMPublicKey where
 instance Encoding KEMCiphertext where
   smpEncode (KEMCiphertext c) = smpEncode (BA.convert c :: ByteString)
   smpP = KEMCiphertext . BA.convert <$> smpP @ByteString
+
+instance J.ToJSON KEMPublicKey where
+  toJSON = J.toJSON . decodeUtf8 . strEncode
+
+instance J.FromJSON KEMPublicKey where
+  parseJSON =
+    J.withText "KEMPublicKey" $
+      either fail pure . strDecode . encodeUtf8

@@ -2,10 +2,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GADTs #-}
 
 module Simplex.RemoteControl.Types where
 
@@ -36,7 +36,8 @@ ipProbeVersionRange = mkVersionRange 1 1
 data IpProbe = IpProbe
   { versionRange :: VersionRange,
     randomNonce :: ByteString
-  } deriving (Show)
+  }
+  deriving (Show)
 
 instance Encoding IpProbe where
   smpEncode IpProbe {versionRange, randomNonce} = smpEncode (versionRange, 'I', randomNonce)
@@ -44,7 +45,7 @@ instance Encoding IpProbe where
   smpP = IpProbe <$> (smpP <* "I") *> smpP
 
 announceVersionRange :: VersionRange
-announceVersionRange = mkVersionRange  1 1
+announceVersionRange = mkVersionRange 1 1
 
 data Announce = Announce
   { versionRange :: VersionRange,
@@ -54,7 +55,8 @@ data Announce = Announce
     caFingerprint :: C.KeyHash,
     sessionDH :: C.PublicKeyX25519,
     announceKey :: C.PublicKeyEd25519
-  } deriving (Show)
+  }
+  deriving (Show)
 
 instance Encoding Announce where
   smpEncode Announce {versionRange, sessionStart, announceCounter, serviceAddress, caFingerprint, sessionDH, announceKey} =
@@ -194,5 +196,5 @@ asyncRegistered tasks action = async action >>= registerAsync tasks
 registerAsync :: MonadIO m => Tasks -> Async () -> m ()
 registerAsync tasks = atomically . modifyTVar tasks . (:)
 
-cancelTasks :: (MonadIO m) => Tasks -> m ()
+cancelTasks :: MonadIO m => Tasks -> m ()
 cancelTasks tasks = readTVarIO tasks >>= mapM_ cancel
