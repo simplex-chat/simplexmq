@@ -39,11 +39,11 @@ data XRCPInvitation = XRCPInvitation
     -- | Supported version range for remote control protocol
     v :: VersionRange,
     -- | Application name
-    app :: Maybe Text,
+    app :: Text,
     -- | App version
-    appv :: Maybe VersionRange,
+    appv :: VersionRange,
     -- | Device name
-    device :: Maybe Text,
+    device :: Text,
     -- | Session start time in seconds since epoch
     ts :: SystemTime,
     -- | Session Ed25519 public key used to verify the announcement and commands
@@ -78,9 +78,9 @@ instance StrEncoding XRCPInvitation where
           ("host", Just $ strEncode host),
           ("port", Just $ strEncode port),
           ("v", Just $ strEncode v),
-          ("app", fmap encodeUtf8 app),
-          ("appv", fmap strEncode appv),
-          ("device", fmap encodeUtf8 device),
+          ("app", Just $ encodeUtf8 app),
+          ("appv", Just $ strEncode appv),
+          ("device", Just $ encodeUtf8 device),
           ("ts", Just $ strEncode ts),
           ("skey", Just $ strEncode skey),
           ("idkey", Just $ strEncode idkey),
@@ -99,9 +99,9 @@ instance StrEncoding XRCPInvitation where
 
     q <- parseSimpleQuery <$> A.takeWhile (/= ' ')
     v <- requiredP q "v" strDecode
-    app <- optionalP q "app" $ pure . decodeUtf8Lenient . urlDecode True
-    appv <- optionalP q "appv" strDecode
-    device <- optionalP q "device" $ pure . decodeUtf8Lenient . urlDecode True
+    app <- requiredP q "app" $ pure . decodeUtf8Lenient . urlDecode True
+    appv <- requiredP q "appv" strDecode
+    device <- requiredP q "device" $ pure . decodeUtf8Lenient . urlDecode True
     ts <- requiredP q "ts" $ strDecode . urlDecode True
     skey <- requiredP q "skey" strDecode
     idkey <- requiredP q "idkey" strDecode
@@ -184,16 +184,16 @@ instance Encoding XRCPEncryptedInvitation where
 
 sessionXRCPInvitation ::
   -- | App information
-  Maybe (Text, VersionRange) ->
+  (Text, VersionRange) ->
   -- | Device name
-  Maybe Text ->
+  Text ->
   -- | Long-term identity key
   C.PublicKeyEd25519 ->
   CtrlSessionKeys ->
   -- | Service address
   (TransportHost, Word16) ->
   XRCPInvitation
-sessionXRCPInvitation app_ device idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
+sessionXRCPInvitation (app, appv) device idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
   XRCPInvitation
     { ca,
       host,
@@ -208,8 +208,6 @@ sessionXRCPInvitation app_ device idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey,
       kem = fst kem,
       dh = C.publicKey dhKey
     }
-  where
-    (app, appv) = (fmap fst app_, fmap snd app_)
 
 requiredP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m a
 requiredP q k f = maybe (fail $ "missing " <> show k) (either fail pure . f) $ lookup k q

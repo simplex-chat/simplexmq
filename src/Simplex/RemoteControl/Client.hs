@@ -3,20 +3,36 @@
 
 module Simplex.RemoteControl.Client where
 
+import Control.Concurrent.Async (Async)
 import Control.Monad.Except (ExceptT)
-import Data.List.NonEmpty (NonEmpty)
-import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings
-import Simplex.RemoteControl.Invitation (XRCPInvitation (..))
+import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
-import UnliftIO (TVar)
-import Simplex.Messaging.Transport (TLS)
-import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret)
-import UnliftIO.STM (TMVar)
 import Data.ByteString (ByteString)
-import Simplex.Messaging.Version (Version)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
-import UnliftIO (newEmptyTMVarIO)
+import Data.Time.Clock.System (getSystemTime)
+import Data.Word (Word16)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret)
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings
+import Simplex.Messaging.Transport (TLS)
+import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Version (Version, VersionRange, mkVersionRange)
+import Simplex.RemoteControl.Invitation (XRCPInvitation (..))
+import UnliftIO (TVar, newEmptyTMVarIO)
+import UnliftIO.STM (TMVar)
+
+currentXRCPVersion :: Version
+currentXRCPVersion = 1
+
+supportedXRCPVRange :: VersionRange
+supportedXRCPVRange = mkVersionRange 1 currentXRCPVersion
+
+data XRCPAppInfo = XRCPAppInfo
+  { app :: Text,
+    appv :: VersionRange,
+    device :: Text
+  }
 
 data XRCPError
 
@@ -24,62 +40,111 @@ newXRCPHostPairing :: ExceptT XRCPError IO XRCPHostPairing
 newXRCPHostPairing = do
   caKey <- pure undefined
   caCert <- pure undefined
-  idSigKey <- pure undefined
-  pure XRCPHostPairing {caKey, caCert, idSigKey, knownHost = Nothing}
+  idPrivKey <- pure undefined
+  pure XRCPHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
 data XRCPHostClient = XRCPHostClient
   { async :: Async ()
   }
 
-connectXRCPHost :: XRCPHostPairing -> ExceptT XRCPError IO (XRCPInvitation, XRCPHostClient, TMVar (XRCPHostSession, XRCPHostPairing))
-connectXRCPHost host@XRCPHostPairing {caKey, caCert, idSigKey, knownHost} = do
+connectXRCPHost :: TVar ChaChaDRG -> XRCPHostPairing -> XRCPAppInfo -> ExceptT XRCPError IO (XRCPInvitation, XRCPHostClient, TMVar (XRCPHostSession, XRCPHostPairing))
+connectXRCPHost drg XRCPHostPairing {caKey, caCert, idPrivKey, knownHost} appInfo = do
   -- start TLS connection
-  inv <- mkInvitation host
+  (host, port) <- pure undefined
+  (inv, keys) <- liftIO $ mkHostSession host port
   r <- newEmptyTMVarIO
   -- wait for TLS connection, possibly start multicast if knownHost is not Nothing
   client <- pure undefined
   pure (inv, client, r)
+  where
+    mkHostSession :: TransportHost -> Word16 -> IO (XRCPInvitation, XRCPHostPrivateKeys)
+    mkHostSession host port = do
+      let XRCPAppInfo {app, appv, device} = appInfo
+      ts <- getSystemTime
+      (skey, sessPrivKey) <- C.generateKeyPair'
+      (kem, kemPrivKey) <- sntrup761Keypair drg
+      (dh, dhPrivKey) <- C.generateKeyPair'
+      let inv =
+            XRCPInvitation
+              { ca = undefined, -- fingerprint caCert
+                host,
+                port,
+                v = supportedXRCPVRange,
+                app,
+                appv,
+                device,
+                ts,
+                skey,
+                idkey = C.publicKey idPrivKey,
+                kem,
+                dh
+              }
+          keys = XRCPHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
+      pure (inv, keys)
 
-mkInvitation :: XRCPHostPairing -> ExceptT XRCPError IO XRCPInvitation
-mkInvitation = undefined
+cancelHostClient :: XRCPHostClient -> IO ()
+cancelHostClient = undefined
 
-cancelClient :: XRCPHostClient -> IO ()
-cancelClient = undefined
+data XRCPCtrlClient = XRCPCtrlClient
+  { async :: Async ()
+  }
 
-newXRCPCtrlPairing :: XRCPInvitation -> ExceptT XRCPError IO XRCPCtrlPairing
-newXRCPCtrlPairing inv@XRCPInvitation {ca} = do
-  caKey <- pure undefined
-  caCert <- pure undefined
-  idSigKey <- pure undefined
-  prevCtrlKeys <- mkPrevCtrlKeys inv
-  pure XRCPCtrlPairing
-    { caKey,
-      caCert,
-      ctrlCAFingerprint = ca,
-      prevCtrlKeys
-    }
+-- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
+connectXRCPCtrl :: XRCPInvitation -> Maybe XRCPCtrlPairing -> ExceptT XRCPError IO (XRCPCtrlClient, TMVar (XRCPCtrlSession, XRCPCtrlPairing))
+connectXRCPCtrl inv pairing_ = do
+  (ct, sess, pairing) <- mkCtrlPairing inv pairing_
+  -- start client connection to TLS
+  r <- newEmptyTMVarIO
+  client <- pure undefined
+  pure (client, r)
 
-type ConfirmSession = Bool -> IO ()
+mkCtrlPairing :: XRCPInvitation -> Maybe XRCPCtrlPairing -> ExceptT XRCPError IO (KEMCiphertext, XRCPCtrlSession, XRCPCtrlPairing)
+mkCtrlPairing inv@XRCPInvitation {ca, idkey} pairing_ = do
+  (ct, pairing) <- maybe newCtrlPairing updateCtrlPairing pairing_
+  session <- pure undefined
+  pure (ct, session, pairing)
+  where
+    newCtrlPairing :: ExceptT XRCPError IO (KEMCiphertext, XRCPCtrlPairing)
+    newCtrlPairing = do
+      caKey <- pure undefined
+      caCert <- pure undefined
+      let pairing =
+            XRCPCtrlPairing
+              { caKey,
+                caCert,
+                ctrlFingerprint = ca,
+                idPubKey = idkey,
+                storedSessKeys = undefined
+              }
+          ct = undefined
+      pure (ct, pairing)
+    updateCtrlPairing :: XRCPCtrlPairing -> ExceptT XRCPError IO (KEMCiphertext, XRCPCtrlPairing)
+    updateCtrlPairing XRCPCtrlPairing {ctrlFingerprint, idPubKey}
+      | ca == ctrlFingerprint && idPubKey == idkey = undefined -- ok
+      | otherwise = undefined -- error
 
 -- The application should save updated XRCPHostPairing after user confirmation of the session
 -- TMVar resolves when TLS is connected
-connectXRCPCtrl :: NonEmpty XRCPCtrlPairing -> ExceptT XRCPError IO (TMVar (XRCPCtrlSession, XRCPCtrlPairing, ConfirmSession))
-connectXRCPCtrl = undefined
+connectKnownXRCPCtrl :: NonEmpty XRCPCtrlPairing -> ExceptT XRCPError IO (XRCPCtrlClient, TMVar (XRCPCtrlSession, XRCPCtrlPairing))
+connectKnownXRCPCtrl = undefined
+
+confirmCtrlSession :: XRCPCtrlClient -> Bool -> IO ()
+confirmCtrlSession = undefined
 
 -- | Long-term part of controller (desktop) connection to host (mobile)
 data XRCPHostPairing = XRCPHostPairing
   { caKey :: C.APrivateSignKey,
     caCert :: C.SignedCertificate,
-    idSigKey :: C.PrivateKeyEd25519,
+    idPrivKey :: C.PrivateKeyEd25519,
     knownHost :: Maybe KnownHostPairing
   }
 
 data KnownHostPairing = KnownHostPairing
-  { hostCAFingerprint :: C.KeyHash, -- this is only changed in the first session, long-term identity of connected remote host
-    prevHostKeys :: PrevHostSessionKeys
+  { hostFingerprint :: C.KeyHash, -- this is only changed in the first session, long-term identity of connected remote host
+    storedSessKeys :: StoredHostSessionKeys
   }
 
-data PrevHostSessionKeys = PrevHostSessionKeys
+data StoredHostSessionKeys = StoredHostSessionKeys
   { hostDHPublicKey :: C.PublicKeyX25519, -- sent by host in HELLO block. Matches one of the DH keys in XRCPCtrlPairing
     kemSharedKey :: KEMSharedKey
   }
@@ -88,14 +153,21 @@ data PrevHostSessionKeys = PrevHostSessionKeys
 data XRCPCtrlPairing = XRCPCtrlPairing
   { caKey :: C.APrivateSignKey,
     caCert :: C.SignedCertificate,
-    ctrlCAFingerprint :: C.KeyHash, -- long-term identity of connected remote controller
-    prevCtrlKeys :: PrevCtrlSessionKeys
+    ctrlFingerprint :: C.KeyHash, -- long-term identity of connected remote controller
+    idPubKey :: C.PublicKeyEd25519,
+    storedSessKeys :: StoredCtrlSessionKeys
   }
 
-data PrevCtrlSessionKeys = PrevCtrlSessionKeys
+data StoredCtrlSessionKeys = StoredCtrlSessionKeys
   { dhPrivateKey :: C.PrivateKeyX25519,
     prevDHPrivateKey :: Maybe C.PrivateKeyX25519,
     kemSharedKey :: KEMSharedKey
+  }
+
+data XRCPHostPrivateKeys = XRCPHostPrivateKeys
+  { sessPrivKey :: C.PrivateKeyEd25519,
+    kemPrivKey :: KEMSecretKey,
+    dhPrivKey :: C.PrivateKeyX25519
   }
 
 -- Connected session with Host
@@ -118,17 +190,17 @@ prepareHostSession = undefined
 
 data XRCPCtrlSession = XRCPCtrlSession
   { tls :: TLS,
-    sessionKeys :: CtrlSessionKeys
+    sessionKeys :: CtrlSessKeys
   }
 
-data CtrlSessionKeys = CtrlSessionKeys
+data CtrlSessKeys = CtrlSessKeys
   { key :: KEMHybridSecret,
     idPrivKey :: C.PublicKeyEd25519,
     sessPrivKey :: C.PublicKeyEd25519
   }
 
 -- cryptography
-prepareCtrlSession :: TVar ChaChaDRG -> XRCPCtrlPairing -> XRCPInvitation -> IO (CtrlSessionKeys, XRCPCtrlPairing)
+prepareCtrlSession :: TVar ChaChaDRG -> XRCPCtrlPairing -> XRCPInvitation -> IO (CtrlSessKeys, XRCPCtrlPairing)
 prepareCtrlSession = undefined
 
 data XRCPEncryptedHello = XRCPEncryptedHello
@@ -143,45 +215,3 @@ data XRCPHelloBody = XRCPHelloBody
     device :: Text,
     appVersion :: Version
   }
-
-
--- ```abnf
--- helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
--- unpaddedSize = 2*2 OCTET
--- pad = <pad block size to 16384 bytes>
--- kemCiphertext = length base64url
--- ```
-
--- Controller decrypts (including the first session) and validates the received hello block:
--- - Chosen versions are supported (must be within offered ranges).
--- - CA fingerprint matches the one presented in TLS handshake and the previous sessions - in subsequent sessions TLS connection should be rejected if the fingerprint is different.
-
--- JTD schema for the encrypted part of hello block:
-
--- ```json
--- {
---   "definitions": {
---     "version": {
---       "type": "string",
---       "metadata": {
---         "format": "[0-9]+"
---       }
---     },
---     "base64url": {
---       "type": "string",
---       "metadata": {
---         "format": "base64url"
---       }
---     }
---   },
---   "properties": {
---     "v": {"ref": "version"},
---     "ca": {"ref": "base64url"},
---   },
---   "optionalProperties": {
---     "device": {"type": "string"},
---     "appVersion": {"ref": "version"}
---   },
---   "additionalProperties": true
--- }
--- ```
