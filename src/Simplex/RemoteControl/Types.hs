@@ -30,7 +30,7 @@ data RCErrorType
   = RCEInternal {internalErr :: String}
   | RCEIdentity
   | RCETLSStartFailed
-  | RCECtrlException {ctrlError :: String}
+  | RCEException {ctrlError :: String}
   | RCECtrlAuth
   | RCECtrlNotFound
   | RCEVersion
@@ -44,7 +44,7 @@ instance StrEncoding RCErrorType where
     RCEInternal err -> "INTERNAL " <> B.pack err
     RCEIdentity -> "IDENTITY"
     RCETLSStartFailed -> "CTRL_TLS_START"
-    RCECtrlException err -> "CTRL_EXCEPTION " <> B.pack err
+    RCEException err -> "EXCEPTION " <> B.pack err
     RCECtrlAuth -> "CTRL_AUTH"
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
     RCEVersion -> "VERSION"
@@ -56,7 +56,7 @@ instance StrEncoding RCErrorType where
       "INTERNAL" -> RCEInternal . B.unpack <$> (A.space *> A.takeByteString)
       "IDENTITY" -> pure RCEIdentity
       "CTRL_TLS_START" -> pure RCETLSStartFailed
-      "CTRL_EXCEPTION" -> RCECtrlException . B.unpack <$> (A.space *> A.takeByteString)
+      "EXCEPTION" -> RCEException . B.unpack <$> (A.space *> A.takeByteString)
       "CTRL_AUTH" -> pure RCECtrlAuth
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
       "VERSION" -> pure RCEVersion
