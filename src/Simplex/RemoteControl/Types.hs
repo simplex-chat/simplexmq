@@ -13,8 +13,9 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System (SystemTime, getSystemTime)
 import qualified Network.TLS as TLS
 import qualified Simplex.Messaging.Crypto as C
@@ -23,6 +24,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
+import Simplex.Messaging.Util (safeDecodeUtf8)
 import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import UnliftIO
 
@@ -41,29 +43,33 @@ data RCErrorType
 
 instance StrEncoding RCErrorType where
   strEncode = \case
-    RCEInternal err -> "INTERNAL " <> B.pack err
+    RCEInternal err -> "INTERNAL" <> text err
     RCEIdentity -> "IDENTITY"
     RCETLSStartFailed -> "CTRL_TLS_START"
-    RCEException err -> "EXCEPTION " <> B.pack err
+    RCEException err -> "EXCEPTION" <> text err
     RCECtrlAuth -> "CTRL_AUTH"
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
     RCEVersion -> "VERSION"
     RCEDecrypt -> "DECRYPT"
     RCELargeMsg -> "LARGE_MSG"
-    RCESyntax err -> "SYNTAX " <> B.pack err
+    RCESyntax err -> "SYNTAX" <> text err
+    where
+      text = (" " <>) . encodeUtf8 . T.pack
   strP =
     A.takeTill (== ' ') >>= \case
-      "INTERNAL" -> RCEInternal . B.unpack <$> (A.space *> A.takeByteString)
+      "INTERNAL" -> RCEInternal <$> textP
       "IDENTITY" -> pure RCEIdentity
       "CTRL_TLS_START" -> pure RCETLSStartFailed
-      "EXCEPTION" -> RCEException . B.unpack <$> (A.space *> A.takeByteString)
+      "EXCEPTION" -> RCEException <$> textP
       "CTRL_AUTH" -> pure RCECtrlAuth
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
       "VERSION" -> pure RCEVersion
       "DECRYPT" -> pure RCEDecrypt
       "LARGE_MSG" -> pure RCELargeMsg
-      "SYNTAX" -> RCESyntax . B.unpack <$> (A.space *> A.takeByteString)
+      "SYNTAX" -> RCESyntax <$> textP
       _ -> fail "bad RCErrorType"
+    where
+      textP = T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
 
 -- * Discovery
 

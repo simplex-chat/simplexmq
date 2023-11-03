@@ -1534,7 +1534,7 @@ instance StrEncoding AgentErrorType where
       <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
-      <|> "INTERNAL " *> (INTERNAL . B.unpack <$> A.takeByteString)
+      <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
       <|> "INACTIVE" $> INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
@@ -1551,7 +1551,7 @@ instance StrEncoding AgentErrorType where
     AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> B.pack e
+    INTERNAL e -> "INTERNAL " <> bshow e
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack

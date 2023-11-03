@@ -9,7 +9,6 @@
 module Simplex.RemoteControl.Client where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent.Async (Async)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -22,7 +21,6 @@ import Data.Default (def)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (getSystemTime)
-import Data.Word (Word16)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.Socket (PortNumber)
@@ -41,7 +39,6 @@ import Simplex.RemoteControl.Discovery (startTLSServer)
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import UnliftIO
-import UnliftIO.STM
 
 currentRCVersion :: Version
 currentRCVersion = 1
