@@ -8,6 +8,7 @@ import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import Simplex.Messaging.Crypto
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 
 -- Hybrid shared secret for crypto_box is defined as SHA256(DHSecret || KEMSharedKey),
@@ -23,6 +24,7 @@ kcbDecrypt (KEMHybridSecret secret) = sbDecrypt_ secret
 kcbEncrypt :: KEMHybridSecret -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 kcbEncrypt (KEMHybridSecret secret) = sbEncrypt_ secret
 
-kemHybridSecret :: DhSecret 'X25519 -> KEMSharedKey -> KEMHybridSecret
-kemHybridSecret (DhSecretX25519 k1) (KEMSharedKey k2) =
-  KEMHybridSecret $ BA.convert (hash $ BA.convert k1 <> k2 :: Digest SHA256)
+kemHybridSecret :: PublicKeyX25519 -> PrivateKeyX25519 -> KEMSharedKey -> KEMHybridSecret
+kemHybridSecret k pk (KEMSharedKey kem) =
+  let DhSecretX25519 dh = C.dh' k pk
+   in KEMHybridSecret $ BA.convert (hash $ BA.convert dh <> kem :: Digest SHA256)

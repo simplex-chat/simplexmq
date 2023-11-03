@@ -9,17 +9,16 @@
 module Simplex.RemoteControl.Invitation where
 
 import Control.Monad (unless)
+import qualified Data.Aeson as J
 import Data.Aeson.TH (deriveJSON)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
-import Data.Maybe (isJust)
-import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8Lenient, encodeUtf8)
+import qualified Data.ByteString.Lazy as LB
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16, Word32)
 import Network.HTTP.Types (parseSimpleQuery)
-import Network.HTTP.Types.URI (SimpleQuery, renderQuery, urlDecode)
+import Network.HTTP.Types.URI (SimpleQuery, renderSimpleQuery, urlDecode)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey)
 import Simplex.Messaging.Encoding (Encoding (..))
@@ -57,7 +56,7 @@ data RCInvitation = RCInvitation
   }
 
 instance StrEncoding RCInvitation where
-  strEncode RCInvitation {ca, host, port, v, app, appv, device, ts, skey, idkey, kem, dh} =
+  strEncode RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh} =
     mconcat
       [ "RC://",
         strEncode ca,
@@ -66,22 +65,20 @@ instance StrEncoding RCInvitation where
         ":",
         strEncode port,
         "#/?",
-        renderQuery False $ filter (isJust . snd) query
+        renderSimpleQuery False query
       ]
     where
       query =
-        [ ("ca", Just $ strEncode ca),
-          ("host", Just $ strEncode host),
-          ("port", Just $ strEncode port),
-          ("v", Just $ strEncode v),
-          ("app", Just $ encodeUtf8 app),
-          ("appv", Just $ strEncode appv),
-          ("device", Just $ encodeUtf8 device),
-          ("ts", Just $ strEncode ts),
-          ("skey", Just $ strEncode skey),
-          ("idkey", Just $ strEncode idkey),
-          ("kem", Just $ strEncode kem),
-          ("dh", Just $ strEncode dh)
+        [ ("ca", strEncode ca),
+          ("host", strEncode host),
+          ("port", strEncode port),
+          ("v", strEncode v),
+          ("app", LB.toStrict $ J.encode app),
+          ("ts", strEncode ts),
+          ("skey", strEncode skey),
+          ("idkey", strEncode idkey),
+          ("kem", strEncode kem),
+          ("dh", strEncode dh)
         ]
 
   strP = do
@@ -95,15 +92,13 @@ instance StrEncoding RCInvitation where
 
     q <- parseSimpleQuery <$> A.takeWhile (/= ' ')
     v <- requiredP q "v" strDecode
-    app <- requiredP q "app" $ pure . decodeUtf8Lenient . urlDecode True
-    appv <- requiredP q "appv" strDecode
-    device <- requiredP q "device" $ pure . decodeUtf8Lenient . urlDecode True
+    app <- requiredP q "app" $ J.eitherDecodeStrict . urlDecode True
     ts <- requiredP q "ts" $ strDecode . urlDecode True
     skey <- requiredP q "skey" strDecode
     idkey <- requiredP q "idkey" strDecode
     kem <- requiredP q "kem" strDecode
     dh <- requiredP q "dh" strDecode
-    pure RCInvitation {ca, host, port, v, app, appv, device, ts, skey, idkey, kem, dh}
+    pure RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh}
 
 data RCSignedInvitation = RCSignedInvitation
   { invitation :: RCInvitation,
@@ -180,24 +175,20 @@ instance Encoding RCEncryptedInvitation where
 
 sessionRCInvitation ::
   -- | App information
-  (Text, VersionRange) ->
-  -- | Device name
-  Text ->
+  J.Value ->
   -- | Long-term identity key
   C.PublicKeyEd25519 ->
   CtrlSessionKeys ->
   -- | Service address
   (TransportHost, Word16) ->
   RCInvitation
-sessionRCInvitation (app, appv) device idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
+sessionRCInvitation app idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
   RCInvitation
     { ca,
       host,
       port,
       v = mkVersionRange 1 1,
       app,
-      appv,
-      device,
       ts,
       skey = C.publicKey sSigKey,
       idkey,
