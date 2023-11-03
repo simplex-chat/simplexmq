@@ -1,10 +1,14 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.RemoteControl.Client where
 
 import Control.Concurrent.Async (Async)
-import Control.Monad.Except (ExceptT)
+import Control.Monad
+import Control.Monad.Except (ExceptT, throwError)
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString (ByteString)
@@ -13,126 +17,202 @@ import Data.Text (Text)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret)
+import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret, kcbDecrypt, kemHybridSecret)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Transport (TLS)
 import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Transport.Credentials (genCredentials)
 import Simplex.Messaging.Version (Version, VersionRange, mkVersionRange)
-import Simplex.RemoteControl.Invitation (XRCPInvitation (..))
+import Simplex.RemoteControl.Invitation (RCInvitation (..))
 import UnliftIO (TVar, newEmptyTMVarIO)
 import UnliftIO.STM (TMVar)
 
-currentXRCPVersion :: Version
-currentXRCPVersion = 1
+currentRCVersion :: Version
+currentRCVersion = 1
 
-supportedXRCPVRange :: VersionRange
-supportedXRCPVRange = mkVersionRange 1 currentXRCPVersion
+supportedRCVRange :: VersionRange
+supportedRCVRange = mkVersionRange 1 currentRCVersion
 
-data XRCPAppInfo = XRCPAppInfo
-  { app :: Text,
-    appv :: VersionRange,
-    device :: Text
-  }
+data RCErrorType = RCEInternal String | RCEBadHelloFingerprint
 
-data XRCPError
+newRCHostPairing :: IO RCHostPairing
+newRCHostPairing = do
+  ((_, caKey), caCert) <- genCredentials Nothing (-25, 24 * 999999) "ca"
+  (_, idPrivKey) <- C.generateKeyPair'
+  pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
-newXRCPHostPairing :: ExceptT XRCPError IO XRCPHostPairing
-newXRCPHostPairing = do
-  caKey <- pure undefined
-  caCert <- pure undefined
-  idPrivKey <- pure undefined
-  pure XRCPHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
-
-data XRCPHostClient = XRCPHostClient
+data RCHostClient = RCHostClient
   { async :: Async ()
   }
 
-connectXRCPHost :: TVar ChaChaDRG -> XRCPHostPairing -> XRCPAppInfo -> ExceptT XRCPError IO (XRCPInvitation, XRCPHostClient, TMVar (XRCPHostSession, XRCPHostPairing))
-connectXRCPHost drg XRCPHostPairing {caKey, caCert, idPrivKey, knownHost} appInfo = do
+connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+connectRCHost drg RCHostPairing {caKey, caCert, idPrivKey, knownHost} appInfo = do
   -- start TLS connection
   (host, port) <- pure undefined
   (inv, keys) <- liftIO $ mkHostSession host port
   r <- newEmptyTMVarIO
   -- wait for TLS connection, possibly start multicast if knownHost is not Nothing
-  client <- pure undefined
+  client <- do
+    -- get hello block 16384
+    -- (HostSessKeys, RCHelloBody, RCHostPairing) <- prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostPrivateKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
+    -- putTMVar r
+    pure undefined
   pure (inv, client, r)
   where
-    mkHostSession :: TransportHost -> Word16 -> IO (XRCPInvitation, XRCPHostPrivateKeys)
+    mkHostSession :: TransportHost -> Word16 -> IO (RCInvitation, RCHostPrivateKeys)
     mkHostSession host port = do
-      let XRCPAppInfo {app, appv, device} = appInfo
       ts <- getSystemTime
       (skey, sessPrivKey) <- C.generateKeyPair'
       (kem, kemPrivKey) <- sntrup761Keypair drg
       (dh, dhPrivKey) <- C.generateKeyPair'
       let inv =
-            XRCPInvitation
+            RCInvitation
               { ca = undefined, -- fingerprint caCert
                 host,
                 port,
-                v = supportedXRCPVRange,
-                app,
-                appv,
-                device,
+                v = supportedRCVRange,
+                app = appInfo,
                 ts,
                 skey,
                 idkey = C.publicKey idPrivKey,
                 kem,
                 dh
               }
-          keys = XRCPHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
+          keys = RCHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
       pure (inv, keys)
 
-cancelHostClient :: XRCPHostClient -> IO ()
+cancelHostClient :: RCHostClient -> IO ()
 cancelHostClient = undefined
 
-data XRCPCtrlClient = XRCPCtrlClient
+prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostPrivateKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
+prepareHostSession
+  tlsHostFingerprint
+  pairing@RCHostPairing {idPrivKey, knownHost = knownHost_}
+  RCHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
+  RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} = do
+    kemSharedKey <- liftIO $ sntrup761Dec kemCiphertext kemPrivKey
+    let key = kemHybridSecret (C.dh' dhPubKey dhPrivKey) kemSharedKey
+    hello@RCHelloBody {ca} <- liftEitherWith rcError $ parseAll rcHelloP =<< kcbDecrypt key nonce encryptedBody
+    -- TODO: validate that version in range
+    let keys = HostSessKeys {key, idPrivKey, sessPrivKey}
+        storedSessKeys = StoredHostSessionKeys {hostDHPublicKey = dhPubKey, kemSharedKey}
+    knownHost' <- updateKnownHost ca storedSessKeys
+    pure (keys, hello, pairing {knownHost = Just knownHost'})
+    where
+      updateKnownHost :: C.KeyHash -> StoredHostSessionKeys -> ExceptT RCErrorType IO KnownHostPairing
+      updateKnownHost ca storedSessKeys = case knownHost_ of
+        Just h -> do
+          unless (h.hostFingerprint == tlsHostFingerprint) $
+            throwError $
+              RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
+          unless (ca == tlsHostFingerprint) $ throwError RCEBadHelloFingerprint
+          pure (h :: KnownHostPairing) {storedSessKeys}
+        Nothing -> pure KnownHostPairing {hostFingerprint = ca, storedSessKeys}
+
+data RCCtrlClient = RCCtrlClient
   { async :: Async ()
   }
 
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
-connectXRCPCtrl :: XRCPInvitation -> Maybe XRCPCtrlPairing -> ExceptT XRCPError IO (XRCPCtrlClient, TMVar (XRCPCtrlSession, XRCPCtrlPairing))
-connectXRCPCtrl inv pairing_ = do
-  (ct, sess, pairing) <- mkCtrlPairing inv pairing_
-  -- start client connection to TLS
-  r <- newEmptyTMVarIO
-  client <- pure undefined
-  pure (client, r)
-
-mkCtrlPairing :: XRCPInvitation -> Maybe XRCPCtrlPairing -> ExceptT XRCPError IO (KEMCiphertext, XRCPCtrlSession, XRCPCtrlPairing)
-mkCtrlPairing inv@XRCPInvitation {ca, idkey} pairing_ = do
-  (ct, pairing) <- maybe newCtrlPairing updateCtrlPairing pairing_
-  session <- pure undefined
-  pure (ct, session, pairing)
+connectNewRCCtrl :: TVar ChaChaDRG -> RCInvitation -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectNewRCCtrl drg inv@RCInvitation {ca, idkey, kem} = do
+  (ct, pairing) <- newCtrlPairing
+  connectRCCtrl_ pairing inv ct
   where
-    newCtrlPairing :: ExceptT XRCPError IO (KEMCiphertext, XRCPCtrlPairing)
+    newCtrlPairing :: ExceptT RCErrorType IO (KEMCiphertext, RCCtrlPairing)
     newCtrlPairing = do
-      caKey <- pure undefined
-      caCert <- pure undefined
+      ((_, caKey), caCert) <- liftIO $ genCredentials Nothing (-25, 24 * 999999) "ca"
+      (_, dhPrivateKey) <- liftIO C.generateKeyPair'
+      (ct, kemSharedKey) <- liftIO $ sntrup761Enc drg kem
       let pairing =
-            XRCPCtrlPairing
+            RCCtrlPairing
               { caKey,
                 caCert,
                 ctrlFingerprint = ca,
                 idPubKey = idkey,
-                storedSessKeys = undefined
+                storedSessKeys = StoredCtrlSessionKeys {dhPrivateKey, kemSharedKey},
+                prevStoredSessKeys = Nothing
               }
-          ct = undefined
       pure (ct, pairing)
-    updateCtrlPairing :: XRCPCtrlPairing -> ExceptT XRCPError IO (KEMCiphertext, XRCPCtrlPairing)
-    updateCtrlPairing XRCPCtrlPairing {ctrlFingerprint, idPubKey}
+
+connectKnownRCCtrl :: RCCtrlPairing -> RCInvitation -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectKnownRCCtrl RCCtrlPairing {ctrlFingerprint, idPubKey} inv@RCInvitation {ca} = do
+  (ct, pairing) <- updateCtrlPairing
+  connectRCCtrl_ pairing inv ct
+  where
+    updateCtrlPairing :: ExceptT RCErrorType IO (KEMCiphertext, RCCtrlPairing)
+    updateCtrlPairing
       | ca == ctrlFingerprint && idPubKey == idkey = undefined -- ok
       | otherwise = undefined -- error
 
--- The application should save updated XRCPHostPairing after user confirmation of the session
--- TMVar resolves when TLS is connected
-connectKnownXRCPCtrl :: NonEmpty XRCPCtrlPairing -> ExceptT XRCPError IO (XRCPCtrlClient, TMVar (XRCPCtrlSession, XRCPCtrlPairing))
-connectKnownXRCPCtrl = undefined
+connectRCCtrl_ :: RCCtrlPairing -> RCInvitation -> KEMCiphertext -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectRCCtrl_ pairing inv ct = do
+  r <- newEmptyTMVarIO
+  client <- do
+    -- start client connection to TLS
+    -- (CtrlSessKeys, RCEncryptedHello, RCCtrlPairing) <- prepareCtrlSession :: RCCtrlPairing -> RCInvitation -> IO (CtrlSessKeys, RCEncryptedHello, RCCtrlPairing)
+    -- putTMVar r
+    pure undefined
+  pure (client, r)
 
-confirmCtrlSession :: XRCPCtrlClient -> Bool -> IO ()
+-- cryptography
+prepareCtrlSession :: TVar ChaChaDRG -> RCInvitation -> J.Value -> KEMCiphertext -> IO (CtrlSessKeys, RCEncryptedHello, RCCtrlPairing)
+prepareCtrlSession
+  drg
+  RCCtrlPairing {caKey, caCert, ctrlFingerprint, idPubKey, storedSessKeys = StoredCtrlSessionKeys {dhPrivateKey, kemSharedKey}}
+  RCInvitation {
+    ca, -- :: C.KeyHash,
+    skey, -- :: C.PublicKeyEd25519,
+    idkey, -- :: C.PublicKeyEd25519,
+    kem, -- :: KEMPublicKey,
+    dh
+   }
+   hostAppInfo
+   kemCiphertext = do
+    let v = compatibleVersion
+    let key = kemHybridSecret (C.dh' dhPrivateKey dh) kemSharedKey
+    -- session, fingerprint
+    -- import Data.X509.Validation (Fingerprint (..), getFingerprint)
+    let Fingerprint rootFP = getFingerprint root X509.HashSHA256
+    let hello = RCHelloBody {v, ca = ?, app = hostAppInfo}
+    nonce <- C.pseudoRandomCbNonce drg
+    encryptedBody <- kcbEncrypt key nonce (smpEncode hello)
+    let sessKeys =
+          CtrlSessKeys
+            { key,
+              idPubKey,
+              sessPubKey = skey
+            }
+        hello =
+          RCEncryptedHello
+            { dhPubKey = C.publicKey dhPrivateKey,
+              kemCiphertext,
+              nonce :: C.CbNonce, -- TODO make random
+              encryptedBody :: ByteString
+            }
+        pairing' =
+          RCCtrlPairing
+            { caKey :: C.APrivateSignKey,
+              caCert :: C.SignedCertificate,
+              ctrlFingerprint :: C.KeyHash, -- long-term identity of connected remote controller
+              idPubKey :: C.PublicKeyEd25519,
+              storedSessKeys :: StoredCtrlSessionKeys,
+              prevStoredSessKeys :: Maybe StoredCtrlSessionKeys
+            }
+    pure (sessKeys, hello, pairing')
+
+-- The application should save updated RCHostPairing after user confirmation of the session
+-- TMVar resolves when TLS is connected
+connectKnownRCCtrlMulticast :: NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectKnownRCCtrlMulticast = do
+  undefined
+
+-- application should call this function when TMVar resolves
+confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()
 confirmCtrlSession = undefined
 
 -- | Long-term part of controller (desktop) connection to host (mobile)
-data XRCPHostPairing = XRCPHostPairing
+data RCHostPairing = RCHostPairing
   { caKey :: C.APrivateSignKey,
     caCert :: C.SignedCertificate,
     idPrivKey :: C.PrivateKeyEd25519,
@@ -145,73 +225,65 @@ data KnownHostPairing = KnownHostPairing
   }
 
 data StoredHostSessionKeys = StoredHostSessionKeys
-  { hostDHPublicKey :: C.PublicKeyX25519, -- sent by host in HELLO block. Matches one of the DH keys in XRCPCtrlPairing
+  { hostDHPublicKey :: C.PublicKeyX25519, -- sent by host in HELLO block. Matches one of the DH keys in RCCtrlPairing
     kemSharedKey :: KEMSharedKey
   }
 
 -- | Long-term part of host (mobile) connection to controller (desktop)
-data XRCPCtrlPairing = XRCPCtrlPairing
+data RCCtrlPairing = RCCtrlPairing
   { caKey :: C.APrivateSignKey,
     caCert :: C.SignedCertificate,
     ctrlFingerprint :: C.KeyHash, -- long-term identity of connected remote controller
     idPubKey :: C.PublicKeyEd25519,
-    storedSessKeys :: StoredCtrlSessionKeys
+    storedSessKeys :: StoredCtrlSessionKeys,
+    prevStoredSessKeys :: Maybe StoredCtrlSessionKeys
   }
 
 data StoredCtrlSessionKeys = StoredCtrlSessionKeys
   { dhPrivateKey :: C.PrivateKeyX25519,
-    prevDHPrivateKey :: Maybe C.PrivateKeyX25519,
     kemSharedKey :: KEMSharedKey
   }
 
-data XRCPHostPrivateKeys = XRCPHostPrivateKeys
+data RCHostPrivateKeys = RCHostPrivateKeys
   { sessPrivKey :: C.PrivateKeyEd25519,
     kemPrivKey :: KEMSecretKey,
     dhPrivKey :: C.PrivateKeyX25519
   }
 
 -- Connected session with Host
-data XRCPHostSession = XRCPHostSession
+data RCHostSession = RCHostSession
   { tls :: TLS,
-    sessionKeys :: HostSessionKeys
+    sessionKeys :: HostSessKeys
   }
 
-data HostSessionKeys = HostSessionKeys
+data HostSessKeys = HostSessKeys
   { key :: KEMHybridSecret,
     idPrivKey :: C.PrivateKeyEd25519,
     sessPrivKey :: C.PrivateKeyEd25519
   }
 
--- cryptography
-prepareHostSession :: TVar ChaChaDRG -> XRCPHostPairing -> XRCPEncryptedHello -> IO (HostSessionKeys, XRCPHelloBody, XRCPHostPairing)
-prepareHostSession = undefined
+-- Host: RCCtrlPairing + RCInvitation => (RCCtrlSession, RCCtrlPairing)
 
--- Host: XRCPCtrlPairing + XRCPInvitation => (XRCPCtrlSession, XRCPCtrlPairing)
-
-data XRCPCtrlSession = XRCPCtrlSession
+data RCCtrlSession = RCCtrlSession
   { tls :: TLS,
     sessionKeys :: CtrlSessKeys
   }
 
 data CtrlSessKeys = CtrlSessKeys
   { key :: KEMHybridSecret,
-    idPrivKey :: C.PublicKeyEd25519,
-    sessPrivKey :: C.PublicKeyEd25519
+    idPubKey :: C.PublicKeyEd25519,
+    sessPubKey :: C.PublicKeyEd25519
   }
 
--- cryptography
-prepareCtrlSession :: TVar ChaChaDRG -> XRCPCtrlPairing -> XRCPInvitation -> IO (CtrlSessKeys, XRCPCtrlPairing)
-prepareCtrlSession = undefined
-
-data XRCPEncryptedHello = XRCPEncryptedHello
+data RCEncryptedHello = RCEncryptedHello
   { dhPubKey :: C.PublicKeyX25519,
     kemCiphertext :: KEMCiphertext,
+    nonce :: C.CbNonce,
     encryptedBody :: ByteString
   }
 
-data XRCPHelloBody = XRCPHelloBody
+data RCHelloBody = RCHelloBody
   { v :: Version,
     ca :: C.KeyHash,
-    device :: Text,
-    appVersion :: Version
+    app :: J.Value
   }

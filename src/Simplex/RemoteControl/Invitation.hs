@@ -29,7 +29,7 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import Simplex.RemoteControl.Types
 
-data XRCPInvitation = XRCPInvitation
+data RCInvitation = RCInvitation
   { -- | CA TLS certificate fingerprint of the controller.
     --
     -- This is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
@@ -38,12 +38,8 @@ data XRCPInvitation = XRCPInvitation
     port :: Word16,
     -- | Supported version range for remote control protocol
     v :: VersionRange,
-    -- | Application name
-    app :: Text,
-    -- | App version
-    appv :: VersionRange,
-    -- | Device name
-    device :: Text,
+    -- | Application information
+    app :: J.Value,
     -- | Session start time in seconds since epoch
     ts :: SystemTime,
     -- | Session Ed25519 public key used to verify the announcement and commands
@@ -60,10 +56,10 @@ data XRCPInvitation = XRCPInvitation
     dh :: C.PublicKeyX25519
   }
 
-instance StrEncoding XRCPInvitation where
-  strEncode XRCPInvitation {ca, host, port, v, app, appv, device, ts, skey, idkey, kem, dh} =
+instance StrEncoding RCInvitation where
+  strEncode RCInvitation {ca, host, port, v, app, appv, device, ts, skey, idkey, kem, dh} =
     mconcat
-      [ "xrcp://",
+      [ "RC://",
         strEncode ca,
         "@",
         strEncode host,
@@ -89,7 +85,7 @@ instance StrEncoding XRCPInvitation where
         ]
 
   strP = do
-    _ <- A.string "xrcp://"
+    _ <- A.string "RC://"
     ca <- strP
     _ <- A.char '@'
     host <- A.takeWhile (/= ':') >>= either fail pure . strDecode . urlDecode True
@@ -107,17 +103,17 @@ instance StrEncoding XRCPInvitation where
     idkey <- requiredP q "idkey" strDecode
     kem <- requiredP q "kem" strDecode
     dh <- requiredP q "dh" strDecode
-    pure XRCPInvitation {ca, host, port, v, app, appv, device, ts, skey, idkey, kem, dh}
+    pure RCInvitation {ca, host, port, v, app, appv, device, ts, skey, idkey, kem, dh}
 
-data XRCPSignedInvitation = XRCPSignedInvitation
-  { invitation :: XRCPInvitation,
+data RCSignedInvitation = RCSignedInvitation
+  { invitation :: RCInvitation,
     ssig :: C.Signature 'C.Ed25519,
     idsig :: C.Signature 'C.Ed25519
   }
 
 -- | URL-encoded and signed for showing in QR code
-instance StrEncoding XRCPSignedInvitation where
-  strEncode XRCPSignedInvitation {invitation, ssig, idsig} =
+instance StrEncoding RCSignedInvitation where
+  strEncode RCSignedInvitation {invitation, ssig, idsig} =
     mconcat
       [ strEncode invitation,
         "&ssig=",
@@ -127,16 +123,16 @@ instance StrEncoding XRCPSignedInvitation where
       ]
 
   strP = do
-    (xrcpURL, invitation) <- A.match strP
-    sigs <- case B.breakSubstring "&ssig=" xrcpURL of
+    (url, invitation) <- A.match strP
+    sigs <- case B.breakSubstring "&ssig=" url of
       (_, sigs) | B.null sigs -> fail "missing signatures"
       (_, sigs) -> pure $ parseSimpleQuery $ B.drop 1 sigs
     ssig <- requiredP sigs "ssig" strDecode
     idsig <- requiredP sigs "idsig" strDecode
-    pure XRCPSignedInvitation {invitation, ssig, idsig}
+    pure RCSignedInvitation {invitation, ssig, idsig}
 
-signInviteURL :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> XRCPInvitation -> XRCPSignedInvitation
-signInviteURL sKey idKey invitation = XRCPSignedInvitation {invitation, ssig, idsig}
+signInviteURL :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> RCSignedInvitation
+signInviteURL sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsig}
   where
     inviteUrl = strEncode invitation
     ssig =
@@ -149,12 +145,12 @@ signInviteURL sKey idKey invitation = XRCPSignedInvitation {invitation, ssig, id
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
 
-verifySignedInviteURL :: XRCPSignedInvitation -> Either SignatureError ()
-verifySignedInviteURL XRCPSignedInvitation {invitation, ssig, idsig} = do
+verifySignedInviteURL :: RCSignedInvitation -> Either SignatureError ()
+verifySignedInviteURL RCSignedInvitation {invitation, ssig, idsig} = do
   unless (C.verify aSKey aSSig inviteURL) $ Left BadSessionSignature
   unless (C.verify aIdKey aIdSig inviteURLS) $ Left BadIdentitySignature
   where
-    XRCPInvitation {skey, idkey} = invitation
+    RCInvitation {skey, idkey} = invitation
     inviteURL = strEncode invitation
     inviteURLS = mconcat [inviteURL, "&ssig=", strEncode ssig]
     aSKey = C.APublicVerifyKey C.SEd25519 skey
@@ -162,13 +158,13 @@ verifySignedInviteURL XRCPSignedInvitation {invitation, ssig, idsig} = do
     aIdKey = C.APublicVerifyKey C.SEd25519 idkey
     aIdSig = C.ASignature C.SEd25519 idsig
 
-data XRCPEncryptedInvitation = XRCPEncryptedInvitation
+data RCEncryptedInvitation = RCEncryptedInvitation
   { dhPubKey :: C.PublicKeyX25519,
     encryptedInvitation :: ByteString
   }
 
-instance Encoding XRCPEncryptedInvitation where
-  smpEncode XRCPEncryptedInvitation {dhPubKey, encryptedInvitation} =
+instance Encoding RCEncryptedInvitation where
+  smpEncode RCEncryptedInvitation {dhPubKey, encryptedInvitation} =
     mconcat
       [ smpEncode dhPubKey,
         smpEncode @Word32 $ fromIntegral (B.length encryptedInvitation),
@@ -178,11 +174,11 @@ instance Encoding XRCPEncryptedInvitation where
     dhPubKey <- smpP
     len <- fromIntegral @Word32 <$> smpP
     encryptedInvitation <- A.take len
-    pure XRCPEncryptedInvitation {dhPubKey, encryptedInvitation}
+    pure RCEncryptedInvitation {dhPubKey, encryptedInvitation}
 
 -- * Utils
 
-sessionXRCPInvitation ::
+sessionRCInvitation ::
   -- | App information
   (Text, VersionRange) ->
   -- | Device name
@@ -192,9 +188,9 @@ sessionXRCPInvitation ::
   CtrlSessionKeys ->
   -- | Service address
   (TransportHost, Word16) ->
-  XRCPInvitation
-sessionXRCPInvitation (app, appv) device idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
-  XRCPInvitation
+  RCInvitation
+sessionRCInvitation (app, appv) device idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
+  RCInvitation
     { ca,
       host,
       port,
@@ -220,4 +216,4 @@ data SignatureError
   | BadIdentitySignature
   deriving (Eq, Show)
 
-$(deriveJSON defaultJSON ''XRCPInvitation)
+$(deriveJSON defaultJSON ''RCInvitation)

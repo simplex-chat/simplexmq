@@ -69,14 +69,12 @@ OOB announcement is a URI with this syntax:
 sessionAddressUri = "xrcp://" encodedCAFingerprint "@" host ":" port "#/?" qsParams
 encodedCAFingerprint = base64url
 qsParams = param *("&" param)
-param = versionRangeParam / appNameParam / appVerionRangeParam / deviceNameParam / sessionTsParam /
+param = versionRangeParam / appInfoParam / sessionTsParam /
         sessPubKeyParam / idPubKeyParam / kemEncKeyParam / dhPubKeyParam /
         sessSignatureParam / idSignatureParam
 versionRangeParam = "v=" (versionParam / (versionParam "-" versionParam))
 versionParam = 1*DIGIT
-appNameParam = "app=" 1*(ALPHA / DIGIT / "-" / "_") ; optional
-appVerionRangeParam = "appv=" (versionParam / (versionParam "-" versionParam)) ; optional
-deviceNameParam = "device=" 1*(ALPHA / DIGIT / "-" / "_") ; optional
+appInfoParam = "app=" escapedJSON ; optional
 sessionTsParam = "ts=" 1*DIGIT
 sessPubKeyParam = "skey=" base64url ; required
 idPubKeyParam = "idkey=" base64url ; required
@@ -126,9 +124,7 @@ addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
     "kem": {"ref": "base64url"}
   },
   "optionalProperties": {
-    "app": {"type": "string"},
-    "appv": {"ref": "versionRange"},
-    "device": {"type": "string"}
+    "app": {"type": "string"}
   },
   "additionalProperties": true
 }
@@ -193,8 +189,7 @@ JTD schema for the encrypted part of hello block:
     "ca": {"ref": "base64url"},
   },
   "optionalProperties": {
-    "device": {"type": "string"},
-    "appVersion": {"ref": "version"}
+    "app": {"type": "string"}
   },
   "additionalProperties": true
 }
