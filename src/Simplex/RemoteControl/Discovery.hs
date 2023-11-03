@@ -117,8 +117,8 @@ runAnnouncer app_ device_ idSigKey sk (host, port) = error "runAnnouncer: make i
 --       UDP.send sock $ smpEncode (signAnnounce announceKey announce)
 --       threadDelay 1000000
 --       loop announce {announceCounter = announceCounter announce + 1} sock
-startTLSServer :: MonadUnliftIO m => TMVar (Maybe N.PortNumber) -> TLS.Credentials -> (Transport.TLS -> IO ()) -> m (Async ())
-startTLSServer started credentials server = async . liftIO $ do
+startTLSServer :: MonadUnliftIO m => TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
+startTLSServer started credentials hooks server = async . liftIO $ do
   startedOk <- newEmptyTMVarIO
   bracketOnError (startTCPServer startedOk "0") (\_e -> void . atomically $ tryPutTMVar started Nothing) $ \socket ->
     ifM
@@ -134,7 +134,7 @@ startTLSServer started credentials server = async . liftIO $ do
       def
         { TLS.serverWantClientCert = False,
           TLS.serverShared = def {TLS.sharedCredentials = credentials},
-          TLS.serverHooks = def,
+          TLS.serverHooks = hooks,
           TLS.serverSupported = supportedParameters
         }
 

@@ -21,6 +21,8 @@ import UnliftIO
 
 data RCErrorType
   = RCEInternal String
+  | RCETLSStartFailed
+  | RCECtrlException SomeException
   | RCEBadHostIdentity
   | RCEBadCtrlIdentity
   | RCEBadCtrlSignature

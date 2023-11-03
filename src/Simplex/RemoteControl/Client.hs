@@ -19,24 +19,29 @@ import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LB
-import Data.List.NonEmpty (NonEmpty)
+import Data.Default (def)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
+import Network.Socket (PortNumber)
+import qualified Network.TLS as TLS
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret, kcbDecrypt, kcbEncrypt, kemHybridSecret)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON)
-import Simplex.Messaging.Transport (TLS)
+import Simplex.Messaging.Transport (TLS, cGet)
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Transport.Credentials (genCredentials)
+import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Util (eitherToMaybe, liftEitherWith, ($>>=))
 import Simplex.Messaging.Version
+import Simplex.RemoteControl.Discovery (startTLSServer)
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
+import UnliftIO
 import UnliftIO.STM
 
 currentRCVersion :: Version
@@ -66,35 +71,68 @@ newRCHostPairing = do
   pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
 data RCHostClient = RCHostClient
-  { async :: Async ()
+  { tlsServer :: Async (),
+    dropSession :: TMVar ()
   }
 
-connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
-connectRCHost drg RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
-  -- start TLS connection
-  (host, port) <- pure undefined
-  (inv, keys) <- liftIO $ mkHostSession host port
+connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> TransportHost -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo host = do
   r <- newEmptyTMVarIO
-  -- wait for TLS connection, possibly start multicast if knownHost is not Nothing
-  client <- do
-    -- get hello block 16384
-    -- (HostSessKeys, RCHelloBody, RCHostPairing) <- prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostPrivateKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
-    -- putTMVar r
-    pure undefined
-  pure (inv, client, r)
+  startedPort <- newEmptyTMVarIO
+  hpk <- newEmptyTMVarIO
+
+  tlsCreds <- liftIO genTLSCredentials
+  dropSession <- newEmptyTMVarIO
+  tlsFinished <- newEmptyTMVarIO
+  tlsFingerprint <- newEmptyTMVarIO
+  tlsServer <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks tlsFingerprint) $ \tls -> do
+    res <- handleAny (pure . Left . RCECtrlException) . runExceptT $ do
+      hostPrivateKeys <- atomically $ takeTMVar hpk -- a roundabout way to get server's own assigned port. NB: take is used, and the keys are consumed by the first connection
+      helloBlock <- liftIO $ cGet tls 16384
+      encryptedHello <- liftEitherWith RCESyntax $ smpDecode helloBlock
+      hostCA <- atomically $ takeTMVar tlsFingerprint
+      (hostSessKeys, rcHelloBody, rcHostPairing) <- prepareHostSession hostCA pairing hostPrivateKeys encryptedHello
+      atomically $ putTMVar r (RCHostSession {tls, sessionKeys = hostSessKeys}, rcHelloBody, rcHostPairing)
+      -- can use `RCHostSession` until `dropSession` is signalled
+      atomically $ takeTMVar dropSession
+    atomically $ putTMVar tlsFinished res
+
+  -- wait for the port and prepare session keys
+  (inv, hostPrivateKeys) <- atomically (readTMVar startedPort) >>= maybe (throwError RCETLSStartFailed) mkHostSession
+  -- put keys for the incoming connection
+  atomically $ putTMVar hpk hostPrivateKeys
+  -- return invitation immediately
+  pure (inv, RCHostClient {tlsServer, dropSession}, r)
   where
-    mkHostSession :: TransportHost -> Word16 -> IO (RCInvitation, RCHostPrivateKeys)
-    mkHostSession host port = do
+    genTLSCredentials :: IO TLS.Credentials
+    genTLSCredentials = do
+      let caCreds = (C.signatureKeyPair caKey, caCert)
+      leaf <- genCredentials (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
+      pure . snd $ tlsCredentials (leaf :| [caCreds])
+    tlsHooks :: TMVar C.KeyHash -> TLS.ServerHooks
+    tlsHooks tlsClientCert =
+      def
+        { TLS.onUnverifiedClientCert = pure True,
+          TLS.onClientCertificate = \(X509.CertificateChain chain) ->
+            case chain of
+              [_leaf, ca] -> do
+                let Fingerprint fp = getFingerprint ca X509.HashSHA256
+                atomically $ putTMVar tlsClientCert $ C.KeyHash fp
+                pure TLS.CertificateUsageAccept
+              _ ->
+                pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
+        }
+    mkHostSession :: MonadIO m => PortNumber -> m (RCInvitation, RCHostPrivateKeys)
+    mkHostSession portNum = liftIO $ do
       ts <- getSystemTime
       (skey, sessPrivKey) <- C.generateKeyPair'
       (kem, kemPrivKey) <- sntrup761Keypair drg
       (dh, dhPrivKey) <- C.generateKeyPair'
-      let Fingerprint fp = getFingerprint caCert X509.HashSHA256
-          inv =
+      let inv =
             RCInvitation
-              { ca = C.KeyHash fp,
+              { ca = certFingerprint caCert,
                 host,
-                port,
+                port = fromIntegral portNum,
                 v = supportedRCVRange,
                 app = ctrlAppInfo,
                 ts,
@@ -105,6 +143,11 @@ connectRCHost drg RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInf
               }
           keys = RCHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
       pure (inv, keys)
+
+certFingerprint :: X509.SignedCertificate -> C.KeyHash
+certFingerprint caCert = C.KeyHash fp
+  where
+    Fingerprint fp = getFingerprint caCert X509.HashSHA256
 
 cancelHostClient :: RCHostClient -> IO ()
 cancelHostClient = undefined
@@ -152,7 +195,7 @@ connectRCCtrl drg inv@RCInvitation {ca, idkey, kem} pairing_ = do
   where
     newCtrlPairing :: IO (KEMCiphertext, RCCtrlPairing)
     newCtrlPairing = do
-      ((_, caKey), caCert) <- genCredentials Nothing (-25, 24 * 999999) "ca"
+      ((_, caKey), caCert) <- genCredentials Nothing (0, 24 * 999999) "ca"
       (ct, storedSessKeys) <- generateCtrlSessKeys drg kem
       let pairing = RCCtrlPairing {caKey, caCert, ctrlFingerprint = ca, idPubKey = idkey, storedSessKeys, prevStoredSessKeys = Nothing}
       pure (ct, pairing)
@@ -302,3 +345,7 @@ data RCEncryptedHello = RCEncryptedHello
     nonce :: C.CbNonce,
     encryptedBody :: ByteString
   }
+
+instance Encoding RCEncryptedHello where
+  smpEncode RCEncryptedHello {} = error "TODO: RCEncryptedHello.smpEncode"
+  smpP = error "TODO: RCEncryptedHello.smpP"
