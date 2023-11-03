@@ -140,10 +140,9 @@ signInviteURL sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsi
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
 
-verifySignedInviteURL :: RCSignedInvitation -> Either SignatureError ()
-verifySignedInviteURL RCSignedInvitation {invitation, ssig, idsig} = do
-  unless (C.verify aSKey aSSig inviteURL) $ Left BadSessionSignature
-  unless (C.verify aIdKey aIdSig inviteURLS) $ Left BadIdentitySignature
+verifySignedInviteURL :: RCSignedInvitation -> Bool
+verifySignedInviteURL RCSignedInvitation {invitation, ssig, idsig} =
+  C.verify aSKey aSSig inviteURL && C.verify aIdKey aIdSig inviteURLS
   where
     RCInvitation {skey, idkey} = invitation
     inviteURL = strEncode invitation
@@ -152,6 +151,9 @@ verifySignedInviteURL RCSignedInvitation {invitation, ssig, idsig} = do
     aSSig = C.ASignature C.SEd25519 ssig
     aIdKey = C.APublicVerifyKey C.SEd25519 idkey
     aIdSig = C.ASignature C.SEd25519 idsig
+
+verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
+verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} = undefined
 
 data RCEncryptedInvitation = RCEncryptedInvitation
   { dhPubKey :: C.PublicKeyX25519,

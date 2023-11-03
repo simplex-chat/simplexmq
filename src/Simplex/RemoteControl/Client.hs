@@ -30,7 +30,8 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Transport.Credentials (genCredentials)
 import Simplex.Messaging.Util (liftEitherWith)
 import Simplex.Messaging.Version
-import Simplex.RemoteControl.Invitation (RCInvitation (..))
+import Simplex.RemoteControl.Invitation
+import Simplex.RemoteControl.Types
 import UnliftIO.STM
 
 currentRCVersion :: Version
@@ -44,14 +45,6 @@ xrcpBlockSize = 16384
 
 helloBlockSize :: Int
 helloBlockSize = 12288
-
-data RCErrorType
-  = RCEInternal String
-  | RCEBadHostIdentity
-  | RCEBadCtrlIdentity
-  | RCEUnsupportedVersion
-  | RCECrypto C.CryptoError
-  | RCESyntax String
 
 data RCHelloBody = RCHelloBody
   { v :: Version,
@@ -142,8 +135,8 @@ data RCCtrlClient = RCCtrlClient
   }
 
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
-connectNewRCCtrl :: TVar ChaChaDRG -> RCInvitation -> Maybe RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-connectNewRCCtrl drg inv@RCInvitation {ca, idkey, kem} pairing_ = do
+connectRCCtrl :: TVar ChaChaDRG -> RCInvitation -> Maybe RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectRCCtrl drg inv@RCInvitation {ca, idkey, kem} pairing_ = do
   (ct, pairing) <- maybe (liftIO newCtrlPairing) updateCtrlPairing pairing_
   connectRCCtrl_ pairing inv ct
   where
@@ -198,9 +191,29 @@ prepareCtrlSession
 
 -- The application should save updated RCHostPairing after user confirmation of the session
 -- TMVar resolves when TLS is connected
-connectKnownRCCtrlMulticast :: NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-connectKnownRCCtrlMulticast = do
-  undefined
+connectKnownRCCtrlMulticast :: TVar ChaChaDRG -> NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectKnownRCCtrlMulticast drg known = do
+  -- start multicast
+  -- receive packets
+  let loop = undefined
+  (pairing, inv) <- loop $ receive >>= parse >>= findRCCtrlPairing known
+  connectRCCtrl drg inv pairing
+
+findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncryptedInvitation -> IO (Maybe (RCCtrlPairing, RCInvitation))
+findRCCtrlPairing known RCEncryptedInvitation {dhPubKey, encryptedInvitation} =
+  --
+  eitherToMaybe <$> runExceptT find
+  where
+    find = do
+      decrypt (toList known) encryptedEnvitation >>= mapM (verifyIdentity >=> verifySignature)
+
+    -- (pairing, signedInv@RCSignedInvitation {invitation = RCInvitation {ca, idkey}}) <-
+    -- unless (verifySignedInvitationMulticast signedInv) $ throwError RCEBadCtrlSignature
+    -- pure (pairing, invitation)
+    decrypt :: [RCCtrlPairing] -> IO (Maybe (RCCtrlPairing, RCSignedInvitation))
+    decrypt [] = pure Nothing
+    decrypt (RCCtrlPairing {} : rest) = do
+      pure undefined
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()

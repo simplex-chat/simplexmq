@@ -88,8 +88,9 @@ base64url = <base64url encoded binary> ; RFC4648, section 5
 Multicast announcement is a binary encoded packet with this syntax:
 
 ```abnf
-sessionAddressPacket = dhPubKey length encrypted(serviceAddress sessSignature idSignature)
+sessionAddressPacket = dhPubKey nonce length encrypted(serviceAddress sessSignature idSignature)
 dhPubKey = length x509encoded
+nonce = length *OCTET
 serviceAddress = length addressJSON
 sessSignature = length *OCTET ; signs the preceding announcement packet
 idSignature = length *OCTET ; signs the preceding announcement packet including sessSignature

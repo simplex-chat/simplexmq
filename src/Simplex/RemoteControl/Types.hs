@@ -19,6 +19,15 @@ import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import UnliftIO
 
+data RCErrorType
+  = RCEInternal String
+  | RCEBadHostIdentity
+  | RCEBadCtrlIdentity
+  | RCEBadCtrlSignature
+  | RCEUnsupportedVersion
+  | RCECrypto C.CryptoError
+  | RCESyntax String
+
 -- * Discovery
 
 ipProbeVersionRange :: VersionRange
@@ -61,17 +70,19 @@ newCtrlSessionKeys rng (caKey, caCert) = do
   pure CtrlSessionKeys {ts, ca, credentials, sSigKey, dhKey, kem}
 
 data CtrlCryptoHandle = CtrlCryptoHandle
-  -- TODO
+
+-- TODO
 
 -- * Host
 
 data HostSessionKeys = HostSessionKeys
   { ca :: C.KeyHash
-    -- TODO
+  -- TODO
   }
 
 data HostCryptoHandle = HostCryptoHandle
-  -- TODO
+
+-- TODO
 
 -- * Utils
 
