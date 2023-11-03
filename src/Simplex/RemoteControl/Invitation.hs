@@ -8,20 +8,19 @@
 
 module Simplex.RemoteControl.Invitation where
 
-import Control.Monad (unless)
 import qualified Data.Aeson as J
-import Data.Aeson.TH (deriveJSON)
+import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Time.Clock.System (SystemTime)
-import Data.Word (Word16, Word32)
+import Data.Word (Word16)
 import Network.HTTP.Types (parseSimpleQuery)
 import Network.HTTP.Types.URI (SimpleQuery, renderSimpleQuery, urlDecode)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey)
-import Simplex.Messaging.Encoding (Encoding (..))
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -167,16 +166,10 @@ data RCEncryptedInvitation = RCEncryptedInvitation
 
 instance Encoding RCEncryptedInvitation where
   smpEncode RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation} =
-    mconcat
-      [ smpEncode dhPubKey,
-        smpEncode @Word32 $ fromIntegral (B.length encryptedInvitation),
-        encryptedInvitation
-      ]
+    smpEncode (dhPubKey, nonce, Tail encryptedInvitation)
   smpP = do
-    dhPubKey <- smpP
-    len <- fromIntegral @Word32 <$> smpP
-    encryptedInvitation <- A.take len
-    pure RCEncryptedInvitation {dhPubKey, encryptedInvitation}
+    (dhPubKey, nonce, Tail encryptedInvitation) <- smpP
+    pure RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation}
 
 -- * Utils
 
@@ -214,4 +207,4 @@ data SignatureError
   | BadIdentitySignature
   deriving (Eq, Show)
 
-$(deriveJSON defaultJSON ''RCInvitation)
+$(JQ.deriveJSON defaultJSON ''RCInvitation)

@@ -88,12 +88,14 @@ base64url = <base64url encoded binary> ; RFC4648, section 5
 Multicast announcement is a binary encoded packet with this syntax:
 
 ```abnf
-sessionAddressPacket = dhPubKey nonce length encrypted(serviceAddress sessSignature idSignature)
+sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize serviceAddress sessSignature idSignature pad)
 dhPubKey = length x509encoded
 nonce = length *OCTET
-serviceAddress = length addressJSON
+serviceAddress = largeLength serviceAddressJSON
 sessSignature = length *OCTET ; signs the preceding announcement packet
 idSignature = length *OCTET ; signs the preceding announcement packet including sessSignature
+length = 1*1 OCTET ; for binary data up to 255 bytes
+largeLength = 2*2 OCTET ; for binary data up to 65535 bytes
 ```
 
 addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
@@ -157,7 +159,7 @@ Hello block must contain:
 Hello block syntax:
   
 ```abnf
-helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext length encrypted(length helloBlockJSON) pad
+helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext encrypted(unpaddedSize helloBlockJSON pad) pad
 unpaddedSize = 2*2 OCTET
 pad = <pad block size to 16384 bytes>
 kemCiphertext = length base64url
