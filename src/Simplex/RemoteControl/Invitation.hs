@@ -117,6 +117,7 @@ instance StrEncoding RCSignedInvitation where
       ]
 
   strP = do
+    -- TODO this assumes some order or parameters, can be made independent
     (url, invitation) <- A.match strP
     sigs <- case B.breakSubstring "&ssig=" url of
       (_, sigs) | B.null sigs -> fail "missing signatures"
