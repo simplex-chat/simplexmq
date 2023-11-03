@@ -16,7 +16,6 @@ import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
-import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LB
 import Data.Default (def)
@@ -86,7 +85,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo h
   tlsFinished <- newEmptyTMVarIO
   tlsFingerprint <- newEmptyTMVarIO
   tlsServer <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks tlsFingerprint) $ \tls -> do
-    res <- handleAny (pure . Left . RCECtrlException) . runExceptT $ do
+    res <- handleAny (pure . Left . RCECtrlException . show) . runExceptT $ do
       hostPrivateKeys <- atomically $ takeTMVar hpk -- a roundabout way to get server's own assigned port. NB: take is used, and the keys are consumed by the first connection
       helloBlock <- liftIO $ cGet tls 16384
       encryptedHello <- liftEitherWith RCESyntax $ smpDecode helloBlock
@@ -160,9 +159,9 @@ prepareHostSession
   RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} = do
     kemSharedKey <- liftIO $ sntrup761Dec kemCiphertext kemPrivKey
     let key = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
-    helloBody <- liftEitherWith RCECrypto $ kcbDecrypt key nonce encryptedBody
+    helloBody <- liftEitherWith (const RCEDecrypt) $ kcbDecrypt key nonce encryptedBody
     hello@RCHelloBody {v, ca} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
-    unless (isCompatible v supportedRCVRange) $ throwError RCEUnsupportedVersion
+    unless (isCompatible v supportedRCVRange) $ throwError RCEVersion
     let keys = HostSessKeys {key, idPrivKey, sessPrivKey}
         storedSessKeys = StoredHostSessKeys {hostDHPublicKey = dhPubKey, kemSharedKey}
     knownHost' <- updateKnownHost ca storedSessKeys
@@ -174,17 +173,17 @@ prepareHostSession
           unless (h.hostFingerprint == tlsHostFingerprint) $
             throwError $
               RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
-          unless (ca == tlsHostFingerprint) $ throwError RCEBadHostIdentity
+          unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
           pure (h :: KnownHostPairing) {storedSessKeys}
         Nothing -> pure KnownHostPairing {hostFingerprint = ca, storedSessKeys}
 
 data RCCtrlClient = RCCtrlClient
-  { async :: Async ()
+  { action :: Async ()
   }
 
 connectRCCtrlURI :: TVar ChaChaDRG -> RCSignedInvitation -> Maybe RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
 connectRCCtrlURI drg signedInv@RCSignedInvitation {invitation} pairing_ = do
-  unless (verifySignedInviteURI signedInv) $ throwError RCEBadCtrlSignature
+  unless (verifySignedInviteURI signedInv) $ throwError RCECtrlAuth
   connectRCCtrl drg invitation pairing_
 
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
@@ -201,7 +200,7 @@ connectRCCtrl drg inv@RCInvitation {ca, idkey, kem} pairing_ = do
       pure (ct, pairing)
     updateCtrlPairing :: RCCtrlPairing -> ExceptT RCErrorType IO (KEMCiphertext, RCCtrlPairing)
     updateCtrlPairing pairing@RCCtrlPairing {ctrlFingerprint, idPubKey, storedSessKeys = prevSSK} = do
-      unless (ca == ctrlFingerprint && idPubKey == idkey) $ throwError RCEBadCtrlIdentity
+      unless (ca == ctrlFingerprint && idPubKey == idkey) $ throwError RCEIdentity
       (ct, storedSessKeys) <- liftIO $ generateCtrlSessKeys drg kem
       let pairing' = pairing {storedSessKeys, prevStoredSessKeys = Just prevSSK}
       pure (ct, pairing')
@@ -231,13 +230,13 @@ prepareCtrlSession
   hostAppInfo
   kemCiphertext =
     case compatibleVersion v supportedRCVRange of
-      Nothing -> throwError RCEUnsupportedVersion
+      Nothing -> throwError RCEVersion
       Just (Compatible v') -> do
         let Fingerprint fp = getFingerprint caCert X509.HashSHA256
             helloBody = RCHelloBody {v = v', ca = C.KeyHash fp, app = hostAppInfo}
             hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
         nonce <- liftIO . atomically $ C.pseudoRandomCbNonce drg
-        encryptedBody <- liftEitherWith RCECrypto $ kcbEncrypt hybridKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
+        encryptedBody <- liftEitherWith (const RCELargeMsg) $ kcbEncrypt hybridKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
         let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
             encHello = RCEncryptedHello {dhPubKey = C.publicKey dhPrivKey, kemCiphertext, nonce, encryptedBody}
         pure (sessKeys, encHello)
@@ -245,20 +244,20 @@ prepareCtrlSession
 -- The application should save updated RCHostPairing after user confirmation of the session
 -- TMVar resolves when TLS is connected
 connectKnownRCCtrlMulticast :: TVar ChaChaDRG -> NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-connectKnownRCCtrlMulticast drg known = do
+connectKnownRCCtrlMulticast drg pairings = do
   -- start multicast
   -- receive packets
   let loop = undefined -- catch and log errors, fail on timeout
       receive = undefined
       parse = undefined
-  (pairing, inv) <- loop $ receive >>= parse >>= findRCCtrlPairing known
+  (pairing, inv) <- loop $ receive >>= parse >>= findRCCtrlPairing pairings
   connectRCCtrl drg inv pairing
 
 findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncryptedInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCInvitation)
-findRCCtrlPairing known RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation} = do
-  (pairing, signedInvStr) <- liftEither $ decrypt (L.toList known)
+findRCCtrlPairing pairings RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation} = do
+  (pairing, signedInvStr) <- liftEither $ decrypt (L.toList pairings)
   signedInv@RCSignedInvitation {invitation} <- liftEitherWith RCESyntax $ smpDecode signedInvStr
-  unless (verifySignedInvitationMulticast signedInv) $ throwError RCEBadCtrlSignature
+  unless (verifySignedInvitationMulticast signedInv) $ throwError RCECtrlAuth
   pure (pairing, invitation)
   where
     decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)

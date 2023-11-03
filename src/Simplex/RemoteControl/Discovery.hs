@@ -93,7 +93,8 @@ announceCtrl runCtrl tasks started app_ device_ idkey sk@CtrlSessionKeys {ca, cr
           logInfo $ "Starting announcer for " <> ident <> " at " <> tshow (host, givenPort)
           runAnnouncer app_ device_ idkey sk (host, givenPort) -- (sigKey, announce {serviceAddress = (host, fromIntegral givenPort)})
   tasks `registerAsync` announcer
-  tlsServer <- startTLSServer started credentials $ \tls -> do
+  let hooks = undefined -- TODO
+  tlsServer <- startTLSServer started credentials hooks $ \tls -> do
     logInfo $ "Incoming connection for " <> ident
     cancel announcer
     let ctrlCryptoHandle = CtrlCryptoHandle -- TODO
