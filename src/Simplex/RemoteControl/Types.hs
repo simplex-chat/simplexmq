@@ -24,6 +24,7 @@ data RCErrorType
   | RCEBadHostIdentity
   | RCEBadCtrlIdentity
   | RCEBadCtrlSignature
+  | RCECtrlNotFound
   | RCEUnsupportedVersion
   | RCECrypto C.CryptoError
   | RCESyntax String

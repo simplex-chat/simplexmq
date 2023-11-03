@@ -3,20 +3,24 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.RemoteControl.Client where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.Async (Async)
 import Control.Monad
-import Control.Monad.Except (ExceptT, throwError)
+import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LB
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Data.X509 as X509
@@ -24,11 +28,12 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret, kcbDecrypt, kcbEncrypt, kemHybridSecret)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport (TLS)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Transport.Credentials (genCredentials)
-import Simplex.Messaging.Util (liftEitherWith)
+import Simplex.Messaging.Util (eitherToMaybe, liftEitherWith, ($>>=))
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
@@ -134,11 +139,16 @@ data RCCtrlClient = RCCtrlClient
   { async :: Async ()
   }
 
+connectRCCtrlURI :: TVar ChaChaDRG -> RCSignedInvitation -> Maybe RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectRCCtrlURI drg signedInv@RCSignedInvitation {invitation} pairing_ = do
+  unless (verifySignedInviteURI signedInv) $ throwError RCEBadCtrlSignature
+  connectRCCtrl drg invitation pairing_
+
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
 connectRCCtrl :: TVar ChaChaDRG -> RCInvitation -> Maybe RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
 connectRCCtrl drg inv@RCInvitation {ca, idkey, kem} pairing_ = do
   (ct, pairing) <- maybe (liftIO newCtrlPairing) updateCtrlPairing pairing_
-  connectRCCtrl_ pairing inv ct
+  connectRCCtrl_ drg pairing inv ct
   where
     newCtrlPairing :: IO (KEMCiphertext, RCCtrlPairing)
     newCtrlPairing = do
@@ -159,8 +169,8 @@ generateCtrlSessKeys drg kemPublicKey = do
   (ct, kemSharedKey) <- sntrup761Enc drg kemPublicKey
   pure (ct, StoredCtrlSessKeys {dhPrivKey, kemSharedKey})
 
-connectRCCtrl_ :: RCCtrlPairing -> RCInvitation -> KEMCiphertext -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-connectRCCtrl_ pairing inv ct = do
+connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> KEMCiphertext -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectRCCtrl_ _drg _pairing _inv _ct = do
   r <- newEmptyTMVarIO
   client <- do
     -- start client connection to TLS
@@ -195,25 +205,28 @@ connectKnownRCCtrlMulticast :: TVar ChaChaDRG -> NonEmpty RCCtrlPairing -> Excep
 connectKnownRCCtrlMulticast drg known = do
   -- start multicast
   -- receive packets
-  let loop = undefined
+  let loop = undefined -- catch and log errors, fail on timeout
+      receive = undefined
+      parse = undefined
   (pairing, inv) <- loop $ receive >>= parse >>= findRCCtrlPairing known
   connectRCCtrl drg inv pairing
 
-findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncryptedInvitation -> IO (Maybe (RCCtrlPairing, RCInvitation))
-findRCCtrlPairing known RCEncryptedInvitation {dhPubKey, encryptedInvitation} =
-  --
-  eitherToMaybe <$> runExceptT find
+findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncryptedInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCInvitation)
+findRCCtrlPairing known RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation} = do
+  (pairing, signedInvStr) <- liftEither $ decrypt (L.toList known)
+  signedInv@RCSignedInvitation {invitation} <- liftEitherWith RCESyntax $ smpDecode signedInvStr
+  unless (verifySignedInvitationMulticast signedInv) $ throwError RCEBadCtrlSignature
+  pure (pairing, invitation)
   where
-    find = do
-      decrypt (toList known) encryptedEnvitation >>= mapM (verifyIdentity >=> verifySignature)
-
-    -- (pairing, signedInv@RCSignedInvitation {invitation = RCInvitation {ca, idkey}}) <-
-    -- unless (verifySignedInvitationMulticast signedInv) $ throwError RCEBadCtrlSignature
-    -- pure (pairing, invitation)
-    decrypt :: [RCCtrlPairing] -> IO (Maybe (RCCtrlPairing, RCSignedInvitation))
-    decrypt [] = pure Nothing
-    decrypt (RCCtrlPairing {} : rest) = do
-      pure undefined
+    decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)
+    decrypt [] = Left RCECtrlNotFound
+    decrypt (pairing@RCCtrlPairing {storedSessKeys, prevStoredSessKeys} : rest) =
+      let r = decrypt_ storedSessKeys <|> (decrypt_ =<< prevStoredSessKeys)
+       in maybe (decrypt rest) (Right . (pairing,)) r
+    decrypt_ :: StoredCtrlSessKeys -> Maybe ByteString
+    decrypt_ StoredCtrlSessKeys {dhPrivKey, kemSharedKey} =
+      let key = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
+       in eitherToMaybe $ kcbDecrypt key nonce encryptedInvitation
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()

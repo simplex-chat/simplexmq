@@ -140,8 +140,8 @@ signInviteURL sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsi
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
 
-verifySignedInviteURL :: RCSignedInvitation -> Bool
-verifySignedInviteURL RCSignedInvitation {invitation, ssig, idsig} =
+verifySignedInviteURI :: RCSignedInvitation -> Bool
+verifySignedInviteURI RCSignedInvitation {invitation, ssig, idsig} =
   C.verify aSKey aSSig inviteURL && C.verify aIdKey aIdSig inviteURLS
   where
     RCInvitation {skey, idkey} = invitation
@@ -152,16 +152,21 @@ verifySignedInviteURL RCSignedInvitation {invitation, ssig, idsig} =
     aIdKey = C.APublicVerifyKey C.SEd25519 idkey
     aIdSig = C.ASignature C.SEd25519 idsig
 
+instance Encoding RCSignedInvitation where
+  smpEncode RCSignedInvitation {} = error "TODO: RCSignedInvitation.smpEncode"
+  smpP = error "TODO: RCSignedInvitation.smpP"
+
 verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
 verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} = undefined
 
 data RCEncryptedInvitation = RCEncryptedInvitation
   { dhPubKey :: C.PublicKeyX25519,
+    nonce :: C.CbNonce,
     encryptedInvitation :: ByteString
   }
 
 instance Encoding RCEncryptedInvitation where
-  smpEncode RCEncryptedInvitation {dhPubKey, encryptedInvitation} =
+  smpEncode RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation} =
     mconcat
       [ smpEncode dhPubKey,
         smpEncode @Word32 $ fromIntegral (B.length encryptedInvitation),
