@@ -31,6 +31,7 @@ import UnliftIO
 data RCErrorType
   = RCEInternal {internalErr :: String}
   | RCEIdentity
+  | RCENoLocalAddress
   | RCETLSStartFailed
   | RCEException {ctrlError :: String}
   | RCECtrlAuth
@@ -45,6 +46,7 @@ instance StrEncoding RCErrorType where
   strEncode = \case
     RCEInternal err -> "INTERNAL" <> text err
     RCEIdentity -> "IDENTITY"
+    RCENoLocalAddress -> "NO_LOCAL_ADDR"
     RCETLSStartFailed -> "CTRL_TLS_START"
     RCEException err -> "EXCEPTION" <> text err
     RCECtrlAuth -> "CTRL_AUTH"
@@ -59,6 +61,7 @@ instance StrEncoding RCErrorType where
     A.takeTill (== ' ') >>= \case
       "INTERNAL" -> RCEInternal <$> textP
       "IDENTITY" -> pure RCEIdentity
+      "NO_LOCAL_ADDR" -> pure RCENoLocalAddress
       "CTRL_TLS_START" -> pure RCETLSStartFailed
       "EXCEPTION" -> RCEException <$> textP
       "CTRL_AUTH" -> pure RCECtrlAuth

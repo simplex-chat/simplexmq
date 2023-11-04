@@ -15,10 +15,12 @@ import Control.Monad
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.Default (def)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.String (IsString)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Word (Word16)
+import Network.Info (IPv4 (..), NetworkInterface (..), getNetworkInterfaces)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
@@ -46,8 +48,18 @@ pattern ANY_ADDR_V4 = "0.0.0.0"
 pattern DISCOVERY_PORT :: (IsString a, Eq a) => a
 pattern DISCOVERY_PORT = "5227"
 
-getLocalAddress :: MonadIO m => TMVar Int -> m (Maybe N.HostAddress)
-getLocalAddress subscribers = liftIO $ do
+getLocalAddress :: MonadIO m => m (Maybe TransportHost)
+getLocalAddress = listToMaybe . mapMaybe usable <$> liftIO getNetworkInterfaces
+  where
+    usable NetworkInterface {ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
+      (0, 0, 0, 0) -> Nothing -- "no" address
+      (255, 255, 255, 255) -> Nothing -- broadcast
+      (127, _, _, _) -> Nothing -- localhost
+      (169, 254, _, _) -> Nothing -- link-local
+      ok -> Just $ THIPv4 ok
+
+getLocalAddressMulticast :: MonadIO m => TMVar Int -> m (Maybe TransportHost)
+getLocalAddressMulticast subscribers = liftIO $ do
   probe <- mkIpProbe
   let bytes = smpEncode probe
   withListener subscribers $ \receiver ->
@@ -56,7 +68,7 @@ getLocalAddress subscribers = liftIO $ do
       let expect = do
             UDP.recvFrom receiver >>= \case
               (p, _) | p /= bytes -> expect
-              (_, UDP.ClientSockAddr (N.SockAddrInet _port host) _cmsg) -> pure host
+              (_, UDP.ClientSockAddr (N.SockAddrInet _port host) _cmsg) -> pure $ THIPv4 (N.hostAddressToTuple host)
               (_, UDP.ClientSockAddr _badAddr _) -> error "receiving from IPv4 socket"
       timeout 1000000 expect
 

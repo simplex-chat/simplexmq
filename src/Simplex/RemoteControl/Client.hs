@@ -35,7 +35,7 @@ import Simplex.Messaging.Transport.Client (TransportHost, defaultTransportClient
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Util (eitherToMaybe, liftEitherWith, ($>>=))
 import Simplex.Messaging.Version
-import Simplex.RemoteControl.Discovery (startTLSServer)
+import Simplex.RemoteControl.Discovery (getLocalAddress, startTLSServer)
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import UnliftIO
@@ -74,6 +74,7 @@ data RCHostClient = RCHostClient
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo = do
   r <- newEmptyTMVarIO
+  host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
   startedPort <- newEmptyTMVarIO
   hpk <- newEmptyTMVarIO
 
@@ -94,7 +95,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
     atomically $ putTMVar tlsFinished res
 
   -- wait for the port and prepare session keys
-  (inv, hostPrivateKeys) <- atomically (readTMVar startedPort) >>= maybe (throwError RCETLSStartFailed) mkHostSession
+  (inv, hostPrivateKeys) <- atomically (readTMVar startedPort) >>= maybe (throwError RCETLSStartFailed) (mkHostSession host)
   -- put keys for the incoming connection
   atomically $ putTMVar hpk hostPrivateKeys
   -- return invitation immediately
@@ -113,9 +114,8 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
-    mkHostSession :: MonadIO m => PortNumber -> m (RCInvitation, RCHostPrivateKeys)
-    mkHostSession portNum = liftIO $ do
-      host <- error "TODO: getServiceHost"
+    mkHostSession :: MonadIO m => TransportHost -> PortNumber -> m (RCInvitation, RCHostPrivateKeys)
+    mkHostSession host portNum = liftIO $ do
       ts <- getSystemTime
       (skey, sessPrivKey) <- C.generateKeyPair'
       (kem, kemPrivKey) <- sntrup761Keypair drg
