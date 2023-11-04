@@ -8,7 +8,22 @@
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module Simplex.RemoteControl.Client where
+module Simplex.RemoteControl.Client
+  ( RCHostPairing (..),
+    RCHostClient,
+    RCHostSession (..),
+    RCHelloBody (..),
+    newRCHostPairing,
+    connectRCHost,
+    cancelHostClient,
+    RCCtrlPairing (..),
+    RCCtrlClient,
+    RCCtrlSession (..),
+    connectRCCtrlURI,
+    connectKnownRCCtrlMulticast,
+    confirmCtrlSession,
+    cancelCtrlClient,
+  ) where
 
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
@@ -73,7 +88,7 @@ newRCHostPairing = do
 
 data RCHostClient = RCHostClient
   { action :: Async (),
-    dropSession :: TMVar ()
+    endSession :: TMVar ()
   }
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
@@ -83,31 +98,31 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   startedPort <- newEmptyTMVarIO
   hostKeys <- liftIO genHostKeys
   tlsCreds <- liftIO $ genTLSCredentials caKey caCert
-  dropSession <- newEmptyTMVarIO
+  endSession <- newEmptyTMVarIO
   tlsFinished <- newEmptyTMVarIO
-  tlsFingerprint <- newEmptyTMVarIO
-  action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks knownHost tlsFingerprint) $ \tls -> do
+  hostCAHash <- newEmptyTMVarIO
+  action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks knownHost hostCAHash) $ \tls -> do
     res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
       logDebug "Incoming TLS connection"
       encryptedHello <- receiveRCPacket tls
-      hostCA <- atomically $ takeTMVar tlsFingerprint
+      hostCA <- atomically $ takeTMVar hostCAHash
       logDebug "TLS fingerprint ready"
       (sessionKeys, helloBody, pairing') <- prepareHostSession hostCA pairing hostKeys encryptedHello
       logDebug "Prepared host session"
       atomically $ putTMVar r (RCHostSession {tls, sessionKeys}, helloBody, pairing')
-      -- can use `RCHostSession` until `dropSession` is signalled
+      -- can use `RCHostSession` until `endSession` is signalled
       logDebug "Holding session"
-      atomically $ takeTMVar dropSession
+      atomically $ takeTMVar endSession
     logDebug $ "TLS connection finished with " <> tshow res
     atomically $ putTMVar tlsFinished res
 
   -- wait for the port and prepare session keys
   portNum <- atomically $ readTMVar startedPort
   signedInv <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
-  pure (signedInv, RCHostClient {action, dropSession}, r)
+  pure (signedInv, RCHostClient {action, endSession}, r)
   where
     tlsHooks :: Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
-    tlsHooks knownHost_ tlsClientCert =
+    tlsHooks knownHost_ hostCAHash =
       def
         { TLS.onUnverifiedClientCert = pure True,
           TLS.onClientCertificate = \(X509.CertificateChain chain) ->
@@ -115,7 +130,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               [_leaf, ca] -> do
                 let Fingerprint fp = getFingerprint ca X509.HashSHA256
                     kh = C.KeyHash fp
-                atomically $ putTMVar tlsClientCert kh
+                atomically $ putTMVar hostCAHash kh
                 let accept = maybe True (\h -> h.hostFingerprint == kh) knownHost_
                 pure $ if accept then TLS.CertificateUsageAccept else TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
               _ ->
@@ -158,7 +173,9 @@ certFingerprint caCert = C.KeyHash fp
     Fingerprint fp = getFingerprint caCert X509.HashSHA256
 
 cancelHostClient :: RCHostClient -> IO ()
-cancelHostClient = undefined
+cancelHostClient RCHostClient {action, endSession} = do
+  atomically $ putTMVar endSession ()
+  uninterruptibleCancel action
 
 prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
 prepareHostSession
@@ -188,7 +205,7 @@ prepareHostSession
 data RCCtrlClient = RCCtrlClient
   { action :: Async (),
     confirmSession :: TMVar Bool,
-    dropSession :: TMVar ()
+    endSession :: TMVar ()
   }
 
 connectRCCtrlURI :: TVar ChaChaDRG -> RCSignedInvitation -> Maybe RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
@@ -226,7 +243,7 @@ connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, h
   r <- newEmptyTMVarIO
   tlsFinished <- newEmptyTMVarIO
   confirmSession <- newEmptyTMVarIO
-  dropSession <- newEmptyTMVarIO
+  endSession <- newEmptyTMVarIO
   let hostAppInfo = J.String "TODO: app info"
   (ctrlSessKeys, encryptedHello) <- prepareCtrlSession drg pairing inv hostAppInfo ct
   clientCredentials <-
@@ -241,10 +258,10 @@ connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, h
         atomically $ putTMVar r (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing)
         ifM
           (atomically $ takeTMVar confirmSession)
-          (atomically $ takeTMVar dropSession)
+          (atomically $ takeTMVar endSession)
           (pure ())
       atomically $ putTMVar tlsFinished res
-  pure (RCCtrlClient {action, confirmSession, dropSession}, r)
+  pure (RCCtrlClient {action, confirmSession, endSession}, r)
 
 sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
@@ -309,7 +326,12 @@ findRCCtrlPairing pairings RCEncryptedInvitation {dhPubKey, nonce, encryptedInvi
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()
-confirmCtrlSession = undefined
+confirmCtrlSession RCCtrlClient {confirmSession} = atomically . putTMVar confirmSession
+
+cancelCtrlClient :: RCCtrlClient -> IO ()
+cancelCtrlClient RCCtrlClient {action, endSession} = do
+  atomically $ putTMVar endSession ()
+  uninterruptibleCancel action
 
 -- | Long-term part of controller (desktop) connection to host (mobile)
 data RCHostPairing = RCHostPairing
