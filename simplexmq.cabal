@@ -194,6 +194,7 @@ library
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
@@ -258,6 +259,7 @@ executable ntf-server
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
@@ -323,6 +325,7 @@ executable smp-agent
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
@@ -388,6 +391,7 @@ executable smp-server
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
@@ -453,6 +457,7 @@ executable xftp
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
@@ -518,6 +523,7 @@ executable xftp-server
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
@@ -618,6 +624,7 @@ test-suite simplexmq-test
     , memory ==0.18.*
     , mtl ==2.3.*
     , network >=3.1.2.7 && <3.2
+    , network-info >=0.2 && <0.3
     , network-transport ==0.5.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17

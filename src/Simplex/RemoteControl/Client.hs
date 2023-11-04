@@ -71,8 +71,8 @@ data RCHostClient = RCHostClient
     dropSession :: TMVar ()
   }
 
-connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> TransportHost -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
-connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo host = do
+connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   startedPort <- newEmptyTMVarIO
   hpk <- newEmptyTMVarIO
@@ -115,6 +115,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo h
         }
     mkHostSession :: MonadIO m => PortNumber -> m (RCInvitation, RCHostPrivateKeys)
     mkHostSession portNum = liftIO $ do
+      host <- error "TODO: getServiceHost"
       ts <- getSystemTime
       (skey, sessPrivKey) <- C.generateKeyPair'
       (kem, kemPrivKey) <- sntrup761Keypair drg

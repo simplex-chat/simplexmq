@@ -159,7 +159,6 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, SubscriptionMode (..), UserProtocol, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
@@ -392,13 +391,13 @@ rcNewHostPairing :: MonadIO m => m RCHostPairing
 rcNewHostPairing = liftIO newRCHostPairing
 
 -- | start TLS server for remote host with optional multicast
-rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> TransportHost -> Bool -> m (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
-rcConnectHost c = withAgentEnv c .:: rcConnectHost'
+rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+rcConnectHost c = withAgentEnv c .:. rcConnectHost'
 
-rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> TransportHost -> Bool -> m (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
-rcConnectHost' pairing ctrlAppInfo host _multicast = do
+rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+rcConnectHost' pairing ctrlAppInfo _multicast = do
   drg <- asks random
-  liftError RCP $ connectRCHost drg pairing ctrlAppInfo host
+  liftError RCP $ connectRCHost drg pairing ctrlAppInfo
 
 -- | connect to remote controller via URI
 rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
