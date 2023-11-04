@@ -53,6 +53,7 @@ data RCInvitation = RCInvitation
     -- | Session X25519 DH key
     dh :: C.PublicKeyX25519
   }
+  deriving (Show)
 
 instance StrEncoding RCInvitation where
   strEncode RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh} =
@@ -104,6 +105,7 @@ data RCSignedInvitation = RCSignedInvitation
     ssig :: C.Signature 'C.Ed25519,
     idsig :: C.Signature 'C.Ed25519
   }
+  deriving (Show)
 
 -- | URL-encoded and signed for showing in QR code
 instance StrEncoding RCSignedInvitation where

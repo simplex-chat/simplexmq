@@ -391,10 +391,10 @@ rcNewHostPairing :: MonadIO m => m RCHostPairing
 rcNewHostPairing = liftIO newRCHostPairing
 
 -- | start TLS server for remote host with optional multicast
-rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
 rcConnectHost c = withAgentEnv c .:. rcConnectHost'
 
-rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
 rcConnectHost' pairing ctrlAppInfo _multicast = do
   drg <- asks random
   liftError RCP $ connectRCHost drg pairing ctrlAppInfo

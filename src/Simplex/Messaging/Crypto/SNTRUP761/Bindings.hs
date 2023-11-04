@@ -18,12 +18,16 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 
 newtype KEMPublicKey = KEMPublicKey ByteString
+  deriving (Show)
 
 newtype KEMSecretKey = KEMSecretKey ScrubbedBytes
+  deriving (Show)
 
 newtype KEMCiphertext = KEMCiphertext ByteString
+  deriving (Show)
 
 newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
+  deriving (Show)
 
 sntrup761Keypair :: TVar ChaChaDRG -> IO (KEMPublicKey, KEMSecretKey)
 sntrup761Keypair drg =

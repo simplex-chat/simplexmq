@@ -10,6 +10,7 @@
 module Simplex.RemoteControl.Client where
 
 import Control.Applicative ((<|>))
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -34,7 +35,7 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport (TLS, cGet, cPut)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, liftEitherWith)
+import Simplex.Messaging.Util (eitherToMaybe, ifM, liftEitherWith, tshow)
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Discovery (getLocalAddress, startTLSServer)
 import Simplex.RemoteControl.Invitation
@@ -58,6 +59,7 @@ data RCHelloBody = RCHelloBody
     ca :: C.KeyHash,
     app :: J.Value
   }
+  deriving (Show)
 
 $(JQ.deriveJSON defaultJSON ''RCHelloBody)
 
@@ -72,7 +74,7 @@ data RCHostClient = RCHostClient
     dropSession :: TMVar ()
   }
 
-connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
@@ -85,22 +87,30 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
   tlsFingerprint <- newEmptyTMVarIO
   action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks tlsFingerprint) $ \tls -> do
     res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
+      logDebug "Incoming TLS connection"
       hostPrivateKeys <- atomically $ takeTMVar hpk -- a roundabout way to get server's own assigned port. NB: take is used, and the keys are consumed by the first connection
+      logDebug "Host keys ready"
       helloBlock <- liftIO $ cGet tls 16384
+      logDebug "Got Hello block"
       encryptedHello <- liftEitherWith RCESyntax $ smpDecode helloBlock
+      logDebug "Parsed encrypted hello"
       hostCA <- atomically $ takeTMVar tlsFingerprint
+      logDebug "TLS fingerprint ready"
       (hostSessKeys, rcHelloBody, rcHostPairing) <- prepareHostSession hostCA pairing hostPrivateKeys encryptedHello
+      logDebug "Prepared host session"
       atomically $ putTMVar r (RCHostSession {tls, sessionKeys = hostSessKeys}, rcHelloBody, rcHostPairing)
       -- can use `RCHostSession` until `dropSession` is signalled
+      logDebug "Holding session"
       atomically $ takeTMVar dropSession
+    logDebug $ "TLS connection finished with " <> tshow res
     atomically $ putTMVar tlsFinished res
 
   -- wait for the port and prepare session keys
-  (inv, hostPrivateKeys) <- atomically (readTMVar startedPort) >>= maybe (throwError RCETLSStartFailed) (mkHostSession host)
+  (signedInv, hostPrivateKeys) <- atomically (readTMVar startedPort) >>= maybe (throwError RCETLSStartFailed) (mkHostSession host)
   -- put keys for the incoming connection
   atomically $ putTMVar hpk hostPrivateKeys
   -- return invitation immediately
-  pure (inv, RCHostClient {action, dropSession}, r)
+  pure (signedInv, RCHostClient {action, dropSession}, r)
   where
     tlsHooks :: TMVar C.KeyHash -> TLS.ServerHooks
     tlsHooks tlsClientCert =
@@ -115,7 +125,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
-    mkHostSession :: MonadIO m => TransportHost -> PortNumber -> m (RCInvitation, RCHostPrivateKeys)
+    mkHostSession :: MonadIO m => TransportHost -> PortNumber -> m (RCSignedInvitation, RCHostPrivateKeys)
     mkHostSession host portNum = liftIO $ do
       ts <- getSystemTime
       (skey, sessPrivKey) <- C.generateKeyPair'
@@ -135,7 +145,8 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
                 dh
               }
           keys = RCHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
-      pure (inv, keys)
+      let signedInv = signInviteURL sessPrivKey idPrivKey inv
+      pure (signedInv, keys)
 
 genTLSCredentials :: C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
 genTLSCredentials caKey caCert = do
