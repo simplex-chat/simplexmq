@@ -115,8 +115,9 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       tlsFinished <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
       pure RCHostClient {action = Nothing, startedPort, hostCAHash, endSession, tlsFinished}
+    runClient :: RCHostClient -> TMVar (RCHostSession, RCHelloBody, RCHostPairing) -> RCHostKeys -> IO (Async ())
     runClient RCHostClient {startedPort, hostCAHash, endSession, tlsFinished} r hostKeys = do
-      tlsCreds <- liftIO $ genTLSCredentials caKey caCert
+      tlsCreds <- genTLSCredentials caKey caCert
       startTLSServer startedPort tlsCreds (tlsHooks knownHost hostCAHash) $ \tls -> do
         res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
           logDebug "Incoming TLS connection"
