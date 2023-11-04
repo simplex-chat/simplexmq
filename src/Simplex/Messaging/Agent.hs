@@ -400,22 +400,22 @@ rcConnectHost' pairing ctrlAppInfo _multicast = do
   liftError RCP $ connectRCHost drg pairing ctrlAppInfo
 
 -- | connect to remote controller via URI
-rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-rcConnectCtrlURI c = withAgentEnv c .: rcConnectCtrlURI'
+rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlURI c = withAgentEnv c .:. rcConnectCtrlURI'
 
-rcConnectCtrlURI' :: AgentMonad m => RCSignedInvitation -> Maybe RCCtrlPairing -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-rcConnectCtrlURI' signedInv pairing_ = do
+rcConnectCtrlURI' :: AgentMonad m => RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlURI' signedInv pairing_ hostAppInfo = do
   drg <- asks random
-  liftError RCP $ connectRCCtrlURI drg signedInv pairing_
+  liftError RCP $ connectRCCtrlURI drg signedInv pairing_ hostAppInfo
 
 -- | connect to known remote controller via multicast
-rcConnectCtrlMulticast :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-rcConnectCtrlMulticast c = withAgentEnv c . rcConnectCtrlMulticast'
+rcConnectCtrlMulticast :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlMulticast c = withAgentEnv c .: rcConnectCtrlMulticast'
 
-rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-rcConnectCtrlMulticast' pairings = do
+rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlMulticast' pairings hostAppInfo = do
   drg <- asks random
-  liftError RCP $ connectKnownRCCtrlMulticast drg pairings
+  liftError RCP $ connectKnownRCCtrlMulticast drg pairings hostAppInfo
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()

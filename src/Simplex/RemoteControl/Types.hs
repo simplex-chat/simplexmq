@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -40,7 +41,7 @@ data RCErrorType
   | RCEDecrypt
   | RCEBlockSize
   | RCESyntax {syntaxErr :: String}
-  deriving (Eq, Show)
+  deriving (Eq, Show, Exception)
 
 instance StrEncoding RCErrorType where
   strEncode = \case
