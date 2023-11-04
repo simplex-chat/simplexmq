@@ -214,7 +214,7 @@ module Simplex.Messaging.Agent.Store.SQLite
 where
 
 import Control.Monad.Except
-import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
@@ -2084,7 +2084,7 @@ createWithRandomId gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+randomId gVar n = atomically $ U.encode <$> C.pseudoRandomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)

@@ -470,7 +470,7 @@ newConnAsync c userId corrId enableNtfs cMode subMode = do
 
 newConnNoQueues :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> m ConnId
 newConnNoQueues c userId connId enableNtfs cMode = do
-  g <- asks idsDrg
+  g <- asks random
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   -- connection mode is determined by the accepting agent
   let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
@@ -482,7 +482,7 @@ joinConnAsync c userId corrId enableNtfs cReqUri@(CRInvitationUri ConnReqUriData
     aVRange <- asks $ smpAgentVRange . config
     case crAgentVRange `compatibleVersion` aVRange of
       Just (Compatible connAgentVersion) -> do
-        g <- asks idsDrg
+        g <- asks random
         let duplexHS = connAgentVersion /= 1
             cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
         connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
@@ -616,7 +616,7 @@ joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> Connec
 joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
-    g <- asks idsDrg
+    g <- asks random
     connId' <- withStore c $ \db -> runExceptT $ do
       connId' <- ExceptT $ createSndConn db g cData q
       liftIO $ createRatchet db connId' rc
@@ -2058,7 +2058,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                       where
                         processConf connInfo senderConf duplexHS = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
-                          g <- asks idsDrg
+                          g <- asks random
                           confId <- withStore c $ \db -> do
                             setHandshakeVersion db connId agentVersion duplexHS
                             createConfirmation db g newConfirmation
@@ -2235,7 +2235,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             logServer "<--" c srv rId "MSG <KEY>"
             case conn' of
               ContactConnection {} -> do
-                g <- asks idsDrg
+                g <- asks random
                 let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
                 invId <- withStore c $ \db -> createInvitation db g newInv
                 let srvs = L.map qServer $ crSmpQueues crData
