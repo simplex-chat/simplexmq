@@ -76,7 +76,7 @@ data RCHostClient = RCHostClient
   }
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
-connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo = do
+connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
   startedPort <- newEmptyTMVarIO
@@ -86,7 +86,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
   dropSession <- newEmptyTMVarIO
   tlsFinished <- newEmptyTMVarIO
   tlsFingerprint <- newEmptyTMVarIO
-  action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks tlsFingerprint) $ \tls -> do
+  action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks knownHost tlsFingerprint) $ \tls -> do
     res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
       logDebug "Incoming TLS connection"
       hostPrivateKeys <- atomically $ takeTMVar hpk -- a roundabout way to get server's own assigned port. NB: take is used, and the keys are consumed by the first connection
@@ -110,17 +110,18 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
   -- return invitation immediately
   pure (signedInv, RCHostClient {action, dropSession}, r)
   where
-    -- TODO validate certificate
-    tlsHooks :: TMVar C.KeyHash -> TLS.ServerHooks
-    tlsHooks tlsClientCert =
+    tlsHooks :: Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
+    tlsHooks knownHost_ tlsClientCert =
       def
         { TLS.onUnverifiedClientCert = pure True,
           TLS.onClientCertificate = \(X509.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
                 let Fingerprint fp = getFingerprint ca X509.HashSHA256
-                atomically $ putTMVar tlsClientCert $ C.KeyHash fp
-                pure TLS.CertificateUsageAccept
+                    kh = C.KeyHash fp
+                atomically $ putTMVar tlsClientCert kh
+                let accept = maybe True (\h -> h.hostFingerprint == kh) knownHost_
+                pure $ if accept then TLS.CertificateUsageAccept else TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
