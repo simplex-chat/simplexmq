@@ -8,6 +8,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
+-- XXX: remove non-discovery functions
 module Simplex.RemoteControl.Discovery where
 
 import Control.Logger.Simple
@@ -130,6 +131,8 @@ runAnnouncer app_ device_ idSigKey sk (host, port) = error "runAnnouncer: make i
 --       UDP.send sock $ smpEncode (signAnnounce announceKey announce)
 --       threadDelay 1000000
 --       loop announce {announceCounter = announceCounter announce + 1} sock
+
+-- XXX: move to RemoteControl.Client
 startTLSServer :: MonadUnliftIO m => TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
 startTLSServer started credentials hooks server = async . liftIO $ do
   startedOk <- newEmptyTMVarIO
@@ -145,7 +148,7 @@ startTLSServer started credentials hooks server = async . liftIO $ do
   where
     serverParams =
       def
-        { TLS.serverWantClientCert = False,
+        { TLS.serverWantClientCert = True,
           TLS.serverShared = def {TLS.sharedCredentials = credentials},
           TLS.serverHooks = hooks,
           TLS.serverSupported = supportedParameters

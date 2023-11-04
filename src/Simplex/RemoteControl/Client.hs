@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -31,9 +32,9 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport (TLS, cGet, cPut)
-import Simplex.Messaging.Transport.Client (TransportHost, defaultTransportClientConfig, runTransportClient)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
-import Simplex.Messaging.Util (eitherToMaybe, liftEitherWith, ($>>=))
+import Simplex.Messaging.Util (eitherToMaybe, ifM, liftEitherWith)
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Discovery (getLocalAddress, startTLSServer)
 import Simplex.RemoteControl.Invitation
@@ -215,19 +216,26 @@ generateCtrlSessKeys drg kemPublicKey = do
 connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> KEMCiphertext -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
 connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} ct = do
   r <- newEmptyTMVarIO
+  tlsFinished <- newEmptyTMVarIO
   confirmSession <- newEmptyTMVarIO
   dropSession <- newEmptyTMVarIO
   let hostAppInfo = J.String "TODO: app info"
   (ctrlSessKeys, encryptedHello) <- prepareCtrlSession drg pairing inv hostAppInfo ct
-  -- tlsCreds <- liftIO $ genTLSCredentials caKey caCert
+  clientCredentials <-
+    liftIO (genTLSCredentials caKey caCert) >>= \case
+      TLS.Credentials [one] -> pure $ Just one
+      _ -> throwError $ RCEInternal "genTLSCredentials must generate only one set of credentials"
+  let clientConfig = defaultTransportClientConfig {clientCredentials}
   action <- liftIO . async $ do
-    liftIO $ runTransportClient defaultTransportClientConfig Nothing host (show port) (Just ca) $ \tls -> do
+    liftIO $ runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls -> do
       res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
         liftIO . cPut tls $ smpEncode encryptedHello
         atomically $ putTMVar r (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing)
-        confirmed <- atomically $ takeTMVar confirmSession
-        atomically $ takeTMVar dropSession
-      pure undefined
+        ifM
+          (atomically $ takeTMVar confirmSession)
+          (atomically $ takeTMVar dropSession)
+          (pure ())
+      atomically $ putTMVar tlsFinished res
   pure (RCCtrlClient {action, confirmSession, dropSession}, r)
 
 -- cryptography

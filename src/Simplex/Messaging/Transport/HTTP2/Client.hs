@@ -65,7 +65,7 @@ defaultHTTP2ClientConfig =
   HTTP2ClientConfig
     { qSize = 64,
       connTimeout = 10000000,
-      transportConfig = TransportClientConfig Nothing Nothing True,
+      transportConfig = TransportClientConfig Nothing Nothing True Nothing,
       bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,
       suportedTLSParams = http2TLSParams
