@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -134,18 +133,20 @@ runAnnouncer app_ device_ idSigKey sk (host, port) = error "runAnnouncer: make i
 
 -- XXX: move to RemoteControl.Client
 startTLSServer :: MonadUnliftIO m => TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
-startTLSServer started credentials hooks server = async . liftIO $ do
-  startedOk <- newEmptyTMVarIO
-  bracketOnError (startTCPServer startedOk "0") (\_e -> void . atomically $ tryPutTMVar started Nothing) $ \socket ->
+startTLSServer startedOnPort credentials hooks server = async . liftIO $ do
+  started <- newEmptyTMVarIO
+  bracketOnError (startTCPServer started "0") (\_e -> setPort Nothing) $ \socket ->
     ifM
-      (atomically $ readTMVar startedOk)
-      do
-        port <- N.socketPort socket
-        logInfo $ "System-assigned port: " <> tshow port
-        atomically $ putTMVar started (Just port)
-        runTransportServerSocket startedOk (pure socket) "RCP TLS" serverParams defaultTransportServerConfig server
-      (void . atomically $ tryPutTMVar started Nothing)
+      (atomically $ readTMVar started)
+      (runServer started socket)
+      (setPort Nothing)
   where
+    runServer started socket = do
+      port <- N.socketPort socket
+      logInfo $ "System-assigned port: " <> tshow port
+      setPort $ Just port
+      runTransportServerSocket started (pure socket) "RCP TLS" serverParams defaultTransportServerConfig server
+    setPort = void . atomically . tryPutTMVar startedOnPort
     serverParams =
       def
         { TLS.serverWantClientCert = True,

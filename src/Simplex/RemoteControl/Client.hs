@@ -110,6 +110,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
   -- return invitation immediately
   pure (signedInv, RCHostClient {action, dropSession}, r)
   where
+    -- TODO validate certificate
     tlsHooks :: TMVar C.KeyHash -> TLS.ServerHooks
     tlsHooks tlsClientCert =
       def
