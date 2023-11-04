@@ -18,6 +18,7 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Default (def)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -90,10 +91,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey} ctrlAppInfo =
       logDebug "Incoming TLS connection"
       hostPrivateKeys <- atomically $ takeTMVar hpk -- a roundabout way to get server's own assigned port. NB: take is used, and the keys are consumed by the first connection
       logDebug "Host keys ready"
-      helloBlock <- liftIO $ cGet tls 16384
-      logDebug "Got Hello block"
-      encryptedHello <- liftEitherWith RCESyntax $ smpDecode helloBlock
-      logDebug "Parsed encrypted hello"
+      encryptedHello <- receiveRCPacket tls
       hostCA <- atomically $ takeTMVar tlsFingerprint
       logDebug "TLS fingerprint ready"
       (hostSessKeys, rcHelloBody, rcHostPairing) <- prepareHostSession hostCA pairing hostPrivateKeys encryptedHello
@@ -240,7 +238,7 @@ connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, h
   action <- liftIO . async $ do
     liftIO $ runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls -> do
       res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
-        liftIO . cPut tls $ smpEncode encryptedHello
+        sendRCPacket tls encryptedHello
         atomically $ putTMVar r (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing)
         ifM
           (atomically $ takeTMVar confirmSession)
@@ -248,6 +246,18 @@ connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, h
           (pure ())
       atomically $ putTMVar tlsFinished res
   pure (RCCtrlClient {action, confirmSession, dropSession}, r)
+
+sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
+sendRCPacket tls pkt = do
+  b <- liftEitherWith (const RCEBlockSize) $ C.pad (smpEncode pkt) xrcpBlockSize
+  liftIO $ cPut tls b
+
+receiveRCPacket :: Encoding a => TLS -> ExceptT RCErrorType IO a
+receiveRCPacket tls = do
+  b <- liftIO $ cGet tls xrcpBlockSize
+  when (B.length b /= xrcpBlockSize) $ throwError RCEBlockSize
+  b' <- liftEitherWith (const RCEBlockSize) $ C.unPad b
+  liftEitherWith RCESyntax $ smpDecode b'
 
 -- cryptography
 prepareCtrlSession :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> KEMCiphertext -> ExceptT RCErrorType IO (CtrlSessKeys, RCEncryptedHello)
@@ -264,7 +274,7 @@ prepareCtrlSession
             helloBody = RCHelloBody {v = v', ca = C.KeyHash fp, app = hostAppInfo}
             hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
         nonce <- liftIO . atomically $ C.pseudoRandomCbNonce drg
-        encryptedBody <- liftEitherWith (const RCELargeMsg) $ kcbEncrypt hybridKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
+        encryptedBody <- liftEitherWith (const RCEBlockSize) $ kcbEncrypt hybridKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
         let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
             encHello = RCEncryptedHello {dhPubKey = C.publicKey dhPrivKey, kemCiphertext, nonce, encryptedBody}
         pure (sessKeys, encHello)

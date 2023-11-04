@@ -38,7 +38,7 @@ data RCErrorType
   | RCECtrlNotFound
   | RCEVersion
   | RCEDecrypt
-  | RCELargeMsg
+  | RCEBlockSize
   | RCESyntax {syntaxErr :: String}
   deriving (Eq, Show)
 
@@ -53,7 +53,7 @@ instance StrEncoding RCErrorType where
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
     RCEVersion -> "VERSION"
     RCEDecrypt -> "DECRYPT"
-    RCELargeMsg -> "LARGE_MSG"
+    RCEBlockSize -> "BLOCK_SIZE"
     RCESyntax err -> "SYNTAX" <> text err
     where
       text = (" " <>) . encodeUtf8 . T.pack
@@ -68,7 +68,7 @@ instance StrEncoding RCErrorType where
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
       "VERSION" -> pure RCEVersion
       "DECRYPT" -> pure RCEDecrypt
-      "LARGE_MSG" -> pure RCELargeMsg
+      "BLOCK_SIZE" -> pure RCEBlockSize
       "SYNTAX" -> RCESyntax <$> textP
       _ -> fail "bad RCErrorType"
     where
