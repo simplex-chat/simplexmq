@@ -103,6 +103,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   hostKeys <- liftIO genHostKeys
   a <- liftIO $ runClient c r hostKeys
   -- wait for the port to make invitation
+  -- TODO can't we actually find to which interface the server got connected to get host there?
   portNum <- atomically $ readTMVar startedPort
   signedInv <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
   pure (signedInv, c {action = Just a}, r)
