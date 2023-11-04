@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport.HTTP2.Client where
@@ -162,4 +163,4 @@ runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) ->
 runHTTP2ClientWith bufferSize host setup client = setup $ withHTTP2 bufferSize run
   where
     run :: H.Config -> SessionId -> IO a
-    run cfg = H.run (ClientConfig "https" (strEncode host) 20) cfg . client
+    run cfg sessId = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client sessId

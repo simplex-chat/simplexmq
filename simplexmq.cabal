@@ -187,7 +187,7 @@ library
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
@@ -252,7 +252,7 @@ executable ntf-server
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
@@ -318,7 +318,7 @@ executable smp-agent
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
@@ -384,7 +384,7 @@ executable smp-server
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
@@ -450,7 +450,7 @@ executable xftp
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
@@ -516,7 +516,7 @@ executable xftp-server
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
@@ -616,7 +616,7 @@ test-suite simplexmq-test
     , hspec ==2.11.*
     , hspec-core ==2.11.*
     , http-types ==0.12.*
-    , http2 >=4.1.4 && <4.2
+    , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
