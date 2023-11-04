@@ -374,5 +374,8 @@ data RCEncryptedHello = RCEncryptedHello
   }
 
 instance Encoding RCEncryptedHello where
-  smpEncode RCEncryptedHello {} = error "TODO: RCEncryptedHello.smpEncode"
-  smpP = error "TODO: RCEncryptedHello.smpP"
+  smpEncode RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} =
+    "HELLO " <> smpEncode (dhPubKey, kemCiphertext, nonce, Tail encryptedBody)
+  smpP = do
+    (dhPubKey, kemCiphertext, nonce, Tail encryptedBody) <- "HELLO " *> smpP
+    pure RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody}

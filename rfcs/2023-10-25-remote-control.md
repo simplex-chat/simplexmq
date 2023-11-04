@@ -159,10 +159,10 @@ Hello block must contain:
 Hello block syntax:
   
 ```abnf
-helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext encrypted(unpaddedSize helloBlockJSON pad) pad
+helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext nonce encrypted(unpaddedSize helloBlockJSON pad) pad
 unpaddedSize = 2*2 OCTET
 pad = <pad block size to 16384 bytes>
-kemCiphertext = length base64url
+kemCiphertext = length *OCTET
 ```
 
 Controller decrypts (including the first session) and validates the received hello block:
