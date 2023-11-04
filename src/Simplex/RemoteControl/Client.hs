@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -80,8 +81,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
   startedPort <- newEmptyTMVarIO
-  hpk <- newEmptyTMVarIO
-
+  hostKeys <- liftIO genHostKeys
   tlsCreds <- liftIO $ genTLSCredentials caKey caCert
   dropSession <- newEmptyTMVarIO
   tlsFinished <- newEmptyTMVarIO
@@ -89,14 +89,12 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks knownHost tlsFingerprint) $ \tls -> do
     res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
       logDebug "Incoming TLS connection"
-      hostPrivateKeys <- atomically $ takeTMVar hpk -- a roundabout way to get server's own assigned port. NB: take is used, and the keys are consumed by the first connection
-      logDebug "Host keys ready"
       encryptedHello <- receiveRCPacket tls
       hostCA <- atomically $ takeTMVar tlsFingerprint
       logDebug "TLS fingerprint ready"
-      (hostSessKeys, rcHelloBody, rcHostPairing) <- prepareHostSession hostCA pairing hostPrivateKeys encryptedHello
+      (sessionKeys, helloBody, pairing') <- prepareHostSession hostCA pairing hostKeys encryptedHello
       logDebug "Prepared host session"
-      atomically $ putTMVar r (RCHostSession {tls, sessionKeys = hostSessKeys}, rcHelloBody, rcHostPairing)
+      atomically $ putTMVar r (RCHostSession {tls, sessionKeys}, helloBody, pairing')
       -- can use `RCHostSession` until `dropSession` is signalled
       logDebug "Holding session"
       atomically $ takeTMVar dropSession
@@ -104,10 +102,8 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     atomically $ putTMVar tlsFinished res
 
   -- wait for the port and prepare session keys
-  (signedInv, hostPrivateKeys) <- atomically (readTMVar startedPort) >>= maybe (throwError RCETLSStartFailed) (mkHostSession host)
-  -- put keys for the incoming connection
-  atomically $ putTMVar hpk hostPrivateKeys
-  -- return invitation immediately
+  portNum <- atomically $ readTMVar startedPort
+  signedInv <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
   pure (signedInv, RCHostClient {action, dropSession}, r)
   where
     tlsHooks :: Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
@@ -125,12 +121,15 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
-    mkHostSession :: MonadIO m => TransportHost -> PortNumber -> m (RCSignedInvitation, RCHostPrivateKeys)
-    mkHostSession host portNum = liftIO $ do
+    genHostKeys :: IO RCHostKeys
+    genHostKeys = do
+      sessKeys <- C.generateKeyPair'
+      kemKeys <- sntrup761Keypair drg
+      dhKeys <- C.generateKeyPair'
+      pure RCHostKeys {sessKeys, kemKeys, dhKeys}
+    mkInvitation :: RCHostKeys -> TransportHost -> PortNumber -> IO RCSignedInvitation
+    mkInvitation RCHostKeys {sessKeys, kemKeys, dhKeys} host portNum = do
       ts <- getSystemTime
-      (skey, sessPrivKey) <- C.generateKeyPair'
-      (kem, kemPrivKey) <- sntrup761Keypair drg
-      (dh, dhPrivKey) <- C.generateKeyPair'
       let inv =
             RCInvitation
               { ca = certFingerprint caCert,
@@ -139,14 +138,13 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
                 v = supportedRCVRange,
                 app = ctrlAppInfo,
                 ts,
-                skey,
+                skey = fst sessKeys,
                 idkey = C.publicKey idPrivKey,
-                kem,
-                dh
+                kem = fst kemKeys,
+                dh = fst dhKeys
               }
-          keys = RCHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
-      let signedInv = signInviteURL sessPrivKey idPrivKey inv
-      pure (signedInv, keys)
+          signedInv = signInviteURL (snd sessKeys) idPrivKey inv
+      pure signedInv
 
 genTLSCredentials :: C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
 genTLSCredentials caKey caCert = do
@@ -162,11 +160,11 @@ certFingerprint caCert = C.KeyHash fp
 cancelHostClient :: RCHostClient -> IO ()
 cancelHostClient = undefined
 
-prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostPrivateKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
+prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
 prepareHostSession
   tlsHostFingerprint
   pairing@RCHostPairing {idPrivKey, knownHost = knownHost_}
-  RCHostPrivateKeys {sessPrivKey, kemPrivKey, dhPrivKey}
+  RCHostKeys {sessKeys = (_, sessPrivKey), kemKeys = (_, kemPrivKey), dhKeys = (_, dhPrivKey)}
   RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} = do
     kemSharedKey <- liftIO $ sntrup761Dec kemCiphertext kemPrivKey
     let key = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
@@ -181,9 +179,8 @@ prepareHostSession
       updateKnownHost :: C.KeyHash -> StoredHostSessKeys -> ExceptT RCErrorType IO KnownHostPairing
       updateKnownHost ca storedSessKeys = case knownHost_ of
         Just h -> do
-          unless (h.hostFingerprint == tlsHostFingerprint) $
-            throwError $
-              RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
+          unless (h.hostFingerprint == tlsHostFingerprint) . throwError $
+            RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
           unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
           pure (h :: KnownHostPairing) {storedSessKeys}
         Nothing -> pure KnownHostPairing {hostFingerprint = ca, storedSessKeys}
@@ -347,10 +344,10 @@ data StoredCtrlSessKeys = StoredCtrlSessKeys
     kemSharedKey :: KEMSharedKey
   }
 
-data RCHostPrivateKeys = RCHostPrivateKeys
-  { sessPrivKey :: C.PrivateKeyEd25519,
-    kemPrivKey :: KEMSecretKey,
-    dhPrivKey :: C.PrivateKeyX25519
+data RCHostKeys = RCHostKeys
+  { sessKeys :: C.KeyPair 'C.Ed25519,
+    kemKeys :: KEMKeyPair,
+    dhKeys :: C.KeyPair 'C.X25519
   }
 
 -- Connected session with Host

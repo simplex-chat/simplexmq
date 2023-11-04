@@ -29,7 +29,9 @@ newtype KEMCiphertext = KEMCiphertext ByteString
 newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
   deriving (Show)
 
-sntrup761Keypair :: TVar ChaChaDRG -> IO (KEMPublicKey, KEMSecretKey)
+type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
+
+sntrup761Keypair :: TVar ChaChaDRG -> IO KEMKeyPair
 sntrup761Keypair drg =
   bimap KEMPublicKey KEMSecretKey
     <$> BA.allocRet
