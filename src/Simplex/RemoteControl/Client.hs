@@ -88,41 +88,49 @@ newRCHostPairing = do
   pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
 data RCHostClient = RCHostClient
-  { action :: Async (),
-    endSession :: TMVar ()
+  { action :: Maybe (Async ()),
+    startedPort :: TMVar (Maybe PortNumber),
+    hostCAHash :: TMVar C.KeyHash,
+    endSession :: TMVar (),
+    tlsFinished :: TMVar (Either RCErrorType ())
   }
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
-  startedPort <- newEmptyTMVarIO
+  c@RCHostClient {startedPort} <- liftIO mkClient
   hostKeys <- liftIO genHostKeys
-  tlsCreds <- liftIO $ genTLSCredentials caKey caCert
-  endSession <- newEmptyTMVarIO
-  tlsFinished <- newEmptyTMVarIO
-  hostCAHash <- newEmptyTMVarIO
-  action <- liftIO $ startTLSServer startedPort tlsCreds (tlsHooks knownHost hostCAHash) $ \tls -> do
-    res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
-      logDebug "Incoming TLS connection"
-      encryptedHello <- receiveRCPacket tls
-      -- TODO send OK response
-      hostCA <- atomically $ takeTMVar hostCAHash
-      logDebug "TLS fingerprint ready"
-      (sessionKeys, helloBody, pairing') <- prepareHostSession hostCA pairing hostKeys encryptedHello
-      logDebug "Prepared host session"
-      atomically $ putTMVar r (RCHostSession {tls, sessionKeys}, helloBody, pairing')
-      -- can use `RCHostSession` until `endSession` is signalled
-      logDebug "Holding session"
-      atomically $ takeTMVar endSession
-    logDebug $ "TLS connection finished with " <> tshow res
-    atomically $ putTMVar tlsFinished res
-
-  -- wait for the port and prepare session keys
+  a <- liftIO $ runClient c r hostKeys
+  -- wait for the port to make invitation
   portNum <- atomically $ readTMVar startedPort
   signedInv <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
-  pure (signedInv, RCHostClient {action, endSession}, r)
+  pure (signedInv, c {action = Just a}, r)
   where
+    mkClient :: IO RCHostClient
+    mkClient = do
+      startedPort <- newEmptyTMVarIO
+      endSession <- newEmptyTMVarIO
+      tlsFinished <- newEmptyTMVarIO
+      hostCAHash <- newEmptyTMVarIO
+      pure RCHostClient {action = Nothing, startedPort, hostCAHash, endSession, tlsFinished}
+    runClient RCHostClient {startedPort, hostCAHash, endSession, tlsFinished} r hostKeys = do
+      tlsCreds <- liftIO $ genTLSCredentials caKey caCert
+      startTLSServer startedPort tlsCreds (tlsHooks knownHost hostCAHash) $ \tls -> do
+        res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
+          logDebug "Incoming TLS connection"
+          encryptedHello <- receiveRCPacket tls
+          -- TODO send OK response
+          hostCA <- atomically $ takeTMVar hostCAHash
+          logDebug "TLS fingerprint ready"
+          (sessionKeys, helloBody, pairing') <- prepareHostSession hostCA pairing hostKeys encryptedHello
+          logDebug "Prepared host session"
+          atomically $ putTMVar r (RCHostSession {tls, sessionKeys}, helloBody, pairing')
+          -- can use `RCHostSession` until `endSession` is signalled
+          logDebug "Holding session"
+          atomically $ takeTMVar endSession
+        logDebug $ "TLS connection finished with " <> tshow res
+        atomically $ putTMVar tlsFinished res
     tlsHooks :: Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
     tlsHooks knownHost_ hostCAHash =
       def
@@ -177,7 +185,7 @@ certFingerprint caCert = C.KeyHash fp
 cancelHostClient :: RCHostClient -> IO ()
 cancelHostClient RCHostClient {action, endSession} = do
   atomically $ putTMVar endSession ()
-  uninterruptibleCancel action
+  mapM_ uninterruptibleCancel action
 
 prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
 prepareHostSession
@@ -205,7 +213,7 @@ prepareHostSession
         Nothing -> pure KnownHostPairing {hostFingerprint = ca, storedSessKeys}
 
 data RCCtrlClient = RCCtrlClient
-  { action :: Async (),
+  { action :: Maybe (Async ()),
     confirmSession :: TMVar Bool,
     endSession :: TMVar (),
     tlsFinished :: TMVar (Either RCErrorType ())
@@ -245,17 +253,17 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> KEMCipherte
 connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} ct hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- async $ runRCCtrl c r
-  pure (c {action}, r)
+  a <- async $ runClient c r
+  pure (c {action = Just a}, r)
   where
     mkClient :: IO RCCtrlClient
     mkClient = do
       tlsFinished <- newEmptyTMVarIO
       confirmSession <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
-      pure RCCtrlClient {action = undefined, confirmSession, endSession, tlsFinished}
-    runRCCtrl :: RCCtrlClient -> TMVar (RCCtrlSession, RCCtrlPairing) -> ExceptT RCErrorType IO ()
-    runRCCtrl RCCtrlClient {confirmSession, endSession, tlsFinished} r = do
+      pure RCCtrlClient {action = Nothing, confirmSession, endSession, tlsFinished}
+    runClient :: RCCtrlClient -> TMVar (RCCtrlSession, RCCtrlPairing) -> ExceptT RCErrorType IO ()
+    runClient RCCtrlClient {confirmSession, endSession, tlsFinished} r = do
       clientCredentials <-
         liftIO (genTLSCredentials caKey caCert) >>= \case
           TLS.Credentials [one] -> pure $ Just one
@@ -343,7 +351,7 @@ confirmCtrlSession RCCtrlClient {confirmSession} = atomically . putTMVar confirm
 cancelCtrlClient :: RCCtrlClient -> IO ()
 cancelCtrlClient RCCtrlClient {action, endSession} = do
   atomically $ putTMVar endSession ()
-  uninterruptibleCancel action
+  mapM_ uninterruptibleCancel action
 
 -- | Long-term part of controller (desktop) connection to host (mobile)
 data RCHostPairing = RCHostPairing
