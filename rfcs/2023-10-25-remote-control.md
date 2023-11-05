@@ -159,10 +159,11 @@ Hello block must contain:
 Hello block syntax:
 
 ```abnf
-helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext nonce encrypted(unpaddedSize helloBlockJSON pad) pad
+helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext nonce encrypted(unpaddedSize helloBlockJSON helloPad) pad
 unpaddedSize = largeLength
 pad = <pad block size to 16384 bytes>
-kemCiphertext = largeLength
+helloPad = <pad hello size to 12888 bytes>
+kemCiphertext = largeLength *OCTET
 largeLength = 2*2 OCTET
 ```
 
