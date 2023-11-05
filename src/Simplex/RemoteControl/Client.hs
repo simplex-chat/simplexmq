@@ -20,6 +20,7 @@ module Simplex.RemoteControl.Client
     RCCtrlPairing (..),
     RCCtrlClient (action),
     RCCtrlSession (..),
+    CtrlSessKeys (..),
     connectRCCtrlURI,
     connectKnownRCCtrlMulticast,
     confirmCtrlSession,
