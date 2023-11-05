@@ -82,7 +82,7 @@ mkIpProbe = do
 -- Announcer is started when TLS server is started and stopped when a connection is made.
 announceCtrl ::
   MonadUnliftIO m =>
-  (MVar rc -> MVar () -> CtrlCryptoHandle -> Transport.TLS -> IO ()) ->
+  (MVar rc -> MVar () -> Transport.TLS -> IO ()) ->
   Tasks ->
   TMVar (Maybe N.PortNumber) ->
   Maybe (Text, VersionRange) ->
@@ -109,8 +109,7 @@ announceCtrl runCtrl tasks started app_ device_ idkey sk@CtrlSessionKeys {ca, cr
   tlsServer <- startTLSServer started credentials hooks $ \tls -> do
     logInfo $ "Incoming connection for " <> ident
     cancel announcer
-    let ctrlCryptoHandle = CtrlCryptoHandle -- TODO
-    runCtrl ctrlStarted ctrlFinished ctrlCryptoHandle tls `catchAny` (logError . tshow)
+    runCtrl ctrlStarted ctrlFinished tls `catchAny` (logError . tshow)
     logInfo $ "Client finished for " <> ident
   _ <- forkIO $ waitCatch tlsServer >> void (tryPutMVar ctrlFinished ())
   tasks `registerAsync` tlsServer

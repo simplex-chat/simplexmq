@@ -34,7 +34,6 @@ import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
-import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
@@ -49,7 +48,7 @@ import Network.Socket (PortNumber)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Client ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret (KEMHybridSecret), kcbDecrypt, kcbEncrypt, kemHybridSecret)
+import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret, kcbDecrypt, kcbEncrypt, kemHybridSecret)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON)
