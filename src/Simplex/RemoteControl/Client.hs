@@ -141,6 +141,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
           logDebug "TLS fingerprint ready"
           (sessionKeys, helloBody, pairing') <- prepareHostSession hostCA pairing hostKeys encryptedHello
           logDebug "Prepared host session"
+          -- TODO: Send OK
           atomically $ putTMVar r (RCHostSession {tls, sessionKeys}, helloBody, pairing')
           -- can use `RCHostSession` until `endSession` is signalled
           logDebug "Holding session"
@@ -298,7 +299,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           logDebug "Waiting for session confirmation"
           atomically $ putTMVar r (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
           ifM
-            (atomically $ takeTMVar confirmSession)
+            (atomically $ readTMVar confirmSession)
             (runSession tls encryptedHello)
             (logDebug "Session rejected")
         atomically $ putTMVar tlsEnded res
@@ -308,6 +309,8 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           logDebug "Sent encrypted HELLO"
           -- TODO receive OK response
           logDebug "Session started"
+          -- release second putTMVar in confirmCtrlSession
+          void . atomically $ takeTMVar confirmSession
           atomically $ takeTMVar endSession
           logDebug "Session ended"
 
@@ -378,7 +381,11 @@ findRCCtrlPairing pairings RCEncryptedInvitation {dhPubKey, nonce, encryptedInvi
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()
-confirmCtrlSession RCCtrlClient {client_ = RCCClient_ {confirmSession}} = atomically . putTMVar confirmSession
+confirmCtrlSession RCCtrlClient {client_ = RCCClient_ {confirmSession}} res = do
+  atomically $ putTMVar confirmSession res
+  -- controler does takeTMVar, freeing the slot
+  -- TODO add timeout
+  atomically $ putTMVar confirmSession res -- wait for Ctrl to take the var
 
 cancelCtrlClient :: RCCtrlClient -> IO ()
 cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
