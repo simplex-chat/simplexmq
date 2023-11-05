@@ -68,8 +68,8 @@ instance StrEncoding KEMPublicKey where
   strP = KEMPublicKey . BA.convert <$> strP @ByteString
 
 instance Encoding KEMCiphertext where
-  smpEncode (KEMCiphertext c) = smpEncode (BA.convert c :: ByteString)
-  smpP = KEMCiphertext . BA.convert <$> smpP @ByteString
+  smpEncode (KEMCiphertext c) = smpEncode . Large $ BA.convert c
+  smpP = KEMCiphertext . BA.convert . unLarge <$> smpP
 
 instance J.ToJSON KEMPublicKey where
   toJSON = J.toJSON . decodeUtf8 . strEncode

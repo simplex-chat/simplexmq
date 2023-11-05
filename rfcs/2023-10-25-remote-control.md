@@ -157,12 +157,13 @@ Hello block must contain:
   - additional application specific parameters, e.g host settings or JSON encoding format.
 
 Hello block syntax:
-  
+
 ```abnf
 helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext nonce encrypted(unpaddedSize helloBlockJSON pad) pad
-unpaddedSize = 2*2 OCTET
+unpaddedSize = largeLength
 pad = <pad block size to 16384 bytes>
-kemCiphertext = length *OCTET
+kemCiphertext = largeLength
+largeLength = 2*2 OCTET
 ```
 
 Controller decrypts (including the first session) and validates the received hello block:
@@ -281,7 +282,7 @@ The alternative design will use mobile host device as TLS server. The session ne
 Pros:
 - no reversing server role between TLS and HTTP2
 - TLS credentials are exchanged before TLS, so invalid credentials can be rejected during the handshake of the first session.
-- if some other way to pass data from host to controller is added, then it can be used with host running in VM. 
+- if some other way to pass data from host to controller is added, then it can be used with host running in VM.
 
 Cons:
 - multicast is mandatory, as there is no efficient way to communicate from mobile to desktop.

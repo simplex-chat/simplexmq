@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
@@ -10,14 +11,14 @@
 
 module Simplex.RemoteControl.Client
   ( RCHostPairing (..),
-    RCHostClient,
+    RCHostClient (action),
     RCHostSession (..),
     RCHelloBody (..),
     newRCHostPairing,
     connectRCHost,
     cancelHostClient,
     RCCtrlPairing (..),
-    RCCtrlClient,
+    RCCtrlClient (action),
     RCCtrlSession (..),
     connectRCCtrlURI,
     connectKnownRCCtrlMulticast,
@@ -33,12 +34,14 @@ import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Default (def)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isNothing)
 import Data.Time.Clock.System (getSystemTime)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
@@ -46,7 +49,7 @@ import Network.Socket (PortNumber)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Client ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret, kcbDecrypt, kcbEncrypt, kemHybridSecret)
+import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret (KEMHybridSecret), kcbDecrypt, kcbEncrypt, kemHybridSecret)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON)
@@ -59,6 +62,7 @@ import Simplex.RemoteControl.Discovery (getLocalAddress, startTLSServer)
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import UnliftIO
+import UnliftIO.Concurrent (forkIO)
 
 currentRCVersion :: Version
 currentRCVersion = 1
@@ -88,40 +92,50 @@ newRCHostPairing = do
   pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
 data RCHostClient = RCHostClient
-  { action :: Maybe (Async ()),
-    startedPort :: TMVar (Maybe PortNumber),
+  { action :: Async (),
+    client_ :: RCHClient_
+  }
+
+data RCHClient_ = RCHClient_
+  { startedPort :: TMVar (Maybe PortNumber),
     hostCAHash :: TMVar C.KeyHash,
     endSession :: TMVar (),
-    tlsFinished :: TMVar (Either RCErrorType ())
+    tlsEnded :: TMVar (Either RCErrorType ())
   }
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
-  c@RCHostClient {startedPort} <- liftIO mkClient
+  c@RCHClient_ {startedPort, tlsEnded} <- liftIO mkClient
   hostKeys <- liftIO genHostKeys
-  a <- liftIO $ runClient c r hostKeys
+  action <- liftIO $ runClient c r hostKeys
+  void . forkIO $ do
+    res <- atomically $ takeTMVar tlsEnded
+    either (logError . ("XRCP session ended with error: " <>) . tshow) (\() -> logInfo "XRCP session ended") res
+    uninterruptibleCancel action
   -- wait for the port to make invitation
   -- TODO can't we actually find to which interface the server got connected to get host there?
   portNum <- atomically $ readTMVar startedPort
   signedInv <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
-  pure (signedInv, c {action = Just a}, r)
+  pure (signedInv, RCHostClient {action, client_ = c}, r)
   where
-    mkClient :: IO RCHostClient
+    mkClient :: IO RCHClient_
     mkClient = do
       startedPort <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
-      tlsFinished <- newEmptyTMVarIO
+      tlsEnded <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
-      pure RCHostClient {action = Nothing, startedPort, hostCAHash, endSession, tlsFinished}
-    runClient :: RCHostClient -> TMVar (RCHostSession, RCHelloBody, RCHostPairing) -> RCHostKeys -> IO (Async ())
-    runClient RCHostClient {startedPort, hostCAHash, endSession, tlsFinished} r hostKeys = do
+      pure RCHClient_ {startedPort, hostCAHash, endSession, tlsEnded}
+    runClient :: RCHClient_ -> TMVar (RCHostSession, RCHelloBody, RCHostPairing) -> RCHostKeys -> IO (Async ())
+    runClient RCHClient_ {startedPort, hostCAHash, endSession, tlsEnded} r hostKeys = do
       tlsCreds <- genTLSCredentials caKey caCert
-      startTLSServer startedPort tlsCreds (tlsHooks knownHost hostCAHash) $ \tls -> do
+      startTLSServer startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls -> do
         res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
           logDebug "Incoming TLS connection"
+          -- TODO lock session
           encryptedHello <- receiveRCPacket tls
+          logDebug "Received encrypted HELLO"
           -- TODO send OK response
           hostCA <- atomically $ takeTMVar hostCAHash
           logDebug "TLS fingerprint ready"
@@ -132,11 +146,12 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
           logDebug "Holding session"
           atomically $ takeTMVar endSession
         logDebug $ "TLS connection finished with " <> tshow res
-        atomically $ putTMVar tlsFinished res
-    tlsHooks :: Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
-    tlsHooks knownHost_ hostCAHash =
+        atomically $ putTMVar tlsEnded res
+    tlsHooks :: TMVar a -> Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
+    tlsHooks r knownHost_ hostCAHash =
       def
         { TLS.onUnverifiedClientCert = pure True,
+          TLS.onNewHandshake = \_ -> atomically $ isNothing <$> tryReadTMVar r,
           TLS.onClientCertificate = \(X509.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
@@ -185,9 +200,9 @@ certFingerprint caCert = C.KeyHash fp
     Fingerprint fp = getFingerprint caCert X509.HashSHA256
 
 cancelHostClient :: RCHostClient -> IO ()
-cancelHostClient RCHostClient {action, endSession} = do
+cancelHostClient RCHostClient {action, client_ = RCHClient_ {endSession}} = do
   atomically $ putTMVar endSession ()
-  mapM_ uninterruptibleCancel action
+  uninterruptibleCancel action
 
 prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
 prepareHostSession
@@ -215,10 +230,14 @@ prepareHostSession
         Nothing -> pure KnownHostPairing {hostFingerprint = ca, storedSessKeys}
 
 data RCCtrlClient = RCCtrlClient
-  { action :: Maybe (Async ()),
-    confirmSession :: TMVar Bool,
+  { action :: Async (),
+    client_ :: RCCClient_
+  }
+
+data RCCClient_ = RCCClient_
+  { confirmSession :: TMVar Bool,
     endSession :: TMVar (),
-    tlsFinished :: TMVar (Either RCErrorType ())
+    tlsEnded :: TMVar (Either RCErrorType ())
   }
 
 connectRCCtrlURI :: TVar ChaChaDRG -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
@@ -229,8 +248,8 @@ connectRCCtrlURI drg signedInv@RCSignedInvitation {invitation} pairing_ hostAppI
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
 connectRCCtrl :: TVar ChaChaDRG -> RCInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
 connectRCCtrl drg inv@RCInvitation {ca, idkey, kem} pairing_ hostAppInfo = do
-  (ct, pairing) <- maybe (liftIO newCtrlPairing) updateCtrlPairing pairing_
-  connectRCCtrl_ drg pairing inv ct hostAppInfo
+  (ct, pairing') <- maybe (liftIO newCtrlPairing) updateCtrlPairing pairing_
+  connectRCCtrl_ drg pairing' inv ct hostAppInfo
   where
     newCtrlPairing :: IO (KEMCiphertext, RCCtrlPairing)
     newCtrlPairing = do
@@ -252,48 +271,58 @@ generateCtrlSessKeys drg kemPublicKey = do
   pure (ct, StoredCtrlSessKeys {dhPrivKey, kemSharedKey})
 
 connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> KEMCiphertext -> J.Value -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-connectRCCtrl_ drg pairing@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} ct hostAppInfo = do
+connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} ct hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  a <- async $ runClient c r
-  pure (c {action = Just a}, r)
+  action <- async $ runClient c r
+  pure (RCCtrlClient {action, client_ = c}, r)
   where
-    mkClient :: IO RCCtrlClient
+    mkClient :: IO RCCClient_
     mkClient = do
-      tlsFinished <- newEmptyTMVarIO
+      tlsEnded <- newEmptyTMVarIO
       confirmSession <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
-      pure RCCtrlClient {action = Nothing, confirmSession, endSession, tlsFinished}
-    runClient :: RCCtrlClient -> TMVar (RCCtrlSession, RCCtrlPairing) -> ExceptT RCErrorType IO ()
-    runClient RCCtrlClient {confirmSession, endSession, tlsFinished} r = do
+      pure RCCClient_ {confirmSession, endSession, tlsEnded}
+    runClient :: RCCClient_ -> TMVar (RCCtrlSession, RCCtrlPairing) -> ExceptT RCErrorType IO ()
+    runClient RCCClient_ {confirmSession, endSession, tlsEnded} r = do
       clientCredentials <-
         liftIO (genTLSCredentials caKey caCert) >>= \case
           TLS.Credentials [one] -> pure $ Just one
           _ -> throwError $ RCEInternal "genTLSCredentials must generate only one set of credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
       liftIO $ runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls -> do
+        logDebug "Got TLS connection"
         -- TODO this seems incorrect still
         res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
+          (ctrlSessKeys, encryptedHello) <- prepareCtrlSession drg pairing' inv hostAppInfo ct
+          logDebug "Waiting for session confirmation"
+          atomically $ putTMVar r (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
           ifM
             (atomically $ takeTMVar confirmSession)
-            (initClient tls)
-            (atomically $ takeTMVar endSession)
-        atomically $ putTMVar tlsFinished res
+            (runSession tls encryptedHello)
+            (logDebug "Session rejected")
+        atomically $ putTMVar tlsEnded res
       where
-        initClient tls = do
-          (ctrlSessKeys, encryptedHello) <- prepareCtrlSession drg pairing inv hostAppInfo ct
+        runSession tls encryptedHello = do
           sendRCPacket tls encryptedHello
+          logDebug "Sent encrypted HELLO"
           -- TODO receive OK response
-          atomically $ putTMVar r (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing)
+          logDebug "Session started"
+          atomically $ takeTMVar endSession
+          logDebug "Session ended"
 
 sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
+  logDebug "Encoding XRCP block for TLS"
   b <- liftEitherWith (const RCEBlockSize) $ C.pad (smpEncode pkt) xrcpBlockSize
+  logDebug $ "Sending XRCP block to TLS, " <> tshow (B.length b) <> " bytes"
   liftIO $ cPut tls b
 
 receiveRCPacket :: Encoding a => TLS -> ExceptT RCErrorType IO a
 receiveRCPacket tls = do
+  logDebug "Getting XRCP block from TLS"
   b <- liftIO $ cGet tls xrcpBlockSize
+  logDebug $ "Got XRCP block from TLS, " <> tshow (B.length b) <> " bytes"
   when (B.length b /= xrcpBlockSize) $ throwError RCEBlockSize
   b' <- liftEitherWith (const RCEBlockSize) $ C.unPad b
   liftEitherWith RCESyntax $ smpDecode b'
@@ -304,7 +333,8 @@ prepareCtrlSession
   RCCtrlPairing {caCert, idPubKey, storedSessKeys = StoredCtrlSessKeys {dhPrivKey, kemSharedKey}}
   RCInvitation {v, skey, dh = dhPubKey}
   hostAppInfo
-  kemCiphertext =
+  kemCiphertext = do
+    logDebug "Preparing session"
     case compatibleVersion v supportedRCVRange of
       Nothing -> throwError RCEVersion
       Just (Compatible v') -> do
@@ -319,8 +349,8 @@ prepareCtrlSession
 
 -- The application should save updated RCHostPairing after user confirmation of the session
 -- TMVar resolves when TLS is connected
-connectKnownRCCtrlMulticast :: TVar ChaChaDRG -> NonEmpty RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
-connectKnownRCCtrlMulticast drg pairings hostAppInfo = do
+connectKnownRCCtrlMulticast :: TVar ChaChaDRG -> TVar Int -> NonEmpty RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+connectKnownRCCtrlMulticast drg _subscribers pairings hostAppInfo = do
   -- start multicast
   -- receive packets
   let loop = undefined -- catch and log errors, fail on timeout
@@ -348,12 +378,12 @@ findRCCtrlPairing pairings RCEncryptedInvitation {dhPubKey, nonce, encryptedInvi
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()
-confirmCtrlSession RCCtrlClient {confirmSession} = atomically . putTMVar confirmSession
+confirmCtrlSession RCCtrlClient {client_ = RCCClient_ {confirmSession}} = atomically . putTMVar confirmSession
 
 cancelCtrlClient :: RCCtrlClient -> IO ()
-cancelCtrlClient RCCtrlClient {action, endSession} = do
+cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
   atomically $ putTMVar endSession ()
-  mapM_ uninterruptibleCancel action
+  uninterruptibleCancel action
 
 -- | Long-term part of controller (desktop) connection to host (mobile)
 data RCHostPairing = RCHostPairing
@@ -425,6 +455,7 @@ data RCEncryptedHello = RCEncryptedHello
     nonce :: C.CbNonce,
     encryptedBody :: ByteString
   }
+  deriving (Show)
 
 instance Encoding RCEncryptedHello where
   smpEncode RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} =

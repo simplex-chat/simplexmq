@@ -415,7 +415,8 @@ rcConnectCtrlMulticast c = withAgentEnv c .: rcConnectCtrlMulticast'
 rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
 rcConnectCtrlMulticast' pairings hostAppInfo = do
   drg <- asks random
-  liftError RCP $ connectKnownRCCtrlMulticast drg pairings hostAppInfo
+  subscribers <- newTVarIO 0 -- TODO: get from agent
+  liftError RCP $ connectKnownRCCtrlMulticast drg subscribers pairings hostAppInfo
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
