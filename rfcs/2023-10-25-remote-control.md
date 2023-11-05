@@ -1,69 +1,68 @@
 # SimpleX Remote Control protocol
 
-Using profiles in SimpleX Chat mobile app from desktop app with minimal risk to the security model of SimpleX protocols.
+Using profiles in SimpleX Chat mobile app from desktop app with minimal risk to the security/threat model of SimpleX protocols.
 
 ## Problem
 
-Synchronizing profiles that use double ratchet for e2e encryption is effectively impossible in a way that tolerates partitioning between devices.
+Synchronizing profiles that use double ratchet for e2e encryption is effectively impossible in a way that tolerates partitioning between devices without reducing security of double ratchet.
 
-We are not considering replacing double ratchet to allow profile synchronization, as some other messengers did. We are also not considering Signal model, when profile is known to the server and adding devices results in changing security code and no visibility of conversation history, as it would be substantially different from the current model.
+We are not considering replacing (or weakening) double ratchet to allow profile synchronization, as some other messengers did (e.g., Session). We are also not considering Signal model, when profile is known to the server and adding devices results in changing security code and no visibility of conversation history, as it would be substantially different from the current model, and also effectively weakens the security, as in practives most users don't revalidate security codes when they change.
 
 ## Solution
 
-The proposed option is remote access/control protocol, when the application on host device (usually mobile) acts as a server, and application on another device (usually desktop) acts as a controller usually running in the same local network.
+The proposed solution is a new remote access/control protocol, when the application on host device (usually mobile) acts as a server, and application on another device (usually desktop) acts as a controller usually running in the same local network.
 
-Service discovery and remote control protocols known to us are vulnerable to spoofing, spamming and MITM attacks. This design aims to solve these problems.
+Existing service discovery and remote control protocols known to us are vulnerable to spoofing, spamming and MITM attacks. This design aims to solve these problems.
 
 ## Requirements
 
 - Strong, cryptographically verified identity of the controller device, with the initial connection requiring out-of-band communication of public keys (QR code or link).
+- Identity verification of the host device during session handshake.
 - Protection against malicious "controllers" trying to make host connect to them instead of valid controller on the same network.
 - Protection against replay attacks, both during discovery and during control session.
-- Additional encryption layer inside TLS.
+- Additional encryption layer inside TLS, with post-quantum algorithm in key agreement.
 - Protect host device from unauthorized access in case of controller compromise.
-- Have post-compromised security - that is, even if long term secrets were copied from the controller, and host device was made to connect to malicious controller device, prevent malicious controller from accessing the host device data.
-- Support general high-level interactions common for many applications:
+- Post-compromised security - that is, even if long term secrets were copied from the controller, and host device was made to connect to malicious controller device, prevent malicious controller from accessing the host device data.
+- Allow general high-level interactions common for many applications:
   - RPC pattern for commands executed by the host application.
   - Events sent by host to update controller UI.
   - Uploading and downloading files between host and controller, either to be processed by the host or to be presented in the controller UI.
 
-This design is quite close to how SimpleX Chat UI interacts with SimpleX Chat core - there is a similar RPC + events protocol and support for files.
+This design will allow application-level protocol that is quite close to how SimpleX Chat UI interacts with SimpleX Chat core - there is a similar RPC + events protocol and support for files. The application-level protocol is out of scope of this specification.
 
 ## Protocol phases
 
 Protocol consists of four phases:
-- controller session announcement
+- controller session invitation
 - establishing session TLS connection
 - session verification and protocol negotiation
 - session operation
 
-### Session announcement
+### Session invitation
 
-The first session between host and controller pair MUST be announced out-of-band, to establish a long term identity keys/certificates of the controller to host device.
+The invitation to the first session between host and controller pair MUST be shared out-of-band, to establish a long term identity keys/certificates of the controller to host device.
 
-The subsequent sessions will be announced via an application-defined site-local multicast group, e.g. `224.0.0.251` (also used in mDNS/bonjour) and an application-defined port (SimpleX Chat uses 5227).
+The subsequent sessions can be announced via an application-defined site-local multicast group, e.g. `224.0.0.251` (also used in mDNS/bonjour) and an application-defined port (SimpleX Chat uses 5227).
 
-The session announcement contains this data:
+The session invitation contains this data:
 - supported version range for remote control protocol
-- application name
-- device name
+- application-specific information, e.g. device name, application name and supported version range, settings, etc.
 - session start time in seconds since epoch
 - if multicast is used, counter of announce packets sent by controller
 - network address (ipv4 address and port) of the controller
 - CA TLS certificate fingerprint of the controller - this is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
 - Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
 - Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
-- Session X25519 DH key and sntrup761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The initial out-of-band announcement is always unencrypted. These DH and KEM key are always sent unencrypted. NaCL Cryptobox is used for encryption.
-- additional application specific parameters, e.g controller settings.
+- Session X25519 DH key and sntrup761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. These DH public key and KEM encapsulation key are always sent unencrypted. NaCL Cryptobox is used for encryption.
 
-Host device decrypts (except the first session) and validates the announcement:
+Host device decrypts (except the first session) and validates the invitation:
 - Session signature is valid.
 - Timestamp is within some window from the current time.
 - Long-term key signature is valid.
-- Long-term CA and key are the same as in the first session.
-- Some version in the range can be supported.
+- Long-term CA and signature key are the same as in the first session.
+- Some version in the offered range is supported.
 
-OOB announcement is a URI with this syntax:
+OOB session invitation is a URI with this syntax:
 
 ```abnf
 sessionAddressUri = "xrcp://" encodedCAFingerprint "@" host ":" port "#/?" qsParams
@@ -85,10 +84,10 @@ idSignatureParam = "idsig=" base64url ; required, signs the URI with this param 
 base64url = <base64url encoded binary> ; RFC4648, section 5
 ```
 
-Multicast announcement is a binary encoded packet with this syntax:
+Multicast session announcement is a binary encoded packet with this syntax:
 
 ```abnf
-sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize serviceAddress sessSignature idSignature pad)
+sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize serviceAddress sessSignature idSignature packetPad)
 dhPubKey = length x509encoded
 nonce = length *OCTET
 serviceAddress = largeLength serviceAddressJSON
@@ -96,6 +95,8 @@ sessSignature = length *OCTET ; signs the preceding announcement packet
 idSignature = length *OCTET ; signs the preceding announcement packet including sessSignature
 length = 1*1 OCTET ; for binary data up to 255 bytes
 largeLength = 2*2 OCTET ; for binary data up to 65535 bytes
+packetPad = <pad packet size to 1450 bytes> ; possibly, we may need to move KEM agreement one step later,
+; with encapsulation key in HELLO block and KEM ciphertext in reply to HELLO.
 ```
 
 addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
@@ -135,13 +136,13 @@ addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
 
 ### Establishing session TLS connection
 
-Host connects to controller via TCP session and validates CA credentials during TLS handshake. Controller acts as a TCP server in this connection, to avoid host device listening on a port, which might create an attack vector. During TLS handshake the controller's TCP server presents a self-signed two-certificate chain where the fingerprint of the first certificate MUST be the same as in the announcement.
+Host connects to controller via TCP session and validates CA credentials during TLS handshake. Controller acts as a TCP server in this connection, to avoid host device listening on a port, which might create an attack vector. During TLS handshake the controller's TCP server MUST present a self-signed two-certificate chain where the fingerprint of the first certificate MUST be the same as in the announcement.
 
 Host device presents its own client certificate chain with CA representing a long-term identity of the host device.
 
 ### Session verification and protocol negotiation
 
-Once TLS session is established, both the host and controller device present a "session security code" to the user who must match them (e.g., visually or via QR code scan) and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established.
+Once TLS session is established, both the host and controller device present a "session security code" to the user who must match them (e.g., visually or via QR code scan) and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established, mitigating the possibility of MITM attack in the connection.
 
 Once the session is confirmed by the user, the host device sends "hello" block to the controller. ALPN TLS extension is not used to obtain tlsunique prior to sending any packets.
 
@@ -206,6 +207,9 @@ Controller should reply with with `ok` or `err` block:
 ok = unpaddedSize %s"OK" pad
 err = unpaddedSize %s"ERR " length error pad
 ```
+
+Once controller replies OK to the valid hello block, it should stop accepting new TCP connections.
+
 
 ### Сontroller/host session operation
 
