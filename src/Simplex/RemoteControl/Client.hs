@@ -14,6 +14,7 @@ module Simplex.RemoteControl.Client
     RCHostClient (action),
     RCHostSession (..),
     RCHelloBody (..),
+    HostSessKeys (..),
     newRCHostPairing,
     connectRCHost,
     cancelHostClient,
