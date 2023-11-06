@@ -22,7 +22,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import Simplex.RemoteControl.Types
@@ -58,7 +58,7 @@ data RCInvitation = RCInvitation
 instance StrEncoding RCInvitation where
   strEncode RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh} =
     mconcat
-      [ "RC://",
+      [ "xrcp:/",
         strEncode ca,
         "@",
         strEncode host,
@@ -69,10 +69,7 @@ instance StrEncoding RCInvitation where
       ]
     where
       query =
-        [ ("ca", strEncode ca),
-          ("host", strEncode host),
-          ("port", strEncode port),
-          ("v", strEncode v),
+        [ ("v", strEncode v),
           ("app", LB.toStrict $ J.encode app),
           ("ts", strEncode ts),
           ("skey", strEncode skey),
@@ -82,7 +79,7 @@ instance StrEncoding RCInvitation where
         ]
 
   strP = do
-    _ <- A.string "RC://"
+    _ <- A.string "xrcp:/"
     ca <- strP
     _ <- A.char '@'
     host <- A.takeWhile (/= ':') >>= either fail pure . strDecode . urlDecode True
@@ -94,10 +91,10 @@ instance StrEncoding RCInvitation where
     v <- requiredP q "v" strDecode
     app <- requiredP q "app" $ J.eitherDecodeStrict . urlDecode True
     ts <- requiredP q "ts" $ strDecode . urlDecode True
-    skey <- requiredP q "skey" strDecode
-    idkey <- requiredP q "idkey" strDecode
+    skey <- requiredP q "skey" $ parseAll strP
+    idkey <- requiredP q "idkey" $ parseAll strP
     kem <- requiredP q "kem" strDecode
-    dh <- requiredP q "dh" strDecode
+    dh <- requiredP q "dh" $ parseAll strP
     pure RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh}
 
 data RCSignedInvitation = RCSignedInvitation
@@ -113,9 +110,9 @@ instance StrEncoding RCSignedInvitation where
     mconcat
       [ strEncode invitation,
         "&ssig=",
-        strEncode ssig,
+        strEncode $ C.signatureBytes ssig,
         "&idsig=",
-        strEncode idsig
+        strEncode $ C.signatureBytes idsig
       ]
 
   strP = do
@@ -124,8 +121,8 @@ instance StrEncoding RCSignedInvitation where
     sigs <- case B.breakSubstring "&ssig=" url of
       (_, sigs) | B.null sigs -> fail "missing signatures"
       (_, sigs) -> pure $ parseSimpleQuery $ B.drop 1 sigs
-    ssig <- requiredP sigs "ssig" strDecode
-    idsig <- requiredP sigs "idsig" strDecode
+    ssig <- requiredP sigs "ssig" $ parseAll strP
+    idsig <- requiredP sigs "idsig" $ parseAll strP
     pure RCSignedInvitation {invitation, ssig, idsig}
 
 signInviteURL :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> RCSignedInvitation
@@ -202,8 +199,8 @@ sessionRCInvitation app idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (hos
 requiredP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m a
 requiredP q k f = maybe (fail $ "missing " <> show k) (either fail pure . f) $ lookup k q
 
-optionalP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m (Maybe a)
-optionalP q k f = maybe (pure Nothing) (either fail (pure . Just) . f) $ lookup k q
+-- optionalP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m (Maybe a)
+-- optionalP q k f = maybe (pure Nothing) (either fail (pure . Just) . f) $ lookup k q
 
 data SignatureError
   = BadSessionSignature

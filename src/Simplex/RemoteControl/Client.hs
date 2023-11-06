@@ -54,7 +54,7 @@ import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret, kcbDecrypt, kcbEncry
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON)
-import Simplex.Messaging.Transport (TLS, cGet, cPut)
+import Simplex.Messaging.Transport (TLS (tlsUniq), cGet, cPut)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, liftEitherWith, tshow)
@@ -104,7 +104,7 @@ data RCHClient_ = RCHClient_
     tlsEnded :: TMVar (Either RCErrorType ())
   }
 
-connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (RCHostSession, RCHelloBody, RCHostPairing))
+connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO (RCSignedInvitation, RCHostClient, TMVar (ByteString, TMVar (RCHostSession, RCHelloBody, RCHostPairing)))
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
@@ -128,12 +128,14 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       tlsEnded <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
       pure RCHClient_ {startedPort, hostCAHash, endSession, tlsEnded}
-    runClient :: RCHClient_ -> TMVar (RCHostSession, RCHelloBody, RCHostPairing) -> RCHostKeys -> IO (Async ())
+    runClient :: RCHClient_ -> TMVar (ByteString, TMVar (RCHostSession, RCHelloBody, RCHostPairing)) -> RCHostKeys -> IO (Async ())
     runClient RCHClient_ {startedPort, hostCAHash, endSession, tlsEnded} r hostKeys = do
       tlsCreds <- genTLSCredentials caKey caCert
       startTLSServer startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls -> do
         res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
           logDebug "Incoming TLS connection"
+          r' <- newEmptyTMVarIO
+          atomically $ putTMVar r (tlsUniq tls, r')
           -- TODO lock session
           encryptedHello <- receiveRCPacket tls
           logDebug "Received encrypted HELLO"
@@ -143,7 +145,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
           (sessionKeys, helloBody, pairing') <- prepareHostSession hostCA pairing hostKeys encryptedHello
           logDebug "Prepared host session"
           -- TODO: Send OK
-          atomically $ putTMVar r (RCHostSession {tls, sessionKeys}, helloBody, pairing')
+          atomically $ putTMVar r' (RCHostSession {tls, sessionKeys}, helloBody, pairing')
           -- can use `RCHostSession` until `endSession` is signalled
           logDebug "Holding session"
           atomically $ takeTMVar endSession
