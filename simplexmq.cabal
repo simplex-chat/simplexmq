@@ -577,6 +577,7 @@ test-suite simplexmq-test
       FileDescriptionTests
       NtfClient
       NtfServerTests
+      RemoteControl
       ServerTests
       SMPAgentClient
       SMPClient

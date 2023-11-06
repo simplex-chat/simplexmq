@@ -208,12 +208,12 @@ cancelHostClient RCHostClient {action, client_ = RCHClient_ {endSession}} = do
   atomically $ putTMVar endSession ()
   uninterruptibleCancel action
 
-prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostKeys -> RCEncryptedHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
+prepareHostSession :: C.KeyHash -> RCHostPairing -> RCHostKeys -> RCHostHello -> ExceptT RCErrorType IO (HostSessKeys, RCHelloBody, RCHostPairing)
 prepareHostSession
   tlsHostFingerprint
   pairing@RCHostPairing {idPrivKey, knownHost = knownHost_}
   RCHostKeys {sessKeys = (_, sessPrivKey), kemKeys = (_, kemPrivKey), dhKeys = (_, dhPrivKey)}
-  RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} = do
+  RCHostHello {dhPubKey, kemCiphertext, nonce, encryptedBody} = do
     kemSharedKey <- liftIO $ sntrup761Dec kemCiphertext kemPrivKey
     let key = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
     helloBody <- liftEitherWith (const RCEDecrypt) $ kcbDecrypt key nonce encryptedBody
@@ -333,7 +333,7 @@ receiveRCPacket tls = do
   b' <- liftEitherWith (const RCEBlockSize) $ C.unPad b
   liftEitherWith RCESyntax $ smpDecode b'
 
-prepareCtrlSession :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> KEMCiphertext -> ExceptT RCErrorType IO (CtrlSessKeys, RCEncryptedHello)
+prepareCtrlSession :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> KEMCiphertext -> ExceptT RCErrorType IO (CtrlSessKeys, RCHostHello)
 prepareCtrlSession
   drg
   RCCtrlPairing {caCert, idPubKey, storedSessKeys = StoredCtrlSessKeys {dhPrivKey, kemSharedKey}}
@@ -350,7 +350,7 @@ prepareCtrlSession
         nonce <- liftIO . atomically $ C.pseudoRandomCbNonce drg
         encryptedBody <- liftEitherWith (const RCEBlockSize) $ kcbEncrypt hybridKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
         let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
-            encHello = RCEncryptedHello {dhPubKey = C.publicKey dhPrivKey, kemCiphertext, nonce, encryptedBody}
+            encHello = RCHostHello {dhPubKey = C.publicKey dhPrivKey, kemCiphertext, nonce, encryptedBody}
         pure (sessKeys, encHello)
 
 -- The application should save updated RCHostPairing after user confirmation of the session
@@ -459,7 +459,7 @@ data CtrlSessKeys = CtrlSessKeys
     sessPubKey :: C.PublicKeyEd25519
   }
 
-data RCEncryptedHello = RCEncryptedHello
+data RCHostHello = RCHostHello
   { dhPubKey :: C.PublicKeyX25519,
     kemCiphertext :: KEMCiphertext,
     nonce :: C.CbNonce,
@@ -467,9 +467,9 @@ data RCEncryptedHello = RCEncryptedHello
   }
   deriving (Show)
 
-instance Encoding RCEncryptedHello where
-  smpEncode RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody} =
+instance Encoding RCHostHello where
+  smpEncode RCHostHello {dhPubKey, kemCiphertext, nonce, encryptedBody} =
     "HELLO " <> smpEncode (dhPubKey, kemCiphertext, nonce, Tail encryptedBody)
   smpP = do
     (dhPubKey, kemCiphertext, nonce, Tail encryptedBody) <- "HELLO " *> smpP
-    pure RCEncryptedHello {dhPubKey, kemCiphertext, nonce, encryptedBody}
+    pure RCHostHello {dhPubKey, kemCiphertext, nonce, encryptedBody}
