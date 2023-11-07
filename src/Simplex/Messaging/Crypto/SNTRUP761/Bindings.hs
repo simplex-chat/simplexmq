@@ -4,6 +4,7 @@ module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
 
 import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
@@ -16,14 +17,20 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 
 newtype KEMPublicKey = KEMPublicKey ByteString
+  deriving (Show)
 
 newtype KEMSecretKey = KEMSecretKey ScrubbedBytes
+  deriving (Show)
 
 newtype KEMCiphertext = KEMCiphertext ByteString
+  deriving (Show)
 
 newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
+  deriving (Show)
 
-sntrup761Keypair :: TVar ChaChaDRG -> IO (KEMPublicKey, KEMSecretKey)
+type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
+
+sntrup761Keypair :: TVar ChaChaDRG -> IO KEMKeyPair
 sntrup761Keypair drg =
   bimap KEMPublicKey KEMSecretKey
     <$> BA.allocRet
@@ -51,14 +58,17 @@ sntrup761Dec (KEMCiphertext c) (KEMSecretKey sk) =
       KEMSharedKey
         <$> BA.alloc c_SNTRUP761_SIZE (\kPtr -> c_sntrup761_dec kPtr cPtr skPtr)
 
-instance Encoding KEMPublicKey where
-  smpEncode (KEMPublicKey pk) = smpEncode (BA.convert pk :: ByteString)
-  smpP = KEMPublicKey . BA.convert <$> smpP @ByteString
-
 instance StrEncoding KEMPublicKey where
   strEncode (KEMPublicKey pk) = strEncode (BA.convert pk :: ByteString)
   strP = KEMPublicKey . BA.convert <$> strP @ByteString
 
 instance Encoding KEMCiphertext where
-  smpEncode (KEMCiphertext c) = smpEncode (BA.convert c :: ByteString)
-  smpP = KEMCiphertext . BA.convert <$> smpP @ByteString
+  smpEncode (KEMCiphertext c) = smpEncode . Large $ BA.convert c
+  smpP = KEMCiphertext . BA.convert . unLarge <$> smpP
+
+instance ToJSON KEMPublicKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON KEMPublicKey where
+  parseJSON = strParseJSON "KEMPublicKey"

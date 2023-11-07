@@ -2,33 +2,83 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GADTs #-}
 
 module Simplex.RemoteControl.Types where
 
-import Control.Monad
-import Crypto.Error (eitherCryptoError)
-import qualified Crypto.PubKey.Ed25519 as Ed25519
+import Crypto.Random (ChaChaDRG)
+import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteArray (convert)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as B
-import Data.Foldable (toList)
-import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8Lenient, encodeUtf8)
-import Data.Time.Clock.System (SystemTime)
-import Data.Word (Word16)
-import Network.HTTP.Types (parseSimpleQuery)
-import Network.HTTP.Types.URI (renderSimpleQuery, urlDecode, urlEncode)
-import qualified Network.Socket as N
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
+import Data.Time.Clock.System (SystemTime, getSystemTime)
+import qualified Network.TLS as TLS
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Encoding (Encoding (..))
-import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey, KEMSecretKey, sntrup761Keypair)
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
+import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
+import Simplex.Messaging.Util (safeDecodeUtf8)
 import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import UnliftIO
+
+data RCErrorType
+  = RCEInternal {internalErr :: String}
+  | RCEIdentity
+  | RCENoLocalAddress
+  | RCETLSStartFailed
+  | RCEException {exception :: String}
+  | RCECtrlAuth
+  | RCECtrlNotFound
+  | RCECtrlError {ctrlErr :: String}
+  | RCEVersion
+  | RCEDecrypt
+  | RCEBlockSize
+  | RCESyntax {syntaxErr :: String}
+  deriving (Eq, Show, Exception)
+
+instance StrEncoding RCErrorType where
+  strEncode = \case
+    RCEInternal err -> "INTERNAL" <> text err
+    RCEIdentity -> "IDENTITY"
+    RCENoLocalAddress -> "NO_LOCAL_ADDR"
+    RCETLSStartFailed -> "CTRL_TLS_START"
+    RCEException err -> "EXCEPTION" <> text err
+    RCECtrlAuth -> "CTRL_AUTH"
+    RCECtrlNotFound -> "CTRL_NOT_FOUND"
+    RCECtrlError err -> "CTRL_ERROR" <> text err
+    RCEVersion -> "VERSION"
+    RCEDecrypt -> "DECRYPT"
+    RCEBlockSize -> "BLOCK_SIZE"
+    RCESyntax err -> "SYNTAX" <> text err
+    where
+      text = (" " <>) . encodeUtf8 . T.pack
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "INTERNAL" -> RCEInternal <$> textP
+      "IDENTITY" -> pure RCEIdentity
+      "NO_LOCAL_ADDR" -> pure RCENoLocalAddress
+      "CTRL_TLS_START" -> pure RCETLSStartFailed
+      "EXCEPTION" -> RCEException <$> textP
+      "CTRL_AUTH" -> pure RCECtrlAuth
+      "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
+      "CTRL_ERROR" -> RCECtrlError <$> textP
+      "VERSION" -> pure RCEVersion
+      "DECRYPT" -> pure RCEDecrypt
+      "BLOCK_SIZE" -> pure RCEBlockSize
+      "SYNTAX" -> RCESyntax <$> textP
+      _ -> fail "bad RCErrorType"
+    where
+      textP = T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+
+-- * Discovery
 
 ipProbeVersionRange :: VersionRange
 ipProbeVersionRange = mkVersionRange 1 1
@@ -36,156 +86,56 @@ ipProbeVersionRange = mkVersionRange 1 1
 data IpProbe = IpProbe
   { versionRange :: VersionRange,
     randomNonce :: ByteString
-  } deriving (Show)
+  }
+  deriving (Show)
 
 instance Encoding IpProbe where
   smpEncode IpProbe {versionRange, randomNonce} = smpEncode (versionRange, 'I', randomNonce)
 
   smpP = IpProbe <$> (smpP <* "I") *> smpP
 
-announceVersionRange :: VersionRange
-announceVersionRange = mkVersionRange  1 1
+-- * Controller
 
-data Announce = Announce
-  { versionRange :: VersionRange,
-    sessionStart :: SystemTime,
-    announceCounter :: Word16,
-    serviceAddress :: (N.HostAddress, Word16),
-    caFingerprint :: C.KeyHash,
-    sessionDH :: C.PublicKeyX25519,
-    announceKey :: C.PublicKeyEd25519
-  } deriving (Show)
-
-instance Encoding Announce where
-  smpEncode Announce {versionRange, sessionStart, announceCounter, serviceAddress, caFingerprint, sessionDH, announceKey} =
-    smpEncode (versionRange, 'A', sessionStart, announceCounter, serviceAddress)
-      <> smpEncode (caFingerprint, sessionDH, announceKey)
-
-  smpP = Announce <$> (smpP <* "A") <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
-
-data SignedAnnounce = SignedAnnounce Announce (C.Signature 'C.Ed25519)
-
-instance Encoding SignedAnnounce where
-  smpEncode (SignedAnnounce ann (C.SignatureEd25519 sig)) = smpEncode (ann, convert sig :: ByteString)
-
-  smpP = do
-    sa <- SignedAnnounce <$> smpP <*> signatureP
-    unless (verifySignedAnnounce sa) $ fail "bad announce signature"
-    pure sa
-    where
-      signatureP = do
-        bs <- smpP :: A.Parser ByteString
-        case eitherCryptoError (Ed25519.signature bs) of
-          Left ce -> fail $ show ce
-          Right ok -> pure $ C.SignatureEd25519 ok
-
-signAnnounce :: C.PrivateKey C.Ed25519 -> Announce -> SignedAnnounce
-signAnnounce announceSecret ann = SignedAnnounce ann sig
-  where
-    sig =
-      case C.sign (C.APrivateSignKey C.SEd25519 announceSecret) (smpEncode ann) of
-        C.ASignature C.SEd25519 s -> s
-        _ -> error "signing with ed25519"
-
-verifySignedAnnounce :: SignedAnnounce -> Bool
-verifySignedAnnounce (SignedAnnounce ann@Announce {announceKey} sig) = C.verify aKey aSig (smpEncode ann)
-  where
-    aKey = C.APublicVerifyKey C.SEd25519 announceKey
-    aSig = C.ASignature C.SEd25519 sig
-
-data OOB = OOB
-  { -- authority part
-    caFingerprint :: C.KeyHash,
-    authToken :: Text,
-    host :: Text,
-    port :: Word16,
-    -- query part
-    version :: VersionRange, -- v=
-    appName :: Text, -- app=
-    sigPubKey :: C.PublicKeyEd25519, -- key=
-    deviceName :: Maybe Text -- device=
+-- | A bunch of keys that should be generated by a controller to start a new remote session and produce invites
+data CtrlSessionKeys = CtrlSessionKeys
+  { ts :: SystemTime,
+    ca :: C.KeyHash,
+    credentials :: TLS.Credentials,
+    sSigKey :: C.PrivateKeyEd25519,
+    dhKey :: C.PrivateKeyX25519,
+    kem :: (KEMPublicKey, KEMSecretKey)
   }
-  deriving (Eq, Show)
 
-instance StrEncoding OOB where
-  strEncode OOB {caFingerprint, authToken, host, port, version, appName, sigPubKey, deviceName} =
-    schema <> "://" <> authority <> "#/?" <> renderSimpleQuery False query
-    where
-      schema = "xrcp"
-      authority =
-        mconcat
-          [ strEncode caFingerprint,
-            ":",
-            encodeUtf8 authToken,
-            "@",
-            encodeUtf8 host,
-            ":",
-            strEncode port
-          ]
-      query =
-        [ ("v", strEncode version),
-          ("app", encodeUtf8 appName),
-          ("key", strEncode $ C.encodePubKey sigPubKey)
-        ]
-          ++ [("device", urlEncode True $ encodeUtf8 name) | name <- toList deviceName]
+newCtrlSessionKeys :: TVar ChaChaDRG -> (C.APrivateSignKey, C.SignedCertificate) -> IO CtrlSessionKeys
+newCtrlSessionKeys rng (caKey, caCert) = do
+  ts <- getSystemTime
+  (_, C.APrivateDhKey C.SX25519 dhKey) <- C.generateDhKeyPair C.SX25519
+  (_, C.APrivateSignKey C.SEd25519 sSigKey) <- C.generateSignatureKeyPair C.SEd25519
 
-  strP = do
-    _ <- A.string "xrcp://"
-    caFingerprint <- strP
-    _ <- A.char ':'
-    authToken <- decodeUtf8Lenient <$> A.takeWhile (/= '@')
-    _ <- A.char '@'
-    host <- decodeUtf8Lenient <$> A.takeWhile (/= ':')
-    _ <- A.char ':'
-    port <- strP
+  let parent = (C.signatureKeyPair caKey, caCert)
+  sessionCreds <- genCredentials (Just parent) (0, 24) "Session"
+  let (ca, credentials) = tlsCredentials $ sessionCreds :| [parent]
+  kem <- sntrup761Keypair rng
 
-    _ <- A.string "#/?"
-    q <- parseSimpleQuery <$> A.takeByteString
-    version <- maybe (fail "missing version") (either fail pure . strDecode) (lookup "v" q)
-    appName <- maybe (fail "missing appName") (pure . decodeUtf8Lenient) (lookup "app" q)
-    sigPubKeyB64 <- maybe (fail "missing key") pure (lookup "key" q)
-    sigPubKey <- either fail pure $ strDecode sigPubKeyB64 >>= C.decodePubKey
-    let deviceName = fmap (decodeUtf8Lenient . urlDecode True) (lookup "device" q)
-    pure OOB {caFingerprint, authToken, host, port, version, appName, sigPubKey, deviceName}
+  pure CtrlSessionKeys {ts, ca, credentials, sSigKey, dhKey, kem}
 
-data SignedOOB = SignedOOB OOB (C.Signature 'C.Ed25519)
-  deriving (Eq, Show)
+data CtrlCryptoHandle = CtrlCryptoHandle
 
-instance StrEncoding SignedOOB where
-  strEncode (SignedOOB oob sig) = strEncode oob <> "&sig=" <> strEncode (C.signatureBytes sig)
+-- TODO
 
-  strDecode s = do
-    unless (B.length sig == sigLen) $ Left "bad size"
-    unless ("&sig=" `B.isPrefixOf` sig) $ Left "bad signature prefix"
-    signedOOB <- SignedOOB <$> strDecode oob <*> (strDecode (B.drop 5 sig) >>= C.decodeSignature)
-    unless (verifySignedOOB signedOOB) $ Left "bad signature"
-    pure signedOOB
-    where
-      l = B.length s
-      (oob, sig) = B.splitAt (l - sigLen) s
-      sigLen = 93 -- &sig= + ed25519 sig size in base64 (88)
+-- * Host
 
-  -- XXX: strP is used in chat command parser, but default strP assumes bas64url-encoded bytestring, where OOB is an URL-like
-  strP = A.takeWhile (/= ' ') >>= either fail pure . strDecode
+data HostSessionKeys = HostSessionKeys
+  { ca :: C.KeyHash
+  -- TODO
+  }
 
-signOOB :: C.PrivateKey C.Ed25519 -> OOB -> SignedOOB
-signOOB key oob = SignedOOB oob sig
-  where
-    sig =
-      case C.sign (C.APrivateSignKey C.SEd25519 key) (strEncode oob) of
-        C.ASignature C.SEd25519 s -> s
-        _ -> error "signing with ed25519"
+data HostCryptoHandle = HostCryptoHandle
 
-verifySignedOOB :: SignedOOB -> Bool
-verifySignedOOB (SignedOOB oob@OOB {sigPubKey} sig) = C.verify aKey aSig (strEncode oob)
-  where
-    aKey = C.APublicVerifyKey C.SEd25519 sigPubKey
-    aSig = C.ASignature C.SEd25519 sig
+-- TODO
 
-decodeOOBLink :: Text -> Either String OOB
-decodeOOBLink = fmap (\(SignedOOB oob _verified) -> oob) . strDecode . encodeUtf8
+-- * Utils
 
--- XXX: Move to utils?
 type Tasks = TVar [Async ()]
 
 asyncRegistered :: MonadUnliftIO m => Tasks -> m () -> m ()
@@ -194,5 +144,7 @@ asyncRegistered tasks action = async action >>= registerAsync tasks
 registerAsync :: MonadIO m => Tasks -> Async () -> m ()
 registerAsync tasks = atomically . modifyTVar tasks . (:)
 
-cancelTasks :: (MonadIO m) => Tasks -> m ()
+cancelTasks :: MonadIO m => Tasks -> m ()
 cancelTasks tasks = readTVarIO tasks >>= mapM_ cancel
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "RCE") ''RCErrorType)

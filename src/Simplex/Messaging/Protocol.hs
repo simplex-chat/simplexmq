@@ -1203,9 +1203,6 @@ instance ProtocolEncoding ErrorType BrokerMsg where
       | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
 
-_smpP :: Encoding a => Parser a
-_smpP = A.space *> smpP
-
 -- | Parse SMP protocol commands and broker messages
 parseProtocol :: forall err msg. ProtocolEncoding err msg => Version -> ByteString -> Either err msg
 parseProtocol v s =

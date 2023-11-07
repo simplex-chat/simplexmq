@@ -93,6 +93,10 @@ module Simplex.Messaging.Agent
     xftpSendFile,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFileRemote,
+    rcNewHostPairing,
+    rcConnectHost,
+    rcConnectCtrlURI,
+    rcConnectCtrlMulticast,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -111,6 +115,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
+import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -156,6 +161,8 @@ import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import Simplex.RemoteControl.Client
+import Simplex.RemoteControl.Invitation
 import UnliftIO.Async (async, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import UnliftIO.STM
@@ -378,6 +385,38 @@ xftpDeleteSndFileInternal c = withAgentEnv c . deleteSndFileInternal c
 -- | Delete XFTP snd file chunks on servers
 xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
+
+-- | Create new remote host pairing
+rcNewHostPairing :: MonadIO m => m RCHostPairing
+rcNewHostPairing = liftIO newRCHostPairing
+
+-- | start TLS server for remote host with optional multicast
+rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m RCHostConnection
+rcConnectHost c = withAgentEnv c .:. rcConnectHost'
+
+rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m RCHostConnection
+rcConnectHost' pairing ctrlAppInfo _multicast = do
+  drg <- asks random
+  liftError RCP $ connectRCHost drg pairing ctrlAppInfo
+
+-- | connect to remote controller via URI
+rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrlURI c = withAgentEnv c .:. rcConnectCtrlURI'
+
+rcConnectCtrlURI' :: AgentMonad m => RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrlURI' signedInv pairing_ hostAppInfo = do
+  drg <- asks random
+  liftError RCP $ connectRCCtrlURI drg signedInv pairing_ hostAppInfo
+
+-- | connect to known remote controller via multicast
+rcConnectCtrlMulticast :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrlMulticast c = withAgentEnv c .: rcConnectCtrlMulticast'
+
+rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrlMulticast' pairings hostAppInfo = do
+  drg <- asks random
+  subscribers <- newTVarIO 0 -- TODO: get from agent
+  liftError RCP $ connectKnownRCCtrlMulticast drg subscribers pairings hostAppInfo
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()

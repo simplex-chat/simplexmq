@@ -211,6 +211,7 @@ import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTra
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import Simplex.RemoteControl.Types
 import Text.Read
 import UnliftIO.Exception (Exception)
 
@@ -1419,6 +1420,8 @@ data AgentErrorType
     NTF {ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {xftpErr :: XFTPErrorType}
+  | -- | XRCP protocol errors forwarded to agent clients
+    RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
     BROKER {brokerAddress :: String, brokerErr :: BrokerErrorType}
   | -- | errors of other agents
@@ -1524,6 +1527,7 @@ instance StrEncoding AgentErrorType where
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
       <|> "XFTP " *> (XFTP <$> strP)
+      <|> "RCP " *> (RCP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
       <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
@@ -1540,6 +1544,7 @@ instance StrEncoding AgentErrorType where
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
     XFTP e -> "XFTP " <> strEncode e
+    RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
     BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e

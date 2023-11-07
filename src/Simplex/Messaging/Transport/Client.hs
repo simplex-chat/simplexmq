@@ -110,12 +110,13 @@ instance IsString (NonEmpty TransportHost) where fromString = parseString strDec
 data TransportClientConfig = TransportClientConfig
   { socksProxy :: Maybe SocksProxy,
     tcpKeepAlive :: Maybe KeepAliveOpts,
-    logTLSErrors :: Bool
+    logTLSErrors :: Bool,
+    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey)
   }
   deriving (Eq, Show)
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True
+defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
@@ -126,9 +127,9 @@ runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig ->
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive} proxyUsername host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials} proxyUsername host port keyHash client = do
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
         _ -> connectTCPClient hostName
@@ -205,14 +206,19 @@ instance ToJSON SocksProxy where
 instance FromJSON SocksProxy where
   parseJSON = strParseJSON "SocksProxy"
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
-mkTLSClientParams supported caStore_ host port keyHash_ = do
-  let p = B.pack port
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> T.ClientParams
+mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ =
   (T.defaultParamsClient host p)
-    { T.clientShared = maybe def (\caStore -> def {T.sharedCAStore = caStore}) caStore_,
-      T.clientHooks = maybe def (\keyHash -> def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p}) keyHash_,
+    { T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
+      T.clientHooks =
+        def
+          { T.onServerCertificate = maybe def (\cafp _ _ _ -> validateCertificateChain cafp host p) cafp_,
+            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_
+          },
       T.clientSupported = supported
     }
+  where
+    p = B.pack port
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]

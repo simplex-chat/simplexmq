@@ -13,7 +13,7 @@ import Data.ASN1.Types (getObjectID)
 import Data.ASN1.Types.String (ASN1StringEncoding (UTF8))
 import Data.Hourglass (Hours (..), timeAdd)
 import Data.List.NonEmpty (NonEmpty (..))
-import qualified Data.List.NonEmpty as NE
+import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.X509 as X509
@@ -34,9 +34,9 @@ tlsCredentials :: NonEmpty Credentials -> (C.KeyHash, TLS.Credentials)
 tlsCredentials credentials = (C.KeyHash rootFP, TLS.Credentials [(X509.CertificateChain certs, privateToTls $ snd leafKey)])
   where
     Fingerprint rootFP = getFingerprint root X509.HashSHA256
-    leafKey = fst $ NE.head credentials
-    root = snd $ NE.last credentials
-    certs = map snd $ NE.toList credentials
+    leafKey = fst $ L.head credentials
+    root = snd $ L.last credentials
+    certs = map snd $ L.toList credentials
 
 privateToTls :: C.APrivateSignKey -> TLS.PrivKey
 privateToTls (C.APrivateSignKey _ k) = case k of
