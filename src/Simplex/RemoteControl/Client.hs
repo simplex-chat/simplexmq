@@ -95,7 +95,7 @@ $(JQ.deriveJSON defaultJSON ''RCHostHello)
 data RCCtrlHello = RCCtrlHello {}
   deriving (Show)
 
-$(JQ.deriveJSON defaultJSON ''RCCtrlHello)
+$(JQ.deriveJSON defaultJSON {J.nullaryToObject = True} ''RCCtrlHello)
 
 newRCHostPairing :: IO RCHostPairing
 newRCHostPairing = do
