@@ -17,26 +17,19 @@ import Data.ByteString (ByteString)
 import Data.Default (def)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.String (IsString)
-import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8)
-import Data.Word (Word16)
 import Network.Info (IPv4 (..), NetworkInterface (..), getNetworkInterfaces)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding (Encoding (..))
-import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Transport (supportedParameters)
 import qualified Simplex.Messaging.Transport as Transport
-import Simplex.Messaging.Transport.Client (TransportHost (..), defaultTransportClientConfig, runTransportClient)
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, runTransportServerSocket, startTCPServer)
 import Simplex.Messaging.Util (ifM, tshow)
-import Simplex.Messaging.Version (VersionRange)
 import Simplex.RemoteControl.Discovery.Multicast (setMembership)
 import Simplex.RemoteControl.Types
 import UnliftIO
-import UnliftIO.Concurrent
 
 -- | mDNS multicast group
 pattern MULTICAST_ADDR_V4 :: (IsString a, Eq a) => a
@@ -76,50 +69,6 @@ mkIpProbe :: MonadIO m => m IpProbe
 mkIpProbe = do
   randomNonce <- liftIO $ getRandomBytes 32
   pure IpProbe {versionRange = ipProbeVersionRange, randomNonce}
-
--- | Announce tls server, wait for connection and attach http2 client to it.
---
--- Announcer is started when TLS server is started and stopped when a connection is made.
-announceCtrl ::
-  MonadUnliftIO m =>
-  (MVar rc -> MVar () -> Transport.TLS -> IO ()) ->
-  Tasks ->
-  TMVar (Maybe N.PortNumber) ->
-  Maybe (Text, VersionRange) ->
-  Maybe Text ->
-  C.PrivateKeyEd25519 ->
-  CtrlSessionKeys ->
-  -- | Session address to announce
-  TransportHost ->
-  m () ->
-  m rc
-announceCtrl runCtrl tasks started app_ device_ idkey sk@CtrlSessionKeys {ca, credentials} host finishAction = do
-  ctrlStarted <- newEmptyMVar
-  ctrlFinished <- newEmptyMVar
-  _ <- forkIO $ readMVar ctrlFinished >> finishAction -- attach external cleanup action to session lock
-  announcer <-
-    async . liftIO $
-      atomically (readTMVar started) >>= \case
-        Nothing -> pure () -- TLS server failed to start, skipping announcer
-        Just givenPort -> do
-          logInfo $ "Starting announcer for " <> ident <> " at " <> tshow (host, givenPort)
-          runAnnouncer app_ device_ idkey sk (host, givenPort) -- (sigKey, announce {serviceAddress = (host, fromIntegral givenPort)})
-  tasks `registerAsync` announcer
-  let hooks = undefined -- TODO
-  tlsServer <- startTLSServer started credentials hooks $ \tls -> do
-    logInfo $ "Incoming connection for " <> ident
-    cancel announcer
-    runCtrl ctrlStarted ctrlFinished tls `catchAny` (logError . tshow)
-    logInfo $ "Client finished for " <> ident
-  _ <- forkIO $ waitCatch tlsServer >> void (tryPutMVar ctrlFinished ())
-  tasks `registerAsync` tlsServer
-  logInfo $ "Waiting for client for " <> ident
-  readMVar ctrlStarted
-  where
-    ident = decodeUtf8 $ strEncode ca
-
-runAnnouncer :: Maybe (Text, VersionRange) -> Maybe Text -> C.PrivateKeyEd25519 -> CtrlSessionKeys -> (TransportHost, N.PortNumber) -> IO ()
-runAnnouncer app_ device_ idSigKey sk (host, port) = error "runAnnouncer: make invites, encrypt and send"
 
 -- | Send replay-proof announce datagrams
 -- runAnnouncer :: (C.PrivateKeyEd25519, Announce) -> IO ()
@@ -199,15 +148,3 @@ recvAnnounce :: MonadIO m => UDP.ListenSocket -> m (N.SockAddr, ByteString)
 recvAnnounce sock = liftIO $ do
   (invite, UDP.ClientSockAddr source _cmsg) <- UDP.recvFrom sock
   pure (source, invite)
-
-connectTLSClient ::
-  MonadUnliftIO m =>
-  (TransportHost, Word16) ->
-  HostSessionKeys ->
-  (HostCryptoHandle -> Transport.TLS -> m a) ->
-  m a
-connectTLSClient (host, port) HostSessionKeys {ca} client =
-  runTransportClient defaultTransportClientConfig Nothing host (show port) (Just ca) $ \tls -> do
-    -- TODO: set up host side using
-    let hch = HostCryptoHandle
-    client hch tls
