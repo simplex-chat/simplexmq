@@ -51,7 +51,6 @@ import Simplex.Messaging.Protocol
     tEncode,
     tEncodeBatch,
     tParse,
-    _smpP,
   )
 import Simplex.Messaging.Transport (SessionId, TransportError (..))
 import Simplex.Messaging.Util (bshow, (<$?>))

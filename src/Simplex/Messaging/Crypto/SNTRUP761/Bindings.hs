@@ -4,12 +4,11 @@ module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
 
 import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)
-import qualified Data.Aeson as J
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Foreign (nullPtr)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
@@ -59,10 +58,6 @@ sntrup761Dec (KEMCiphertext c) (KEMSecretKey sk) =
       KEMSharedKey
         <$> BA.alloc c_SNTRUP761_SIZE (\kPtr -> c_sntrup761_dec kPtr cPtr skPtr)
 
-instance Encoding KEMPublicKey where
-  smpEncode (KEMPublicKey pk) = smpEncode (BA.convert pk :: ByteString)
-  smpP = KEMPublicKey . BA.convert <$> smpP @ByteString
-
 instance StrEncoding KEMPublicKey where
   strEncode (KEMPublicKey pk) = strEncode (BA.convert pk :: ByteString)
   strP = KEMPublicKey . BA.convert <$> strP @ByteString
@@ -71,10 +66,9 @@ instance Encoding KEMCiphertext where
   smpEncode (KEMCiphertext c) = smpEncode . Large $ BA.convert c
   smpP = KEMCiphertext . BA.convert . unLarge <$> smpP
 
-instance J.ToJSON KEMPublicKey where
-  toJSON = J.toJSON . decodeUtf8 . strEncode
+instance ToJSON KEMPublicKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
-instance J.FromJSON KEMPublicKey where
-  parseJSON =
-    J.withText "KEMPublicKey" $
-      either fail pure . strDecode . encodeUtf8
+instance FromJSON KEMPublicKey where
+  parseJSON = strParseJSON "KEMPublicKey"

@@ -77,7 +77,6 @@ appInfoParam = "app=" escapedJSON ; optional
 sessionTsParam = "ts=" 1*DIGIT
 sessPubKeyParam = "skey=" base64url ; required
 idPubKeyParam = "idkey=" base64url ; required
-kemEncKeyParam = "kem=" base64url ; required, can we have x509encoded?
 dhPubKeyParam = "dh=" base64url ; required
 sessSignatureParam = "ssig=" base64url ; required, signs the URI with this and idSignatureParam param removed
 idSignatureParam = "idsig=" base64url ; required, signs the URI with this param removed
@@ -124,11 +123,10 @@ addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
     "v": {"ref": "versionRange"},
     "ts": {"type": "uint64"},
     "skey": {"ref": "base64url"},
-    "idkey": {"ref": "base64url"},
-    "kem": {"ref": "base64url"}
+    "idkey": {"ref": "base64url"}
   },
   "optionalProperties": {
-    "app": {"type": "string"}
+    "app": {"properties": {}, "additionalProperties": true}
   },
   "additionalProperties": true
 }
@@ -148,23 +146,22 @@ Once the session is confirmed by the user, the host device sends "hello" block t
 
 Block size should be 16384 bytes.
 
-Hello block must contain:
-- KEM ciphertext with encapsulated secret and new session DH key - used to compute new shared secret with the controller keys from the announcement.
+Host HELLO must contain:
+- new session DH key - used to compute new shared secret with the controller keys from the announcement.
 - encrypted part of hello block (JSON object), containing:
   - chosen protocol version.
   - host CA TLS certificate fingerprint - part of host long term identity - must match the one presented in TLS handshake and the previous sessions, otherwise the connection is terminated.
-  - host device name
-  - chosen application version.
-  - additional application specific parameters, e.g host settings or JSON encoding format.
+  - KEM encapsulation key - used to compute new shared secret for the session.
+  - additional application specific parameters, e.g host device name, application version, host settings or JSON encoding format.
 
 Hello block syntax:
 
 ```abnf
-helloBlock = unpaddedSize %s"HELLO " dhPubKey kemCiphertext nonce encrypted(unpaddedSize helloBlockJSON helloPad) pad
+hostHello = unpaddedSize %s"HELLO " dhPubKey nonce encrypted(unpaddedSize hostHelloJSON helloPad) pad
 unpaddedSize = largeLength
+dhPubKey = length x509encoded
 pad = <pad block size to 16384 bytes>
 helloPad = <pad hello size to 12888 bytes>
-kemCiphertext = largeLength *OCTET
 largeLength = 2*2 OCTET
 ```
 
@@ -172,7 +169,7 @@ Controller decrypts (including the first session) and validates the received hel
 - Chosen versions are supported (must be within offered ranges).
 - CA fingerprint matches the one presented in TLS handshake and the previous sessions - in subsequent sessions TLS connection should be rejected if the fingerprint is different.
 
-JTD schema for the encrypted part of hello block:
+JTD schema for the encrypted part of host HELLO block `hostHelloJSON`: 
 
 ```json
 {
@@ -193,22 +190,52 @@ JTD schema for the encrypted part of hello block:
   "properties": {
     "v": {"ref": "version"},
     "ca": {"ref": "base64url"},
+    "kem": {"ref": "base64url"}
   },
   "optionalProperties": {
-    "app": {"type": "string"}
+    "app": {"properties": {}, "additionalProperties": true}
   },
   "additionalProperties": true
 }
 ```
 
-Controller should reply with with `ok` or `err` block:
+Controller should reply with with `hello` or `error` response:
 
-```
-ok = unpaddedSize %s"OK" pad
-err = unpaddedSize %s"ERR " length error pad
+```abnf
+ctrlHello = unpaddedSize %s"HELLO " kemCyphertext nonce encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
+; ctrlHelloJSON is encrypted with the hybrid secret,
+; including both previously agreed DH secret and KEM secret from kemCyphertext
+unpaddedSize = largeLength
+kemCyphertext = largeLength *OCTET
+pad = <pad block size to 16384 bytes>
+helloPad = <pad hello size to 12888 bytes>
+largeLength = 2*2 OCTET
+
+ctrlError = unpaddedSize %s"ERROR " nonce encrypted(unpaddedSize ctrlErrorJSON helloPad) pad
+; ctrlErrorJSON is encrypted using previously agreed DH secret.
 ```
 
-Once controller replies OK to the valid hello block, it should stop accepting new TCP connections.
+JTD schema for the encrypted part of controller HELLO block `ctrlHelloJSON`:
+
+```json
+{
+  "properties": {},
+  "additionalProperties": true
+}
+```
+
+JTD schema for the encrypted part of controller ERROR block `ctrlErrorJSON`:
+
+```json
+{
+  "properties": {
+    "message": {"type": "string"}
+  },
+  "additionalProperties": true
+}
+```
+
+Once controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
 
 
 ### Сontroller/host session operation
@@ -217,7 +244,7 @@ The protocol for communication during the session is out of scope of this protoc
 
 SimpleX Chat will use HTTP2 encoding, where host device acts as a server and controller acts as a client (these roles are reversed compared with TLS connection).
 
-Payloads in the protocol must be encrypted using NaCL cryptobox using the shared secret agreed during session establishment.
+Payloads in the protocol must be encrypted using NaCL cryptobox using the hybrid shared secret agreed during session establishment.
 
 Commands of the controller must be signed after the encryption using the controller's session and long term Ed25519 keys.
 
@@ -236,27 +263,30 @@ counter = 8*8 OCTET ; int64
 
 Initial announcement is shared out-of-band, and it is not encrypted.
 
-This announcement contains DH and KEM keys, which are used to agree session encryption keys - the HELLO block will containt DH key and KEM ciphertext with encapsulated secret that will be used to determine the shared secret (using SHA512 over concatenated DH shared secret and KEM encapsulated secret).
+This announcement contains only DH keys, as KEM key is too large to include in QR code, which are used to agree encryption key for host HELLO block. The host HELLO block will containt DH key in plaintext part and KEM encapsulation (public) key in encrypted part, that will be used to determine the shared secret (using SHA256 over concatenated DH shared secret and KEM encapsulated secret) both for controller HELLO response (that contains KEM cyphertext in plaintext part) and subsequent session commands and responses.
 
-During the next session we send announcement via encrypted multicast block. The shared key for this secret is determined using the KEM shared secred from the previous session and DH shared secret computed using the host DH key from the previous session and the new controller DH key from the announcement.
+During the next session the announcement is sent via encrypted multicast block. The shared key for this announcement and for host HELLO block is determined using the KEM shared secred from the previous session and DH shared secret computed using the host DH key from the previous session and the new controller DH key from the announcement.
 
-For the session, the shared secred is computed again using the KEM shared secret encapsulated using the new KEM key from the announcement and DH shared secret computed using the host DH key from HELLO block and the new controller DH key from the announcement.
+For the session, the shared secred is computed again using the KEM shared secret encapsulated by the controller using the new KEM key from the HOST hello block and DH shared secret computed using the host DH key from HELLO block and the new controller DH key from the announcement.
 
 To describe it in pseudocode:
 
 ```
 // session 1
-sessionSecret(1) = sha512(dhSecret(1) || kemSecret(1)) // to encrypt session 1 data, incl. hello
+hostHelloSecret(1) = dhSecret(1)
+sessionSecret(1) = sha256(dhSecret(1) || kemSecret(1)) // to encrypt session 1 data, incl. controller hello
 dhSecret(1) = dh(hostHelloDhKey(1), controllerAnnouncementDhKey(1))
 kemCiphertext(1) = enc(kemSecret(1), kemEncKey(1))
+// kemEncKey is included in host HELLO, kemCiphertext - in controller HELLO
 kemSecret(1) = dec(kemCiphertext(1), kemDecKey(1))
 
 // announcement for session n
-announcementSecret(n) = sha512(dhSecret(n') || kemSecret(n - 1))
+announcementSecret(n) = sha256(dhSecret(n') || kemSecret(n - 1))
 dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerAnnouncementDhKey(n))
 
 // session n
-sessionSecret(n) = sha512(dhSecret(n) || kemSecret(n))
+hostHelloSecret(n) = sha256(dhSecret(n) || kemSecret(n - 1))
+sessionSecret(n) = sha256(dhSecret(n) || kemSecret(n)) // to encrypt session n data, incl. controller hello
 dhSecret(n) = dh(hostHelloDhKey(n), controllerAnnouncementDhKey(n))
 kemCiphertext(n) = enc(kemSecret(n), kemEncKey(n))
 kemSecret(n) = dec(kemCiphertext(n), kemDecKey(n))

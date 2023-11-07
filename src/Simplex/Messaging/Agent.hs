@@ -391,28 +391,28 @@ rcNewHostPairing :: MonadIO m => m RCHostPairing
 rcNewHostPairing = liftIO newRCHostPairing
 
 -- | start TLS server for remote host with optional multicast
-rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m (RCSignedInvitation, RCHostClient, TMVar (ByteString, TMVar (RCHostSession, RCHelloBody, RCHostPairing)))
+rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m RCHostConnection
 rcConnectHost c = withAgentEnv c .:. rcConnectHost'
 
-rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m (RCSignedInvitation, RCHostClient, TMVar (ByteString, TMVar (RCHostSession, RCHelloBody, RCHostPairing)))
+rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m RCHostConnection
 rcConnectHost' pairing ctrlAppInfo _multicast = do
   drg <- asks random
   liftError RCP $ connectRCHost drg pairing ctrlAppInfo
 
 -- | connect to remote controller via URI
-rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
 rcConnectCtrlURI c = withAgentEnv c .:. rcConnectCtrlURI'
 
-rcConnectCtrlURI' :: AgentMonad m => RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlURI' :: AgentMonad m => RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
 rcConnectCtrlURI' signedInv pairing_ hostAppInfo = do
   drg <- asks random
   liftError RCP $ connectRCCtrlURI drg signedInv pairing_ hostAppInfo
 
 -- | connect to known remote controller via multicast
-rcConnectCtrlMulticast :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlMulticast :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
 rcConnectCtrlMulticast c = withAgentEnv c .: rcConnectCtrlMulticast'
 
-rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m (RCCtrlClient, TMVar (RCCtrlSession, RCCtrlPairing))
+rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
 rcConnectCtrlMulticast' pairings hostAppInfo = do
   drg <- asks random
   subscribers <- newTVarIO 0 -- TODO: get from agent

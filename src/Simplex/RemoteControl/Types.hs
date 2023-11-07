@@ -34,9 +34,10 @@ data RCErrorType
   | RCEIdentity
   | RCENoLocalAddress
   | RCETLSStartFailed
-  | RCEException {ctrlError :: String}
+  | RCEException {exception :: String}
   | RCECtrlAuth
   | RCECtrlNotFound
+  | RCECtrlError {ctrlErr :: String}
   | RCEVersion
   | RCEDecrypt
   | RCEBlockSize
@@ -52,6 +53,7 @@ instance StrEncoding RCErrorType where
     RCEException err -> "EXCEPTION" <> text err
     RCECtrlAuth -> "CTRL_AUTH"
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
+    RCECtrlError err -> "CTRL_ERROR" <> text err
     RCEVersion -> "VERSION"
     RCEDecrypt -> "DECRYPT"
     RCEBlockSize -> "BLOCK_SIZE"
@@ -67,6 +69,7 @@ instance StrEncoding RCErrorType where
       "EXCEPTION" -> RCEException <$> textP
       "CTRL_AUTH" -> pure RCECtrlAuth
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
+      "CTRL_ERROR" -> RCECtrlError <$> textP
       "VERSION" -> pure RCEVersion
       "DECRYPT" -> pure RCEDecrypt
       "BLOCK_SIZE" -> pure RCEBlockSize

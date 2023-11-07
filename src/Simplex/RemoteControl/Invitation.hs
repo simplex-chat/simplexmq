@@ -19,13 +19,11 @@ import Data.Word (Word16)
 import Network.HTTP.Types (parseSimpleQuery)
 import Network.HTTP.Types.URI (SimpleQuery, renderSimpleQuery, urlDecode)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Version (VersionRange, mkVersionRange)
-import Simplex.RemoteControl.Types
+import Simplex.Messaging.Version (VersionRange)
 
 data RCInvitation = RCInvitation
   { -- | CA TLS certificate fingerprint of the controller.
@@ -48,15 +46,13 @@ data RCInvitation = RCInvitation
     --
     -- Is apart of the long term controller identity.
     idkey :: C.PublicKeyEd25519,
-    -- | SNTRUP761 encapsulation key
-    kem :: KEMPublicKey,
     -- | Session X25519 DH key
     dh :: C.PublicKeyX25519
   }
   deriving (Show)
 
 instance StrEncoding RCInvitation where
-  strEncode RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh} =
+  strEncode RCInvitation {ca, host, port, v, app, ts, skey, idkey, dh} =
     mconcat
       [ "xrcp:/",
         strEncode ca,
@@ -74,7 +70,6 @@ instance StrEncoding RCInvitation where
           ("ts", strEncode ts),
           ("skey", strEncode skey),
           ("idkey", strEncode idkey),
-          ("kem", strEncode kem),
           ("dh", strEncode dh)
         ]
 
@@ -93,9 +88,8 @@ instance StrEncoding RCInvitation where
     ts <- requiredP q "ts" $ strDecode . urlDecode True
     skey <- requiredP q "skey" $ parseAll strP
     idkey <- requiredP q "idkey" $ parseAll strP
-    kem <- requiredP q "kem" strDecode
     dh <- requiredP q "dh" $ parseAll strP
-    pure RCInvitation {ca, host, port, v, app, ts, skey, idkey, kem, dh}
+    pure RCInvitation {ca, host, port, v, app, ts, skey, idkey, dh}
 
 data RCSignedInvitation = RCSignedInvitation
   { invitation :: RCInvitation,
@@ -158,53 +152,25 @@ instance Encoding RCSignedInvitation where
 verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
 verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} = undefined
 
-data RCEncryptedInvitation = RCEncryptedInvitation
+data RCEncInvitation = RCEncInvitation
   { dhPubKey :: C.PublicKeyX25519,
     nonce :: C.CbNonce,
-    encryptedInvitation :: ByteString
+    encInvitation :: ByteString
   }
 
-instance Encoding RCEncryptedInvitation where
-  smpEncode RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation} =
-    smpEncode (dhPubKey, nonce, Tail encryptedInvitation)
+instance Encoding RCEncInvitation where
+  smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation} =
+    smpEncode (dhPubKey, nonce, Tail encInvitation)
   smpP = do
-    (dhPubKey, nonce, Tail encryptedInvitation) <- smpP
-    pure RCEncryptedInvitation {dhPubKey, nonce, encryptedInvitation}
+    (dhPubKey, nonce, Tail encInvitation) <- smpP
+    pure RCEncInvitation {dhPubKey, nonce, encInvitation}
 
 -- * Utils
-
-sessionRCInvitation ::
-  -- | App information
-  J.Value ->
-  -- | Long-term identity key
-  C.PublicKeyEd25519 ->
-  CtrlSessionKeys ->
-  -- | Service address
-  (TransportHost, Word16) ->
-  RCInvitation
-sessionRCInvitation app idkey CtrlSessionKeys {ts, ca, sSigKey, dhKey, kem} (host, port) =
-  RCInvitation
-    { ca,
-      host,
-      port,
-      v = mkVersionRange 1 1,
-      app,
-      ts,
-      skey = C.publicKey sSigKey,
-      idkey,
-      kem = fst kem,
-      dh = C.publicKey dhKey
-    }
 
 requiredP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m a
 requiredP q k f = maybe (fail $ "missing " <> show k) (either fail pure . f) $ lookup k q
 
 -- optionalP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m (Maybe a)
 -- optionalP q k f = maybe (pure Nothing) (either fail (pure . Just) . f) $ lookup k q
-
-data SignatureError
-  = BadSessionSignature
-  | BadIdentitySignature
-  deriving (Eq, Show)
 
 $(JQ.deriveJSON defaultJSON ''RCInvitation)
