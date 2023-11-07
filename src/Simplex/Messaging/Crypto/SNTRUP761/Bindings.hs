@@ -9,6 +9,8 @@ import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
+import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple.ToField
 import Foreign (nullPtr)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
@@ -72,3 +74,9 @@ instance ToJSON KEMPublicKey where
 
 instance FromJSON KEMPublicKey where
   parseJSON = strParseJSON "KEMPublicKey"
+
+instance ToField KEMSharedKey where
+  toField (KEMSharedKey k) = toField (BA.convert k :: ByteString)
+
+instance FromField KEMSharedKey where
+  fromField f = KEMSharedKey . BA.convert @ByteString <$> fromField f
