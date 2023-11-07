@@ -30,7 +30,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
-import qualified Data.Aeson.TH as JQ
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
@@ -199,15 +198,14 @@ prepareHostSession
   pairing@RCHostPairing {idPrivKey, knownHost = knownHost_}
   RCHostKeys {sessKeys = (_, sessPrivKey), dhKeys = (_, dhPrivKey)}
   RCHostEncHello {dhPubKey, nonce, encBody} = do
-    let sharedKey = kemHybridOrDHSecret dhPubKey dhPrivKey $ (\h -> h.storedSessKeys.kemSharedKey) <$> knownHost_
-    helloBody <- liftEitherWith (const RCEDecrypt) $ kcbDecrypt sharedKey nonce encBody
+    let sharedKey = C.dh' dhPubKey dhPrivKey
+    helloBody <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encBody
     hostHello@RCHostHello {v, ca, kem = kemPubKey} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
     (kemCiphertext, kemSharedKey) <- liftIO $ sntrup761Enc drg kemPubKey
     let hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
     unless (isCompatible v supportedRCVRange) $ throwError RCEVersion
     let keys = HostSessKeys {hybridKey, idPrivKey, sessPrivKey}
-        storedSessKeys = StoredHostSessKeys {hostDHPublicKey = dhPubKey, kemSharedKey}
-    knownHost' <- updateKnownHost ca storedSessKeys
+    knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
     -- TODO send error response if something fails
     nonce' <- liftIO . atomically $ C.pseudoRandomCbNonce drg
@@ -215,14 +213,14 @@ prepareHostSession
     let ctrlEncHello = RCCtrlEncHello {kem = kemCiphertext, nonce = nonce', encBody = encBody'}
     pure (ctrlEncHello, keys, hostHello, pairing {knownHost = Just knownHost'})
     where
-      updateKnownHost :: C.KeyHash -> StoredHostSessKeys -> ExceptT RCErrorType IO KnownHostPairing
-      updateKnownHost ca storedSessKeys = case knownHost_ of
+      updateKnownHost :: C.KeyHash -> C.PublicKeyX25519 -> ExceptT RCErrorType IO KnownHostPairing
+      updateKnownHost ca hostDhPubKey = case knownHost_ of
         Just h -> do
           unless (h.hostFingerprint == tlsHostFingerprint) . throwError $
             RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
           unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
-          pure (h :: KnownHostPairing) {storedSessKeys}
-        Nothing -> pure KnownHostPairing {hostFingerprint = ca, storedSessKeys}
+          pure (h :: KnownHostPairing) {hostDhPubKey}
+        Nothing -> pure KnownHostPairing {hostFingerprint = ca, hostDhPubKey}
 
 data RCCtrlClient = RCCtrlClient
   { action :: Async (),
@@ -252,13 +250,12 @@ connectRCCtrl drg inv@RCInvitation {ca, idkey} pairing_ hostAppInfo = do
     newCtrlPairing = do
       ((_, caKey), caCert) <- genCredentials Nothing (0, 24 * 999999) "ca"
       (_, dhPrivKey) <- C.generateKeyPair'
-      let storedSessKeys = StoredCtrlSessKeys dhPrivKey Nothing
-      pure RCCtrlPairing {caKey, caCert, ctrlFingerprint = ca, idPubKey = idkey, storedSessKeys, prevStoredSessKeys = Nothing}
+      pure RCCtrlPairing {caKey, caCert, ctrlFingerprint = ca, idPubKey = idkey, dhPrivKey, prevDhPrivKey = Nothing}
     updateCtrlPairing :: RCCtrlPairing -> ExceptT RCErrorType IO RCCtrlPairing
-    updateCtrlPairing pairing@RCCtrlPairing {ctrlFingerprint, idPubKey, storedSessKeys = currSSK} = do
+    updateCtrlPairing pairing@RCCtrlPairing {ctrlFingerprint, idPubKey, dhPrivKey = currDhPrivKey} = do
       unless (ca == ctrlFingerprint && idPubKey == idkey) $ throwError RCEIdentity
       (_, dhPrivKey) <- liftIO C.generateKeyPair'
-      pure pairing {storedSessKeys = currSSK {dhPrivKey}, prevStoredSessKeys = Just currSSK}
+      pure pairing {dhPrivKey, prevDhPrivKey = Just currDhPrivKey}
 
 connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
@@ -298,8 +295,8 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           sendRCPacket tls hostEncHello
           ctrlEncHello <- receiveRCPacket tls
           logDebug "Received ctrl HELLO"
-          (ctrlSessKeys, pairing'') <- prepareCtrlSession pairing' inv sharedKey kemPrivKey ctrlEncHello
-          atomically $ putTMVar r' $ Right (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing'')
+          ctrlSessKeys <- prepareCtrlSession pairing' inv sharedKey kemPrivKey ctrlEncHello
+          atomically $ putTMVar r' $ Right (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
           -- TODO receive OK response
           logDebug "Session started"
           -- release second putTMVar in confirmCtrlSession
@@ -319,10 +316,10 @@ receiveRCPacket tls = do
   b' <- liftEitherWith (const RCEBlockSize) $ C.unPad b
   liftEitherWith RCESyntax $ smpDecode b'
 
-prepareHostHello :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO (KEMHybridOrDHSecret, KEMSecretKey, RCHostEncHello)
+prepareHostHello :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO (C.DhSecretX25519, KEMSecretKey, RCHostEncHello)
 prepareHostHello
   drg
-  RCCtrlPairing {caCert, storedSessKeys = StoredCtrlSessKeys {dhPrivKey, kemSharedKey}}
+  RCCtrlPairing {caCert, dhPrivKey}
   RCInvitation {v, dh = dhPubKey}
   hostAppInfo = do
     logDebug "Preparing session"
@@ -333,15 +330,15 @@ prepareHostHello
         (kemPubKey, kemPrivKey) <- liftIO $ sntrup761Keypair drg
         let Fingerprint fp = getFingerprint caCert X509.HashSHA256
             helloBody = RCHostHello {v = v', ca = C.KeyHash fp, app = hostAppInfo, kem = kemPubKey}
-            sharedKey = kemHybridOrDHSecret dhPubKey dhPrivKey kemSharedKey
-        encBody <- liftEitherWith (const RCEBlockSize) $ kcbEncrypt sharedKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
+            sharedKey = C.dh' dhPubKey dhPrivKey
+        encBody <- liftEitherWith (const RCEBlockSize) $ C.cbEncrypt sharedKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
         -- let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
         let hostEncHello = RCHostEncHello {dhPubKey = C.publicKey dhPrivKey, nonce, encBody}
         pure (sharedKey, kemPrivKey, hostEncHello)
 
-prepareCtrlSession :: RCCtrlPairing -> RCInvitation -> KEMHybridOrDHSecret -> KEMSecretKey -> RCCtrlEncHello -> ExceptT RCErrorType IO (CtrlSessKeys, RCCtrlPairing)
+prepareCtrlSession :: RCCtrlPairing -> RCInvitation -> C.DhSecretX25519 -> KEMSecretKey -> RCCtrlEncHello -> ExceptT RCErrorType IO CtrlSessKeys
 prepareCtrlSession
-  pairing@RCCtrlPairing {idPubKey, storedSessKeys = ssk@StoredCtrlSessKeys {dhPrivKey}}
+  RCCtrlPairing {idPubKey, dhPrivKey}
   RCInvitation {skey, dh = dhPubKey}
   sharedKey
   kemPrivKey = \case
@@ -351,11 +348,9 @@ prepareCtrlSession
       helloBody <- liftEitherWith (const RCEDecrypt) $ kcbDecrypt hybridKey nonce encBody
       logDebug "Decrypted ctrl HELLO"
       RCCtrlHello {} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
-      let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
-          pairing' = (pairing :: RCCtrlPairing) {storedSessKeys = ssk {kemSharedKey = Just kemSharedKey}}
-      pure (sessKeys, pairing')
+      pure CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
     RCCtrlEncError {nonce, encMessage} -> do
-      message <- liftEitherWith (const RCEDecrypt) $ kcbDecrypt sharedKey nonce encMessage
+      message <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encMessage
       throwError $ RCECtrlError $ T.unpack $ safeDecodeUtf8 message
 
 -- The application should save updated RCHostPairing after user confirmation of the session
@@ -379,13 +374,13 @@ findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
   where
     decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)
     decrypt [] = Left RCECtrlNotFound
-    decrypt (pairing@RCCtrlPairing {storedSessKeys, prevStoredSessKeys} : rest) =
-      let r = decrypt_ storedSessKeys <|> (decrypt_ =<< prevStoredSessKeys)
+    decrypt (pairing@RCCtrlPairing {dhPrivKey, prevDhPrivKey} : rest) =
+      let r = decrypt_ dhPrivKey <|> (decrypt_ =<< prevDhPrivKey)
        in maybe (decrypt rest) (Right . (pairing,)) r
-    decrypt_ :: StoredCtrlSessKeys -> Maybe ByteString
-    decrypt_ StoredCtrlSessKeys {dhPrivKey, kemSharedKey} =
-      let key = kemHybridOrDHSecret dhPubKey dhPrivKey kemSharedKey
-       in eitherToMaybe $ kcbDecrypt key nonce encInvitation
+    decrypt_ :: C.PrivateKeyX25519 -> Maybe ByteString
+    decrypt_ dhPrivKey =
+      let key = C.dh' dhPubKey dhPrivKey
+       in eitherToMaybe $ C.cbDecrypt key nonce encInvitation
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()

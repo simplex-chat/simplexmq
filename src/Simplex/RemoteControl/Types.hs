@@ -119,12 +119,7 @@ data RCHostPairing = RCHostPairing
 
 data KnownHostPairing = KnownHostPairing
   { hostFingerprint :: C.KeyHash, -- this is only changed in the first session, long-term identity of connected remote host
-    storedSessKeys :: StoredHostSessKeys
-  }
-
-data StoredHostSessKeys = StoredHostSessKeys
-  { hostDHPublicKey :: C.PublicKeyX25519, -- sent by host in HELLO block. Matches one of the DH keys in RCCtrlPairing
-    kemSharedKey :: KEMSharedKey
+    hostDhPubKey :: C.PublicKeyX25519
   }
 
 -- | Long-term part of host (mobile) connection to controller (desktop)
@@ -133,13 +128,8 @@ data RCCtrlPairing = RCCtrlPairing
     caCert :: C.SignedCertificate,
     ctrlFingerprint :: C.KeyHash, -- long-term identity of connected remote controller
     idPubKey :: C.PublicKeyEd25519,
-    storedSessKeys :: StoredCtrlSessKeys,
-    prevStoredSessKeys :: Maybe StoredCtrlSessKeys
-  }
-
-data StoredCtrlSessKeys = StoredCtrlSessKeys
-  { dhPrivKey :: C.PrivateKeyX25519,
-    kemSharedKey :: Maybe KEMSharedKey -- this is Nothing only for a new pairing, and once connected it is always Just.
+    dhPrivKey :: C.PrivateKeyX25519,
+    prevDhPrivKey :: Maybe C.PrivateKeyX25519
   }
 
 data RCHostKeys = RCHostKeys
