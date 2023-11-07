@@ -29,6 +29,7 @@ module Simplex.RemoteControl.Client
     connectKnownRCCtrlMulticast,
     confirmCtrlSession,
     cancelCtrlClient,
+    RCStepTMVar,
   ) where
 
 import Control.Applicative ((<|>))
