@@ -138,8 +138,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
           TLS.onClientCertificate = \(X509.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
-                let Fingerprint fp = getFingerprint ca X509.HashSHA256
-                    kh = C.KeyHash fp
+                let kh = certFingerprint ca
                     accept = maybe True (\h -> h.hostFingerprint == kh) knownHost_
                 if accept
                   then atomically (putTMVar hostCAHash kh) $> TLS.CertificateUsageAccept
@@ -322,8 +321,7 @@ prepareHostHello
       Just (Compatible v') -> do
         nonce <- liftIO . atomically $ C.pseudoRandomCbNonce drg
         (kemPubKey, kemPrivKey) <- liftIO $ sntrup761Keypair drg
-        let Fingerprint fp = getFingerprint caCert X509.HashSHA256
-            helloBody = RCHostHello {v = v', ca = C.KeyHash fp, app = hostAppInfo, kem = kemPubKey}
+        let helloBody = RCHostHello {v = v', ca = certFingerprint caCert, app = hostAppInfo, kem = kemPubKey}
             sharedKey = C.dh' dhPubKey dhPrivKey
         encBody <- liftEitherWith (const RCEBlockSize) $ C.cbEncrypt sharedKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
         -- let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
