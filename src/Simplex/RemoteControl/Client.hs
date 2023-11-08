@@ -282,9 +282,9 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           atomically $ putTMVar r $ Right (tlsUniq tls, r')
           logDebug "Waiting for session confirmation"
           whenM (atomically $ readTMVar confirmSession) $
-            runTLSClient tls r' `putRCError` r'
+            runSession tls r' `putRCError` r'
       where
-        runTLSClient tls r' = do
+        runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
           sendRCPacket tls hostEncHello
           ctrlEncHello <- receiveRCPacket tls
