@@ -197,11 +197,11 @@ prepareHostSession
     let sharedKey = C.dh' dhPubKey dhPrivKey
     helloBody <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encBody
     hostHello@RCHostHello {v, ca, kem = kemPubKey} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
+    unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
     (kemCiphertext, kemSharedKey) <- liftIO $ sntrup761Enc drg kemPubKey
     let hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
     unless (isCompatible v supportedRCVRange) $ throwError RCEVersion
     let keys = HostSessKeys {hybridKey, idPrivKey, sessPrivKey}
-    unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
     knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
     -- TODO send error response if something fails
