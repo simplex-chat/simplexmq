@@ -279,10 +279,10 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
         void . runExceptT $ do
           logDebug "Got TLS connection"
           r' <- newEmptyTMVarIO
-          atomically $ putTMVar r $ Right (tlsUniq tls, r')
-          logDebug "Waiting for session confirmation"
-          whenM (atomically $ readTMVar confirmSession) $
-            runSession tls r' `putRCError` r'
+          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, r')) $ do
+            logDebug "Waiting for session confirmation"
+            whenM (atomically $ readTMVar confirmSession) $
+              runSession tls r' `putRCError` r'
       where
         runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
@@ -290,13 +290,12 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           ctrlEncHello <- receiveRCPacket tls
           logDebug "Received ctrl HELLO"
           ctrlSessKeys <- prepareCtrlSession pairing' inv sharedKey kemPrivKey ctrlEncHello
-          atomically $ putTMVar r' $ Right (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
-          -- TODO receive OK response
-          logDebug "Session started"
-          -- release second putTMVar in confirmCtrlSession
-          void . atomically $ takeTMVar confirmSession
-          atomically $ takeTMVar endSession
-          logDebug "Session ended"
+          whenM (atomically $ tryPutTMVar r' $ Right (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')) $ do
+            logDebug "Session started"
+            -- release second putTMVar in confirmCtrlSession
+            void . atomically $ takeTMVar confirmSession
+            atomically $ takeTMVar endSession
+            logDebug "Session ended"
 
 catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
 catchRCError = catchAllErrors (RCEException . show)
