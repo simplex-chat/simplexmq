@@ -281,8 +281,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           r' <- newEmptyTMVarIO
           whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, r')) $ do
             logDebug "Waiting for session confirmation"
-            whenM (atomically $ readTMVar confirmSession) $
-              runSession tls r' `putRCError` r'
+            whenM (atomically $ readTMVar confirmSession) (runSession tls r') `putRCError` r'
       where
         runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
