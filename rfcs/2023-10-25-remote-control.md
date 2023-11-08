@@ -285,7 +285,7 @@ announcementSecret(n) = sha256(dhSecret(n') || kemSecret(n - 1))
 dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerAnnouncementDhKey(n))
 
 // session n
-hostHelloSecret(n) = sha256(dhSecret(n) || kemSecret(n - 1))
+hostHelloSecret(n) = dhSecret(n)
 sessionSecret(n) = sha256(dhSecret(n) || kemSecret(n)) // to encrypt session n data, incl. controller hello
 dhSecret(n) = dh(hostHelloDhKey(n), controllerAnnouncementDhKey(n))
 kemCiphertext(n) = enc(kemSecret(n), kemEncKey(n))
