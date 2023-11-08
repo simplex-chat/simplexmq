@@ -51,7 +51,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport (TLS (tlsUniq), cGet, cPut)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, liftEitherWith, safeDecodeUtf8, tshow)
+import Simplex.Messaging.Util (catchAllErrors, eitherToMaybe, liftEitherWith, safeDecodeUtf8, tshow, whenM)
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Discovery (getLocalAddress, startTLSServer)
 import Simplex.RemoteControl.Invitation
@@ -229,8 +229,7 @@ data RCCtrlClient = RCCtrlClient
 
 data RCCClient_ = RCCClient_
   { confirmSession :: TMVar Bool,
-    endSession :: TMVar (),
-    tlsEnded :: TMVar (Either RCErrorType ())
+    endSession :: TMVar ()
   }
 
 type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
@@ -261,36 +260,31 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- async $ runClient c r
+  action <- async $ runClient c r `putRCError` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
     mkClient :: IO RCCClient_
     mkClient = do
-      tlsEnded <- newEmptyTMVarIO
       confirmSession <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
-      pure RCCClient_ {confirmSession, endSession, tlsEnded}
+      pure RCCClient_ {confirmSession, endSession}
     runClient :: RCCClient_ -> RCStepTMVar (SessionCode, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
-    runClient RCCClient_ {confirmSession, endSession, tlsEnded} r = do
+    runClient RCCClient_ {confirmSession, endSession} r = do
       clientCredentials <-
         liftIO (genTLSCredentials caKey caCert) >>= \case
-          TLS.Credentials [one] -> pure $ Just one
-          _ -> throwError $ RCEInternal "genTLSCredentials must generate only one set of credentials"
+          TLS.Credentials (creds : _) -> pure $ Just creds
+          _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      liftIO $ runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls -> do
-        logDebug "Got TLS connection"
-        -- TODO this seems incorrect still
-        res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
-          logDebug "Waiting for session confirmation"
+      liftIO . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls ->
+        void . runExceptT $ do
+          logDebug "Got TLS connection"
           r' <- newEmptyTMVarIO
-          atomically $ putTMVar r $ Right (tlsUniq tls, r') -- (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
-          ifM
-            (atomically $ readTMVar confirmSession)
-            (runSession tls r')
-            (logDebug "Session rejected")
-        atomically $ putTMVar tlsEnded res
+          atomically $ putTMVar r $ Right (tlsUniq tls, r')
+          logDebug "Waiting for session confirmation"
+          whenM (atomically $ readTMVar confirmSession) $
+            runTLSClient tls r' `putRCError` r'
       where
-        runSession tls r' = do
+        runTLSClient tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
           sendRCPacket tls hostEncHello
           ctrlEncHello <- receiveRCPacket tls
@@ -303,6 +297,13 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           void . atomically $ takeTMVar confirmSession
           atomically $ takeTMVar endSession
           logDebug "Session ended"
+
+catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
+catchRCError = catchAllErrors (RCEException . show)
+{-# INLINE catchRCError #-}
+
+putRCError :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
+a `putRCError` r = a `catchRCError` \e -> atomically (tryPutTMVar r $ Left e) >> throwError e
 
 sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
