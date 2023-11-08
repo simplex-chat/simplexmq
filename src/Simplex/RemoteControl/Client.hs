@@ -34,6 +34,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Default (def)
+import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
@@ -51,13 +52,12 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport (TLS (tlsUniq), cGet, cPut)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, liftEitherWith, safeDecodeUtf8, tshow)
+import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Discovery (getLocalAddress, startTLSServer)
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import UnliftIO
-import UnliftIO.Concurrent (forkIO)
 
 currentRCVersion :: Version
 currentRCVersion = 1
@@ -85,8 +85,7 @@ data RCHostClient = RCHostClient
 data RCHClient_ = RCHClient_
   { startedPort :: TMVar (Maybe PortNumber),
     hostCAHash :: TMVar C.KeyHash,
-    endSession :: TMVar (),
-    tlsEnded :: TMVar (Either RCErrorType ())
+    endSession :: TMVar ()
   }
 
 type RCHostConnection = (RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
@@ -95,13 +94,9 @@ connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorTy
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
   r <- newEmptyTMVarIO
   host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
-  c@RCHClient_ {startedPort, tlsEnded} <- liftIO mkClient
+  c@RCHClient_ {startedPort} <- liftIO mkClient
   hostKeys <- liftIO genHostKeys
-  action <- liftIO $ runClient c r hostKeys
-  void . forkIO $ do
-    res <- atomically $ takeTMVar tlsEnded
-    either (logError . ("XRCP session ended with error: " <>) . tshow) (\() -> logInfo "XRCP session ended") res
-    uninterruptibleCancel action
+  action <- runClient c r hostKeys `putRCError` r
   -- wait for the port to make invitation
   -- TODO can't we actually find to which interface the server got connected to get host there?
   portNum <- atomically $ readTMVar startedPort
@@ -112,30 +107,29 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     mkClient = do
       startedPort <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
-      tlsEnded <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
-      pure RCHClient_ {startedPort, hostCAHash, endSession, tlsEnded}
-    runClient :: RCHClient_ -> RCStepTMVar (ByteString, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> IO (Async ())
-    runClient RCHClient_ {startedPort, hostCAHash, endSession, tlsEnded} r hostKeys = do
-      tlsCreds <- genTLSCredentials caKey caCert
-      startTLSServer startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls -> do
-        res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
-          logDebug "Incoming TLS connection"
+      pure RCHClient_ {startedPort, hostCAHash, endSession}
+    runClient :: RCHClient_ -> RCStepTMVar (ByteString, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> ExceptT RCErrorType IO (Async ())
+    runClient RCHClient_ {startedPort, hostCAHash, endSession} r hostKeys = do
+      tlsCreds <- liftIO $ genTLSCredentials caKey caCert
+      startTLSServer startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
+        void . runExceptT $ do
           r' <- newEmptyTMVarIO
-          atomically $ putTMVar r $ Right (tlsUniq tls, r')
-          -- TODO lock session
+          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, r')) $
+            runSession tls r' `putRCError` r'
+      where
+        runSession tls r' = do
+          logDebug "Incoming TLS connection"
           hostEncHello <- receiveRCPacket tls
           logDebug "Received host HELLO"
           hostCA <- atomically $ takeTMVar hostCAHash
           (ctrlEncHello, sessionKeys, helloBody, pairing') <- prepareHostSession drg hostCA pairing hostKeys hostEncHello
           sendRCPacket tls ctrlEncHello
           logDebug "Sent ctrl HELLO"
-          atomically $ putTMVar r' $ Right (RCHostSession {tls, sessionKeys}, helloBody, pairing')
-          -- can use `RCHostSession` until `endSession` is signalled
-          logDebug "Holding session"
-          atomically $ takeTMVar endSession
-        logDebug $ "TLS connection finished with " <> tshow res
-        atomically $ putTMVar tlsEnded res
+          whenM (atomically $ tryPutTMVar r' $ Right (RCHostSession {tls, sessionKeys}, helloBody, pairing')) $ do
+            -- can use `RCHostSession` until `endSession` is signalled
+            logDebug "Holding session"
+            atomically $ takeTMVar endSession
     tlsHooks :: TMVar a -> Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
     tlsHooks r knownHost_ hostCAHash =
       def
@@ -144,11 +138,11 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
           TLS.onClientCertificate = \(X509.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
-                let Fingerprint fp = getFingerprint ca X509.HashSHA256
-                    kh = C.KeyHash fp
-                atomically $ putTMVar hostCAHash kh
-                let accept = maybe True (\h -> h.hostFingerprint == kh) knownHost_
-                pure $ if accept then TLS.CertificateUsageAccept else TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
+                let kh = certFingerprint ca
+                    accept = maybe True (\h -> h.hostFingerprint == kh) knownHost_
+                if accept
+                  then atomically (putTMVar hostCAHash kh) $> TLS.CertificateUsageAccept
+                  else pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
@@ -201,6 +195,7 @@ prepareHostSession
     let sharedKey = C.dh' dhPubKey dhPrivKey
     helloBody <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encBody
     hostHello@RCHostHello {v, ca, kem = kemPubKey} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
+    unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
     (kemCiphertext, kemSharedKey) <- liftIO $ sntrup761Enc drg kemPubKey
     let hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
     unless (isCompatible v supportedRCVRange) $ throwError RCEVersion
@@ -218,7 +213,6 @@ prepareHostSession
         Just h -> do
           unless (h.hostFingerprint == tlsHostFingerprint) . throwError $
             RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
-          unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
           pure (h :: KnownHostPairing) {hostDhPubKey}
         Nothing -> pure KnownHostPairing {hostFingerprint = ca, hostDhPubKey}
 
@@ -229,8 +223,7 @@ data RCCtrlClient = RCCtrlClient
 
 data RCCClient_ = RCCClient_
   { confirmSession :: TMVar Bool,
-    endSession :: TMVar (),
-    tlsEnded :: TMVar (Either RCErrorType ())
+    endSession :: TMVar ()
   }
 
 type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
@@ -261,34 +254,28 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- async $ runClient c r
+  action <- async $ runClient c r `putRCError` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
     mkClient :: IO RCCClient_
     mkClient = do
-      tlsEnded <- newEmptyTMVarIO
       confirmSession <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
-      pure RCCClient_ {confirmSession, endSession, tlsEnded}
+      pure RCCClient_ {confirmSession, endSession}
     runClient :: RCCClient_ -> RCStepTMVar (SessionCode, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
-    runClient RCCClient_ {confirmSession, endSession, tlsEnded} r = do
+    runClient RCCClient_ {confirmSession, endSession} r = do
       clientCredentials <-
         liftIO (genTLSCredentials caKey caCert) >>= \case
-          TLS.Credentials [one] -> pure $ Just one
-          _ -> throwError $ RCEInternal "genTLSCredentials must generate only one set of credentials"
+          TLS.Credentials (creds : _) -> pure $ Just creds
+          _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      liftIO $ runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls -> do
-        logDebug "Got TLS connection"
-        -- TODO this seems incorrect still
-        res <- handleAny (pure . Left . RCEException . show) . runExceptT $ do
-          logDebug "Waiting for session confirmation"
+      liftIO . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls ->
+        void . runExceptT $ do
+          logDebug "Got TLS connection"
           r' <- newEmptyTMVarIO
-          atomically $ putTMVar r $ Right (tlsUniq tls, r') -- (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
-          ifM
-            (atomically $ readTMVar confirmSession)
-            (runSession tls r')
-            (logDebug "Session rejected")
-        atomically $ putTMVar tlsEnded res
+          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, r')) $ do
+            logDebug "Waiting for session confirmation"
+            whenM (atomically $ readTMVar confirmSession) (runSession tls r') `putRCError` r'
       where
         runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
@@ -296,13 +283,19 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           ctrlEncHello <- receiveRCPacket tls
           logDebug "Received ctrl HELLO"
           ctrlSessKeys <- prepareCtrlSession pairing' inv sharedKey kemPrivKey ctrlEncHello
-          atomically $ putTMVar r' $ Right (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')
-          -- TODO receive OK response
-          logDebug "Session started"
-          -- release second putTMVar in confirmCtrlSession
-          void . atomically $ takeTMVar confirmSession
-          atomically $ takeTMVar endSession
-          logDebug "Session ended"
+          whenM (atomically $ tryPutTMVar r' $ Right (RCCtrlSession {tls, sessionKeys = ctrlSessKeys}, pairing')) $ do
+            logDebug "Session started"
+            -- release second putTMVar in confirmCtrlSession
+            void . atomically $ takeTMVar confirmSession
+            atomically $ takeTMVar endSession
+            logDebug "Session ended"
+
+catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
+catchRCError = catchAllErrors (RCEException . show)
+{-# INLINE catchRCError #-}
+
+putRCError :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
+a `putRCError` r = a `catchRCError` \e -> atomically (tryPutTMVar r $ Left e) >> throwError e
 
 sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
@@ -328,8 +321,7 @@ prepareHostHello
       Just (Compatible v') -> do
         nonce <- liftIO . atomically $ C.pseudoRandomCbNonce drg
         (kemPubKey, kemPrivKey) <- liftIO $ sntrup761Keypair drg
-        let Fingerprint fp = getFingerprint caCert X509.HashSHA256
-            helloBody = RCHostHello {v = v', ca = C.KeyHash fp, app = hostAppInfo, kem = kemPubKey}
+        let helloBody = RCHostHello {v = v', ca = certFingerprint caCert, app = hostAppInfo, kem = kemPubKey}
             sharedKey = C.dh' dhPubKey dhPrivKey
         encBody <- liftEitherWith (const RCEBlockSize) $ C.cbEncrypt sharedKey nonce (LB.toStrict $ J.encode helloBody) helloBlockSize
         -- let sessKeys = CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
