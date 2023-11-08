@@ -120,7 +120,6 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       where
         runSession tls r' = do
           logDebug "Incoming TLS connection"
-          -- TODO lock session
           hostEncHello <- receiveRCPacket tls
           logDebug "Received host HELLO"
           hostCA <- atomically $ takeTMVar hostCAHash
