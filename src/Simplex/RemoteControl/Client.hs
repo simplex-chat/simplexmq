@@ -226,7 +226,7 @@ data RCCClient_ = RCCClient_
     endSession :: TMVar ()
   }
 
-type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
+type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
 
 connectRCCtrlURI :: TVar ChaChaDRG -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
 connectRCCtrlURI drg signedInv@RCSignedInvitation {invitation} pairing_ hostAppInfo = do
@@ -262,7 +262,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
       confirmSession <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
       pure RCCClient_ {confirmSession, endSession}
-    runClient :: RCCClient_ -> RCStepTMVar (SessionCode, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
+    runClient :: RCCClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
     runClient RCCClient_ {confirmSession, endSession} r = do
       clientCredentials <-
         liftIO (genTLSCredentials caKey caCert) >>= \case
@@ -273,7 +273,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
         void . runExceptT $ do
           logDebug "Got TLS connection"
           r' <- newEmptyTMVarIO
-          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, r')) $ do
+          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
             logDebug "Waiting for session confirmation"
             whenM (atomically $ readTMVar confirmSession) (runSession tls r') `putRCError` r'
       where

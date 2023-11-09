@@ -46,7 +46,7 @@ testNewPairing = do
     logNote "h 1"
     (rcCtrlClient, r) <- RC.connectRCCtrlURI drg inv Nothing (J.String "app")
     logNote "h 2"
-    Right (sessId', r') <- atomically $ takeTMVar r
+    Right (sessId', _tls, r') <- atomically $ takeTMVar r
     logNote "h 3"
     liftIO $ RC.confirmCtrlSession rcCtrlClient True
     logNote "h 4"
@@ -105,7 +105,7 @@ testExistingPairing = do
       pure hp'
     runHost drg cp_ inv = async . runRight $ do
       (rcCtrlClient, r) <- RC.connectRCCtrlURI drg inv cp_ (J.String "app")
-      Right (_sessId', r') <- atomically $ takeTMVar r
+      Right (_sessId', _tls, r') <- atomically $ takeTMVar r
       liftIO $ RC.confirmCtrlSession rcCtrlClient True
       Right (_rcCtrlSession, cp') <- atomically $ takeTMVar r'
       threadDelay 250000
