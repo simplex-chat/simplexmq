@@ -253,15 +253,21 @@ tlsunique channel binding from TLS session MUST be included in commands (include
 The syntax for encrypted command and response body encoding:
 
 ```
-commandBody = length encrypted(tlsunique counter length command) sessSignature idSignature
-responseBody = length encrypted(tlsunique counter length response) ; should match counter in the command
+commandBody = encBody sessSignature idSignature (attachment / noAttachment)
+responseBody = encBody attachment; should match counter in the command
+encBody = nonce encLength32 encrypted(tlsunique counter body)
+attachment = %x01 nonce encLength32 encrypted(attachment)
+noAttachment = %x00
 tlsunique = length 1*OCTET
 counter = 8*8 OCTET ; int64
+encLength32 = 4*4 OCTET ; uint32, includes authTag
 ```
+
+If the command or response includes attachment, it's hash must be included in command/response and validated.
 
 ## Key agreement for announcement packet and for session
 
-Initial announcement is shared out-of-band, and it is not encrypted.
+Initial announcement is shared out-of-band (URI with xrcp scheme), and it is not encrypted.
 
 This announcement contains only DH keys, as KEM key is too large to include in QR code, which are used to agree encryption key for host HELLO block. The host HELLO block will containt DH key in plaintext part and KEM encapsulation (public) key in encrypted part, that will be used to determine the shared secret (using SHA256 over concatenated DH shared secret and KEM encapsulated secret) both for controller HELLO response (that contains KEM cyphertext in plaintext part) and subsequent session commands and responses.
 
@@ -275,24 +281,27 @@ To describe it in pseudocode:
 // session 1
 hostHelloSecret(1) = dhSecret(1)
 sessionSecret(1) = sha256(dhSecret(1) || kemSecret(1)) // to encrypt session 1 data, incl. controller hello
-dhSecret(1) = dh(hostHelloDhKey(1), controllerAnnouncementDhKey(1))
+dhSecret(1) = dh(hostHelloDhKey(1), controllerInvitationDhKey(1))
 kemCiphertext(1) = enc(kemSecret(1), kemEncKey(1))
 // kemEncKey is included in host HELLO, kemCiphertext - in controller HELLO
 kemSecret(1) = dec(kemCiphertext(1), kemDecKey(1))
 
-// announcement for session n
-announcementSecret(n) = sha256(dhSecret(n') || kemSecret(n - 1))
-dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerAnnouncementDhKey(n))
+// multicast announcement for session n
+announcementSecret(n) = sha256(dhSecret(n'))
+dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerDhKey(n))
 
 // session n
 hostHelloSecret(n) = dhSecret(n)
 sessionSecret(n) = sha256(dhSecret(n) || kemSecret(n)) // to encrypt session n data, incl. controller hello
-dhSecret(n) = dh(hostHelloDhKey(n), controllerAnnouncementDhKey(n))
+dhSecret(n) = dh(hostHelloDhKey(n), controllerDhKey(n))
+// controllerDhKey(n) is either from invitation or from multicast announcement
 kemCiphertext(n) = enc(kemSecret(n), kemEncKey(n))
 kemSecret(n) = dec(kemCiphertext(n), kemDecKey(n))
 ```
 
 If controller fails to store the new host DH key after receiving HELLO block, the encryption will become out of sync and the host won't be able to decrypt the next announcement. To mitigate it, the host should keep the last session DH key and also previous session DH key to try to decrypt the next announcement computing shared secret using both keys (first the new one, and in case it fails - the previous).
+
+To decrypt multicast announcement, the host should try to decrypt it using the keys of all known (paired) remote controllers.
 
 ## Other options
 

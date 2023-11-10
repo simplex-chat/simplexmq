@@ -85,6 +85,7 @@ module Simplex.Messaging.Crypto
     SignatureAlgorithm,
     AlgorithmI (..),
     sign,
+    sign',
     verify,
     verify',
     validSignatureSize,

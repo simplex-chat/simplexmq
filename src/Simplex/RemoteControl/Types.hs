@@ -37,6 +37,7 @@ data RCErrorType
   | RCECtrlNotFound
   | RCECtrlError {ctrlErr :: String}
   | RCEVersion
+  | RCEEncrypt
   | RCEDecrypt
   | RCEBlockSize
   | RCESyntax {syntaxErr :: String}
@@ -53,6 +54,7 @@ instance StrEncoding RCErrorType where
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
     RCECtrlError err -> "CTRL_ERROR" <> text err
     RCEVersion -> "VERSION"
+    RCEEncrypt -> "ENCRYPT"
     RCEDecrypt -> "DECRYPT"
     RCEBlockSize -> "BLOCK_SIZE"
     RCESyntax err -> "SYNTAX" <> text err
@@ -69,6 +71,7 @@ instance StrEncoding RCErrorType where
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
       "CTRL_ERROR" -> RCECtrlError <$> textP
       "VERSION" -> pure RCEVersion
+      "ENCRYPT" -> pure RCEEncrypt
       "DECRYPT" -> pure RCEDecrypt
       "BLOCK_SIZE" -> pure RCEBlockSize
       "SYNTAX" -> RCESyntax <$> textP

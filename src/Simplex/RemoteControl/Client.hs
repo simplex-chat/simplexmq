@@ -21,6 +21,9 @@ module Simplex.RemoteControl.Client
     confirmCtrlSession,
     cancelCtrlClient,
     RCStepTMVar,
+    rcEncryptBody,
+    rcDecryptBody,
+    xrcpBlockSize,
   ) where
 
 import Control.Applicative ((<|>))
@@ -46,6 +49,8 @@ import Network.Socket (PortNumber)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Client ()
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Lazy (LazyByteString)
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
@@ -386,3 +391,20 @@ cancelCtrlClient :: RCCtrlClient -> IO ()
 cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
   atomically $ putTMVar endSession ()
   uninterruptibleCancel action
+
+-- * Session encryption
+
+rcEncryptBody :: TVar ChaChaDRG -> KEMHybridSecret -> LazyByteString -> ExceptT RCErrorType IO (C.CbNonce, LazyByteString)
+rcEncryptBody drg hybridKey s = do
+  nonce <- atomically $ C.pseudoRandomCbNonce drg
+  let len = LB.length s
+  ct <- liftEitherWith (const RCEEncrypt) $ LC.kcbEncryptTailTag hybridKey nonce s len (len + 8)
+  pure (nonce, ct)
+
+rcDecryptBody :: KEMHybridSecret -> C.CbNonce -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
+rcDecryptBody hybridKey nonce ct = do
+  let len = LB.length ct - 16
+  when (len < 0) $ throwError RCEDecrypt
+  (ok, s) <- liftEitherWith (const RCEDecrypt) $ LC.kcbDecryptTailTag hybridKey nonce len ct
+  unless ok $ throwError RCEDecrypt
+  pure s
