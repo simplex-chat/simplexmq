@@ -138,8 +138,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     tlsHooks :: TMVar a -> Maybe KnownHostPairing -> TMVar C.KeyHash -> TLS.ServerHooks
     tlsHooks r knownHost_ hostCAHash =
       def
-        { TLS.onUnverifiedClientCert = pure True,
-          TLS.onNewHandshake = \_ -> atomically $ isNothing <$> tryReadTMVar r,
+        { TLS.onNewHandshake = \_ -> atomically $ isNothing <$> tryReadTMVar r,
           TLS.onClientCertificate = \(X509.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
