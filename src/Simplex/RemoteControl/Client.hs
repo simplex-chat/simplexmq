@@ -93,7 +93,7 @@ data RCHClient_ = RCHClient_
     endSession :: TMVar ()
   }
 
-type RCHostConnection = (RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
+type RCHostConnection = (RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> ExceptT RCErrorType IO RCHostConnection
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo = do
@@ -114,13 +114,13 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       endSession <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
       pure RCHClient_ {startedPort, hostCAHash, endSession}
-    runClient :: RCHClient_ -> RCStepTMVar (ByteString, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> ExceptT RCErrorType IO (Async ())
+    runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> ExceptT RCErrorType IO (Async ())
     runClient RCHClient_ {startedPort, hostCAHash, endSession} r hostKeys = do
       tlsCreds <- liftIO $ genTLSCredentials caKey caCert
       startTLSServer startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
         void . runExceptT $ do
           r' <- newEmptyTMVarIO
-          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, r')) $
+          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $
             runSession tls r' `putRCError` r'
       where
         runSession tls r' = do

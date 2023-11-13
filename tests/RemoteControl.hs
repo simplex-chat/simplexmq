@@ -30,7 +30,7 @@ testNewPairing = do
     logNote "c 2"
     putMVar invVar (inv, hc)
     logNote "c 3"
-    Right (sessId, r') <- atomically $ takeTMVar r
+    Right (sessId, _tls, r') <- atomically $ takeTMVar r
     logNote "c 4"
     Right (_rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
     logNote "c 5"
@@ -98,7 +98,7 @@ testExistingPairing = do
     runCtrl drg hp invVar = async . runRight $ do
       (inv, hc, r) <- RC.connectRCHost drg hp (J.String "app")
       putMVar invVar inv
-      Right (_sessId, r') <- atomically $ takeTMVar r
+      Right (_sessId, _tls, r') <- atomically $ takeTMVar r
       Right (_rcHostSession, _rcHelloBody, hp') <- atomically $ takeTMVar r'
       threadDelay 250000
       liftIO $ RC.cancelHostClient hc
