@@ -8,6 +8,8 @@
 
 module Simplex.RemoteControl.Invitation where
 
+import Control.Monad
+import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -145,13 +147,6 @@ verifySignedInviteURI RCSignedInvitation {invitation, ssig, idsig} =
     aIdKey = C.APublicVerifyKey C.SEd25519 idkey
     aIdSig = C.ASignature C.SEd25519 idsig
 
-instance Encoding RCSignedInvitation where
-  smpEncode RCSignedInvitation {} = error "TODO: RCSignedInvitation.smpEncode"
-  smpP = error "TODO: RCSignedInvitation.smpP"
-
-verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
-verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} = undefined
-
 data RCEncInvitation = RCEncInvitation
   { dhPubKey :: C.PublicKeyX25519,
     nonce :: C.CbNonce,
@@ -174,3 +169,49 @@ requiredP q k f = maybe (fail $ "missing " <> show k) (either fail pure . f) $ l
 -- optionalP q k f = maybe (pure Nothing) (either fail (pure . Just) . f) $ lookup k q
 
 $(JQ.deriveJSON defaultJSON ''RCInvitation)
+
+sessionAddressJSON :: RCInvitation -> ByteString
+sessionAddressJSON = LB.toStrict . J.encode . J.toJSON
+
+signInviteJSON :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> ByteString
+signInviteJSON sKey idKey invitation = idSigned
+  where
+    sessionAddress = sessionAddressJSON invitation
+
+    ssig :: C.Signature 'C.Ed25519
+    ssig =
+      case C.sign (C.APrivateSignKey C.SEd25519 sKey) sessionAddress of
+        C.ASignature C.SEd25519 s -> s
+        _ -> error "signing with ed25519"
+    sSigned = sessionAddress <> C.signatureBytes ssig
+
+    idsig :: C.Signature 'C.Ed25519
+    idsig =
+      case C.sign (C.APrivateSignKey C.SEd25519 idKey) sSigned of
+        C.ASignature C.SEd25519 s -> s
+        _ -> error "signing with ed25519"
+    idSigned = sSigned <> C.signatureBytes idsig
+
+instance Encoding RCSignedInvitation where
+  smpEncode RCSignedInvitation {invitation, ssig, idsig} = sessionAddressJSON invitation <> C.signatureBytes ssig <> C.signatureBytes idsig
+  smpDecode bs = do
+    let (json, sigs) = B.splitAt sigStart bs
+    unless (B.length sigs == sigLen * 2) $ Left "bad size"
+    invitation <- J.eitherDecodeStrict json
+    let (ssig, idsig) = B.splitAt sigLen sigs
+    RCSignedInvitation invitation <$> C.decodeSignature ssig <*> C.decodeSignature idsig
+    where
+      sigStart = B.length bs - 2 * sigLen
+      sigLen = Ed25519.signatureSize
+
+verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
+verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} =
+  C.verify aSKey aSSig sa && C.verify aIdKey aIdSig sSigned
+  where
+    RCInvitation {skey, idkey} = invitation
+    sa = sessionAddressJSON invitation
+    sSigned = sa <> C.signatureBytes ssig
+    aSKey = C.APublicVerifyKey C.SEd25519 skey
+    aSSig = C.ASignature C.SEd25519 ssig
+    aIdKey = C.APublicVerifyKey C.SEd25519 idkey
+    aIdSig = C.ASignature C.SEd25519 idsig

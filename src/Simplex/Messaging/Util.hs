@@ -19,6 +19,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
 import GHC.Conc
+import UnliftIO
 import UnliftIO.Async
 import qualified UnliftIO.Exception as UE
 
@@ -135,6 +136,9 @@ safeDecodeUtf8 :: ByteString -> Text
 safeDecodeUtf8 = decodeUtf8With onError
   where
     onError _ _ = Just '?'
+
+timeoutThrow :: (MonadUnliftIO m, MonadError e m) => e -> Int -> m a -> m a
+timeoutThrow e ms action = timeout ms action >>= maybe (throwError e) pure
 
 threadDelay' :: Int64 -> IO ()
 threadDelay' time

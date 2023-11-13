@@ -396,9 +396,9 @@ rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value ->
 rcConnectHost c = withAgentEnv c .:. rcConnectHost'
 
 rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m RCHostConnection
-rcConnectHost' pairing ctrlAppInfo _multicast = do
+rcConnectHost' pairing ctrlAppInfo multicast = do
   drg <- asks random
-  liftError RCP $ connectRCHost drg pairing ctrlAppInfo
+  liftError RCP $ connectRCHost drg pairing ctrlAppInfo multicast
 
 -- | connect to remote controller via URI
 rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
@@ -416,8 +416,8 @@ rcConnectCtrlMulticast c = withAgentEnv c .: rcConnectCtrlMulticast'
 rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
 rcConnectCtrlMulticast' pairings hostAppInfo = do
   drg <- asks random
-  subscribers <- newTVarIO 0 -- TODO: get from agent
-  liftError RCP $ connectKnownRCCtrlMulticast drg subscribers pairings hostAppInfo
+  subs <- asks multicastSubscribers
+  liftError RCP $ connectKnownRCCtrlMulticast drg subs pairings hostAppInfo
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
