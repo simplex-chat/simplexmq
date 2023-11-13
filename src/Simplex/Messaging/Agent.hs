@@ -2268,11 +2268,17 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 pure exists
               getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)
               getSendRatchetKeys
-                | rss == RSStarted = withStore c (`getRatchetX3dhKeys'` connId)
-                | otherwise = do
+                -- receiving client
+                | rss == RSOk = do
                     (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
                     void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
                     pure (pk1, pk2, k1, k2)
+                -- initiating client
+                | rss == RSStarted = withStore c (`getRatchetX3dhKeys'` connId)
+                | otherwise = do
+                  withStore' c $ \db -> setConnRatchetSync db connId RSRequired
+                  -- TODO communicate for other client to reset to RSRequired (EERROR)
+                  throwError $ AGENT A_PROHIBITED
               notifyAgreed :: m ()
               notifyAgreed = do
                 let cData'' = cData' {ratchetSyncState = RSAgreed} :: ConnData
