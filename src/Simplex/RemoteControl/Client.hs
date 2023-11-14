@@ -16,8 +16,8 @@ module Simplex.RemoteControl.Client
     cancelHostClient,
     RCCtrlClient (action),
     RCCtrlConnection,
-    connectRCCtrlURI,
-    connectKnownRCCtrlMulticast,
+    connectRCCtrl,
+    discoverRCCtrl,
     confirmCtrlSession,
     cancelCtrlClient,
     RCStepTMVar,
@@ -45,7 +45,7 @@ import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
-import Network.Socket (PortNumber)
+import Network.Socket (SockAddr, PortNumber)
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
 import Simplex.Messaging.Agent.Client ()
@@ -246,14 +246,9 @@ data RCCClient_ = RCCClient_
 
 type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
 
-connectRCCtrlURI :: TVar ChaChaDRG -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
-connectRCCtrlURI drg signedInv@RCSignedInvitation {invitation} pairing_ hostAppInfo = do
-  unless (verifySignedInviteURI signedInv) $ throwError RCECtrlAuth
-  connectRCCtrl drg invitation pairing_ hostAppInfo
-
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
-connectRCCtrl :: TVar ChaChaDRG -> RCInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
-connectRCCtrl drg inv@RCInvitation {ca, idkey} pairing_ hostAppInfo = do
+connectRCCtrl :: TVar ChaChaDRG -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
+connectRCCtrl drg (RCVerifiedInvitation inv@RCInvitation {ca, idkey}) pairing_ hostAppInfo = do
   pairing' <- maybe (liftIO newCtrlPairing) updateCtrlPairing pairing_
   connectRCCtrl_ drg pairing' inv hostAppInfo
   where
@@ -363,23 +358,6 @@ prepareCtrlSession
       message <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encMessage
       throwError $ RCECtrlError $ T.unpack $ safeDecodeUtf8 message
 
--- The application should save updated RCHostPairing after user confirmation of the session
--- TMVar resolves when TLS is connected
-connectKnownRCCtrlMulticast :: TVar ChaChaDRG -> TMVar Int -> NonEmpty RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
-connectKnownRCCtrlMulticast drg subscribers pairings hostAppInfo = do
-  (pairing, inv) <- timeoutThrow RCENotDiscovered 30000000 $ withListener subscribers $ \listener ->
-    loop $ recvAnnounce listener >>= parse >>= findRCCtrlPairing pairings
-  connectRCCtrl drg inv (Just pairing) hostAppInfo
-  where
-    loop :: ExceptT RCErrorType IO a -> ExceptT RCErrorType IO a
-    loop action = liftIO (runExceptT action) >>= \case
-      Left err -> logError (tshow err) >> loop action
-      Right res -> pure res
-    parse :: (a, ByteString) -> ExceptT RCErrorType IO RCEncInvitation
-    parse (_source, bytes) = do
-      -- TODO: check source
-      liftEitherWith RCESyntax $ smpDecode bytes
-
 announceRC :: TVar ChaChaDRG -> Int -> C.PrivateKeyEd25519 -> C.PublicKeyX25519 -> RCHostKeys -> RCInvitation -> ExceptT RCErrorType IO ()
 announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv = withSender $ \sender -> do
   replicateM_ maxCount $ do
@@ -394,12 +372,28 @@ announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv =
     (_sPub, sPrivKey) = sessKeys
     (dhPubKey, dhPrivKey) = dhKeys
 
-findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCInvitation)
+-- The application should save updated RCHostPairing after user confirmation of the session
+-- TMVar resolves when TLS is connected
+discoverRCCtrl :: TVar ChaChaDRG -> TMVar Int -> NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
+discoverRCCtrl drg subscribers pairings =
+  timeoutThrow RCENotDiscovered 30000000 $ withListener subscribers $ \listener ->
+    loop $ do
+      (source, bytes) <- recvAnnounce listener
+      encInvitation <- liftEitherWith RCESyntax $ smpDecode bytes
+      r@(pairing, vi@(RCVerifiedInvitation RCInvitation {host})) <- findRCCtrlPairing pairings encInvitation
+      -- TODO: check source vs host
+      pure r
+  where
+    loop :: ExceptT RCErrorType IO a -> ExceptT RCErrorType IO a
+    loop action = liftIO (runExceptT action) >>= \case
+      Left err -> logError (tshow err) >> loop action
+      Right res -> pure res
+
+findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
 findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
   (pairing, signedInvStr) <- liftEither $ decrypt (L.toList pairings)
   signedInv@RCSignedInvitation {invitation} <- liftEitherWith RCESyntax $ smpDecode signedInvStr
-  unless (verifySignedInvitationMulticast signedInv) $ throwError RCECtrlAuth
-  pure (pairing, invitation)
+  maybe (throwError RCECtrlAuth) (pure . (pairing,)) $ verifySignedInvitationMulticast signedInv
   where
     decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)
     decrypt [] = Left RCECtrlNotFound

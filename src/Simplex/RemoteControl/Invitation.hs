@@ -135,18 +135,6 @@ signInviteURL sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsi
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
 
-verifySignedInviteURI :: RCSignedInvitation -> Bool
-verifySignedInviteURI RCSignedInvitation {invitation, ssig, idsig} =
-  C.verify aSKey aSSig inviteURL && C.verify aIdKey aIdSig inviteURLS
-  where
-    RCInvitation {skey, idkey} = invitation
-    inviteURL = strEncode invitation
-    inviteURLS = mconcat [inviteURL, "&ssig=", strEncode ssig]
-    aSKey = C.APublicVerifyKey C.SEd25519 skey
-    aSSig = C.ASignature C.SEd25519 ssig
-    aIdKey = C.APublicVerifyKey C.SEd25519 idkey
-    aIdSig = C.ASignature C.SEd25519 idsig
-
 data RCEncInvitation = RCEncInvitation
   { dhPubKey :: C.PublicKeyX25519,
     nonce :: C.CbNonce,
@@ -204,9 +192,27 @@ instance Encoding RCSignedInvitation where
       sigStart = B.length bs - 2 * sigLen
       sigLen = Ed25519.signatureSize
 
-verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
+newtype RCVerifiedInvitation = RCVerifiedInvitation RCInvitation
+
+verifySignedInviteURI :: RCSignedInvitation -> Maybe RCVerifiedInvitation
+verifySignedInviteURI RCSignedInvitation {invitation, ssig, idsig} =
+  if C.verify aSKey aSSig inviteURL && C.verify aIdKey aIdSig inviteURLS
+    then Just $ RCVerifiedInvitation invitation
+    else Nothing
+  where
+    RCInvitation {skey, idkey} = invitation
+    inviteURL = strEncode invitation
+    inviteURLS = mconcat [inviteURL, "&ssig=", strEncode ssig]
+    aSKey = C.APublicVerifyKey C.SEd25519 skey
+    aSSig = C.ASignature C.SEd25519 ssig
+    aIdKey = C.APublicVerifyKey C.SEd25519 idkey
+    aIdSig = C.ASignature C.SEd25519 idsig
+
+verifySignedInvitationMulticast :: RCSignedInvitation -> Maybe RCVerifiedInvitation
 verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} =
-  C.verify aSKey aSSig sa && C.verify aIdKey aIdSig sSigned
+  if C.verify aSKey aSSig sa && C.verify aIdKey aIdSig sSigned
+    then Just $ RCVerifiedInvitation invitation
+    else Nothing
   where
     RCInvitation {skey, idkey} = invitation
     sa = sessionAddressJSON invitation

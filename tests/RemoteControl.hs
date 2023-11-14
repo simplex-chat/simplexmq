@@ -10,7 +10,7 @@ import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Simplex.RemoteControl.Client as RC
-import Simplex.RemoteControl.Invitation (RCSignedInvitation)
+import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitationMulticast, verifySignedInviteURI)
 import Simplex.RemoteControl.Types
 import Test.Hspec
 import UnliftIO
@@ -44,12 +44,13 @@ testNewPairing = do
     liftIO $ RC.cancelHostClient hc
     pure sessId
 
-  (inv, hc) <- takeMVar invVar
+  (signedInv, hc) <- takeMVar invVar
   -- logNote $ decodeUtf8 $ strEncode inv
+  let Just inv = verifySignedInviteURI signedInv
 
   hostSessId <- async . runRight $ do
     logNote "h 1"
-    (rcCtrlClient, r) <- RC.connectRCCtrlURI drg inv Nothing (J.String "app")
+    (rcCtrlClient, r) <- RC.connectRCCtrl drg inv Nothing (J.String "app")
     logNote "h 2"
     Right (sessId', _tls, r') <- atomically $ takeTMVar r
     logNote "h 3"
@@ -131,8 +132,9 @@ runCtrl drg multicast hp invVar = async . runRight $ do
   pure hp'
 
 runHostURI :: TVar ChaChaDRG -> Maybe RCCtrlPairing -> RCSignedInvitation -> IO (Async RCCtrlPairing)
-runHostURI drg cp_ inv = async . runRight $ do
-  (rcCtrlClient, r) <- RC.connectRCCtrlURI drg inv cp_ (J.String "app")
+runHostURI drg cp_ signedInv = async . runRight $ do
+  let Just inv = verifySignedInviteURI signedInv
+  (rcCtrlClient, r) <- RC.connectRCCtrl drg inv cp_ (J.String "app")
   Right (_sessId', _tls, r') <- atomically $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True
   Right (_rcCtrlSession, cp') <- atomically $ takeTMVar r'
@@ -141,7 +143,8 @@ runHostURI drg cp_ inv = async . runRight $ do
 
 runHostMulticast :: TVar ChaChaDRG -> TMVar Int -> RCCtrlPairing -> IO (Async RCCtrlPairing)
 runHostMulticast drg subscribers cp = async . runRight $ do
-  (rcCtrlClient, r) <- RC.connectKnownRCCtrlMulticast drg subscribers (cp :| []) (J.String "app")
+  (pairing, inv) <- RC.discoverRCCtrl drg subscribers (cp :| [])
+  (rcCtrlClient, r) <- RC.connectRCCtrl drg inv (Just pairing) (J.String "app")
   Right (_sessId', _tls, r') <- atomically $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True
   Right (_rcCtrlSession, cp') <- atomically $ takeTMVar r'

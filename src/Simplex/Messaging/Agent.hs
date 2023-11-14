@@ -95,8 +95,8 @@ module Simplex.Messaging.Agent
     xftpDeleteSndFileRemote,
     rcNewHostPairing,
     rcConnectHost,
-    rcConnectCtrlURI,
-    rcConnectCtrlMulticast,
+    rcConnectCtrl,
+    rcDiscoverCtrl,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -401,23 +401,23 @@ rcConnectHost' pairing ctrlAppInfo multicast = do
   liftError RCP $ connectRCHost drg pairing ctrlAppInfo multicast
 
 -- | connect to remote controller via URI
-rcConnectCtrlURI :: AgentErrorMonad m => AgentClient -> RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
-rcConnectCtrlURI c = withAgentEnv c .:. rcConnectCtrlURI'
+rcConnectCtrl :: AgentErrorMonad m => AgentClient -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrl c = withAgentEnv c .:. rcConnectCtrl'
 
-rcConnectCtrlURI' :: AgentMonad m => RCSignedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
-rcConnectCtrlURI' signedInv pairing_ hostAppInfo = do
+rcConnectCtrl' :: AgentMonad m => RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrl' verifiedInv pairing_ hostAppInfo = do
   drg <- asks random
-  liftError RCP $ connectRCCtrlURI drg signedInv pairing_ hostAppInfo
+  liftError RCP $ connectRCCtrl drg verifiedInv pairing_ hostAppInfo
 
 -- | connect to known remote controller via multicast
-rcConnectCtrlMulticast :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
-rcConnectCtrlMulticast c = withAgentEnv c .: rcConnectCtrlMulticast'
+rcDiscoverCtrl :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
+rcDiscoverCtrl c = withAgentEnv c . rcDiscoverCtrl'
 
-rcConnectCtrlMulticast' :: AgentMonad m => NonEmpty RCCtrlPairing -> J.Value -> m RCCtrlConnection
-rcConnectCtrlMulticast' pairings hostAppInfo = do
+rcDiscoverCtrl' :: AgentMonad m => NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
+rcDiscoverCtrl' pairings = do
   drg <- asks random
   subs <- asks multicastSubscribers
-  liftError RCP $ connectKnownRCCtrlMulticast drg subs pairings hostAppInfo
+  liftError RCP $ discoverRCCtrl drg subs pairings
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
