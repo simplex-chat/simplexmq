@@ -6,9 +6,11 @@
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
     XFTPRcvChunkSpec (..),
+    ReceiveFileError (..),
     receiveFile,
     sendEncFile,
     receiveEncFile,
+    receiveSbFile,
   )
 where
 
@@ -16,6 +18,7 @@ import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
+import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -59,25 +62,34 @@ receiveFile getBody = receiveFile_ receive
 receiveEncFile :: (Int -> IO ByteString) -> LC.SbState -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveEncFile getBody = receiveFile_ . receive
   where
-    receive sbState h sz = do
+    receive sbState h sz = first err <$> receiveSbFile getBody h sbState sz
+    err RFESize = SIZE
+    err RFECrypto = CRYPTO
+
+data ReceiveFileError = RFESize | RFECrypto
+
+receiveSbFile :: (Int -> IO ByteString) -> Handle -> LC.SbState -> Word32 -> IO (Either ReceiveFileError ())
+receiveSbFile getBody h = receive
+  where
+    receive sbState sz = do
       ch <- getBody fileBlockSize
       let chSize = fromIntegral $ B.length ch
       if
-        | chSize > sz + authSz -> pure $ Left SIZE
+        | chSize > sz + authSz -> pure $ Left RFESize
         | chSize > 0 -> do
             let (ch', rest) = B.splitAt (fromIntegral sz) ch
                 (decCh, sbState') = LC.sbDecryptChunk sbState ch'
                 sz' = sz - fromIntegral (B.length ch')
             B.hPut h decCh
             if sz' > 0
-              then receive sbState' h sz'
+              then receive sbState' sz'
               else do
                 let tag' = B.take C.authTagSize rest
                     tagSz = B.length tag'
                     tag = LC.sbAuth sbState'
                 tag'' <- if tagSz == C.authTagSize then pure tag' else (tag' <>) <$> getBody (C.authTagSize - tagSz)
-                pure $ if BA.constEq tag'' tag then Right () else Left CRYPTO
-        | otherwise -> pure $ Left SIZE
+                pure $ if BA.constEq tag'' tag then Right () else Left RFECrypto
+        | otherwise -> pure $ Left RFESize
     authSz = fromIntegral C.authTagSize
 
 receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
