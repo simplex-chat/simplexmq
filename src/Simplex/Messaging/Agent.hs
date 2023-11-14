@@ -2268,9 +2268,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 pure exists
               getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)
               getSendRatchetKeys = case rss of
-                RSOk -> sendReplyKeys -- receiving client
-                RSAllowed -> sendReplyKeys
-                RSRequired -> sendReplyKeys
+                RSOk -> sendReplyKey -- receiving client
+                RSAllowed -> sendReplyKey
+                RSRequired -> sendReplyKey
                 RSStarted -> withStore c (`getRatchetX3dhKeys'` connId) -- initiating client
                 RSAgreed -> do
                   withStore' c $ \db -> setConnRatchetSync db connId RSRequired
@@ -2280,7 +2280,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   -- - need to deduplicate on receiving side
                   throwError $ AGENT (A_CRYPTO RATCHET_SYNC)
                 where
-                  sendReplyKeys = do
+                  sendReplyKey = do
                     (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
                     void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
                     pure (pk1, pk2, k1, k2)
