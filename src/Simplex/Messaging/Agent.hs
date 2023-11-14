@@ -2267,18 +2267,27 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
               getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)
-              getSendRatchetKeys
-                -- receiving client
-                | rss == RSOk = do
+              getSendRatchetKeys = case rss of
+                RSOk -> sendReplyKeys -- receiving client
+                RSAllowed -> sendReplyKeys
+                RSRequired -> sendReplyKeys
+                RSStarted -> withStore c (`getRatchetX3dhKeys'` connId) -- initiating client
+                RSAgreed -> do
+                  withStore' c $ \db -> setConnRatchetSync db connId RSRequired
+                  notifyRatchetSyncError
+                  -- can communicate for other client to reset to RSRequired
+                  -- - need to add new AgentMsgEnvelope, AgentMessage, AgentMessageType
+                  -- - need to deduplicate on receiving side
+                  throwError $ AGENT (A_CRYPTO RATCHET_SYNC)
+                where
+                  sendReplyKeys = do
                     (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
                     void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
                     pure (pk1, pk2, k1, k2)
-                -- initiating client
-                | rss == RSStarted = withStore c (`getRatchetX3dhKeys'` connId)
-                | otherwise = do
-                  withStore' c $ \db -> setConnRatchetSync db connId RSRequired
-                  -- TODO communicate for other client to reset to RSRequired (EERROR)
-                  throwError $ AGENT A_PROHIBITED
+                  notifyRatchetSyncError = do
+                    let cData'' = cData' {ratchetSyncState = RSRequired} :: ConnData
+                        conn'' = updateConnection cData'' conn'
+                    notify $ RSYNC RSRequired (Just RATCHET_SYNC) (connectionStats conn'')
               notifyAgreed :: m ()
               notifyAgreed = do
                 let cData'' = cData' {ratchetSyncState = RSAgreed} :: ConnData
