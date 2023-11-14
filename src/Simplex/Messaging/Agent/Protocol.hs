@@ -1504,6 +1504,8 @@ data AgentCryptoError
     RATCHET_EARLIER Word32
   | -- | too many skipped messages
     RATCHET_SKIPPED Word32
+  | -- | ratchet synchronization error
+    RATCHET_SYNC
   deriving (Eq, Read, Show, Exception)
 
 instance StrEncoding AgentCryptoError where
@@ -1513,12 +1515,14 @@ instance StrEncoding AgentCryptoError where
       <|> "RATCHET_HEADER" $> RATCHET_HEADER
       <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
       <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
+      <|> "RATCHET_SYNC" $> RATCHET_SYNC
   strEncode = \case
     DECRYPT_AES -> "DECRYPT_AES"
     DECRYPT_CB -> "DECRYPT_CB"
     RATCHET_HEADER -> "RATCHET_HEADER"
     RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
     RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
+    RATCHET_SYNC -> "RATCHET_SYNC"
 
 instance StrEncoding AgentErrorType where
   strP =
@@ -1563,6 +1567,7 @@ cryptoErrToSyncState = \case
   RATCHET_HEADER -> RSRequired
   RATCHET_EARLIER _ -> RSAllowed
   RATCHET_SKIPPED _ -> RSRequired
+  RATCHET_SYNC -> RSRequired
 
 -- | SMP agent command and response parser for commands passed via network (only parses binary length)
 networkCommandP :: Parser ACmd
