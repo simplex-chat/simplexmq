@@ -37,6 +37,7 @@ data RCErrorType
   | RCECtrlAuth
   | RCECtrlNotFound
   | RCECtrlError {ctrlErr :: String}
+  | RCEAddress
   | RCEVersion
   | RCEEncrypt
   | RCEDecrypt
@@ -55,6 +56,7 @@ instance StrEncoding RCErrorType where
     RCECtrlAuth -> "CTRL_AUTH"
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
     RCECtrlError err -> "CTRL_ERROR" <> text err
+    RCEAddress -> "ADDRESS"
     RCEVersion -> "VERSION"
     RCEEncrypt -> "ENCRYPT"
     RCEDecrypt -> "DECRYPT"
@@ -73,6 +75,7 @@ instance StrEncoding RCErrorType where
       "CTRL_AUTH" -> pure RCECtrlAuth
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
       "CTRL_ERROR" -> RCECtrlError <$> textP
+      "ADDRESS" -> pure RCEAddress
       "VERSION" -> pure RCEVersion
       "ENCRYPT" -> pure RCEEncrypt
       "DECRYPT" -> pure RCEDecrypt

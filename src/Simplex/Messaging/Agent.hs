@@ -415,9 +415,8 @@ rcDiscoverCtrl c = withAgentEnv c . rcDiscoverCtrl'
 
 rcDiscoverCtrl' :: AgentMonad m => NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
 rcDiscoverCtrl' pairings = do
-  drg <- asks random
   subs <- asks multicastSubscribers
-  liftError RCP $ discoverRCCtrl drg subs pairings
+  liftError RCP $ discoverRCCtrl subs pairings
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
