@@ -54,7 +54,8 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Transport (TLS (tlsUniq), cGet, cPut)
+import Simplex.Messaging.Transport (TLS (..), cGet, cPut)
+import Simplex.Messaging.Transport.Buffer (peekBuffered)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Util
@@ -273,13 +274,14 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           TLS.Credentials (creds : _) -> pure $ Just creds
           _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      liftIO . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls ->
-        void . runExceptT $ do
-          logDebug "Got TLS connection"
-          r' <- newEmptyTMVarIO
-          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
-            logDebug "Waiting for session confirmation"
-            whenM (atomically $ readTMVar confirmSession) (runSession tls r') `putRCError` r'
+      runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> do
+        -- pump socket to detect connection problems
+        liftIO $ peekBuffered tlsBuffer 100000 (TLS.recvData tlsContext) >>= logDebug . tshow -- should normally be ("", Nothing) here
+        logDebug "Got TLS connection"
+        r' <- newEmptyTMVarIO
+        whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
+          logDebug "Waiting for session confirmation"
+          whenM (atomically $ readTMVar confirmSession) $ runSession tls r' `putRCError` r'
       where
         runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
