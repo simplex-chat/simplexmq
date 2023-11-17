@@ -5,7 +5,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -57,7 +56,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport (TLS (..), cGet, cPut)
 import Simplex.Messaging.Transport.Buffer (peekBuffered)
-import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTransportClient)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost, defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
