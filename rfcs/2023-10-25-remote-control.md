@@ -86,50 +86,14 @@ base64url = <base64url encoded binary> ; RFC4648, section 5
 Multicast session announcement is a binary encoded packet with this syntax:
 
 ```abnf
-sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize serviceAddress sessSignature idSignature packetPad)
-dhPubKey = length x509encoded
+sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize sessionAddress packetPad)
+dhPubKey = length x509encoded ; same as announced
 nonce = length *OCTET
-serviceAddress = largeLength serviceAddressJSON
-sessSignature = length *OCTET ; signs the preceding announcement packet
-idSignature = length *OCTET ; signs the preceding announcement packet including sessSignature
+sessionAddress = largeLength sessionAddressUri ; as above
 length = 1*1 OCTET ; for binary data up to 255 bytes
 largeLength = 2*2 OCTET ; for binary data up to 65535 bytes
 packetPad = <pad packet size to 1450 bytes> ; possibly, we may need to move KEM agreement one step later,
 ; with encapsulation key in HELLO block and KEM ciphertext in reply to HELLO.
-```
-
-addressJSON is a JSON string valid against this JTD (RFC 8927) schema:
-
-```json
-{
-  "definitions": {
-    "versionRange": {
-      "type": "string",
-      "metadata": {
-        "format": "[0-9]+(-[0-9]+)?"
-      }
-    },
-    "base64url": {
-      "type": "string",
-      "metadata": {
-        "format": "base64url"
-      }
-    }
-  },
-  "properties": {
-    "ca": {"ref": "base64url"},
-    "host": {"type": "string"},
-    "port": {"type": "uint16"},
-    "v": {"ref": "versionRange"},
-    "ts": {"type": "uint64"},
-    "skey": {"ref": "base64url"},
-    "idkey": {"ref": "base64url"}
-  },
-  "optionalProperties": {
-    "app": {"properties": {}, "additionalProperties": true}
-  },
-  "additionalProperties": true
-}
 ```
 
 ### Establishing session TLS connection

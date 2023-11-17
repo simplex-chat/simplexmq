@@ -31,11 +31,14 @@ data RCErrorType
   = RCEInternal {internalErr :: String}
   | RCEIdentity
   | RCENoLocalAddress
+  | RCENewController
+  | RCENotDiscovered
   | RCETLSStartFailed
   | RCEException {exception :: String}
   | RCECtrlAuth
   | RCECtrlNotFound
   | RCECtrlError {ctrlErr :: String}
+  | RCEInvitation
   | RCEVersion
   | RCEEncrypt
   | RCEDecrypt
@@ -48,11 +51,14 @@ instance StrEncoding RCErrorType where
     RCEInternal err -> "INTERNAL" <> text err
     RCEIdentity -> "IDENTITY"
     RCENoLocalAddress -> "NO_LOCAL_ADDR"
+    RCENewController -> "NEW_CONTROLLER"
+    RCENotDiscovered -> "NOT_DISCOVERED"
     RCETLSStartFailed -> "CTRL_TLS_START"
     RCEException err -> "EXCEPTION" <> text err
     RCECtrlAuth -> "CTRL_AUTH"
     RCECtrlNotFound -> "CTRL_NOT_FOUND"
     RCECtrlError err -> "CTRL_ERROR" <> text err
+    RCEInvitation -> "INVITATION"
     RCEVersion -> "VERSION"
     RCEEncrypt -> "ENCRYPT"
     RCEDecrypt -> "DECRYPT"
@@ -65,11 +71,14 @@ instance StrEncoding RCErrorType where
       "INTERNAL" -> RCEInternal <$> textP
       "IDENTITY" -> pure RCEIdentity
       "NO_LOCAL_ADDR" -> pure RCENoLocalAddress
+      "NEW_CONTROLLER" -> pure RCENewController
+      "NOT_DISCOVERED" -> pure RCENotDiscovered
       "CTRL_TLS_START" -> pure RCETLSStartFailed
       "EXCEPTION" -> RCEException <$> textP
       "CTRL_AUTH" -> pure RCECtrlAuth
       "CTRL_NOT_FOUND" -> pure RCECtrlNotFound
       "CTRL_ERROR" -> RCECtrlError <$> textP
+      "INVITATION" -> pure RCEInvitation
       "VERSION" -> pure RCEVersion
       "ENCRYPT" -> pure RCEEncrypt
       "DECRYPT" -> pure RCEDecrypt

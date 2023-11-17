@@ -3,13 +3,17 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeApplications #-}
 
-module Simplex.RemoteControl.Invitation where
+module Simplex.RemoteControl.Invitation
+  ( RCInvitation (..)
+  , signInvitation
+  , RCSignedInvitation (..)
+  , verifySignedInvitation
+  , RCVerifiedInvitation (..)
+  , RCEncInvitation (..)
+  ) where
 
 import qualified Data.Aeson as J
-import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -21,7 +25,7 @@ import Network.HTTP.Types.URI (SimpleQuery, renderSimpleQuery, urlDecode)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, parseAll)
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Version (VersionRange)
 
@@ -119,38 +123,32 @@ instance StrEncoding RCSignedInvitation where
     idsig <- requiredP sigs "idsig" $ parseAll strP
     pure RCSignedInvitation {invitation, ssig, idsig}
 
-signInviteURL :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> RCSignedInvitation
-signInviteURL sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsig}
+signInvitation :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> RCSignedInvitation
+signInvitation sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsig}
   where
-    inviteUrl = strEncode invitation
+    uri = strEncode invitation
     ssig =
-      case C.sign (C.APrivateSignKey C.SEd25519 sKey) inviteUrl of
+      case C.sign (C.APrivateSignKey C.SEd25519 sKey) uri of
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
-    inviteUrlSigned = mconcat [inviteUrl, "&ssig=", strEncode ssig]
+    inviteUrlSigned = mconcat [uri, "&ssig=", strEncode ssig]
     idsig =
       case C.sign (C.APrivateSignKey C.SEd25519 idKey) inviteUrlSigned of
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
 
-verifySignedInviteURI :: RCSignedInvitation -> Bool
-verifySignedInviteURI RCSignedInvitation {invitation, ssig, idsig} =
-  C.verify aSKey aSSig inviteURL && C.verify aIdKey aIdSig inviteURLS
+newtype RCVerifiedInvitation = RCVerifiedInvitation RCInvitation
+  deriving (Show)
+
+verifySignedInvitation :: RCSignedInvitation -> Maybe RCVerifiedInvitation
+verifySignedInvitation RCSignedInvitation {invitation, ssig, idsig} =
+  if C.verify' skey ssig inviteURL && C.verify' idkey idsig inviteURLS
+    then Just $ RCVerifiedInvitation invitation
+    else Nothing
   where
     RCInvitation {skey, idkey} = invitation
     inviteURL = strEncode invitation
     inviteURLS = mconcat [inviteURL, "&ssig=", strEncode ssig]
-    aSKey = C.APublicVerifyKey C.SEd25519 skey
-    aSSig = C.ASignature C.SEd25519 ssig
-    aIdKey = C.APublicVerifyKey C.SEd25519 idkey
-    aIdSig = C.ASignature C.SEd25519 idsig
-
-instance Encoding RCSignedInvitation where
-  smpEncode RCSignedInvitation {} = error "TODO: RCSignedInvitation.smpEncode"
-  smpP = error "TODO: RCSignedInvitation.smpP"
-
-verifySignedInvitationMulticast :: RCSignedInvitation -> Bool
-verifySignedInvitationMulticast RCSignedInvitation {invitation, ssig, idsig} = undefined
 
 data RCEncInvitation = RCEncInvitation
   { dhPubKey :: C.PublicKeyX25519,
@@ -169,8 +167,3 @@ instance Encoding RCEncInvitation where
 
 requiredP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m a
 requiredP q k f = maybe (fail $ "missing " <> show k) (either fail pure . f) $ lookup k q
-
--- optionalP :: MonadFail m => SimpleQuery -> ByteString -> (ByteString -> Either String a) -> m (Maybe a)
--- optionalP q k f = maybe (pure Nothing) (either fail (pure . Just) . f) $ lookup k q
-
-$(JQ.deriveJSON defaultJSON ''RCInvitation)
