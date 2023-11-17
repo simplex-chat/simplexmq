@@ -115,7 +115,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   portNum <- atomically $ readTMVar startedPort
   signedInv@RCSignedInvitation {invitation} <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
   when multicast $ case knownHost of
-    Nothing -> fail "oops, must have known host for multicast"
+    Nothing -> throwError RCENewController
     Just KnownHostPairing {hostDhPubKey} -> do
       ann <- async . liftIO . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
       atomically $ putTMVar announcer ann
