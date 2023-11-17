@@ -395,11 +395,11 @@ discoverRCCtrl subscribers pairings =
         Right res -> pure res
 
 findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
-findRCCtrlPairing pairings RCEncInvitation {dhPubKey = encDh, nonce, encInvitation} = do
+findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
   (pairing, signedInvStr) <- liftEither $ decrypt (L.toList pairings)
   signedInv <- liftEitherWith RCESyntax $ strDecode signedInvStr
   inv@(RCVerifiedInvitation RCInvitation {dh = invDh}) <- maybe (throwError RCEInvitation) pure $ verifySignedInvitation signedInv
-  unless (invDh == encDh) $ throwError RCEInvitation
+  unless (invDh == dhPubKey) $ throwError RCEInvitation
   pure (pairing, inv)
   where
     decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)
@@ -408,8 +408,8 @@ findRCCtrlPairing pairings RCEncInvitation {dhPubKey = encDh, nonce, encInvitati
       let r = decrypt_ dhPrivKey <|> (decrypt_ =<< prevDhPrivKey)
        in maybe (decrypt rest) (Right . (pairing,)) r
     decrypt_ :: C.PrivateKeyX25519 -> Maybe ByteString
-    decrypt_ pairDh =
-      let key = C.dh' encDh pairDh
+    decrypt_ dhPrivKey =
+      let key = C.dh' dhPubKey dhPrivKey
        in eitherToMaybe $ C.cbDecrypt key nonce encInvitation
 
 -- * Controller handle operations
