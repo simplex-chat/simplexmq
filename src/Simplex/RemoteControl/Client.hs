@@ -45,7 +45,7 @@ import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
-import Network.Socket (SockAddr (..), PortNumber, hostAddressToTuple)
+import Network.Socket (PortNumber, SockAddr (..), hostAddressToTuple)
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
 import Simplex.Messaging.Agent.Client ()
@@ -55,7 +55,8 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Transport (TLS (tlsUniq), cGet, cPut)
+import Simplex.Messaging.Transport (TLS (..), cGet, cPut)
+import Simplex.Messaging.Transport.Buffer (peekBuffered)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Util
@@ -111,7 +112,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   -- wait for the port to make invitation
   -- TODO can't we actually find to which interface the server got connected to get host there?
   portNum <- atomically $ readTMVar startedPort
-  signedInv@RCSignedInvitation{invitation} <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
+  signedInv@RCSignedInvitation {invitation} <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
   when multicast $ case knownHost of
     Nothing -> fail "oops, must have known host for multicast"
     Just KnownHostPairing {hostDhPubKey} -> do
@@ -282,13 +283,14 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           TLS.Credentials (creds : _) -> pure $ Just creds
           _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      liftIO . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls ->
-        void . runExceptT $ do
-          logDebug "Got TLS connection"
-          r' <- newEmptyTMVarIO
-          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
-            logDebug "Waiting for session confirmation"
-            whenM (atomically $ readTMVar confirmSession) (runSession tls r') `putRCError` r'
+      runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> do
+        -- pump socket to detect connection problems
+        liftIO $ peekBuffered tlsBuffer 100000 (TLS.recvData tlsContext) >>= logDebug . tshow -- should normally be ("", Nothing) here
+        logDebug "Got TLS connection"
+        r' <- newEmptyTMVarIO
+        whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
+          logDebug "Waiting for session confirmation"
+          whenM (atomically $ readTMVar confirmSession) $ runSession tls r' `putRCError` r'
       where
         runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
@@ -387,9 +389,10 @@ discoverRCCtrl subscribers pairings =
       pure r
   where
     loop :: ExceptT RCErrorType IO a -> ExceptT RCErrorType IO a
-    loop action = liftIO (runExceptT action) >>= \case
-      Left err -> logError (tshow err) >> loop action
-      Right res -> pure res
+    loop action =
+      liftIO (runExceptT action) >>= \case
+        Left err -> logError (tshow err) >> loop action
+        Right res -> pure res
 
 findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
 findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
