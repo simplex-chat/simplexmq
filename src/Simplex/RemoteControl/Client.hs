@@ -275,19 +275,14 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           TLS.Credentials (creds : _) -> pure $ Just creds
           _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      c <- try . liftIO $ runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> do
+      runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> do
         -- pump socket to detect connection problems
-        peekBuffered tlsBuffer 100000 (TLS.recvData tlsContext) >>= logDebug . tshow -- should normally be ("", Nothing) here
-        runExceptT $ do
-          logDebug "Got TLS connection"
-          r' <- newEmptyTMVarIO
-          whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
-            logDebug "Waiting for session confirmation"
-            whenM (atomically $ readTMVar confirmSession) (runSession tls r') `putRCError` r'
-      case c of
-        Right (Right ok) -> pure ok
-        Right (Left err) -> atomically (tryPutTMVar r $ Left . RCEException $ show err) >>= logDebug . tshow . (err,)
-        Left (err :: TLS.TLSException) -> atomically (tryPutTMVar r $ Left . RCEException $ show err) >>= logDebug . tshow . (err,)
+        liftIO $ peekBuffered tlsBuffer 100000 (TLS.recvData tlsContext) >>= logDebug . tshow -- should normally be ("", Nothing) here
+        logDebug "Got TLS connection"
+        r' <- newEmptyTMVarIO
+        whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
+          logDebug "Waiting for session confirmation"
+          whenM (atomically $ readTMVar confirmSession) $ runSession tls r' `putRCError` r'
       where
         runSession tls r' = do
           (sharedKey, kemPrivKey, hostEncHello) <- prepareHostHello drg pairing' inv hostAppInfo
