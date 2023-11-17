@@ -80,8 +80,8 @@ xrcpBlockSize = 16384
 helloBlockSize :: Int
 helloBlockSize = 12288
 
-announceBlockSize :: Int
-announceBlockSize = 1024 -- TODO: put a real number
+encInvitationSize :: Int
+encInvitationSize = 900
 
 newRCHostPairing :: IO RCHostPairing
 newRCHostPairing = do
@@ -367,7 +367,7 @@ announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv =
   replicateM_ maxCount $ do
     logDebug "Announcing..."
     nonce <- atomically $ C.pseudoRandomCbNonce drg
-    encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce sigInvitation announceBlockSize
+    encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce sigInvitation encInvitationSize
     liftIO . UDP.send sender $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
     threadDelay 1000000
   where
