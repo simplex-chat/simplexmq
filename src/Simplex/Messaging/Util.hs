@@ -19,8 +19,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
 import GHC.Conc
-import UnliftIO
-import UnliftIO.Async
+import UnliftIO hiding (handle)
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()

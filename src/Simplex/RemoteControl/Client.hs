@@ -55,6 +55,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Transport (TLS (..), cGet, cPut)
 import Simplex.Messaging.Transport.Buffer (peekBuffered)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTransportClient)
@@ -184,8 +185,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
                 idkey = C.publicKey idPrivKey,
                 dh = fst dhKeys
               }
-          signedInv = signInviteURL (snd sessKeys) idPrivKey inv
-      pure signedInv
+      pure $ signInvitation (snd sessKeys) idPrivKey inv
 
 genTLSCredentials :: C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
 genTLSCredentials caKey caCert = do
@@ -360,32 +360,32 @@ prepareCtrlSession
       message <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encMessage
       throwError $ RCECtrlError $ T.unpack $ safeDecodeUtf8 message
 
+-- * Multicast discovery
+
 announceRC :: TVar ChaChaDRG -> Int -> C.PrivateKeyEd25519 -> C.PublicKeyX25519 -> RCHostKeys -> RCInvitation -> ExceptT RCErrorType IO ()
 announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv = withSender $ \sender -> do
   replicateM_ maxCount $ do
-    nonce <- atomically $ C.pseudoRandomCbNonce drg
-    let sharedKey = C.dh' knownDhPub dhPrivKey
-    encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce signedSA announceBlockSize
     logDebug "Announcing..."
+    nonce <- atomically $ C.pseudoRandomCbNonce drg
+    encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce sigInvitation announceBlockSize
     liftIO . UDP.send sender $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
     threadDelay 1000000
   where
-    signedSA = signInviteJSON sPrivKey idPrivKey inv
+    sigInvitation = strEncode $ signInvitation sPrivKey idPrivKey inv
     (_sPub, sPrivKey) = sessKeys
+    sharedKey = C.dh' knownDhPub dhPrivKey
     (dhPubKey, dhPrivKey) = dhKeys
 
--- The application should save updated RCHostPairing after user confirmation of the session
--- TMVar resolves when TLS is connected
 discoverRCCtrl :: TMVar Int -> NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
 discoverRCCtrl subscribers pairings =
   timeoutThrow RCENotDiscovered 30000000 $ withListener subscribers $ \listener ->
     loop $ do
       (source, bytes) <- recvAnnounce listener
-      encInvitation <- liftEitherWith RCESyntax $ smpDecode bytes
+      encInvitation <- liftEitherWith (const RCEInvitation) $ smpDecode bytes
       r@(_, RCVerifiedInvitation RCInvitation {host}) <- findRCCtrlPairing pairings encInvitation
       case source of
         SockAddrInet _ ha | THIPv4 (hostAddressToTuple ha) == host -> pure ()
-        _ -> throwError RCEAddress
+        _ -> throwError RCEInvitation
       pure r
   where
     loop :: ExceptT RCErrorType IO a -> ExceptT RCErrorType IO a
@@ -395,10 +395,12 @@ discoverRCCtrl subscribers pairings =
         Right res -> pure res
 
 findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
-findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
+findRCCtrlPairing pairings RCEncInvitation {dhPubKey = encDh, nonce, encInvitation} = do
   (pairing, signedInvStr) <- liftEither $ decrypt (L.toList pairings)
-  signedInv <- liftEitherWith RCESyntax $ smpDecode signedInvStr
-  maybe (throwError RCECtrlAuth) (pure . (pairing,)) $ verifySignedInvitationMulticast signedInv
+  signedInv <- liftEitherWith RCESyntax $ strDecode signedInvStr
+  inv@(RCVerifiedInvitation RCInvitation {dh = invDh}) <- maybe (throwError RCEInvitation) pure $ verifySignedInvitation signedInv
+  unless (invDh == encDh) $ throwError RCEInvitation
+  pure (pairing, inv)
   where
     decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)
     decrypt [] = Left RCECtrlNotFound
@@ -406,9 +408,11 @@ findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
       let r = decrypt_ dhPrivKey <|> (decrypt_ =<< prevDhPrivKey)
        in maybe (decrypt rest) (Right . (pairing,)) r
     decrypt_ :: C.PrivateKeyX25519 -> Maybe ByteString
-    decrypt_ dhPrivKey =
-      let key = C.dh' dhPubKey dhPrivKey
+    decrypt_ pairDh =
+      let key = C.dh' encDh pairDh
        in eitherToMaybe $ C.cbDecrypt key nonce encInvitation
+
+-- * Controller handle operations
 
 -- application should call this function when TMVar resolves
 confirmCtrlSession :: RCCtrlClient -> Bool -> IO ()

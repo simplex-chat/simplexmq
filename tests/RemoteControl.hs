@@ -10,7 +10,7 @@ import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Simplex.RemoteControl.Client as RC
-import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitationMulticast, verifySignedInviteURI)
+import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
 import Simplex.RemoteControl.Types
 import Test.Hspec
 import UnliftIO
@@ -46,7 +46,7 @@ testNewPairing = do
 
   (signedInv, hc) <- takeMVar invVar
   -- logNote $ decodeUtf8 $ strEncode inv
-  let Just inv = verifySignedInviteURI signedInv
+  inv <- maybe (fail "bad invite") pure $ verifySignedInvitation signedInv
 
   hostSessId <- async . runRight $ do
     logNote "h 1"
@@ -133,7 +133,7 @@ runCtrl drg multicast hp invVar = async . runRight $ do
 
 runHostURI :: TVar ChaChaDRG -> Maybe RCCtrlPairing -> RCSignedInvitation -> IO (Async RCCtrlPairing)
 runHostURI drg cp_ signedInv = async . runRight $ do
-  let Just inv = verifySignedInviteURI signedInv
+  inv <- maybe (fail "bad invite") pure $ verifySignedInvitation signedInv
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv cp_ (J.String "app")
   Right (_sessId', _tls, r') <- atomically $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True
@@ -143,7 +143,7 @@ runHostURI drg cp_ signedInv = async . runRight $ do
 
 runHostMulticast :: TVar ChaChaDRG -> TMVar Int -> RCCtrlPairing -> IO (Async RCCtrlPairing)
 runHostMulticast drg subscribers cp = async . runRight $ do
-  (pairing, inv) <- RC.discoverRCCtrl drg subscribers (cp :| [])
+  (pairing, inv) <- RC.discoverRCCtrl subscribers (cp :| [])
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv (Just pairing) (J.String "app")
   Right (_sessId', _tls, r') <- atomically $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True
