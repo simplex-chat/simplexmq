@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.ProtocolErrorTests where
@@ -17,6 +18,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..))
 import Simplex.Messaging.Transport (HandshakeError (..), TransportError (..))
+import Simplex.RemoteControl.Types (RCErrorType (..))
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -58,6 +60,8 @@ deriving instance Generic HandshakeError
 
 deriving instance Generic XFTPErrorType
 
+deriving instance Generic RCErrorType
+
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
@@ -79,3 +83,5 @@ instance Arbitrary TransportError where arbitrary = genericArbitraryU
 instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
 
 instance Arbitrary XFTPErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary RCErrorType where arbitrary = genericArbitraryU
