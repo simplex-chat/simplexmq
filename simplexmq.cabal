@@ -1,11 +1,11 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.35.2.
+-- This file has been generated from package.yaml by hpack version 0.36.0.
 --
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        5.4.0.4
+version:        5.4.0.5
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -26,6 +26,8 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
+    cbits/sha512.h
+    cbits/sntrup761.h
 
 flag swift
   description: Enable swift JSON format
@@ -99,6 +101,11 @@ library
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Crypto.SNTRUP761
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
+      Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
@@ -141,11 +148,23 @@ library
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
       Simplex.Messaging.Version
+      Simplex.RemoteControl.Client
+      Simplex.RemoteControl.Discovery
+      Simplex.RemoteControl.Discovery.Multicast
+      Simplex.RemoteControl.Invitation
+      Simplex.RemoteControl.Types
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
+  include-dirs:
+      cbits
+  c-sources:
+      cbits/sha512.c
+      cbits/sntrup761.c
+  extra-libraries:
+      crypto
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -175,7 +194,9 @@ library
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
@@ -238,7 +259,9 @@ executable ntf-server
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
@@ -302,7 +325,9 @@ executable smp-agent
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
@@ -366,7 +391,9 @@ executable smp-server
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
@@ -430,7 +457,9 @@ executable xftp
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
@@ -494,7 +523,9 @@ executable xftp-server
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3
@@ -546,6 +577,7 @@ test-suite simplexmq-test
       FileDescriptionTests
       NtfClient
       NtfServerTests
+      RemoteControl
       ServerTests
       SMPAgentClient
       SMPClient
@@ -593,7 +625,9 @@ test-suite simplexmq-test
     , memory ==0.15.*
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
+    , network-info ==0.2.*
     , network-transport ==0.5.4
+    , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
     , random >=1.1 && <1.3

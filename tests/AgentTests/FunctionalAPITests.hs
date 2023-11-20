@@ -144,7 +144,7 @@ prevRange vr = vr {maxVersion = maxVersion vr - 1}
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
 
-runRight :: HasCallStack => ExceptT AgentErrorType IO a -> IO a
+runRight :: (Show e, HasCallStack) => ExceptT e IO a -> IO a
 runRight action =
   runExceptT action >>= \case
     Right x -> pure x

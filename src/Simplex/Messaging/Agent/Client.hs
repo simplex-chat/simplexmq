@@ -73,6 +73,7 @@ module Simplex.Messaging.Agent.Client
     removeSubscription,
     hasActiveSubscription,
     agentClientStore,
+    agentDRG,
     getAgentSubscriptions,
     SubscriptionsInfo (..),
     SubInfo (..),
@@ -115,7 +116,7 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (ChaChaDRG, getRandomBytes)
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
@@ -377,6 +378,9 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
+
+agentDRG :: AgentClient -> TVar ChaChaDRG
+agentDRG AgentClient {agentEnv = Env {random}} = random
 
 class (Encoding err, Show err) => ProtocolServerClient err msg | msg -> err where
   type Client msg = c | c -> msg

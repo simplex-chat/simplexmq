@@ -14,13 +14,16 @@ module Simplex.Messaging.Crypto.Lazy
     sbEncrypt,
     sbDecrypt,
     sbEncryptTailTag,
+    kcbEncryptTailTag,
     sbDecryptTailTag,
+    kcbDecryptTailTag,
     fastReplicate,
     secretBox,
     secretBoxTailTag,
     SbState,
     cbInit,
     sbInit,
+    kcbInit,
     sbEncryptChunk,
     sbDecryptChunk,
     sbEncryptChunkLazy,
@@ -48,6 +51,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Foreign (sizeOf)
 import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), DhSecret (..), DhSecretX25519, SbKey, pattern CbNonce, pattern SbKey)
+import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret (..))
 import Simplex.Messaging.Encoding
 
 type LazyByteString = LB.ByteString
@@ -127,13 +131,33 @@ secretBox sbProcess secret nonce msg = run <$> sbInit_ secret nonce
 
 -- | NaCl @secret_box@ lazy encrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
 sbEncryptTailTag :: SbKey -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
-sbEncryptTailTag (SbKey key) (CbNonce nonce) msg len paddedLen =
+sbEncryptTailTag (SbKey key) = sbEncryptTailTag_ key
+{-# INLINE sbEncryptTailTag #-}
+
+-- | NaCl @crypto_box@ lazy encrypt with with a shared hybrid KEM+DH 256-bit secret and 192-bit nonce with appended auth tag (more efficient with large strings/files).
+kcbEncryptTailTag :: KEMHybridSecret -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
+kcbEncryptTailTag (KEMHybridSecret key) = sbEncryptTailTag_ key
+{-# INLINE kcbEncryptTailTag #-}
+
+sbEncryptTailTag_ :: ByteArrayAccess key => key -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
+sbEncryptTailTag_ key (CbNonce nonce) msg len paddedLen =
   LB.fromChunks <$> (secretBoxTailTag sbEncryptChunk key nonce =<< pad msg len paddedLen)
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
 -- paddedLen should NOT include the tag length, it should be the same number that is passed to sbEncrypt / sbEncryptTailTag.
 sbDecryptTailTag :: SbKey -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
-sbDecryptTailTag (SbKey key) (CbNonce nonce) paddedLen packet =
+sbDecryptTailTag (SbKey key) = sbDecryptTailTag_ key
+{-# INLINE sbDecryptTailTag #-}
+
+-- | NaCl @crypto_box@ lazy decrypt with a shared hybrid KEM+DH 256-bit secret and 192-bit nonce with appended auth tag (more efficient with large strings/files).
+-- paddedLen should NOT include the tag length, it should be the same number that is passed to sbEncrypt / sbEncryptTailTag.
+kcbDecryptTailTag :: KEMHybridSecret -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
+kcbDecryptTailTag (KEMHybridSecret key) = sbDecryptTailTag_ key
+{-# INLINE kcbDecryptTailTag #-}
+
+-- paddedLen should NOT include the tag length, it should be the same number that is passed to sbEncrypt / sbEncryptTailTag.
+sbDecryptTailTag_ :: ByteArrayAccess key => key -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
+sbDecryptTailTag_ key (CbNonce nonce) paddedLen packet =
   case secretBox sbDecryptChunk key nonce c of
     Right (tag :| cs) ->
       let valid = LB.length tag' == 16 && BA.constEq (LB.toStrict tag') tag
@@ -164,6 +188,10 @@ cbInit (DhSecretX25519 secret) (CbNonce nonce) = sbInit_ secret nonce
 sbInit :: SbKey -> CbNonce -> Either CryptoError SbState
 sbInit (SbKey secret) (CbNonce nonce) = sbInit_ secret nonce
 {-# INLINE sbInit #-}
+
+kcbInit :: KEMHybridSecret -> CbNonce -> Either CryptoError SbState
+kcbInit (KEMHybridSecret k) (CbNonce nonce) = sbInit_ k nonce
+{-# INLINE kcbInit #-}
 
 sbInit_ :: ByteArrayAccess key => key -> ByteString -> Either CryptoError SbState
 sbInit_ secret nonce = (state2,) <$> cryptoPassed (Poly1305.initialize rs)

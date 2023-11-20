@@ -3,6 +3,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -84,6 +85,7 @@ module Simplex.Messaging.Crypto
     SignatureAlgorithm,
     AlgorithmI (..),
     sign,
+    sign',
     verify,
     verify',
     validSignatureSize,
@@ -115,6 +117,8 @@ module Simplex.Messaging.Crypto
     cbEncrypt,
     cbEncryptMaxLenBS,
     cbDecrypt,
+    sbDecrypt_,
+    sbEncrypt_,
     cbNonce,
     randomCbNonce,
     pseudoRandomCbNonce,
@@ -674,6 +678,10 @@ class CryptoSignature s where
   serializeSignature = encode . signatureBytes
   signatureBytes :: s -> ByteString
   decodeSignature :: ByteString -> Either String s
+
+instance CryptoSignature (Signature s) => StrEncoding (Signature s) where
+  strEncode = serializeSignature
+  strDecode = decodeSignature
 
 instance CryptoSignature ASignature where
   signatureBytes (ASignature _ sig) = signatureBytes sig
