@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module RemoteControl where
@@ -9,6 +8,7 @@ import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
+import Simplex.RemoteControl.Client (RCHostClient (..))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
 import Simplex.RemoteControl.Types
@@ -62,7 +62,7 @@ testNewPairing = do
     logNote "ctrl: adios"
     pure sessId'
 
-  waitCatch hc.action >>= \case
+  waitCatch (action hc) >>= \case
     Left err -> fromException err `shouldBe` Just AsyncCancelled
     Right () -> fail "Unexpected controller finish"
 
