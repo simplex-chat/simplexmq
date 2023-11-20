@@ -18,8 +18,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
-import GHC.Conc
-import UnliftIO hiding (handle)
+import GHC.Conc (labelThread, myThreadId, threadDelay)
+import UnliftIO
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -98,7 +98,7 @@ tryAllErrors err action = tryError action `UE.catch` (pure . Left . err)
 {-# INLINE tryAllErrors #-}
 
 catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
-catchAllErrors err action handle = tryAllErrors err action >>= either handle pure
+catchAllErrors err action handler = tryAllErrors err action >>= either handler pure
 {-# INLINE catchAllErrors #-}
 
 catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
