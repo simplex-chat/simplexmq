@@ -276,7 +276,7 @@ agentOpSel = \case
 agentOperations :: [AgentClient -> TVar AgentOpState]
 agentOperations = [ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp]
 
-data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
+data AgentOpState = AgentOpState {opSuspended :: !Bool, opsInProgress :: !Int}
 
 data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)

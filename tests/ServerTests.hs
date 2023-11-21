@@ -859,10 +859,10 @@ testTiming (ATransport t) =
   where
     timingTests :: [(Int, Int, Int)]
     timingTests =
-      [ (32, 32, 200),
-        (32, 57, 100),
-        (57, 32, 200),
-        (57, 57, 100)
+      [ (32, 32, 500),
+        (32, 57, 250),
+        (57, 32, 500),
+        (57, 57, 250)
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25 `shouldBe` True
@@ -897,13 +897,13 @@ testTiming (ATransport t) =
           timeNoQueue <- timeRepeat n $ do
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
-          -- (putStrLn . unwords . map show)
-          --   [ fromIntegral goodKeySize,
-          --     fromIntegral badKeySize,
-          --     timeWrongKey,
-          --     timeNoQueue,
-          --     timeWrongKey / timeNoQueue - 1
-          --   ]
+          (putStrLn . unwords . map show)
+            [ fromIntegral goodKeySize,
+              fromIntegral badKeySize,
+              timeWrongKey,
+              timeNoQueue,
+              timeWrongKey / timeNoQueue - 1
+            ]
           similarTime timeNoQueue timeWrongKey
 
 testMessageNotifications :: ATransport -> Spec
