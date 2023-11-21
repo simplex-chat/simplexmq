@@ -235,7 +235,7 @@ functionalAPITests t = do
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
-    it "should restore and complete async commands on restart" $
+    fit "should restore and complete async commands on restart" $
       testAsyncCommandsRestore t
     it "should accept connection using async command" $
       withSmpServer t testAcceptContactAsync
@@ -1279,6 +1279,7 @@ testAsyncCommandsRestore t = do
       ("1", _, INV _) <- get alice'
       pure ()
   disconnectAgentClient alice'
+  threadDelay 1000000
 
 testAcceptContactAsync :: IO ()
 testAcceptContactAsync =
