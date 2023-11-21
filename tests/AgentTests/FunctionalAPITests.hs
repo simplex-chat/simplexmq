@@ -1279,6 +1279,7 @@ testAsyncCommandsRestore t = do
       ("1", _, INV _) <- get alice'
       pure ()
   disconnectAgentClient alice'
+  threadDelay 1000000
 
 testAcceptContactAsync :: IO ()
 testAcceptContactAsync =
