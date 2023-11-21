@@ -762,7 +762,6 @@ testDuplicateMessage t = do
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
   disconnectAgentClient alice2
   disconnectAgentClient bob2
-  threadDelay 1000000
 
 testSkippedMessages :: HasCallStack => ATransport -> IO ()
 testSkippedMessages t = do
@@ -1280,7 +1279,6 @@ testAsyncCommandsRestore t = do
       ("1", _, INV _) <- get alice'
       pure ()
   disconnectAgentClient alice'
-  threadDelay 1000000
 
 testAcceptContactAsync :: IO ()
 testAcceptContactAsync =
