@@ -749,6 +749,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 s -> s
               where
                 subscriber = do
+                  labelMyThread $ B.unpack ("client $" <> encode clnt.sessionId) <> " subscriber/" <> T.unpack name
                   msg <- atomically $ peekMsg q
                   time "subscriber" . atomically $ do
                     let encMsg = encryptMsg qr msg
