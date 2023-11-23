@@ -143,11 +143,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
-    serverThread s label subQ subs clientSubs unsub = forever $ do
+    serverThread s label subQ subs clientSubs unsub = do
       labelMyThread label
-      atomically updateSubscribers
-        $>>= endPreviousSubscriptions
-        >>= liftIO . mapM_ unsub
+      forever $
+        atomically updateSubscribers
+          $>>= endPreviousSubscriptions
+          >>= liftIO . mapM_ unsub
       where
         updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
@@ -161,9 +162,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          labelMyThread $ label <> ".endPreviousSubscriptions"
-          void . forkIO . atomically $
-            writeTBQueue (sndQ c) [(CorrId "", qId, END)]
+          void . forkIO $ do
+            labelMyThread $ label <> ".endPreviousSubscriptions"
+            atomically $ writeTBQueue (sndQ c) [(CorrId "", qId, END)]
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
