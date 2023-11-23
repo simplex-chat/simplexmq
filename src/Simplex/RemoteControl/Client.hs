@@ -376,9 +376,9 @@ announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv =
     sharedKey = C.dh' knownDhPub dhPrivKey
     (dhPubKey, dhPrivKey) = dhKeys
 
-discoverRCCtrl :: TMVar Int -> NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
-discoverRCCtrl subscribers pairings =
-  timeoutThrow RCENotDiscovered 30000000 $ withListener subscribers $ \listener ->
+discoverRCCtrl :: TMVar Int -> NonEmpty RCCtrlPairing -> Int -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
+discoverRCCtrl subscribers pairings time =
+  timeoutThrow RCENotDiscovered time $ withListener subscribers $ \listener ->
     loop $ do
       (source, bytes) <- recvAnnounce listener
       encInvitation <- liftEitherWith (const RCEInvitation) $ smpDecode bytes

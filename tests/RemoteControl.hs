@@ -143,7 +143,7 @@ runHostURI drg cp_ signedInv = async . runRight $ do
 
 runHostMulticast :: TVar ChaChaDRG -> TMVar Int -> RCCtrlPairing -> IO (Async RCCtrlPairing)
 runHostMulticast drg subscribers cp = async . runRight $ do
-  (pairing, inv) <- RC.discoverRCCtrl subscribers (cp :| [])
+  (pairing, inv) <- RC.discoverRCCtrl subscribers (cp :| []) 30000000
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv (Just pairing) (J.String "app")
   Right (_sessId', _tls, r') <- atomically $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True

@@ -410,13 +410,13 @@ rcConnectCtrl' verifiedInv pairing_ hostAppInfo = do
   liftError RCP $ connectRCCtrl drg verifiedInv pairing_ hostAppInfo
 
 -- | connect to known remote controller via multicast
-rcDiscoverCtrl :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
-rcDiscoverCtrl c = withAgentEnv c . rcDiscoverCtrl'
+rcDiscoverCtrl :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> Int -> m (RCCtrlPairing, RCVerifiedInvitation)
+rcDiscoverCtrl c = withAgentEnv c .: rcDiscoverCtrl'
 
-rcDiscoverCtrl' :: AgentMonad m => NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
-rcDiscoverCtrl' pairings = do
+rcDiscoverCtrl' :: AgentMonad m => NonEmpty RCCtrlPairing -> Int -> m (RCCtrlPairing, RCVerifiedInvitation)
+rcDiscoverCtrl' pairings time = do
   subs <- asks multicastSubscribers
-  liftError RCP $ discoverRCCtrl subs pairings
+  liftError RCP $ discoverRCCtrl subs pairings time
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
