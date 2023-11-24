@@ -59,6 +59,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
+import Debug.Trace (traceEventIO)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -237,13 +238,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           threadDelay' interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
-    runClient tp h = do
+    runClient tp h = bracket_ start end $ do
       kh <- asks serverIdentity
       smpVRange <- asks $ smpServerVRange . config
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
         Right th -> runClientTransport th
         Left _ -> pure ()
+      where
+        sid = B.unpack . encode $ tlsUnique h
+        start = liftIO $ traceEventIO ("START " <> sid <> " S")
+        end = liftIO $ traceEventIO ("STOP " <> sid <> " S")
 
     controlPortThread_ :: ServerConfig -> [M ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
@@ -327,22 +332,28 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   c <- atomically $ newClient q thVersion sessionId ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  labelMyThread . B.unpack $ "client $" <> encode sessionId
+  labelMyThread $ "client $" <> sid
+  liftIO $ traceEventIO ("START " <> sid <> " C")
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
+    sid = B.unpack $ encode sessionId
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th c activeAt expCfg]
     disconnectThread_ _ _ = []
 
 clientDisconnected :: Client -> M ()
-clientDisconnected c@Client {subscriptions, connected} = do
+clientDisconnected c@Client {subscriptions, connected, sessionId} = do
+  liftIO $ traceEventIO ("START " <> sid <> " D")
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
   liftIO $ mapM_ cancelSub subs
   atomically $ writeTVar subscriptions M.empty
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
+  liftIO $ traceEventIO ("STOP " <> sid <> " D")
+  liftIO $ traceEventIO ("STOP " <> sid <> " C")
   where
+    sid = B.unpack $ encode sessionId
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
       | sameClientSession c c' = Nothing
