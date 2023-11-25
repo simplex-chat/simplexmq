@@ -344,6 +344,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
 clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {subscriptions, connected, sessionId} = do
   liftIO $ traceEventIO ("START " <> sid <> " D")
+  labelMyThread $ "client $" <> sid <> " disc"
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
   liftIO $ mapM_ cancelSub subs
@@ -370,12 +371,15 @@ cancelSub sub =
 
 receive :: Transport c => THandle c -> Client -> M ()
 receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
+  -- labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
+    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / tGet"
     ts <- L.toList <$> liftIO (tGet th)
     atomically . writeTVar activeAt =<< liftIO getSystemTime
     as <- partitionEithers <$> mapM cmdAction ts
+    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / write snd"
     write sndQ $ fst as
+    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / write rcv"
     write rcvQ $ snd as
   where
     cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
@@ -391,9 +395,11 @@ receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
 
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
+  -- labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
+    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send / read"
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
+    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send / tPut"
     void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
     atomically . writeTVar activeAt =<< liftIO getSystemTime
   where
@@ -760,8 +766,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 s -> s
               where
                 subscriber = do
-                  labelMyThread $ B.unpack ("client $" <> encode clnt.sessionId) <> " subscriber/" <> T.unpack name
+                  labelMyThread $ B.unpack ("client $" <> encode clnt.sessionId) <> " subscriber/" <> T.unpack name <> " peekMsg"
                   msg <- atomically $ peekMsg q
+                  labelMyThread $ B.unpack ("client $" <> encode clnt.sessionId) <> " subscriber/" <> T.unpack name <> " sndQ"
                   time "subscriber" . atomically $ do
                     let encMsg = encryptMsg qr msg
                     writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
