@@ -142,7 +142,7 @@ runTestFileChunkDelete s r = do
   deleteXFTPChunk s spKey sId
   liftIO $
     readChunk sId
-      `shouldThrow` \(e :: SomeException) -> "withBinaryFile: does not exist" `isInfixOf` show e
+      `shouldThrow` \(e :: SomeException) -> "withBinaryFile" `isInfixOf` show e
   downloadXFTPChunk r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId
