@@ -11,6 +11,7 @@ module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),
     Large (..),
+    _smpP,
     smpEncodeList,
     smpListP,
     lenEncode,
@@ -142,6 +143,9 @@ instance Encoding SystemTime where
   {-# INLINE smpEncode #-}
   smpP = MkSystemTime <$> smpP <*> pure 0
   {-# INLINE smpP #-}
+
+_smpP :: Encoding a => Parser a
+_smpP = A.space *> smpP
 
 -- lists encode/parse as a sequence of items prefixed with list length (as 1 byte)
 smpEncodeList :: Encoding a => [a] -> ByteString

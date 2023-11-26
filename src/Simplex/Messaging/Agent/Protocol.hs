@@ -211,6 +211,7 @@ import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTra
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import Simplex.RemoteControl.Types
 import Text.Read
 import UnliftIO.Exception (Exception)
 
@@ -1419,6 +1420,8 @@ data AgentErrorType
     NTF {ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {xftpErr :: XFTPErrorType}
+  | -- | XRCP protocol errors forwarded to agent clients
+    RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
     BROKER {brokerAddress :: String, brokerErr :: BrokerErrorType}
   | -- | errors of other agents
@@ -1501,6 +1504,8 @@ data AgentCryptoError
     RATCHET_EARLIER Word32
   | -- | too many skipped messages
     RATCHET_SKIPPED Word32
+  | -- | ratchet synchronization error
+    RATCHET_SYNC
   deriving (Eq, Read, Show, Exception)
 
 instance StrEncoding AgentCryptoError where
@@ -1510,12 +1515,14 @@ instance StrEncoding AgentCryptoError where
       <|> "RATCHET_HEADER" $> RATCHET_HEADER
       <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
       <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
+      <|> "RATCHET_SYNC" $> RATCHET_SYNC
   strEncode = \case
     DECRYPT_AES -> "DECRYPT_AES"
     DECRYPT_CB -> "DECRYPT_CB"
     RATCHET_HEADER -> "RATCHET_HEADER"
     RATCHET_EARLIER n -> "RATCHET_EARLIER " <> strEncode n
     RATCHET_SKIPPED n -> "RATCHET_SKIPPED " <> strEncode n
+    RATCHET_SYNC -> "RATCHET_SYNC"
 
 instance StrEncoding AgentErrorType where
   strP =
@@ -1524,6 +1531,7 @@ instance StrEncoding AgentErrorType where
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
       <|> "XFTP " *> (XFTP <$> strP)
+      <|> "RCP " *> (RCP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
       <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
@@ -1540,6 +1548,7 @@ instance StrEncoding AgentErrorType where
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
     XFTP e -> "XFTP " <> strEncode e
+    RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
     BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
@@ -1558,6 +1567,7 @@ cryptoErrToSyncState = \case
   RATCHET_HEADER -> RSRequired
   RATCHET_EARLIER _ -> RSAllowed
   RATCHET_SKIPPED _ -> RSRequired
+  RATCHET_SYNC -> RSRequired
 
 -- | SMP agent command and response parser for commands passed via network (only parses binary length)
 networkCommandP :: Parser ACmd

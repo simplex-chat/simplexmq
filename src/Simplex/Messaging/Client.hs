@@ -237,7 +237,7 @@ defaultNetworkConfig =
 
 transportClientConfig :: NetworkConfig -> TransportClientConfig
 transportClientConfig NetworkConfig {socksProxy, tcpKeepAlive, logTLSErrors} =
-  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors}
+  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing}
 
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig

@@ -6,6 +6,7 @@ module Simplex.Messaging.Transport.Buffer where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E
+import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import GHC.IO.Exception (IOErrorType (..), IOException (..), ioException)
@@ -27,6 +28,14 @@ withBufferLock TBuffer {getLock} =
   E.bracket_
     (atomically $ takeTMVar getLock)
     (atomically $ putTMVar getLock ())
+
+-- | Attempt to read some bytes, appending it to the existing buffer
+peekBuffered :: TBuffer -> Int -> IO ByteString -> IO (ByteString, Maybe ByteString)
+peekBuffered tb@TBuffer {buffer} t getChunk = withBufferLock tb $ do
+  old <- readTVarIO buffer
+  next_ <- timeout t getChunk
+  forM_ next_ $ \next -> atomically $ writeTVar buffer $! old <> next
+  pure (old, next_)
 
 getBuffered :: TBuffer -> Int -> Maybe Int -> IO ByteString -> IO ByteString
 getBuffered tb@TBuffer {buffer} n t_ getChunk = withBufferLock tb $ do

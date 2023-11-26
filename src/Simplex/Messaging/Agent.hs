@@ -94,6 +94,10 @@ module Simplex.Messaging.Agent
     xftpSendFile,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFileRemote,
+    rcNewHostPairing,
+    rcConnectHost,
+    rcConnectCtrl,
+    rcDiscoverCtrl,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -112,6 +116,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
+import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -157,6 +162,9 @@ import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import Simplex.RemoteControl.Client
+import Simplex.RemoteControl.Invitation
+import Simplex.RemoteControl.Types
 import UnliftIO.Async (async, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import UnliftIO.STM
@@ -384,6 +392,37 @@ xftpDeleteSndFileInternal c = withAgentEnv c . deleteSndFileInternal c
 -- | Delete XFTP snd file chunks on servers
 xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
+
+-- | Create new remote host pairing
+rcNewHostPairing :: MonadIO m => m RCHostPairing
+rcNewHostPairing = liftIO newRCHostPairing
+
+-- | start TLS server for remote host with optional multicast
+rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m RCHostConnection
+rcConnectHost c = withAgentEnv c .:. rcConnectHost'
+
+rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m RCHostConnection
+rcConnectHost' pairing ctrlAppInfo multicast = do
+  drg <- asks random
+  liftError RCP $ connectRCHost drg pairing ctrlAppInfo multicast
+
+-- | connect to remote controller via URI
+rcConnectCtrl :: AgentErrorMonad m => AgentClient -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrl c = withAgentEnv c .:. rcConnectCtrl'
+
+rcConnectCtrl' :: AgentMonad m => RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection
+rcConnectCtrl' verifiedInv pairing_ hostAppInfo = do
+  drg <- asks random
+  liftError RCP $ connectRCCtrl drg verifiedInv pairing_ hostAppInfo
+
+-- | connect to known remote controller via multicast
+rcDiscoverCtrl :: AgentErrorMonad m => AgentClient -> NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
+rcDiscoverCtrl c = withAgentEnv c . rcDiscoverCtrl'
+
+rcDiscoverCtrl' :: AgentMonad m => NonEmpty RCCtrlPairing -> m (RCCtrlPairing, RCVerifiedInvitation)
+rcDiscoverCtrl' pairings = do
+  subs <- asks multicastSubscribers
+  liftError RCP $ discoverRCCtrl subs pairings
 
 -- | Activate operations
 foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
@@ -2273,12 +2312,27 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
               getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)
-              getSendRatchetKeys
-                | rss == RSStarted = withStore c (`getRatchetX3dhKeys'` connId)
-                | otherwise = do
+              getSendRatchetKeys = case rss of
+                RSOk -> sendReplyKey -- receiving client
+                RSAllowed -> sendReplyKey
+                RSRequired -> sendReplyKey
+                RSStarted -> withStore c (`getRatchetX3dhKeys'` connId) -- initiating client
+                RSAgreed -> do
+                  withStore' c $ \db -> setConnRatchetSync db connId RSRequired
+                  notifyRatchetSyncError
+                  -- can communicate for other client to reset to RSRequired
+                  -- - need to add new AgentMsgEnvelope, AgentMessage, AgentMessageType
+                  -- - need to deduplicate on receiving side
+                  throwError $ AGENT (A_CRYPTO RATCHET_SYNC)
+                where
+                  sendReplyKey = do
                     (pk1, pk2, e2eParams@(CR.E2ERatchetParams _ k1 k2)) <- liftIO . CR.generateE2EParams $ version e2eOtherPartyParams
                     void $ enqueueRatchetKeyMsgs c cData' sqs e2eParams
                     pure (pk1, pk2, k1, k2)
+                  notifyRatchetSyncError = do
+                    let cData'' = cData' {ratchetSyncState = RSRequired} :: ConnData
+                        conn'' = updateConnection cData'' conn'
+                    notify $ RSYNC RSRequired (Just RATCHET_SYNC) (connectionStats conn'')
               notifyAgreed :: m ()
               notifyAgreed = do
                 let cData'' = cData' {ratchetSyncState = RSAgreed} :: ConnData
