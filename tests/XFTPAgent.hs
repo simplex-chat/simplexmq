@@ -379,8 +379,8 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     rcp1 <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ . void $
       testReceive rcp1 rfd1 filePath
-    disconnectAgentClient rcp1
-    disconnectAgentClient sndr
+    disposeAgentClient rcp1
+    disposeAgentClient sndr
     pure (sfId, sndDescr, rfd2)
 
   -- delete file - should not succeed with server down
