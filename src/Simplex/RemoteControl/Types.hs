@@ -14,6 +14,7 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Simplex.Messaging.Crypto as C
@@ -23,6 +24,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport (TLS)
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (safeDecodeUtf8)
 import Simplex.Messaging.Version (Version, VersionRange, mkVersionRange)
 import UnliftIO
@@ -134,6 +136,12 @@ data KnownHostPairing = KnownHostPairing
     hostDhPubKey :: C.PublicKeyX25519
   }
 
+data RCCtrlAddress = RCCtrlAddress
+  { address :: TransportHost, -- allows any interface when found exactly
+    interface :: Text
+  }
+  deriving (Show)
+
 -- | Long-term part of host (mobile) connection to controller (desktop)
 data RCCtrlPairing = RCCtrlPairing
   { caKey :: C.APrivateSignKey,
@@ -226,3 +234,5 @@ cancelTasks :: MonadIO m => Tasks -> m ()
 cancelTasks tasks = readTVarIO tasks >>= mapM_ cancel
 
 $(JQ.deriveJSON (sumTypeJSON $ dropPrefix "RCE") ''RCErrorType)
+
+$(JQ.deriveJSON defaultJSON ''RCCtrlAddress)

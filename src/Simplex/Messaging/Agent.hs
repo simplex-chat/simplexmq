@@ -119,7 +119,7 @@ import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:), (.:.), (.::))
+import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Foldable (foldl')
 import Data.Functor (($>))
 import Data.List (find)
@@ -132,6 +132,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
+import Data.Word (Word16)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpReceiveFile', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -392,13 +393,13 @@ rcNewHostPairing :: MonadIO m => m RCHostPairing
 rcNewHostPairing = liftIO newRCHostPairing
 
 -- | start TLS server for remote host with optional multicast
-rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> m RCHostConnection
-rcConnectHost c = withAgentEnv c .:. rcConnectHost'
+rcConnectHost :: AgentErrorMonad m => AgentClient -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> m RCHostConnection
+rcConnectHost c = withAgentEnv c .::. rcConnectHost'
 
-rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> m RCHostConnection
-rcConnectHost' pairing ctrlAppInfo multicast = do
+rcConnectHost' :: AgentMonad m => RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> m RCHostConnection
+rcConnectHost' pairing ctrlAppInfo multicast rcAddr_ port_ = do
   drg <- asks random
-  liftError RCP $ connectRCHost drg pairing ctrlAppInfo multicast
+  liftError RCP $ connectRCHost drg pairing ctrlAppInfo multicast rcAddr_ port_
 
 -- | connect to remote controller via URI
 rcConnectCtrl :: AgentErrorMonad m => AgentClient -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> m RCCtrlConnection

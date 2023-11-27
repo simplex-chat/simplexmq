@@ -10,13 +10,17 @@
 -- XXX: remove non-discovery functions
 module Simplex.RemoteControl.Discovery where
 
+import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.Default (def)
-import Data.Maybe (listToMaybe, mapMaybe)
+import qualified Data.List as L
+import Data.Maybe (mapMaybe)
 import Data.String (IsString)
+import qualified Data.Text as T
+import Data.Word (Word16)
 import Network.Info (IPv4 (..), NetworkInterface (..), getNetworkInterfaces)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
@@ -41,15 +45,22 @@ pattern ANY_ADDR_V4 = "0.0.0.0"
 pattern DISCOVERY_PORT :: (IsString a, Eq a) => a
 pattern DISCOVERY_PORT = "5227"
 
-getLocalAddress :: MonadIO m => m (Maybe TransportHost)
-getLocalAddress = listToMaybe . mapMaybe usable <$> liftIO getNetworkInterfaces
+getLocalAddress :: MonadIO m => Maybe RCCtrlAddress -> m (Maybe RCCtrlAddress, [RCCtrlAddress])
+getLocalAddress preferred_ = do
+  found <- mapMaybe toCtrlAddr <$> liftIO getNetworkInterfaces
+  pure (byAddr found <|> byIface found, found)
   where
-    usable NetworkInterface {ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
+    toCtrlAddr NetworkInterface {name, ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
       (0, 0, 0, 0) -> Nothing -- "no" address
       (255, 255, 255, 255) -> Nothing -- broadcast
-      (127, _, _, _) -> Nothing -- localhost
       (169, 254, _, _) -> Nothing -- link-local
-      ok -> Just $ THIPv4 ok
+      ok -> Just RCCtrlAddress {address = THIPv4 ok, interface = T.pack name}
+    byAddr found = do
+      RCCtrlAddress {address = p} <- preferred_
+      L.find (\RCCtrlAddress {address = a} -> a == p) found
+    byIface found = do
+      RCCtrlAddress {interface = p} <- preferred_
+      L.find (\RCCtrlAddress {interface = a} -> a == p) found
 
 getLocalAddressMulticast :: MonadIO m => TMVar Int -> m (Maybe TransportHost)
 getLocalAddressMulticast subscribers = liftIO $ do
@@ -80,10 +91,10 @@ mkIpProbe = do
 --       loop announce {announceCounter = announceCounter announce + 1} sock
 
 -- XXX: move to RemoteControl.Client
-startTLSServer :: MonadUnliftIO m => TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
-startTLSServer startedOnPort credentials hooks server = async . liftIO $ do
+startTLSServer :: MonadUnliftIO m => Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
+startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do
   started <- newEmptyTMVarIO
-  bracketOnError (startTCPServer started "0") (\_e -> setPort Nothing) $ \socket ->
+  bracketOnError (startTCPServer started $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
     ifM
       (atomically $ readTMVar started)
       (runServer started socket)
