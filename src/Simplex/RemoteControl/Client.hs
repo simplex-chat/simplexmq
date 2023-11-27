@@ -123,7 +123,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   where
     findCtrlAddress :: ExceptT RCErrorType IO (NonEmpty RCCtrlAddress, RCCtrlAddress)
     findCtrlAddress = do
-      (matched_, found') <- getLocalAddress rcAddrPrefs_
+      (found', matched_) <- getLocalAddress rcAddrPrefs_
       found <- maybe (throwError RCENoLocalAddress) pure $ L.nonEmpty found'
       let selected = fromMaybe (L.head found) matched_
       pure (found, selected)

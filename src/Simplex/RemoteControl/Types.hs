@@ -140,7 +140,7 @@ data RCCtrlAddress = RCCtrlAddress
   { address :: TransportHost, -- allows any interface when found exactly
     interface :: Text
   }
-  deriving (Show)
+  deriving (Show, Eq)
 
 -- | Long-term part of host (mobile) connection to controller (desktop)
 data RCCtrlPairing = RCCtrlPairing

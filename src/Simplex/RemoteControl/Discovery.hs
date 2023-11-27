@@ -45,10 +45,13 @@ pattern ANY_ADDR_V4 = "0.0.0.0"
 pattern DISCOVERY_PORT :: (IsString a, Eq a) => a
 pattern DISCOVERY_PORT = "5227"
 
-getLocalAddress :: MonadIO m => Maybe RCCtrlAddress -> m (Maybe RCCtrlAddress, [RCCtrlAddress])
+getLocalAddress :: MonadIO m => Maybe RCCtrlAddress -> m ([RCCtrlAddress], Maybe RCCtrlAddress)
 getLocalAddress preferred_ = do
   found <- mapMaybe toCtrlAddr <$> liftIO getNetworkInterfaces
-  pure (byAddr found <|> byIface found, found)
+  let selected = byAddr found <|> byIface found
+  let localhost = L.find (\RCCtrlAddress {address = a} -> a == THIPv4 (127, 0, 0, 1)) found
+  let prioritized = bringUp selected $ pushDown localhost found
+  pure (prioritized, selected)
   where
     toCtrlAddr NetworkInterface {name, ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
       (0, 0, 0, 0) -> Nothing -- "no" address
@@ -61,6 +64,12 @@ getLocalAddress preferred_ = do
     byIface found = do
       RCCtrlAddress {interface = p} <- preferred_
       L.find (\RCCtrlAddress {interface = a} -> a == p) found
+    bringUp x_ xs = case x_ of
+      Nothing -> xs
+      Just x -> x : L.delete x xs
+    pushDown x_ xs = case x_ of
+      Nothing -> xs
+      Just x -> L.delete x xs <> [x]
 
 getLocalAddressMulticast :: MonadIO m => TMVar Int -> m (Maybe TransportHost)
 getLocalAddressMulticast subscribers = liftIO $ do
