@@ -847,7 +847,9 @@ randomId n = do
   atomically (C.pseudoRandomBytes n gVar)
 
 saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => Bool -> m ()
-saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
+saveServerMessages keepMsgs = do
+  liftIO $ traceEventIO "saveServerMessages"
+  asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
     saveMessages f = do
       logInfo $ "saving messages to file " <> T.pack f
