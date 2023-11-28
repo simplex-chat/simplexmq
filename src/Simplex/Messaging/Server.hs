@@ -773,11 +773,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                in RcvMessage msgId msgTs msgFlags encBody
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) msgId'
-          where
-            msgId' = case msg of
-              Message {msgId} -> msgId
-              MessageQuota {msgId} -> msgId
+        setDelivered s msg = tryPutTMVar (delivered s) $ case msg of
+          Message {msgId} -> msgId
+          MessageQuota {msgId} -> msgId
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do

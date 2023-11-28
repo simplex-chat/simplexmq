@@ -306,7 +306,7 @@ foldReplicasToChunks :: FileSize Word32 -> [FileServerReplica] -> Either String 
 foldReplicasToChunks defChunkSize fs = do
   sd <- foldSizesDigests fs
   -- TODO validate (check that chunks match) or in separate function
-  sortOn (\FileChunk{chunkNo} -> chunkNo) . map reverseReplicas . M.elems <$> foldChunks sd fs
+  sortOn (\FileChunk {chunkNo} -> chunkNo) . map reverseReplicas . M.elems <$> foldChunks sd fs
   where
     foldSizesDigests :: [FileServerReplica] -> Either String (Map Int (FileSize Word32), Map Int FileDigest)
     foldSizesDigests = foldl' addSizeDigest $ Right (M.empty, M.empty)
