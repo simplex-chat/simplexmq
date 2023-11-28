@@ -42,10 +42,10 @@ pattern ANY_ADDR_V4 = "0.0.0.0"
 pattern DISCOVERY_PORT :: (IsString a, Eq a) => a
 pattern DISCOVERY_PORT = "5227"
 
-getLocalAddress :: MonadIO m => Maybe RCCtrlAddress -> m [RCCtrlAddress]
-getLocalAddress preferred_ = mkFirst preferred_ . mkLastLocalHost <$> getAddresses
+getLocalAddress :: Maybe RCCtrlAddress -> IO [RCCtrlAddress]
+getLocalAddress preferred_ =
+  mkFirst preferred_ . mkLastLocalHost . mapMaybe toCtrlAddr <$> getNetworkInterfaces
   where
-    getAddresses = mapMaybe toCtrlAddr <$> liftIO getNetworkInterfaces
     toCtrlAddr NetworkInterface {name, ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
       (0, 0, 0, 0) -> Nothing -- "no" address
       (255, 255, 255, 255) -> Nothing -- broadcast
