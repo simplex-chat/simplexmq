@@ -44,26 +44,29 @@ pattern DISCOVERY_PORT = "5227"
 
 getLocalAddress :: Maybe RCCtrlAddress -> IO [RCCtrlAddress]
 getLocalAddress preferred_ =
-  mkFirst preferred_ . mkLastLocalHost . mapMaybe toCtrlAddr <$> getNetworkInterfaces
+  maybe id preferAddress preferred_ . mkLastLocalHost . mapMaybe toCtrlAddr <$> getNetworkInterfaces
   where
     toCtrlAddr NetworkInterface {name, ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
       (0, 0, 0, 0) -> Nothing -- "no" address
       (255, 255, 255, 255) -> Nothing -- broadcast
       (169, 254, _, _) -> Nothing -- link-local
       ok -> Just RCCtrlAddress {address = THIPv4 ok, interface = T.pack name}
-    mkLastLocalHost addrs = case find localHost addrs of
-      Nothing -> addrs
-      Just lh -> delete lh addrs <> [lh]
-      where
-        localHost RCCtrlAddress {address = a} = a == THIPv4 (127, 0, 0, 1)
-    mkFirst Nothing addrs = addrs
-    mkFirst (Just RCCtrlAddress {address, interface}) addrs =
-      case find matchAddr addrs <|> find matchIface addrs of
-        Nothing -> addrs
-        Just p -> p : delete p addrs
-      where
-        matchAddr RCCtrlAddress {address = a} = a == address
-        matchIface RCCtrlAddress {interface = i} = i == interface
+
+mkLastLocalHost :: [RCCtrlAddress] -> [RCCtrlAddress]
+mkLastLocalHost addrs = case find localHost addrs of
+  Nothing -> addrs
+  Just lh -> delete lh addrs <> [lh]
+  where
+    localHost RCCtrlAddress {address = a} = a == THIPv4 (127, 0, 0, 1)
+
+preferAddress :: RCCtrlAddress -> [RCCtrlAddress] -> [RCCtrlAddress]
+preferAddress RCCtrlAddress {address, interface} addrs =
+  case find matchAddr addrs <|> find matchIface addrs of
+    Nothing -> addrs
+    Just p -> p : delete p addrs
+  where
+    matchAddr RCCtrlAddress {address = a} = a == address
+    matchIface RCCtrlAddress {interface = i} = i == interface
 
 startTLSServer :: MonadUnliftIO m => Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
 startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do

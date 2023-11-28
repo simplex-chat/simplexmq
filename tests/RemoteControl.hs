@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -9,7 +10,9 @@ import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import qualified Simplex.RemoteControl.Client as RC
+import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
 import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
 import Simplex.RemoteControl.Types
 import Test.Hspec
@@ -18,11 +21,44 @@ import UnliftIO.Concurrent
 
 remoteControlTests :: Spec
 remoteControlTests = do
+  describe "preferred bindings should go first" testPreferAddress
   describe "New controller/host pairing" $ do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
   describe "Multicast discovery" $ do
     it "should find paired host and connect" testMulticast
+
+testPreferAddress :: Spec
+testPreferAddress = do
+  it "suppresses localhost" $
+    mkLastLocalHost addrs
+      `shouldBe` [ "10.20.30.40" @ "eth0",
+                   "10.20.30.42" @ "wlan0",
+                   "127.0.0.1" @ "lo"
+                 ]
+  it "finds by address" $ do
+    preferAddress ("127.0.0.1" @ "lo23") addrs' `shouldBe` addrs -- localhost is back on top
+    preferAddress ("10.20.30.42" @ "wlp2s0") addrs'
+      `shouldBe` [ "10.20.30.42" @ "wlan0",
+                   "10.20.30.40" @ "eth0",
+                   "127.0.0.1" @ "lo"
+                 ]
+  it "finds by interface" $ do
+    preferAddress ("127.1.2.3" @ "lo") addrs' `shouldBe` addrs
+    preferAddress ("0.0.0.0" @ "eth0") addrs' `shouldBe` addrs'
+  it "survives duplicates" $ do
+    preferAddress ("0.0.0.0" @ "eth1") addrsDups `shouldBe` addrsDups
+    preferAddress ("0.0.0.0" @ "eth0") ifaceDups `shouldBe` ifaceDups
+  where
+    th @ interface = RCCtrlAddress {address = either error id $ strDecode th, interface}
+    addrs =
+      [ "127.0.0.1" @ "lo", -- localhost may go first and break things
+        "10.20.30.40" @ "eth0",
+        "10.20.30.42" @ "wlan0"
+      ]
+    addrs' = mkLastLocalHost addrs
+    addrsDups = "10.20.30.40" @ "eth1" : addrs'
+    ifaceDups = "10.20.30.41" @ "eth0" : addrs'
 
 testNewPairing :: IO ()
 testNewPairing = do
