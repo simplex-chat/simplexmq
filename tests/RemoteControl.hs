@@ -1,6 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module RemoteControl where
@@ -11,6 +10,7 @@ import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
 import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
@@ -32,33 +32,33 @@ testPreferAddress :: Spec
 testPreferAddress = do
   it "suppresses localhost" $
     mkLastLocalHost addrs
-      `shouldBe` [ "10.20.30.40" @ "eth0",
-                   "10.20.30.42" @ "wlan0",
-                   "127.0.0.1" @ "lo"
+      `shouldBe` [ "10.20.30.40" `on` "eth0",
+                   "10.20.30.42" `on` "wlan0",
+                   "127.0.0.1" `on` "lo"
                  ]
   it "finds by address" $ do
-    preferAddress ("127.0.0.1" @ "lo23") addrs' `shouldBe` addrs -- localhost is back on top
-    preferAddress ("10.20.30.42" @ "wlp2s0") addrs'
-      `shouldBe` [ "10.20.30.42" @ "wlan0",
-                   "10.20.30.40" @ "eth0",
-                   "127.0.0.1" @ "lo"
+    preferAddress ("127.0.0.1" `on` "lo23") addrs' `shouldBe` addrs -- localhost is back on top
+    preferAddress ("10.20.30.42" `on` "wlp2s0") addrs'
+      `shouldBe` [ "10.20.30.42" `on` "wlan0",
+                   "10.20.30.40" `on` "eth0",
+                   "127.0.0.1" `on` "lo"
                  ]
   it "finds by interface" $ do
-    preferAddress ("127.1.2.3" @ "lo") addrs' `shouldBe` addrs
-    preferAddress ("0.0.0.0" @ "eth0") addrs' `shouldBe` addrs'
+    preferAddress ("127.1.2.3" `on` "lo") addrs' `shouldBe` addrs
+    preferAddress ("0.0.0.0" `on` "eth0") addrs' `shouldBe` addrs'
   it "survives duplicates" $ do
-    preferAddress ("0.0.0.0" @ "eth1") addrsDups `shouldBe` addrsDups
-    preferAddress ("0.0.0.0" @ "eth0") ifaceDups `shouldBe` ifaceDups
+    preferAddress ("0.0.0.0" `on` "eth1") addrsDups `shouldBe` addrsDups
+    preferAddress ("0.0.0.0" `on` "eth0") ifaceDups `shouldBe` ifaceDups
   where
-    th @ interface = RCCtrlAddress {address = either error id $ strDecode th, interface}
+    on th interface = RCCtrlAddress {address = either error id $ strDecode th, interface}
     addrs =
-      [ "127.0.0.1" @ "lo", -- localhost may go first and break things
-        "10.20.30.40" @ "eth0",
-        "10.20.30.42" @ "wlan0"
+      [ "127.0.0.1" `on` "lo", -- localhost may go first and break things
+        "10.20.30.40" `on` "eth0",
+        "10.20.30.42" `on` "wlan0"
       ]
     addrs' = mkLastLocalHost addrs
-    addrsDups = "10.20.30.40" @ "eth1" : addrs'
-    ifaceDups = "10.20.30.41" @ "eth0" : addrs'
+    addrsDups = "10.20.30.40" `on` "eth1" : addrs'
+    ifaceDups = "10.20.30.41" `on` "eth0" : addrs'
 
 testNewPairing :: IO ()
 testNewPairing = do
@@ -98,7 +98,7 @@ testNewPairing = do
     logNote "ctrl: adios"
     pure sessId'
 
-  waitCatch hc.action >>= \case
+  waitCatch (HC.action hc) >>= \case
     Left err -> fromException err `shouldBe` Just AsyncCancelled
     Right () -> fail "Unexpected controller finish"
 

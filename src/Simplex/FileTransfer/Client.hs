@@ -3,7 +3,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -111,7 +110,7 @@ xftpClientServer = B.unpack . strEncode . snd3 . transportSession
     snd3 (_, s, _) = s
 
 xftpTransportHost :: XFTPClient -> TransportHost
-xftpTransportHost c = c.http2Client.client_.host
+xftpTransportHost XFTPClient {http2Client = HTTP2Client {client_ = HClient {host}}} = host
 
 xftpSessionTs :: XFTPClient -> UTCTime
 xftpSessionTs = sessionTs . http2Client

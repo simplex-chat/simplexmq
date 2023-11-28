@@ -1,6 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Stats where
@@ -56,31 +55,31 @@ newNtfServerStats ts = do
   pure NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs}
 
 getNtfServerStatsData :: NtfServerStats -> STM NtfServerStatsData
-getNtfServerStatsData s = do
-  _fromTime <- readTVar s.fromTime
-  _tknCreated <- readTVar s.tknCreated
-  _tknVerified <- readTVar s.tknVerified
-  _tknDeleted <- readTVar s.tknDeleted
-  _subCreated <- readTVar s.subCreated
-  _subDeleted <- readTVar s.subDeleted
-  _ntfReceived <- readTVar s.ntfReceived
-  _ntfDelivered <- readTVar s.ntfDelivered
-  _activeTokens <- getPeriodStatsData s.activeTokens
-  _activeSubs <- getPeriodStatsData s.activeSubs
+getNtfServerStatsData NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} = do
+  _fromTime <- readTVar fromTime
+  _tknCreated <- readTVar tknCreated
+  _tknVerified <- readTVar tknVerified
+  _tknDeleted <- readTVar tknDeleted
+  _subCreated <- readTVar subCreated
+  _subDeleted <- readTVar subDeleted
+  _ntfReceived <- readTVar ntfReceived
+  _ntfDelivered <- readTVar ntfDelivered
+  _activeTokens <- getPeriodStatsData activeTokens
+  _activeSubs <- getPeriodStatsData activeSubs
   pure NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs}
 
 setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> STM ()
-setNtfServerStats s d = do
-  writeTVar s.fromTime $! d._fromTime
-  writeTVar s.tknCreated $! _tknCreated d
-  writeTVar s.tknVerified $! _tknVerified d
-  writeTVar s.tknDeleted $! _tknDeleted d
-  writeTVar s.subCreated $! _subCreated d
-  writeTVar s.subDeleted $! _subDeleted d
-  writeTVar s.ntfReceived $! _ntfReceived d
-  writeTVar s.ntfDelivered $! _ntfDelivered d
-  setPeriodStats s.activeTokens (_activeTokens d)
-  setPeriodStats s.activeSubs (_activeSubs d)
+setNtfServerStats NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} d@NtfServerStatsData {_fromTime} = do
+  writeTVar fromTime $! _fromTime
+  writeTVar tknCreated $! _tknCreated d
+  writeTVar tknVerified $! _tknVerified d
+  writeTVar tknDeleted $! _tknDeleted d
+  writeTVar subCreated $! _subCreated d
+  writeTVar subDeleted $! _subDeleted d
+  writeTVar ntfReceived $! _ntfReceived d
+  writeTVar ntfDelivered $! _ntfDelivered d
+  setPeriodStats activeTokens (_activeTokens d)
+  setPeriodStats activeSubs (_activeSubs d)
 
 instance StrEncoding NtfServerStatsData where
   strEncode NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs} =

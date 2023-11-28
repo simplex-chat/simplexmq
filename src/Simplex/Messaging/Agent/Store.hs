@@ -8,10 +8,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
@@ -27,7 +27,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
-import GHC.Records (HasField)
+import GHC.Records (HasField (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
@@ -182,7 +182,7 @@ switchingRQ = find $ isJust . rcvSwchStatus
 {-# INLINE switchingRQ #-}
 
 updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
-updatedQs q = L.map $ \q' -> if q.dbQueueId == q'.dbQueueId then q else q'
+updatedQs q = L.map $ \q' -> if (getField @"dbQueueId" q) == (getField @"dbQueueId" q') then q else q'
 {-# INLINE updatedQs #-}
 
 type SMPQueueRec q =
