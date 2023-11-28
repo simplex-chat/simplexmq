@@ -40,7 +40,7 @@ import Data.Default (def)
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
@@ -107,7 +107,7 @@ type RCHostConnection = (NonEmpty RCCtrlAddress, RCCtrlAddress, RCSignedInvitati
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> ExceptT RCErrorType IO RCHostConnection
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo multicast rcAddrPrefs_ port_ = do
   r <- newEmptyTMVarIO
-  (found, selected@RCCtrlAddress {address}) <- findCtrlAddress
+  found@(selected@RCCtrlAddress {address} :| _) <- findCtrlAddress
   c@RCHClient_ {startedPort, announcer} <- liftIO mkClient
   hostKeys <- liftIO genHostKeys
   action <- runClient c r hostKeys `putRCError` r
@@ -121,12 +121,10 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       atomically $ putTMVar announcer ann
   pure (found, selected, signedInv, RCHostClient {action, client_ = c}, r)
   where
-    findCtrlAddress :: ExceptT RCErrorType IO (NonEmpty RCCtrlAddress, RCCtrlAddress)
+    findCtrlAddress :: ExceptT RCErrorType IO (NonEmpty RCCtrlAddress)
     findCtrlAddress = do
-      (found', matched_) <- getLocalAddress rcAddrPrefs_
-      found <- maybe (throwError RCENoLocalAddress) pure $ L.nonEmpty found'
-      let selected = fromMaybe (L.head found) matched_
-      pure (found, selected)
+      found' <- getLocalAddress rcAddrPrefs_
+      maybe (throwError RCENoLocalAddress) pure $ L.nonEmpty found'
     mkClient :: IO RCHClient_
     mkClient = do
       startedPort <- newEmptyTMVarIO
