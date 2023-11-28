@@ -43,6 +43,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
+import Data.Word (Word16)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.Socket (PortNumber, SockAddr (..), hostAddressToTuple)
@@ -101,26 +102,29 @@ data RCHClient_ = RCHClient_
     endSession :: TMVar ()
   }
 
-type RCHostConnection = (RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
+type RCHostConnection = (NonEmpty RCCtrlAddress, RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
 
-connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> ExceptT RCErrorType IO RCHostConnection
-connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo multicast = do
+connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> ExceptT RCErrorType IO RCHostConnection
+connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo multicast rcAddrPrefs_ port_ = do
   r <- newEmptyTMVarIO
-  host <- getLocalAddress >>= maybe (throwError RCENoLocalAddress) pure
+  found@(RCCtrlAddress {address} :| _) <- findCtrlAddress
   c@RCHClient_ {startedPort, announcer} <- liftIO mkClient
   hostKeys <- liftIO genHostKeys
   action <- runClient c r hostKeys `putRCError` r
   -- wait for the port to make invitation
-  -- TODO can't we actually find to which interface the server got connected to get host there?
   portNum <- atomically $ readTMVar startedPort
-  signedInv@RCSignedInvitation {invitation} <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys host) portNum
+  signedInv@RCSignedInvitation {invitation} <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys address) portNum
   when multicast $ case knownHost of
     Nothing -> throwError RCENewController
     Just KnownHostPairing {hostDhPubKey} -> do
       ann <- async . liftIO . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
       atomically $ putTMVar announcer ann
-  pure (signedInv, RCHostClient {action, client_ = c}, r)
+  pure (found, signedInv, RCHostClient {action, client_ = c}, r)
   where
+    findCtrlAddress :: ExceptT RCErrorType IO (NonEmpty RCCtrlAddress)
+    findCtrlAddress = do
+      found' <- liftIO $ getLocalAddress rcAddrPrefs_
+      maybe (throwError RCENoLocalAddress) pure $ L.nonEmpty found'
     mkClient :: IO RCHClient_
     mkClient = do
       startedPort <- newEmptyTMVarIO
@@ -131,7 +135,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> ExceptT RCErrorType IO (Async ())
     runClient RCHClient_ {startedPort, announcer, hostCAHash, endSession} r hostKeys = do
       tlsCreds <- liftIO $ genTLSCredentials caKey caCert
-      startTLSServer startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
+      startTLSServer port_ startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
         void . runExceptT $ do
           r' <- newEmptyTMVarIO
           whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $
