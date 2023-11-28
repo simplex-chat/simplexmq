@@ -245,6 +245,8 @@ testFileLog = do
   rIdVar1 <- newTVarIO ""
   rIdVar2 <- newTVarIO ""
 
+  threadDelay 100000
+
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     let file = FileInfo {sndKey, size = chSize, digest}
         chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
@@ -260,6 +262,8 @@ testFileLog = do
   logSize testXFTPLogFile `shouldReturn` 3
   logSize testXFTPStatsBackupFile `shouldReturn` 11
 
+  threadDelay 100000
+
   withXFTPServerThreadOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
     rId1 <- liftIO $ readTVarIO rIdVar1
@@ -272,6 +276,8 @@ testFileLog = do
     deleteXFTPChunk c spKey sId
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
+  threadDelay 100000
+
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     rId1 <- liftIO $ readTVarIO rIdVar1
     rId2 <- liftIO $ readTVarIO rIdVar2
@@ -283,8 +289,12 @@ testFileLog = do
   logSize testXFTPLogFile `shouldReturn` 4
   logSize testXFTPStatsBackupFile `shouldReturn` 11
 
+  threadDelay 100000
+
   withXFTPServerStoreLogOn $ \_ -> pure () -- ack is compacted - -1 from log
   logSize testXFTPLogFile `shouldReturn` 3
+
+  threadDelay 100000
 
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
@@ -300,9 +310,13 @@ testFileLog = do
   logSize testXFTPLogFile `shouldReturn` 4
   logSize testXFTPStatsBackupFile `shouldReturn` 11
 
+  threadDelay 100000
+
   withXFTPServerStoreLogOn $ \_ -> pure () -- compacts on start
   logSize testXFTPLogFile `shouldReturn` 0
   logSize testXFTPStatsBackupFile `shouldReturn` 11
+
+  threadDelay 100000
 
   removeFile testXFTPLogFile
   removeFile testXFTPStatsBackupFile
