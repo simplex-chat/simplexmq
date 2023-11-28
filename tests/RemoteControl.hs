@@ -31,7 +31,7 @@ testNewPairing = do
   invVar <- newEmptyMVar
   ctrlSessId <- async . runRight $ do
     logNote "c 1"
-    (_found, _selected, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") False Nothing Nothing
+    (_found, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") False Nothing Nothing
     logNote "c 2"
     putMVar invVar (inv, hc)
     logNote "c 3"
@@ -123,7 +123,7 @@ testMulticast = do
 
 runCtrl :: TVar ChaChaDRG -> Bool -> RCHostPairing -> MVar RCSignedInvitation -> IO (Async RCHostPairing)
 runCtrl drg multicast hp invVar = async . runRight $ do
-  (_found, _selected, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") multicast Nothing Nothing
+  (_found, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") multicast Nothing Nothing
   putMVar invVar inv
   Right (_sessId, _tls, r') <- atomically $ takeTMVar r
   Right (_rcHostSession, _rcHelloBody, hp') <- atomically $ takeTMVar r'

@@ -7,15 +7,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
--- XXX: remove non-discovery functions
 module Simplex.RemoteControl.Discovery where
 
+import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
-import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.Default (def)
-import qualified Data.List as L
+import Data.List (delete, find)
 import Data.Maybe (mapMaybe)
 import Data.String (IsString)
 import qualified Data.Text as T
@@ -24,7 +23,6 @@ import Network.Info (IPv4 (..), NetworkInterface (..), getNetworkInterfaces)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
-import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Transport (supportedParameters)
 import qualified Simplex.Messaging.Transport as Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -45,55 +43,28 @@ pattern DISCOVERY_PORT :: (IsString a, Eq a) => a
 pattern DISCOVERY_PORT = "5227"
 
 getLocalAddress :: MonadIO m => Maybe RCCtrlAddress -> m [RCCtrlAddress]
-getLocalAddress preferred_ = do
-  found' <- mapMaybe toCtrlAddr <$> liftIO getNetworkInterfaces
-  let found = prioritize found' $ not . matchAddr (THIPv4 (127, 0, 0, 1)) -- push localhosts down
-  pure $ case preferred_ of
-    Nothing -> found
-    Just RCCtrlAddress {address, interface} ->
-      -- bring preferred up
-      prioritize found $ \rc -> matchAddr address rc || matchIface interface rc
+getLocalAddress preferred_ = mkFirst preferred_ . mkLastLocalHost <$> getAddresses
   where
+    getAddresses = mapMaybe toCtrlAddr <$> liftIO getNetworkInterfaces
     toCtrlAddr NetworkInterface {name, ipv4 = IPv4 ha} = case N.hostAddressToTuple ha of
       (0, 0, 0, 0) -> Nothing -- "no" address
       (255, 255, 255, 255) -> Nothing -- broadcast
       (169, 254, _, _) -> Nothing -- link-local
       ok -> Just RCCtrlAddress {address = THIPv4 ok, interface = T.pack name}
-    prioritize xs f = top <> bottom
+    mkLastLocalHost addrs = case find localHost addrs of
+      Nothing -> addrs
+      Just lh -> delete lh addrs <> [lh]
       where
-        (top, bottom) = L.partition f xs
-    matchAddr a RCCtrlAddress {address} = address == a
-    matchIface i RCCtrlAddress {interface} = interface == i
+        localHost RCCtrlAddress {address = a} = a == THIPv4 (127, 0, 0, 1)
+    mkFirst Nothing addrs = addrs
+    mkFirst (Just RCCtrlAddress {address, interface}) addrs =
+      case find matchAddr addrs <|> find matchIface addrs of
+        Nothing -> addrs
+        Just p -> p : delete p addrs
+      where
+        matchAddr RCCtrlAddress {address = a} = a == address
+        matchIface RCCtrlAddress {interface = i} = i == interface
 
-getLocalAddressMulticast :: MonadIO m => TMVar Int -> m (Maybe TransportHost)
-getLocalAddressMulticast subscribers = liftIO $ do
-  probe <- mkIpProbe
-  let bytes = smpEncode probe
-  withListener subscribers $ \receiver ->
-    withSender $ \sender -> do
-      UDP.send sender bytes
-      let expect = do
-            UDP.recvFrom receiver >>= \case
-              (p, _) | p /= bytes -> expect
-              (_, UDP.ClientSockAddr (N.SockAddrInet _port host) _cmsg) -> pure $ THIPv4 (N.hostAddressToTuple host)
-              (_, UDP.ClientSockAddr _badAddr _) -> error "receiving from IPv4 socket"
-      timeout 1000000 expect
-
-mkIpProbe :: MonadIO m => m IpProbe
-mkIpProbe = do
-  randomNonce <- liftIO $ getRandomBytes 32
-  pure IpProbe {versionRange = ipProbeVersionRange, randomNonce}
-
--- | Send replay-proof announce datagrams
--- runAnnouncer :: (C.PrivateKeyEd25519, Announce) -> IO ()
--- runAnnouncer (announceKey, initialAnnounce) = withSender $ loop initialAnnounce
---   where
---     loop announce sock = do
---       UDP.send sock $ smpEncode (signAnnounce announceKey announce)
---       threadDelay 1000000
---       loop announce {announceCounter = announceCounter announce + 1} sock
-
--- XXX: move to RemoteControl.Client
 startTLSServer :: MonadUnliftIO m => Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
 startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do
   started <- newEmptyTMVarIO

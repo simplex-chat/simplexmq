@@ -102,12 +102,12 @@ data RCHClient_ = RCHClient_
     endSession :: TMVar ()
   }
 
-type RCHostConnection = (NonEmpty RCCtrlAddress, RCCtrlAddress, RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
+type RCHostConnection = (NonEmpty RCCtrlAddress, RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> ExceptT RCErrorType IO RCHostConnection
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo multicast rcAddrPrefs_ port_ = do
   r <- newEmptyTMVarIO
-  found@(selected@RCCtrlAddress {address} :| _) <- findCtrlAddress
+  found@(RCCtrlAddress {address} :| _) <- findCtrlAddress
   c@RCHClient_ {startedPort, announcer} <- liftIO mkClient
   hostKeys <- liftIO genHostKeys
   action <- runClient c r hostKeys `putRCError` r
@@ -119,7 +119,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     Just KnownHostPairing {hostDhPubKey} -> do
       ann <- async . liftIO . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
       atomically $ putTMVar announcer ann
-  pure (found, selected, signedInv, RCHostClient {action, client_ = c}, r)
+  pure (found, signedInv, RCHostClient {action, client_ = c}, r)
   where
     findCtrlAddress :: ExceptT RCErrorType IO (NonEmpty RCCtrlAddress)
     findCtrlAddress = do
