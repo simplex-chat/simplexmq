@@ -1,9 +1,10 @@
-with-compiler: ghc-8.10.7
-
 packages: .
 -- packages: . ../direct-sqlcipher ../sqlcipher-simple
 -- packages: . ../hs-socks
 -- packages: . ../http2
+-- packages: . ../network-transport
+
+with-compiler: ghc-8.10.7
 
 source-repository-package
     type: git

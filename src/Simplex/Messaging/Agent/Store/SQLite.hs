@@ -1968,7 +1968,7 @@ insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, interna
   DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, encryptedMsgHash)
 
 updateHashRcv_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
+updateHashRcv_ dbConn connId RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalHash, internalRcvId} =
   DB.executeNamed
     dbConn
     -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
@@ -1979,7 +1979,7 @@ updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
       WHERE conn_id = :conn_id
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
-    [ ":last_external_snd_msg_id" := sndMsgId (msgMeta :: MsgMeta),
+    [ ":last_external_snd_msg_id" := sndMsgId,
       ":last_rcv_msg_hash" := internalHash,
       ":conn_id" := connId,
       ":last_internal_rcv_msg_id" := internalRcvId

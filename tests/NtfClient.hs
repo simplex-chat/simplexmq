@@ -134,8 +134,9 @@ ntfServerTest ::
   IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' h (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
+    tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
+    tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
+      let t' = smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do

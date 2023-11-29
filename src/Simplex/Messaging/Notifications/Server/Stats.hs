@@ -55,8 +55,8 @@ newNtfServerStats ts = do
   pure NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs}
 
 getNtfServerStatsData :: NtfServerStats -> STM NtfServerStatsData
-getNtfServerStatsData s = do
-  _fromTime <- readTVar $ fromTime (s :: NtfServerStats)
+getNtfServerStatsData s@NtfServerStats {fromTime} = do
+  _fromTime <- readTVar fromTime
   _tknCreated <- readTVar $ tknCreated s
   _tknVerified <- readTVar $ tknVerified s
   _tknDeleted <- readTVar $ tknDeleted s
@@ -69,8 +69,8 @@ getNtfServerStatsData s = do
   pure NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs}
 
 setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> STM ()
-setNtfServerStats s d = do
-  writeTVar (fromTime (s :: NtfServerStats)) $! _fromTime (d :: NtfServerStatsData)
+setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} = do
+  writeTVar fromTime $! _fromTime
   writeTVar (tknCreated s) $! _tknCreated d
   writeTVar (tknVerified s) $! _tknVerified d
   writeTVar (tknDeleted s) $! _tknDeleted d

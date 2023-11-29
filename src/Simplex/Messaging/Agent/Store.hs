@@ -189,32 +189,27 @@ updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
 class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
-  queueId :: q -> QueueId
   dbQId :: q -> Int64
   dbReplaceQId :: q -> Maybe Int64
 
 instance SMPQueueRec RcvQueue where
-  qUserId = userId
+  qUserId RcvQueue {userId} = userId
   {-# INLINE qUserId #-}
-  qConnId = connId
+  qConnId RcvQueue {connId} = connId
   {-# INLINE qConnId #-}
-  queueId = rcvId
-  {-# INLINE queueId #-}
-  dbQId = dbQueueId
+  dbQId RcvQueue {dbQueueId} = dbQueueId
   {-# INLINE dbQId #-}
-  dbReplaceQId = dbReplaceQueueId
+  dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
 instance SMPQueueRec SndQueue where
-  qUserId = userId
+  qUserId SndQueue {userId} = userId
   {-# INLINE qUserId #-}
-  qConnId = connId
+  qConnId SndQueue {connId} = connId
   {-# INLINE qConnId #-}
-  queueId = sndId
-  {-# INLINE queueId #-}
-  dbQId = dbQueueId
+  dbQId SndQueue {dbQueueId} = dbQueueId
   {-# INLINE dbQId #-}
-  dbReplaceQId = dbReplaceQueueId
+  dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
 -- * Connection types

@@ -359,7 +359,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
         rcvChunks :: [[FileChunk]]
         rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
         sortChunks :: [FileChunk] -> [FileChunk]
-        sortChunks = map reverseReplicas . sortOn (chunkNo :: FileChunk -> Int)
+        sortChunks = map reverseReplicas . sortOn (\FileChunk {chunkNo} -> chunkNo)
         reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
         addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
         addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
@@ -418,7 +418,9 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
       liftIO $ printNoNewLine "Downloading file..."
       downloadedChunks <- newTVarIO []
-      let srv FileChunk {replicas} = server (head replicas :: FileChunkReplica)
+      let srv FileChunk {replicas} = case replicas of
+            [] -> error "empty FileChunk.replicas"
+            FileChunkReplica {server} : _ -> server
           srvChunks = groupAllOn srv chunks
       chunkPaths <- map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 srvChunks (mapM $ downloadFileChunk a encPath size downloadedChunks)
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
@@ -496,10 +498,9 @@ cliFileDescrInfo InfoOptions {fileDescription} = do
         printParty
         putStrLn $ "File download size: " <> strEnc size
         putStrLn "File server(s):"
-        forM_ replicas $ \srvReplicas -> do
-          let srv = replicaServer $ head srvReplicas
-              chSizes = map (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
-          putStrLn $ strEnc srv <> ": " <> strEnc (FileSize $ sum chSizes)
+        forM_ replicas $ \srvReplicas@(FileServerReplica {server} :| _) -> do
+          let chSizes = fmap (\FileServerReplica {chunkSize = chSize_} -> unFileSize $ fromMaybe chunkSize chSize_) srvReplicas
+          putStrLn $ strEnc server <> ": " <> strEnc (FileSize $ sum chSizes)
       where
         printParty :: IO ()
         printParty = case party of

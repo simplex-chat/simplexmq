@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module RemoteControl where
@@ -8,8 +9,10 @@ import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
-import Simplex.RemoteControl.Client (RCHostClient (..))
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
+import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
 import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
 import Simplex.RemoteControl.Types
 import Test.Hspec
@@ -18,11 +21,44 @@ import UnliftIO.Concurrent
 
 remoteControlTests :: Spec
 remoteControlTests = do
+  describe "preferred bindings should go first" testPreferAddress
   describe "New controller/host pairing" $ do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
   describe "Multicast discovery" $ do
     it "should find paired host and connect" testMulticast
+
+testPreferAddress :: Spec
+testPreferAddress = do
+  it "suppresses localhost" $
+    mkLastLocalHost addrs
+      `shouldBe` [ "10.20.30.40" `on` "eth0",
+                   "10.20.30.42" `on` "wlan0",
+                   "127.0.0.1" `on` "lo"
+                 ]
+  it "finds by address" $ do
+    preferAddress ("127.0.0.1" `on` "lo23") addrs' `shouldBe` addrs -- localhost is back on top
+    preferAddress ("10.20.30.42" `on` "wlp2s0") addrs'
+      `shouldBe` [ "10.20.30.42" `on` "wlan0",
+                   "10.20.30.40" `on` "eth0",
+                   "127.0.0.1" `on` "lo"
+                 ]
+  it "finds by interface" $ do
+    preferAddress ("127.1.2.3" `on` "lo") addrs' `shouldBe` addrs
+    preferAddress ("0.0.0.0" `on` "eth0") addrs' `shouldBe` addrs'
+  it "survives duplicates" $ do
+    preferAddress ("0.0.0.0" `on` "eth1") addrsDups `shouldBe` addrsDups
+    preferAddress ("0.0.0.0" `on` "eth0") ifaceDups `shouldBe` ifaceDups
+  where
+    on th interface = RCCtrlAddress {address = either error id $ strDecode th, interface}
+    addrs =
+      [ "127.0.0.1" `on` "lo", -- localhost may go first and break things
+        "10.20.30.40" `on` "eth0",
+        "10.20.30.42" `on` "wlan0"
+      ]
+    addrs' = mkLastLocalHost addrs
+    addrsDups = "10.20.30.40" `on` "eth1" : addrs'
+    ifaceDups = "10.20.30.41" `on` "eth0" : addrs'
 
 testNewPairing :: IO ()
 testNewPairing = do
@@ -31,7 +67,7 @@ testNewPairing = do
   invVar <- newEmptyMVar
   ctrlSessId <- async . runRight $ do
     logNote "c 1"
-    (inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") False
+    (_found, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") False Nothing Nothing
     logNote "c 2"
     putMVar invVar (inv, hc)
     logNote "c 3"
@@ -62,7 +98,7 @@ testNewPairing = do
     logNote "ctrl: adios"
     pure sessId'
 
-  waitCatch (action hc) >>= \case
+  waitCatch (HC.action hc) >>= \case
     Left err -> fromException err `shouldBe` Just AsyncCancelled
     Right () -> fail "Unexpected controller finish"
 
@@ -123,7 +159,7 @@ testMulticast = do
 
 runCtrl :: TVar ChaChaDRG -> Bool -> RCHostPairing -> MVar RCSignedInvitation -> IO (Async RCHostPairing)
 runCtrl drg multicast hp invVar = async . runRight $ do
-  (inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") multicast
+  (_found, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") multicast Nothing Nothing
   putMVar invVar inv
   Right (_sessId, _tls, r') <- atomically $ takeTMVar r
   Right (_rcHostSession, _rcHelloBody, hp') <- atomically $ takeTMVar r'
