@@ -118,6 +118,8 @@ module Simplex.Messaging.Protocol
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
+    messageId,
+    messageTs,
 
     -- * Parse and serialize
     ProtocolMsgTag (..),
@@ -355,6 +357,16 @@ data Message
       { msgId :: MsgId,
         msgTs :: SystemTime
       }
+
+messageId :: Message -> MsgId
+messageId = \case
+  Message {msgId} -> msgId
+  MessageQuota {msgId} -> msgId
+
+messageTs :: Message -> SystemTime
+messageTs = \case
+  Message {msgTs} -> msgTs
+  MessageQuota {msgTs} -> msgTs
 
 instance StrEncoding RcvMessage where
   strEncode RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} =

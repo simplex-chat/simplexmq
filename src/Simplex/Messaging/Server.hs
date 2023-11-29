@@ -761,21 +761,21 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
         encryptMsg qr msg = case msg of
-          Message {msgId, msgTs, msgFlags, msgBody}
-            | thVersion == 1 || thVersion == 2 -> encrypt msgId msgTs msgFlags msgBody
-            | otherwise -> encrypt msgId msgTs msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
-          MessageQuota {msgId, msgTs} ->
-            encrypt msgId msgTs noMsgFlags $ encodeRcvMsgBody (RcvMsgQuota msgTs)
+          Message {msgFlags, msgBody}
+            | thVersion == 1 || thVersion == 2 -> encrypt msgFlags msgBody
+            | otherwise -> encrypt msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
+          MessageQuota {} ->
+            encrypt noMsgFlags $ encodeRcvMsgBody (RcvMsgQuota msgTs')
           where
-            encrypt :: KnownNat i => ByteString -> SystemTime -> MsgFlags -> C.MaxLenBS i -> RcvMessage
-            encrypt msgId msgTs msgFlags body =
-              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) body
-               in RcvMessage msgId msgTs msgFlags encBody
+            encrypt :: KnownNat i => MsgFlags -> C.MaxLenBS i -> RcvMessage
+            encrypt msgFlags body =
+              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+               in RcvMessage msgId' msgTs' msgFlags encBody
+            msgId' = messageId msg
+            msgTs' = messageTs msg
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) $ case msg of
-          Message {msgId} -> msgId
-          MessageQuota {msgId} -> msgId
+        setDelivered s msg = tryPutTMVar (delivered s) (messageId msg)
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
@@ -875,10 +875,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
                     | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
                     | otherwise -> pure False
                   MessageQuota {} -> writeMsg q msg $> False
-              let msgId' = case msg of
-                    Message {msgId} -> msgId
-                    MessageQuota {msgId} -> msgId
-              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode msgId'
+              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
