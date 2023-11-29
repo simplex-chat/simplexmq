@@ -33,6 +33,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     openSQLiteStore,
     reopenSQLiteStore,
     sqlString,
+    keyString,
+    storeKey,
     execSQL,
     upMigration, -- used in tests
 
@@ -388,7 +390,7 @@ connectDB path key = do
   where
     prepare db = do
       let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (BA.null key) . exec $ "PRAGMA key = " <> sqlString (safeDecodeUtf8 $ BA.convert key) <> ";"
+      unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
       exec . fromQuery $
         [sql|
           PRAGMA busy_timeout = 100;
@@ -429,6 +431,9 @@ reopenSQLiteStore st@SQLiteStore {dbKey, dbClosed} =
       readTVarIO dbKey >>= \case
         Just key -> openSQLiteStore_ st key True
         Nothing -> fail "reopenSQLiteStore: no key"
+
+keyString :: ScrubbedBytes -> Text
+keyString = sqlString . safeDecodeUtf8 . BA.convert
 
 sqlString :: Text -> Text
 sqlString s = quote <> T.replace quote "''" s <> quote
