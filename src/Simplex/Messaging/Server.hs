@@ -131,8 +131,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      counters <- asks socketCounters
-      runTransportServerCount counters started tcpPort serverParams tCfg (runClient t)
+      ss <- asks sockets
+      runTransportServerState ss started tcpPort serverParams tCfg (runClient t)
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
@@ -776,9 +776,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 s -> s
               where
                 subscriber = do
-                  labelMyThread $ B.unpack ("client $" <> encode clnt.sessionId) <> " subscriber/" <> T.unpack name <> " peekMsg"
+                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name <> " peekMsg"
                   msg <- atomically $ peekMsg q
-                  labelMyThread $ B.unpack ("client $" <> encode clnt.sessionId) <> " subscriber/" <> T.unpack name <> " sndQ"
+                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name <> " sndQ"
                   time "subscriber" . atomically $ do
                     let encMsg = encryptMsg qr msg
                     writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
