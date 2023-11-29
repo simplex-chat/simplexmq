@@ -31,6 +31,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     closeSQLiteStore,
     openSQLiteStore,
+    reopenSQLiteStore,
     sqlString,
     execSQL,
     upMigration, -- used in tests
@@ -221,6 +222,8 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
+import Data.ByteArray (ScrubbedBytes)
+import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
@@ -267,7 +270,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, safeDecodeUtf8, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -316,11 +319,11 @@ instance StrEncoding MigrationConfirmation where
       "error" -> pure MCError
       _ -> fail "invalid MigrationConfirmation"
 
-createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
-createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
+createSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
+createSQLiteStore dbFilePath dbKey keepKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
-  st <- connectSQLiteStore dbFilePath dbKey
+  st <- connectSQLiteStore dbFilePath dbKey keepKey
   r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
   case r of
     Right () -> pure $ Right st
@@ -366,17 +369,17 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
-connectSQLiteStore dbFilePath dbKey = do
+connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO SQLiteStore
+connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop (connectDB dbFilePath dbKey)
+  dbConn <- dbBusyLoop (connectDB dbFilePath key)
   atomically $ do
     dbConnection <- newTMVar dbConn
-    dbEncrypted <- newTVar . not $ null dbKey
+    dbKey <- newTVar $! storeKey key keepKey
     dbClosed <- newTVar False
-    pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew, dbClosed}
+    pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew, dbClosed}
 
-connectDB :: FilePath -> String -> IO DB.Connection
+connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
   prepare db `onException` DB.close db
@@ -385,7 +388,7 @@ connectDB path key = do
   where
     prepare db = do
       let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
+      unless (BA.null key) . exec $ "PRAGMA key = " <> sqlString (safeDecodeUtf8 $ BA.convert key) <> ";"
       exec . fromQuery $
         [sql|
           PRAGMA busy_timeout = 100;
@@ -402,22 +405,33 @@ closeSQLiteStore st@SQLiteStore {dbClosed} =
       DB.close conn
       atomically $ writeTVar dbClosed True
 
-openSQLiteStore :: SQLiteStore -> String -> IO ()
-openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
-  ifM (readTVarIO dbClosed) open (putStrLn "closeSQLiteStore: already opened")
+openSQLiteStore :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
+openSQLiteStore st@SQLiteStore {dbClosed} key keepKey =
+  ifM (readTVarIO dbClosed) (openSQLiteStore_ st key keepKey) (putStrLn "openSQLiteStore: already opened")
+
+openSQLiteStore_ :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
+openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
+  bracketOnError
+    (atomically $ takeTMVar dbConnection)
+    (atomically . tryPutTMVar dbConnection)
+    $ \DB.Connection {slow} -> do
+      DB.Connection {conn} <- connectDB dbFilePath key
+      atomically $ do
+        putTMVar dbConnection DB.Connection {conn, slow}
+        writeTVar dbClosed False
+        writeTVar dbKey $! storeKey key keepKey
+
+reopenSQLiteStore :: SQLiteStore -> IO ()
+reopenSQLiteStore st@SQLiteStore {dbKey, dbClosed} =
+  ifM (readTVarIO dbClosed) open (putStrLn "reopenSQLiteStore: already opened")
   where
     open =
-      bracketOnError
-        (atomically $ takeTMVar dbConnection)
-        (atomically . tryPutTMVar dbConnection)
-        $ \DB.Connection {slow} -> do
-          DB.Connection {conn} <- connectDB dbFilePath key
-          atomically $ do
-            putTMVar dbConnection DB.Connection {conn, slow}
-            writeTVar dbClosed False
+      readTVarIO dbKey >>= \case
+        Just key -> openSQLiteStore_ st key True
+        Nothing -> fail "reopenSQLiteStore: no key"
 
-sqlString :: String -> Text
-sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
+sqlString :: Text -> Text
+sqlString s = quote <> T.replace quote "''" s <> quote
   where
     quote = "'"
 

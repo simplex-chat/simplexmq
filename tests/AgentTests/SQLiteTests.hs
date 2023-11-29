@@ -16,6 +16,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
 import Crypto.Random (drgNew)
+import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
@@ -49,18 +50,18 @@ withStore2 = before connect2 . after (removeStore . fst)
     connect2 :: IO (SQLiteStore, SQLiteStore)
     connect2 = do
       s1 <- createStore
-      s2 <- connectSQLiteStore (dbFilePath s1) ""
+      s2 <- connectSQLiteStore (dbFilePath s1) "" False
       pure (s1, s2)
 
 createStore :: IO SQLiteStore
-createStore = createEncryptedStore ""
+createStore = createEncryptedStore "" False
 
-createEncryptedStore :: String -> IO SQLiteStore
-createEncryptedStore key = do
+createEncryptedStore :: ScrubbedBytes -> Bool -> IO SQLiteStore
+createEncryptedStore key keepKey = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  Right st <- createSQLiteStore (testDB <> show r) key Migrations.app MCError
+  Right st <- createSQLiteStore (testDB <> show r) key keepKey Migrations.app MCError
   pure st
 
 removeStore :: SQLiteStore -> IO ()
@@ -112,6 +113,7 @@ storeTests = do
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
+    it "should close and re-open encrypted store (keep key)" testReopenEncryptedStoreKeepKey
 
 testConcurrentWrites :: SpecWith (SQLiteStore, SQLiteStore)
 testConcurrentWrites =
@@ -520,28 +522,38 @@ testCloseReopenStore = do
   closeSQLiteStore st
   closeSQLiteStore st
   errorGettingMigrations st
-  openSQLiteStore st ""
-  openSQLiteStore st ""
+  openSQLiteStore st "" False
+  openSQLiteStore st "" False
   hasMigrations st
   closeSQLiteStore st
   errorGettingMigrations st
-  openSQLiteStore st ""
+  reopenSQLiteStore st
   hasMigrations st
 
 testCloseReopenEncryptedStore :: IO ()
 testCloseReopenEncryptedStore = do
   let key = "test_key"
-  st <- createEncryptedStore key
+  st <- createEncryptedStore key False
   hasMigrations st
   closeSQLiteStore st
   closeSQLiteStore st
   errorGettingMigrations st
-  openSQLiteStore st key
-  openSQLiteStore st key
+  openSQLiteStore st key True
+  openSQLiteStore st key True
   hasMigrations st
   closeSQLiteStore st
   errorGettingMigrations st
-  openSQLiteStore st key
+  reopenSQLiteStore st
+  hasMigrations st
+
+testReopenEncryptedStoreKeepKey :: IO ()
+testReopenEncryptedStoreKeepKey = do
+  let key = "test_key"
+  st <- createEncryptedStore key True
+  hasMigrations st
+  closeSQLiteStore st
+  errorGettingMigrations st
+  reopenSQLiteStore st
   hasMigrations st
 
 getMigrations :: SQLiteStore -> IO Bool

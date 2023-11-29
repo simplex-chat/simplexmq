@@ -213,7 +213,7 @@ withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
       initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         ( \started -> do
-            Right st <- liftIO $ createAgentStore db' "" MCError
+            Right st <- liftIO $ createAgentStore db' "" False MCError
             runSMPAgentBlocking t cfg' initServers' st started
         )
         afterProcess

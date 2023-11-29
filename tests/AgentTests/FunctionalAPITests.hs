@@ -2050,7 +2050,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 
 getSMPAgentClient' :: AgentConfig -> InitialAgentServers -> FilePath -> IO AgentClient
 getSMPAgentClient' cfg' initServers dbPath = do
-  Right st <- liftIO $ createAgentStore dbPath "" MCError
+  Right st <- liftIO $ createAgentStore dbPath "" False MCError
   getSMPAgentClient cfg' initServers st
 
 testServerMultipleIdentities :: HasCallStack => IO ()
