@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -7,7 +8,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -49,18 +49,16 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (intercalate, sort)
+import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
-import GHC.Conc (listThreads, threadStatus)
-import GHC.Conc.Sync (threadLabel)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -92,6 +90,12 @@ import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
+#if MIN_VERSION_base(4,18,0)
+import Data.List (sort)
+import Data.Maybe (fromMaybe)
+import GHC.Conc (listThreads, threadStatus)
+import GHC.Conc.Sync (threadLabel)
+#endif
 
 -- | Runs an SMP server using passed configuration.
 --
@@ -297,12 +301,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
               CPStatsRTS -> getRTSStats >>= hPutStrLn h . show
               CPThreads -> do
+#if MIN_VERSION_base(4,18,0)
                 threads <- liftIO listThreads
                 hPutStrLn h $ "Threads: " <> show (length threads)
                 forM_ (sort threads) $ \tid -> do
                   label <- threadLabel tid
                   status <- threadStatus tid
                   hPutStrLn h $ show tid <> " (" <> show status <> ") " <> fromMaybe "" label
+#else
+                hPutStrLn h "Not available on GHC 8.10"
+#endif
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
@@ -318,7 +326,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   c <- atomically $ newClient q thVersion sessionId ts
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  labelMyThread . B.unpack $ "client $" <> encode c.sessionId
+  labelMyThread . B.unpack $ "client $" <> encode sessionId
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
@@ -441,8 +449,8 @@ dummyKeyEd448 :: C.PublicKey 'C.Ed448
 dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/XopbOSaq9qyLhrgJWKOLyNrQPNVvpMA"
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
-  labelMyThread . B.unpack $ "client $" <> encode clnt.sessionId <> " commands"
+client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
@@ -763,11 +771,11 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             encrypt msgFlags body =
               let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
                in RcvMessage msgId' msgTs' msgFlags encBody
-            msgId' = msg.msgId
-            msgTs' = msg.msgTs
+            msgId' = messageId msg
+            msgTs' = messageTs msg
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) msg.msgId
+        setDelivered s msg = tryPutTMVar (delivered s) (messageId msg)
 
         getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
@@ -867,7 +875,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
                     | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
                     | otherwise -> pure False
                   MessageQuota {} -> writeMsg q msg $> False
-              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode msg.msgId
+              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body

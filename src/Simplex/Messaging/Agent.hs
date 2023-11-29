@@ -8,7 +8,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -986,7 +985,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameQueue (srv, rId)) rqs of
               Just rq'@RcvQueue {server, sndId, status, dbReplaceQueueId = Just replaceQId} ->
-                case find (\q -> replaceQId == q.dbQueueId) rqs of
+                case find ((replaceQId ==) . dbQId) rqs of
                   Just rq1 -> when (status == Confirmed) $ do
                     secureQueue c rq' senderKey
                     withStore' c $ \db -> setRcvQueueStatus db rq' Secured
@@ -1243,7 +1242,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                         -- this is the same queue where this loop delivers messages to but with updated state
                         Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
                           -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
-                          case removeQP (\sq' -> sq'.dbQueueId == replacedId && not (sameQueue addr sq')) sqs of
+                          case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
                             Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
                             Just (sq', sq'' : sqs') -> do
                               checkSQSwchStatus sq' SSSendingQTEST
@@ -1358,7 +1357,7 @@ abortConnectionSwitch' c connId =
           | canAbortRcvSwitch rq -> do
               when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
               -- multiple queues to which the connections switches were possible when repeating switch was allowed
-              let (delRqs, keepRqs) = L.partition (\q -> Just rq.dbQueueId == q.dbReplaceQueueId) rqs
+              let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
               case L.nonEmpty keepRqs of
                 Just rqs' -> do
                   rq' <- withStore' c $ \db -> do
@@ -1476,7 +1475,7 @@ deleteConnQueues c ntf rqs = do
             | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> withStore' c (`incRcvDeleteErrors` rq) $> r
             | otherwise -> withStore' c (`deleteConnRcvQueue` rq) >> notifyRQ rq (Just e) $> Right ()
         pure (rq, r')
-    notifyRQ rq e_ = notify ("", rq.connId, APC SAEConn $ DEL_RCVQ (qServer rq) (queueId rq) e_)
+    notifyRQ rq e_ = notify ("", qConnId rq, APC SAEConn $ DEL_RCVQ (qServer rq) (queueId rq) e_)
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
     connResults = M.map snd . foldl' addResult M.empty
@@ -1922,7 +1921,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         case (conn', dbReplaceQueueId) of
                           (DuplexConnection _ rqs _, Just replacedId) -> do
                             when primary . withStore' c $ \db -> setRcvQueuePrimary db connId rq
-                            case find (\q -> replacedId == q.dbQueueId) rqs of
+                            case find ((replacedId ==) . dbQId) rqs of
                               Just rq'@RcvQueue {server, rcvId} -> do
                                 checkRQSwchStatus rq' RSSendingQUSE
                                 void $ withStore' c $ \db -> setRcvSwitchStatus db rq' $ Just RSReceivedMessage
@@ -2197,7 +2196,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 case (findQ (qAddress sqInfo) sqs, findQ addr sqs) of
                   (Just _, _) -> qError "QADD: queue address is already used in connection"
                   (_, Just sq@SndQueue {dbQueueId}) -> do
-                    let (delSqs, keepSqs) = L.partition (\q -> Just dbQueueId == q.dbReplaceQueueId) sqs
+                    let (delSqs, keepSqs) = L.partition ((Just dbQueueId == ) . dbReplaceQId) sqs
                     case L.nonEmpty keepSqs of
                       Just sqs' -> do
                         -- move inside case?
@@ -2248,7 +2247,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             when (ratchetSyncSendProhibited cData') $ throwError $ AGENT (A_QUEUE "ratchet is not synchronized")
             case findQ addr sqs of
               Just sq'@SndQueue {dbReplaceQueueId = Just replaceQId} -> do
-                case find (\q -> replaceQId == q.dbQueueId) sqs of
+                case find ((replaceQId ==) . dbQId) sqs of
                   Just sq1 -> do
                     checkSQSwchStatus sq1 SSSendingQKEY
                     logServer "<--" c srv rId $ "MSG <QUSE> " <> logSecret (snd addr)
