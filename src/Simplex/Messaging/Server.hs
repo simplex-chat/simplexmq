@@ -86,6 +86,7 @@ import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
+import UnliftIO (timeout)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -242,9 +243,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       kh <- asks serverIdentity
       smpVRange <- asks $ smpServerVRange . config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
-        Right th -> runClientTransport th
-        Left _ -> pure ()
+      liftIO (timeout 120000000 . runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
+        Just (Right th) -> runClientTransport th
+        _ -> pure ()
       where
         sid = B.unpack . encode $ tlsUnique h
         start = liftIO $ traceEventIO ("START " <> sid <> " S")
