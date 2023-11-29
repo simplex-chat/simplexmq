@@ -161,7 +161,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
             case chain of
               [_leaf, ca] -> do
                 let kh = certFingerprint ca
-                    accept = maybe True (\KnownHostPairing{hostFingerprint} -> hostFingerprint == kh) knownHost_
+                    accept = maybe True (\h -> hostFingerprint h == kh) knownHost_
                 if accept
                   then atomically (putTMVar hostCAHash kh) $> TLS.CertificateUsageAccept
                   else pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
@@ -232,8 +232,8 @@ prepareHostSession
     where
       updateKnownHost :: C.KeyHash -> C.PublicKeyX25519 -> ExceptT RCErrorType IO KnownHostPairing
       updateKnownHost ca hostDhPubKey = case knownHost_ of
-        Just h@KnownHostPairing {hostFingerprint} -> do
-          unless (hostFingerprint == tlsHostFingerprint) . throwError $
+        Just h -> do
+          unless (hostFingerprint h == tlsHostFingerprint) . throwError $
             RCEInternal "TLS host CA is different from host pairing, should be caught in TLS handshake"
           pure (h :: KnownHostPairing) {hostDhPubKey}
         Nothing -> pure KnownHostPairing {hostFingerprint = ca, hostDhPubKey}
