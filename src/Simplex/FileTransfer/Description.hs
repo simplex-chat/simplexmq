@@ -243,7 +243,7 @@ instance ToField a => ToField (FileSize a) where toField (FileSize s) = toField 
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [NonEmpty FileServerReplica]
 groupReplicasByServer defChunkSize =
-  L.groupAllWith (\FileServerReplica{server} -> server) . unfoldChunksToReplicas defChunkSize
+  L.groupAllWith (\FileServerReplica {server} -> server) . unfoldChunksToReplicas defChunkSize
 
 encodeFileReplicas :: FileSize Word32 -> [FileChunk] -> [YAMLServerReplicas]
 encodeFileReplicas defChunkSize =
