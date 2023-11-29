@@ -13,6 +13,7 @@ data ControlProtocol
   | CPStats
   | CPStatsRTS
   | CPThreads
+  | CPSockets
   | CPSave
   | CPHelp
   | CPQuit
@@ -26,6 +27,7 @@ instance StrEncoding ControlProtocol where
     CPStats -> "stats"
     CPStatsRTS -> "stats-rts"
     CPThreads -> "threads"
+    CPSockets -> "sockets"
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
@@ -38,6 +40,7 @@ instance StrEncoding ControlProtocol where
       "stats" -> pure CPStats
       "stats-rts" -> pure CPStatsRTS
       "threads" -> pure CPThreads
+      "sockets" -> pure CPSockets
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit

@@ -31,7 +31,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
 import Simplex.Messaging.Version
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -102,7 +102,8 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
-    serverStats :: ServerStats
+    serverStats :: ServerStats,
+    sockets :: SocketState
   }
 
 data Server = Server
@@ -166,7 +167,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats}
+  sockets <- atomically newSocketState
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats, sockets}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

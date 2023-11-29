@@ -131,7 +131,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams tCfg (runClient t)
+      counters <- asks socketCounters
+      runTransportServerCount counters started tcpPort serverParams tCfg (runClient t)
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
@@ -318,6 +319,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
+              CPSockets -> do
+                (accepted', closed', clients') <- unliftIO u $ asks sockets
+                (accepted, closed, clients) <- atomically $ (,,) <$> readTVar accepted' <*> readTVar closed' <*> readTVar clients'
+                hPutStrLn h "Sockets: "
+                hPutStrLn h $ "accepted: " <> show accepted
+                hPutStrLn h $ "closed: " <> show closed
+                hPutStrLn h $ "active: " <> show (M.size clients)
+                hPutStrLn h $ "leaked: " <> show (accepted - closed - M.size clients)
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
