@@ -137,7 +137,6 @@ import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Word (Word16)
-import GHC.Records (getField)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -444,7 +443,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           TM.delete tSess smpClients
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
-          let cs = S.fromList $ map (getField @"connId") qs
+          let cs = S.fromList $ map qConnId qs
           cs' <- RQ.getConns $ activeSubs c
           pure (qs, S.toList $ cs `S.difference` cs')
 
@@ -827,7 +826,7 @@ mkSMPTransportSession :: (AgentMonad' m, SMPQueueRec q) => AgentClient -> q -> m
 mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
 
 mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
-mkSMPTSession q = mkTSession (getField @"userId" q) (qServer q) (getField @"connId" q)
+mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig

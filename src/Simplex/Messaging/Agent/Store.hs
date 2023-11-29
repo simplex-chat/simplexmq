@@ -11,7 +11,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store where
@@ -27,7 +26,6 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
-import GHC.Records (HasField (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
@@ -182,16 +180,34 @@ switchingRQ = find $ isJust . rcvSwchStatus
 {-# INLINE switchingRQ #-}
 
 updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
-updatedQs q = L.map $ \q' -> if (getField @"dbQueueId" q) == (getField @"dbQueueId" q') then q else q'
+updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
 {-# INLINE updatedQs #-}
 
-type SMPQueueRec q =
-  ( SMPQueue q,
-    HasField "userId" q UserId,
-    HasField "connId" q ConnId,
-    HasField "dbQueueId" q Int64,
-    HasField "dbReplaceQueueId" q (Maybe Int64)
-  )
+class SMPQueue q => SMPQueueRec q where
+  qUserId :: q -> UserId
+  qConnId :: q -> ConnId
+  dbQId :: q -> Int64
+  dbReplaceQId :: q -> Maybe Int64
+
+instance SMPQueueRec RcvQueue where
+  qUserId RcvQueue {userId} = userId
+  {-# INLINE qUserId #-}
+  qConnId RcvQueue {connId} = connId
+  {-# INLINE qConnId #-}
+  dbQId RcvQueue {dbQueueId} = dbQueueId
+  {-# INLINE dbQId #-}
+  dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
+
+instance SMPQueueRec SndQueue where
+  qUserId SndQueue {userId} = userId
+  {-# INLINE qUserId #-}
+  qConnId SndQueue {connId} = connId
+  {-# INLINE qConnId #-}
+  dbQId SndQueue {dbQueueId} = dbQueueId
+  {-# INLINE dbQId #-}
+  dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
 
 -- * Connection types
 
