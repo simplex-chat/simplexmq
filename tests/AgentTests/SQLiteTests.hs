@@ -538,6 +538,7 @@ testCloseReopenEncryptedStore = do
   closeSQLiteStore st
   closeSQLiteStore st
   errorGettingMigrations st
+  reopenSQLiteStore st `shouldThrow` \(e :: SomeException) -> "reopenSQLiteStore: no key" `isInfixOf` show e
   openSQLiteStore st key True
   openSQLiteStore st key True
   hasMigrations st
