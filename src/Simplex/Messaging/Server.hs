@@ -348,7 +348,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
     `finally` clientDisconnected c
   where
     sid = B.unpack $ encode sessionId
-    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th c activeAt expCfg]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (activeAt c) expCfg]
     disconnectThread_ _ _ = []
 
 clientDisconnected :: Client -> M ()
@@ -419,14 +419,14 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
       NMSG {} -> 0
       _ -> 1
 
-disconnectTransport :: Transport c => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> IO ()
-disconnectTransport THandle {connection, sessionId} c activeAt expCfg = do
+disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> ExpirationConfig -> IO ()
+disconnectTransport THandle {connection, sessionId} activeAt expCfg = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   let interval = checkInterval expCfg * 1000000
   forever . liftIO $ do
     threadDelay' interval
     old <- expireBeforeEpoch expCfg
-    ts <- readTVarIO $ activeAt c
+    ts <- readTVarIO activeAt
     when (systemSeconds ts < old) $ closeConnection connection
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
