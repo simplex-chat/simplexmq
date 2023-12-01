@@ -122,7 +122,8 @@ data Client = Client
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
-    activeAt :: TVar SystemTime
+    rcvActiveAt :: TVar SystemTime,
+    sndActiveAt :: TVar SystemTime
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
@@ -148,8 +149,9 @@ newClient qSize thVersion sessionId ts = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
-  activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt}
+  rcvActiveAt <- newTVar ts
+  sndActiveAt <- newTVar ts
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do

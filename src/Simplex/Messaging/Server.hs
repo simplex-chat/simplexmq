@@ -286,12 +286,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPClients -> do
                 Server {subscribers} <- unliftIO u $ asks server
                 clients <- readTVarIO subscribers
-                hPutStrLn h $ "Clients: " <> show (length clients)
-                forM_ (M.toList clients) $ \(cid, Client {sessionId, connected, activeAt, subscriptions}) -> do
-                  hPutStrLn h . B.unpack $ "Client " <> encode cid <> " $" <> encode sessionId
-                  readTVarIO connected >>= hPutStrLn h . ("  connected: " <>) . show
-                  readTVarIO activeAt >>= hPutStrLn h . ("  activeAt: " <>) . B.unpack . strEncode
-                  readTVarIO subscriptions >>= hPutStrLn h . ("  subscriptions: " <>) . show . M.size
+                hPutStrLn h $ "clientId,sessionId,connected,rcvActiveAt,sndActiveAt,subscriptions"
+                forM_ (M.toList clients) $ \(cid, Client {sessionId, connected, rcvActiveAt, sndActiveAt, subscriptions}) -> do
+                  connected' <- bshow <$> readTVarIO connected
+                  rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
+                  sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
+                  subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
+                  hPutStrLn h . B.unpack $ B.intercalate "," [encode cid, encode sessionId, connected', rcvActiveAt', sndActiveAt', subscriptions']
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -331,7 +332,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, threads, save, help, quit"
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, threads, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
 
@@ -348,7 +349,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
     `finally` clientDisconnected c
   where
     sid = B.unpack $ encode sessionId
-    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (activeAt c) expCfg]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg]
     disconnectThread_ _ _ = []
 
 clientDisconnected :: Client -> M ()
@@ -380,12 +381,12 @@ cancelSub sub =
     _ -> return ()
 
 receive :: Transport c => THandle c -> Client -> M ()
-receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
+receive th Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   -- labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / tGet"
     ts <- L.toList <$> liftIO (tGet th)
-    atomically . writeTVar activeAt =<< liftIO getSystemTime
+    atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
     as <- partitionEithers <$> mapM cmdAction ts
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / write snd"
     write sndQ $ fst as
@@ -404,14 +405,14 @@ receive th Client {rcvQ, sndQ, activeAt, sessionId} = do
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandle c -> Client -> IO ()
-send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
+send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
   -- labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send / read"
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send / tPut"
     void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
-    atomically . writeTVar activeAt =<< liftIO getSystemTime
+    atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
     tOrder (_, _, cmd) = case cmd of
@@ -419,15 +420,15 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
       NMSG {} -> 0
       _ -> 1
 
-disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> ExpirationConfig -> IO ()
-disconnectTransport THandle {connection, sessionId} activeAt expCfg = do
+disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO ()
+disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
     loop = do
       threadDelay' $ checkInterval expCfg * 1000000
       old <- expireBeforeEpoch expCfg
-      ts <- readTVarIO activeAt
+      ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
       if systemSeconds ts < old then closeConnection connection else loop
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed

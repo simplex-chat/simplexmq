@@ -345,17 +345,17 @@ runNtfClientTransport th@THandle {sessionId} = do
   raceAny_ ([liftIO $ send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
-    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (activeAt c) expCfg]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg]
     disconnectThread_ _ _ = []
 
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: Transport c => THandle c -> NtfServerClient -> M ()
-receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
+receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
-    atomically . writeTVar activeAt =<< liftIO getSystemTime
+    atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
     logDebug "received transmission"
     case cmdOrError of
       Left e -> write sndQ (corrId, entId, NRErr e)
@@ -367,10 +367,10 @@ receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: Transport c => THandle c -> NtfServerClient -> IO ()
-send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, activeAt} = forever $ do
+send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h Nothing [(Nothing, encodeTransmission v sessionId t)]
-  atomically . writeTVar activeAt =<< liftIO getSystemTime
+  atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where
 --   show x = unsafePerformIO $ show <$> readTVarIO x
