@@ -422,12 +422,13 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = do
 disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> ExpirationConfig -> IO ()
 disconnectTransport THandle {connection, sessionId} activeAt expCfg = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
-  let interval = checkInterval expCfg * 1000000
-  forever . liftIO $ do
-    threadDelay' interval
-    old <- expireBeforeEpoch expCfg
-    ts <- readTVarIO activeAt
-    when (systemSeconds ts < old) $ closeConnection connection
+  loop
+  where
+    loop = do
+      threadDelay' $ checkInterval expCfg * 1000000
+      old <- expireBeforeEpoch expCfg
+      ts <- readTVarIO activeAt
+      if systemSeconds ts < old then closeConnection connection else loop
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 
