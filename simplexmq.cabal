@@ -174,12 +174,12 @@ library
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
@@ -191,11 +191,11 @@ library
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -206,12 +206,12 @@ library
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -239,12 +239,12 @@ executable ntf-server
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
@@ -256,11 +256,11 @@ executable ntf-server
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -272,12 +272,12 @@ executable ntf-server
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -305,12 +305,12 @@ executable smp-agent
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
@@ -322,11 +322,11 @@ executable smp-agent
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -338,12 +338,12 @@ executable smp-agent
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -371,12 +371,12 @@ executable smp-server
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
@@ -388,11 +388,11 @@ executable smp-server
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -404,12 +404,12 @@ executable smp-server
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -437,12 +437,12 @@ executable xftp
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
@@ -454,11 +454,11 @@ executable xftp
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -470,12 +470,12 @@ executable xftp
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -503,12 +503,12 @@ executable xftp-server
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
@@ -520,11 +520,11 @@ executable xftp-server
     , ini ==0.4.1
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -536,12 +536,12 @@ executable xftp-server
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
@@ -600,12 +600,12 @@ test-suite simplexmq-test
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.11.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite ==0.30.*
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , deepseq ==1.4.*
@@ -622,11 +622,11 @@ test-suite simplexmq-test
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , main-tester ==0.2.*
-    , memory ==0.18.*
-    , mtl ==2.3.*
+    , memory >=0.15 && <0.19
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
-    , network-transport ==0.5.6
+    , network-transport >=0.5.4 && <0.6
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -639,13 +639,13 @@ test-suite simplexmq-test
     , stm ==2.5.*
     , template-haskell >=2.16 && <2.21
     , temporary ==1.3.*
-    , text ==2.0.*
+    , text >=2.0 && <3
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , timeit ==2.0.*
     , tls >=1.6.0 && <1.7
-    , transformers ==0.6.*
+    , transformers >=0.5 && <0.7
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
