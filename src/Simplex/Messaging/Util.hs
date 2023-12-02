@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -65,6 +66,33 @@ liftEitherError f a = liftIOEither (first f <$> a)
 liftEitherWith :: MonadError e' m => (e -> e') -> Either e a -> m a
 liftEitherWith f = liftEither . first f
 {-# INLINE liftEitherWith #-}
+
+-- tryError :: MonadError e m => m a -> m (Either e a)
+-- tryError action = (Right <$> action) `catchError` (pure . Left)
+-- {-# INLINE tryError #-}
+
+#if !MIN_VERSION_transformers(0,6,0)
+-- | Handle an exception.
+--
+-- * @'catchE' ('lift' m) h = 'lift' m@
+--
+-- * @'catchE' ('throwE' e) h = h e@
+catchE :: (Monad m) =>
+    ExceptT e m a               -- ^ the inner computation
+    -> (e -> ExceptT e' m a)    -- ^ a handler for exceptions in the inner
+                                -- computation
+    -> ExceptT e' m a
+m `catchE` h = ExceptT $ do
+    a <- runExceptT m
+    case a of
+        Left  l -> runExceptT (h l)
+        Right r -> return (Right r)
+{-# INLINE catchE #-}
+
+tryE :: Monad m => ExceptT e m a -> ExceptT e m (Either e a)
+tryE m = (Right <$> m) `catchE` (pure . Left)
+{-# INLINE tryE #-}
+#endif
 
 liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
 liftE f a = ExceptT $ first f <$> runExceptT a

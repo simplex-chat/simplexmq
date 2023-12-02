@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -41,6 +42,9 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, toChunks, ($>>=))
+#if !MIN_VERSION_transformers(0,6,0)
+import Simplex.Messaging.Util (tryE)
+#endif
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.Exception (Exception)

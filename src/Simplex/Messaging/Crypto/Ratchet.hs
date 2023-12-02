@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -39,6 +40,9 @@ import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
+#if !MIN_VERSION_transformers(0,6,0)
+import Simplex.Messaging.Util (tryE)
+#endif
 import Simplex.Messaging.Version
 
 currentE2EEncryptVersion :: Version
