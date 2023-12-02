@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.35.0.
+-- This file has been generated from package.yaml by hpack version 0.36.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -192,7 +192,7 @@ library
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
@@ -257,7 +257,7 @@ executable ntf-server
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
@@ -323,7 +323,7 @@ executable smp-agent
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
@@ -389,7 +389,7 @@ executable smp-server
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
@@ -455,7 +455,7 @@ executable xftp
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
@@ -521,7 +521,7 @@ executable xftp-server
     , iproute ==1.7.*
     , iso8601-time ==0.1.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
@@ -623,7 +623,7 @@ test-suite simplexmq-test
     , iso8601-time ==0.1.*
     , main-tester ==0.2.*
     , memory >=0.15 && <0.19
-    , mtl >=2.3.1 && <3
+    , mtl >=2.2 && <3
     , network >=3.1.2.7 && <3.2
     , network-info ==0.2.*
     , network-transport >=0.5.4 && <0.6
