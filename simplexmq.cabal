@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.35.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -219,12 +219,12 @@ library
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
@@ -292,12 +292,12 @@ executable ntf-server
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
@@ -365,12 +365,12 @@ executable smp-agent
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
@@ -438,12 +438,12 @@ executable smp-server
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
@@ -511,12 +511,12 @@ executable xftp
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
@@ -584,12 +584,12 @@ executable xftp-server
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
@@ -695,12 +695,12 @@ test-suite simplexmq-test
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
+  if impl(ghc >= 9.6.3)
     build-depends:
         bytestring ==0.11.*
       , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
+  if impl(ghc < 9.6.3)
     build-depends:
         bytestring ==0.10.*
       , template-haskell ==2.16.*
