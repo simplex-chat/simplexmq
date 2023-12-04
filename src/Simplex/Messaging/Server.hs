@@ -284,15 +284,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPSuspend -> hPutStrLn h "suspend not implemented"
               CPResume -> hPutStrLn h "resume not implemented"
               CPClients -> do
-                Server {subscribers} <- unliftIO u $ asks server
-                clients <- readTVarIO subscribers
+                active <- unliftIO u (asks clients) >>= readTVarIO
                 hPutStrLn h $ "clientId,sessionId,connected,rcvActiveAt,sndActiveAt,subscriptions"
-                forM_ (M.toList clients) $ \(cid, Client {sessionId, connected, rcvActiveAt, sndActiveAt, subscriptions}) -> do
+                forM_ (M.toList active) $ \(cid, Client {sessionId, connected, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
-                  hPutStrLn h . B.unpack $ B.intercalate "," [encode cid, encode sessionId, connected', rcvActiveAt', sndActiveAt', subscriptions']
+                  hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', rcvActiveAt', sndActiveAt', subscriptions']
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -340,20 +339,26 @@ runClientTransport :: Transport c => THandle c -> M ()
 runClientTransport th@THandle {thVersion, sessionId} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newClient q thVersion sessionId ts
+  active <- asks clients
+  nextClientId <- asks clientSeq
+  (cid, c) <- atomically $ do
+    clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
+    new <- newClient q thVersion sessionId ts
+    TM.insert clientId new active
+    pure (clientId, new)
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   labelMyThread $ "client $" <> sid
   liftIO $ traceEventIO ("START " <> sid <> " C")
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
-    `finally` clientDisconnected c
+    `finally` clientDisconnected cid c
   where
     sid = B.unpack $ encode sessionId
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg]
     disconnectThread_ _ _ = []
 
-clientDisconnected :: Client -> M ()
-clientDisconnected c@Client {subscriptions, connected, sessionId} = do
+clientDisconnected :: Int -> Client -> M ()
+clientDisconnected cid c@Client {subscriptions, connected, sessionId} = do
   liftIO $ traceEventIO ("START " <> sid <> " D")
   labelMyThread $ "client $" <> sid <> " disc"
   atomically $ writeTVar connected False
@@ -362,6 +367,7 @@ clientDisconnected c@Client {subscriptions, connected, sessionId} = do
   atomically $ writeTVar subscriptions M.empty
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
+  asks clients >>= atomically . TM.delete cid
   liftIO $ traceEventIO ("STOP " <> sid <> " D")
   liftIO $ traceEventIO ("STOP " <> sid <> " C")
   where

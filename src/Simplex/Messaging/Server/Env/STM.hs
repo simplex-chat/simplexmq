@@ -103,7 +103,9 @@ data Env = Env
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
-    sockets :: SocketState
+    sockets :: SocketState,
+    clientSeq :: TVar Int,
+    clients :: TMap Int Client
   }
 
 data Server = Server
@@ -170,7 +172,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   let serverIdentity = KeyHash fp
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
   sockets <- atomically newSocketState
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats, sockets}
+  clientSeq <- newTVarIO 0
+  clients <- atomically TM.empty
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
