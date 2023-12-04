@@ -320,13 +320,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
               CPSockets -> do
-                (accepted', closed', clients') <- unliftIO u $ asks sockets
-                (accepted, closed, clients) <- atomically $ (,,) <$> readTVar accepted' <*> readTVar closed' <*> readTVar clients'
+                (accepted', closed', active') <- unliftIO u $ asks sockets
+                (accepted, closed, active) <- atomically $ (,,) <$> readTVar accepted' <*> readTVar closed' <*> readTVar active'
                 hPutStrLn h "Sockets: "
                 hPutStrLn h $ "accepted: " <> show accepted
                 hPutStrLn h $ "closed: " <> show closed
-                hPutStrLn h $ "active: " <> show (M.size clients)
-                hPutStrLn h $ "leaked: " <> show (accepted - closed - M.size clients)
+                hPutStrLn h $ "active: " <> show (M.size active)
+                hPutStrLn h $ "leaked: " <> show (accepted - closed - M.size active)
+                forM_ (M.toList active) $ \(sid, tid') ->
+                  deRefWeak tid' >>= \case
+                    Nothing -> hPutStrLn h $ intercalate "," [show sid, "", "gone", ""]
+                    Just tid -> do
+                      label <- threadLabel tid
+                      status <- threadStatus tid
+                      hPutStrLn h $ intercalate "," [show sid, show tid, show status, fromMaybe "" label]
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
