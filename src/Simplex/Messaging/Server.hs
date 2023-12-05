@@ -327,7 +327,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h $ "closed: " <> show closed
                 hPutStrLn h $ "active: " <> show (M.size active)
                 hPutStrLn h $ "leaked: " <> show (accepted - closed - M.size active)
+              CPSocketThreads -> do
 #if MIN_VERSION_base(4,18,0)
+                (_, _, active') <- unliftIO u $ asks sockets
+                active <- readTVarIO active'
                 forM_ (M.toList active) $ \(sid, tid') ->
                   deRefWeak tid' >>= \case
                     Nothing -> hPutStrLn h $ intercalate "," [show sid, "", "gone", ""]
@@ -335,12 +338,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                       label <- threadLabel tid
                       status <- threadStatus tid
                       hPutStrLn h $ intercalate "," [show sid, show tid, show status, fromMaybe "" label]
+#else
+                hPutStrLn h "Not available on GHC 8.10"
 #endif
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, threads, save, help, quit"
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
 
