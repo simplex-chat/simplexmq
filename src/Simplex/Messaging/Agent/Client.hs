@@ -235,7 +235,7 @@ data AgentClient = AgentClient
     pendingSubs :: TRcvQueues,
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     pendingMsgsQueued :: TMap SndQAddr Bool,
-    smpQueueMsgQueues :: TMap SndQAddr (TQueue InternalId, TMVar ()),
+    smpQueueMsgQueues :: TMap SndQAddr (TQueue (InternalId, Bool), TMVar ()),
     smpQueueMsgDeliveries :: TMap SndQAddr (Async ()),
     connCmdsQueued :: TMap ConnId Bool,
     asyncCmdQueues :: TMap (Maybe SMPServer) (TQueue AsyncCmdId),

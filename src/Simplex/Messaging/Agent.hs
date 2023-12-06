@@ -1101,20 +1101,23 @@ resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
       >>= \a -> atomically (TM.insert qKey a $ smpQueueMsgDeliveries c)
   unlessM msgsQueued $
     withStore' c (\db -> getPendingMsgs db connId sq)
-      >>= queuePendingMsgs c sq
+      >>= queuePendingMsgs' c False sq
   where
     queueDelivering qKey = atomically $ TM.member qKey (smpQueueMsgDeliveries c)
     msgsQueued = atomically $ isJust <$> TM.lookupInsert (server, sndId) True (pendingMsgsQueued c)
 
 queuePendingMsgs :: AgentMonad' m => AgentClient -> SndQueue -> [InternalId] -> m ()
-queuePendingMsgs c sq msgIds = atomically $ do
-  modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
+queuePendingMsgs c = queuePendingMsgs' c True
+
+queuePendingMsgs' :: AgentMonad' m => AgentClient -> Bool -> SndQueue -> [InternalId] -> m ()
+queuePendingMsgs' c setDeliveryOps sq msgIds = atomically $ do
+  when setDeliveryOps $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
   -- s <- readTVar (msgDeliveryOp c)
   -- unsafeIOToSTM $ putStrLn $ "msgDeliveryOp: " <> show (opsInProgress s)
   (mq, _) <- getPendingMsgQ c sq
-  mapM_ (writeTQueue mq) msgIds
+  mapM_ (writeTQueue mq . (,setDeliveryOps)) msgIds
 
-getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId, TMVar ())
+getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue (InternalId, Bool), TMVar ())
 getPendingMsgQ c SndQueue {server, sndId} = do
   let qKey = (server, sndId)
   maybe (newMsgQueue qKey) pure =<< TM.lookup qKey (smpQueueMsgQueues c)
@@ -1132,9 +1135,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
     atomically $ endAgentOperation c AOSndNetwork
     atomically $ throwWhenInactive c
     atomically $ throwWhenNoDelivery c sq
-    msgId <- atomically $ readTQueue mq
+    (msgId, deliveryOp) <- atomically $ readTQueue mq
     atomically $ beginAgentOperation c AOSndNetwork
-    atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in queuePendingMsgs
+    when deliveryOp $ atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in queuePendingMsgs
     let mId = unId msgId
     tryAgentError (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left e -> notify $ MERR mId e
