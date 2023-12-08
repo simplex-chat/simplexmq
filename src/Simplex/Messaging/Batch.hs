@@ -24,8 +24,26 @@ import Control.Monad.Trans (MonadTrans, lift)
 import Control.Monad.Trans.Cont (ContT (..))
 import Data.Kind (Type)
 import UnliftIO (bracket)
+import UnliftIO.MVar
 
 type Parent env err m = (MonadReader env m, MonadError err m, MonadUnliftIO m)
+
+exampleWithResults :: Parent env err m => m [(Bool, Int)]
+exampleWithResults = forB [1 :: Int .. 10] $ \item -> do
+  dbResult <- batchOperation SDB1 $ \ExDB -> do
+    liftIO $ putStrLn ("operation on DB1 for item " <> show item)
+    pure FancyResult
+  -- the action that will continue with the results later (can batch more actions)
+  batchOperation SNet $ \ExSocket exInt -> do
+    liftIO $ putStrLn $ "Sending " <> show dbResult <> " to channel " <> show exInt
+  -- the final result
+  pure (dbResult == FancyResult, item)
+
+forB :: (Parent env err m, Traversable t) => t a -> (a -> BatchT () m b) -> m (t b)
+forB items action = do
+  r <- newEmptyMVar
+  runBatched $ forM items action >>= putMVar r
+  takeMVar r
 
 example ::
   forall env err m.
@@ -40,10 +58,12 @@ example = do
       dbResult <- batchOperation SDB1 $ \ExDB -> do
         liftIO $ putStrLn ("operation on DB1 for item " <> show item)
         pure FancyResult
+      -- the action that will continue with the results later (can batch more actions)
       batchOperation SNet $ \ExSocket exInt -> do
         liftIO $ putStrLn $ "Sending " <> show dbResult <> " to channel " <> show exInt
-      pure (dbResult == FancyResult, item) -- the action that will continue with the results later (can batch more actions)
-      -- collect final result?
+      -- the final result
+      pure (dbResult == FancyResult, item)
+    -- aggregate results
     liftIO $ print rs
   -- pure ()
   pure $ length $ show finalResult
@@ -116,12 +136,12 @@ data ExSocket = ExSocket
 withExSocket :: (ExSocket -> BatchT r m a) -> BatchT r m a
 withExSocket = error "produce DB handle, run transcation, commit or abort, close DB handle"
 
-type family Batched (b :: Op) m a where
-  Batched DB1 m a = ExDB -> m a
-  Batched DB2 m a = ExDB -> m a
-  Batched Net m a = ExSocket -> Int -> m a
+type family BatchStep (op :: Op) m a where
+  BatchStep DB1 m a = ExDB -> m a
+  BatchStep DB2 m a = ExDB -> m a
+  BatchStep Net m a = ExSocket -> Int -> m a
 
-data ABatch m = forall op a. ABatch (SOp op) (Batched op m a) (a -> BatchT () m ()) -- XXX: add `TypeRep r` to recover final result?
+data ABatch m = forall op a. ABatch (SOp op) (BatchStep op m a) (a -> BatchT () m ()) -- XXX: add `TypeRep r` to recover final result?
 
 data SOp :: Op -> Type where
   SDB1 :: SOp DB1
@@ -129,7 +149,7 @@ data SOp :: Op -> Type where
   SNet :: SOp Net
 
 -- the magic (:
-batchOperation :: Parent env err m => SOp op -> Batched op m a -> BatchT () m a
+batchOperation :: Parent env err m => SOp op -> BatchStep op m a -> BatchT () m a
 batchOperation op action = BatchT $ ContT $ \next ->
   modify' (ABatch op action (stateToBatch . next) :)
 
