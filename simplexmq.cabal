@@ -95,6 +95,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
+      Simplex.Messaging.Batch
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
@@ -607,6 +608,7 @@ test-suite simplexmq-test
       AgentTests.NotificationTests
       AgentTests.SchemaDump
       AgentTests.SQLiteTests
+      BatchTests
       CLITests
       CoreTests.BatchingTests
       CoreTests.CryptoFileTests

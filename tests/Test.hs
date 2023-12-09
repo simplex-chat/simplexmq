@@ -3,6 +3,7 @@
 
 import AgentTests (agentTests)
 import AgentTests.SchemaDump (schemaDumpTest)
+import BatchTests
 import CLITests
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
@@ -64,6 +65,7 @@ main = do
           describe "XFTP agent" xftpAgentTests
         describe "XRCP" remoteControlTests
         describe "Server CLIs" cliTests
+        describe "Batching" batchTests
 
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of
