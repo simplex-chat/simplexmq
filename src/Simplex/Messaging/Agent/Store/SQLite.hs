@@ -27,10 +27,17 @@ module Simplex.Messaging.Agent.Store.SQLite
     MigrationConfirmation (..),
     MigrationError (..),
     UpMigration (..),
+    SQLiteJournalMode (..),
     createSQLiteStore,
     connectSQLiteStore,
     closeSQLiteStore,
     openSQLiteStore,
+    checkpointSQLiteStore,
+    backupSQLiteStore,
+    restoreSQLiteStore,
+    removeSQLiteStore,
+    setSQLiteJournalMode,
+    getSQLiteJournalMode,
     sqlString,
     execSQL,
     upMigration, -- used in tests
@@ -218,12 +225,14 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
@@ -267,9 +276,9 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, unlessM, whenM, ($>>=), (<$$>))
 import Simplex.Messaging.Version
-import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
@@ -316,6 +325,33 @@ instance StrEncoding MigrationConfirmation where
       "error" -> pure MCError
       _ -> fail "invalid MigrationConfirmation"
 
+data SQLiteJournalMode = SQLModeWAL | SQLModeDelete | SQLMode Text
+  deriving (Show)
+
+instance StrEncoding SQLiteJournalMode where
+  strEncode = \case
+    SQLModeWAL -> "wal"
+    SQLModeDelete -> "delete"
+    SQLMode s -> encodeUtf8 s
+  strP = do
+    s <- A.takeTill (== ' ')
+    pure $ case s of
+      "wal" -> SQLModeWAL
+      "WAL" -> SQLModeWAL
+      "delete" -> SQLModeDelete
+      "DELETE" -> SQLModeDelete
+      _ -> SQLMode $ decodeLatin1 s
+
+decodeJournalMode :: Text -> SQLiteJournalMode
+decodeJournalMode s = fromRight (SQLMode s) $ strDecode $ encodeUtf8 s
+
+instance ToJSON SQLiteJournalMode where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON SQLiteJournalMode where
+  parseJSON = strParseJSON "SQLiteJournalMode"
+
 createSQLiteStore :: FilePath -> String -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createSQLiteStore dbFilePath dbKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
@@ -353,10 +389,43 @@ migrateSchema st migrations confirmMigrations = do
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
     run ms = do
-      let f = dbFilePath st
-      copyFile f (f <> ".bak")
+      withConnection st $ \db -> do
+        execSQL_ db "PRAGMA wal_checkpoint(TRUNCATE);"
+        backupSQLiteStore st
       Migrations.run st ms
       pure $ Right ()
+
+-- names are chosen to make .bak file a valid database with WAL files
+backupSQLiteStore :: SQLiteStore -> IO ()
+backupSQLiteStore st = do
+  let f = dbFilePath st
+      fBak = f <> ".bak"
+  copyWhenExists f fBak
+  copyWhenExists (f <> "-wal") (fBak <> "-wal")
+  copyWhenExists (f <> "-shm") (fBak <> "-shm")
+
+restoreSQLiteStore :: SQLiteStore -> IO ()
+restoreSQLiteStore st = do
+  let f = dbFilePath st
+      fBak = f <> ".bak"
+  copyWhenExists fBak f
+  copyWhenExists (fBak <> "-wal") (f <> "-wal")
+  copyWhenExists (fBak <> "-shm") (f <> "-shm")
+
+copyWhenExists :: FilePath -> FilePath -> IO ()
+copyWhenExists f f' = whenM (doesFileExist f) $ copyFile f f'
+
+removeSQLiteStore :: SQLiteStore -> IO ()
+removeSQLiteStore st = do
+  let f = dbFilePath st
+  removeDB f
+  removeDB (f <> ".bak")
+  where
+    removeDB f = do
+      remove f
+      remove (f <> "-wal")
+      remove (f <> "-shm")
+    remove f = whenM (doesFileExist f) $ removeFile f
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do
@@ -379,27 +448,23 @@ connectSQLiteStore dbFilePath dbKey = do
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
-  prepare db `onException` DB.close db
+  execSQL_ db openSQL `onException` DB.close db
   -- _printPragmas db path
   pure db
   where
-    prepare db = do
-      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-      exec . fromQuery $
-        [sql|
-          PRAGMA busy_timeout = 100;
-          PRAGMA foreign_keys = ON;
-          -- PRAGMA trusted_schema = OFF;
-          PRAGMA secure_delete = ON;
-          PRAGMA auto_vacuum = FULL;
-        |]
+    openSQL =
+      (if null key then "" else "PRAGMA key = " <> sqlString key <> ";\n")
+        <> "PRAGMA journal_mode = WAL;\n\
+           \PRAGMA busy_timeout = 100;\n\
+           \PRAGMA foreign_keys = ON;\n\
+           \PRAGMA trusted_schema = OFF;\n\
+           \PRAGMA secure_delete = ON;\n"
 
 closeSQLiteStore :: SQLiteStore -> IO ()
 closeSQLiteStore st@SQLiteStore {dbClosed} =
   ifM (readTVarIO dbClosed) (putStrLn "closeSQLiteStore: already closed") $
-    withConnection st $ \conn -> do
-      DB.close conn
+    withConnection st $ \db -> do
+      DB.close db
       atomically $ writeTVar dbClosed True
 
 openSQLiteStore :: SQLiteStore -> String -> IO ()
@@ -415,6 +480,26 @@ openSQLiteStore SQLiteStore {dbConnection, dbFilePath, dbClosed} key =
           atomically $ do
             putTMVar dbConnection DB.Connection {conn, slow}
             writeTVar dbClosed False
+
+checkpointSQLiteStore :: SQLiteStore -> IO ()
+checkpointSQLiteStore st =
+  unlessM (readTVarIO $ dbClosed st) $
+    withConnection st (`execSQL_` "PRAGMA wal_checkpoint(TRUNCATE);")
+
+setSQLiteJournalMode :: SQLiteStore -> SQLiteJournalMode -> IO ()
+setSQLiteJournalMode st mode =
+  withConnection st (`execSQL_` q)
+  where
+    q = case mode of
+      SQLModeWAL -> "PRAGMA journal_mode = WAL;"
+      SQLModeDelete -> "PRAGMA journal_mode = DELETE;"
+      SQLMode s -> "PRAGMA journal_mode = " <> s <> ";"
+
+getSQLiteJournalMode :: SQLiteStore -> IO SQLiteJournalMode
+getSQLiteJournalMode st =
+  withConnection st $ \db -> do
+    [Only mode] <- DB.query_ db "PRAGMA journal_mode;" :: IO [Only Text]
+    pure $ decodeJournalMode mode
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
@@ -432,6 +517,9 @@ sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
 --   print $ path <> " secure_delete: " <> show secure_delete
 --   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
 --   print $ path <> " auto_vacuum: " <> show auto_vacuum
+
+execSQL_ :: DB.Connection -> Text -> IO ()
+execSQL_ = SQLite3.exec . SQL.connectionHandle . DB.conn
 
 execSQL :: DB.Connection -> Text -> IO [Text]
 execSQL db query = do
