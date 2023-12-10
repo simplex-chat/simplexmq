@@ -164,7 +164,7 @@ defaultAgentConfig =
       ntfWorkerDelay = 100000, -- microseconds
       ntfSMPWorkerDelay = 500000, -- microseconds
       ntfSubCheckInterval = nominalDay,
-      ntfMaxMessages = 4,
+      ntfMaxMessages = 3,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
