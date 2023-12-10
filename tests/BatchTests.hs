@@ -16,8 +16,9 @@ import UnliftIO
 batchTests :: Spec
 batchTests = do
   describe "postcard example" $ do
-    it "simply works" simple
+    fit "simply works" simple
     it "internal simply works" simpleInt -- XXX: it doesn't
+    fit "batching works" simpleFor
   describe "batching" $ do
     it "example works" exampleTest
     it "results work" resultsTest
@@ -39,8 +40,8 @@ type S m = TVar [Later m] -- A mutable var to hold suspended computations.
 --   next x
 -- @
 doLater :: MonadIO m => m r -> CSM () m r
-doLater action = ContT $ \next -> do
-  let later = Later action (\r -> ContT $ \next' -> next' () >> next r)
+doLater action = ContT $ \nextR -> do
+  let later = Later action (\r -> ContT $ \nextU -> nextU () >> nextR r)
   s <- ask
   atomically $ modifyTVar' s (later :)
 
@@ -55,7 +56,8 @@ runAllStages :: MonadIO m => S m -> m ()
 runAllStages st = do
   late <- atomically $ stateTVar st (,[]) -- get all the suspended steps
   -- the computations can now be inspected, partitioned, discarded etc.
-  runSimple st $ -- get planning facilities back
+  runSimple st $ -- get planning facilities back -- get planning facilities back
+  -- get planning facilities back
     forM_ late $ \(Later action next) ->
       lift (lift action) >>= next -- fuse action with its continuation, producing effects in `m`
       -- XXX: alternatively, ...
@@ -101,13 +103,32 @@ simple = do
     traceM "() <- doLater $ traceM $ \"final: \" <> xy"
     pure () -- no results... we're just planning here
   late1 <- readTVarIO st
-  traceM $ "late1: " <> show (length late1)
-  runAllStages st
   length late1 `shouldBe` 1 -- one item queued
-  late2 <- readTVarIO st
-  traceM $ "late2: " <> show (length late2)
   runAllStages st
-  length late1 `shouldBe` 0 -- all the steps are fully processed despite being multiple layers deep
+  late2 <- readTVarIO st
+  length late2 `shouldBe` 0 -- all the steps are fully processed despite being multiple layers deep
+  runAllStages st -- nothing happens
+
+simpleFor :: IO ()
+simpleFor = do
+  traceM "\n"
+  let items = "abc"
+  st <- newTVarIO []
+  getResults <- forB st items $ \item -> do
+    twice <- doLater $ pure [item, item]
+    doLater $ pure (item : "*2 = " <> twice)
+  length <$> readTVarIO st `shouldReturn` length items
+  runAllStages st
+  getResults `shouldReturn` ["a*2 = aa", "b*2 = bb", "c*2 = cc"]
+
+forB :: (MonadIO m, Traversable t) => S m -> t input -> (input -> CSM () m output) -> m (m (t output))
+forB st inputs action = do
+  results <- forM inputs $ \input -> do
+    -- submit actions per-input
+    result <- newEmptyMVar
+    runSimple st $ action input >>= putMVar result -- every action gets its own track with a final action "collect results"
+    pure result -- return result promise
+  pure $ forM results $ tryTakeMVar >=> maybe (error "task didn't finish") pure
 
 simpleInt :: IO ()
 simpleInt = do
