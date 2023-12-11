@@ -1010,34 +1010,35 @@ testOnlyCreatePull :: IO ()
 testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate
   aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
-  getMsg alice bobId
-  Just ("", _, CONF confId _ "bob's connInfo") <- timeout 5_000000 $ get alice
+  Just ("", _, CONF confId _ "bob's connInfo") <- getMsg alice bobId $ timeout 5_000000 $ get alice
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
-  getMsg bob aliceId
-  get bob ##> ("", aliceId, INFO "alice's connInfo")
+  getMsg bob aliceId $
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
   liftIO $ threadDelay 1_000000
-  getMsg alice bobId
+  getMsg alice bobId $ pure ()
   get alice ##> ("", bobId, CON)
-  getMsg bob aliceId
-  get bob ##> ("", aliceId, CON)
+  getMsg bob aliceId $
+    get bob ##> ("", aliceId, CON)
   -- exchange messages
   4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   get alice ##> ("", bobId, SENT 4)
-  getMsg bob aliceId
-  get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+  getMsg bob aliceId $
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 4 Nothing
   5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 5)
-  getMsg alice bobId
-  get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+  getMsg alice bobId $
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 5 Nothing
   where
-    getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-    getMsg c cId = do
+    getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
+    getMsg c cId action = do
       liftIO $ noMessages c "nothing should be delivered before GET"
       Just _ <- getConnectionMessage c cId
-      pure ()
+      r <- action
+      get c =##> \case ("", cId', MSGNTF _) -> cId == cId'; _ -> False
+      pure r
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
@@ -2049,7 +2050,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 
 getSMPAgentClient' :: AgentConfig -> InitialAgentServers -> FilePath -> IO AgentClient
 getSMPAgentClient' cfg' initServers dbPath = do
-  Right st <- liftIO $ createAgentStore dbPath "" MCError
+  Right st <- liftIO $ createAgentStore dbPath "" False MCError
   getSMPAgentClient cfg' initServers st
 
 testServerMultipleIdentities :: HasCallStack => IO ()

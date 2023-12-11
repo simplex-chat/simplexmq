@@ -178,16 +178,16 @@ testMigration ::
 testMigration (initMs, initTables) (finalMs, confirmModes, tablesOrError) = forM_ confirmModes $ \confirmMode -> do
   r <- randomIO :: IO Word32
   let dpPath = testDB <> show r
-  Right st <- createSQLiteStore dpPath "" initMs MCError
+  Right st <- createSQLiteStore dpPath "" False initMs MCError
   st `shouldHaveTables` initTables
   closeSQLiteStore st
   case tablesOrError of
     Right tables -> do
-      Right st' <- createSQLiteStore dpPath "" finalMs confirmMode
+      Right st' <- createSQLiteStore dpPath "" False finalMs confirmMode
       st' `shouldHaveTables` tables
       closeSQLiteStore st'
     Left e -> do
-      Left e' <- createSQLiteStore dpPath "" finalMs confirmMode
+      Left e' <- createSQLiteStore dpPath "" False finalMs confirmMode
       e `shouldBe` e'
   removeFile dpPath
   where

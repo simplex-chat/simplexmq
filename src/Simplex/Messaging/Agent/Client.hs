@@ -72,6 +72,7 @@ module Simplex.Messaging.Agent.Client
     logSecret,
     removeSubscription,
     hasActiveSubscription,
+    hasGetLock,
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
@@ -897,8 +898,8 @@ subscribeQueues c qs = do
   -- only "checked" queues are subscribed
   (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
   where
-    checkQueue rq@RcvQueue {rcvId, server} = do
-      prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
+    checkQueue rq = do
+      prohibited <- atomically $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
     subscribeQueues_ :: UnliftIO m -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ u smp qs' = do
@@ -1048,6 +1049,10 @@ sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
   withSMPClient c rq "ACK" $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq
+
+hasGetLock :: AgentClient -> RcvQueue -> STM Bool
+hasGetLock c RcvQueue {server, rcvId} =
+  TM.member (server, rcvId) $ getMsgLocks c
 
 releaseGetLock :: AgentClient -> RcvQueue -> STM ()
 releaseGetLock c RcvQueue {server, rcvId} =

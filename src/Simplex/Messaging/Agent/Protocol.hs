@@ -193,6 +193,7 @@ import Simplex.Messaging.Protocol
     MsgId,
     NMsgMeta,
     ProtocolServer (..),
+    SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
     SndPublicVerifyKey,
@@ -337,6 +338,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SENT :: AgentMsgId -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
+  MSGNTF :: SMPMsgMeta -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn
   SWCH :: ACommand Client AEConn
@@ -397,6 +399,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   SENT_ :: ACommandTag Agent AEConn
   MERR_ :: ACommandTag Agent AEConn
   MSG_ :: ACommandTag Agent AEConn
+  MSGNTF_ :: ACommandTag Agent AEConn
   ACK_ :: ACommandTag Client AEConn
   RCVD_ :: ACommandTag Agent AEConn
   SWCH_ :: ACommandTag Client AEConn
@@ -450,6 +453,7 @@ aCommandTag = \case
   SENT _ -> SENT_
   MERR {} -> MERR_
   MSG {} -> MSG_
+  MSGNTF {} -> MSGNTF_
   ACK {} -> ACK_
   RCVD {} -> RCVD_
   SWCH -> SWCH_
@@ -1604,6 +1608,7 @@ instance StrEncoding ACmdTag where
       "SENT" -> ct SENT_
       "MERR" -> ct MERR_
       "MSG" -> ct MSG_
+      "MSGNTF" -> ct MSGNTF_
       "ACK" -> t ACK_
       "RCVD" -> ct RCVD_
       "SWCH" -> t SWCH_
@@ -1659,6 +1664,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     SENT_ -> "SENT"
     MERR_ -> "MERR"
     MSG_ -> "MSG"
+    MSGNTF_ -> "MSGNTF"
     ACK_ -> "ACK"
     RCVD_ -> "RCVD"
     SWCH_ -> "SWCH"
@@ -1727,6 +1733,7 @@ commandP binaryP =
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
+          MSGNTF_ -> s (MSGNTF <$> strP)
           RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
           DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
           DEL_CONN_ -> pure DEL_CONN
@@ -1781,6 +1788,7 @@ serializeCommand = \case
   SENT mId -> s (SENT_, Str $ bshow mId)
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
+  MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
   ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
   SWCH -> s SWCH_
