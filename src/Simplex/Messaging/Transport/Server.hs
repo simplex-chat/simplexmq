@@ -73,10 +73,15 @@ runTransportServerSocketState ss started getSocket threadLabel serverParams cfg 
   let tCfg = serverTransportConfig cfg
   labelMyThread $ "transport server for " <> threadLabel
   liftIO . runTCPServerSocketState ss started getSocket $ \conn ->
-    E.bracket
-      (connectTLS Nothing tCfg serverParams conn >>= getServerConnection tCfg)
-      closeConnection
-      (unliftIO u . server)
+    E.bracket (setup >>= maybe (fail "tls setup timeout") pure) closeConnection (unliftIO u . server)
+  where
+    setup = timeout 60000000 $ do
+      labelMyThread $ threadLabel <> "/connectTLS"
+      tls <- connectTLS Nothing tCfg serverParams conn
+      labelMyThread $ threadLabel <> "/getServer"
+      conn <- getServerConnection tCfg tls
+      labelMyThread $ threadLabel <> "/tls"
+      pure conn
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --

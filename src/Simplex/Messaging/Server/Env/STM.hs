@@ -124,6 +124,7 @@ data Client = Client
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
+    createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime
   }
@@ -145,15 +146,15 @@ newServer = do
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
 newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
-newClient qSize thVersion sessionId ts = do
+newClient qSize thVersion sessionId createdAt = do
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
-  rcvActiveAt <- newTVar ts
-  sndActiveAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, rcvActiveAt, sndActiveAt}
+  rcvActiveAt <- newTVar createdAt
+  sndActiveAt <- newTVar createdAt
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do

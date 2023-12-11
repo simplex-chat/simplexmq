@@ -285,13 +285,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPResume -> hPutStrLn h "resume not implemented"
               CPClients -> do
                 active <- unliftIO u (asks clients) >>= readTVarIO
-                hPutStrLn h $ "clientId,sessionId,connected,rcvActiveAt,sndActiveAt,subscriptions"
-                forM_ (M.toList active) $ \(cid, Client {sessionId, connected, rcvActiveAt, sndActiveAt, subscriptions}) -> do
+                hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
+                forM_ (M.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
+                  now <- liftIO getSystemTime
+                  let age = systemSeconds now - systemSeconds createdAt
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
-                  hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', rcvActiveAt', sndActiveAt', subscriptions']
+                  hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
