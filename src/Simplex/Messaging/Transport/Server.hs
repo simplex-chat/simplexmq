@@ -41,6 +41,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak, deRefWeak)
+import UnliftIO (timeout)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -70,18 +71,18 @@ runTransportServerState ss started port = runTransportServerSocketState ss start
 runTransportServerSocketState :: (MonadUnliftIO m, T.TLSParams p, Transport a) => SocketState -> TMVar Bool -> IO Socket -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
 runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server = do
   u <- askUnliftIO
-  let tCfg = serverTransportConfig cfg
   labelMyThread $ "transport server for " <> threadLabel
   liftIO . runTCPServerSocketState ss started getSocket $ \conn ->
-    E.bracket (setup >>= maybe (fail "tls setup timeout") pure) closeConnection (unliftIO u . server)
+    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (unliftIO u . server)
   where
-    setup = timeout 60000000 $ do
+    tCfg = serverTransportConfig cfg
+    setup conn = timeout 60000000 $ do
       labelMyThread $ threadLabel <> "/connectTLS"
       tls <- connectTLS Nothing tCfg serverParams conn
       labelMyThread $ threadLabel <> "/getServer"
-      conn <- getServerConnection tCfg tls
+      ready <- getServerConnection tCfg tls
       labelMyThread $ threadLabel <> "/tls"
-      pure conn
+      pure ready
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
