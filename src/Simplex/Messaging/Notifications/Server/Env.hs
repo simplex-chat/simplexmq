@@ -66,8 +66,8 @@ data NtfServerConfig = NtfServerConfig
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 7200, -- 2 hours
-      checkInterval = 3600 -- seconds, 1 hour
+    { ttl = 43200, -- seconds, 12 hours
+      checkInterval = 3600 -- seconds, 1 hours
     }
 
 data NtfEnv = NtfEnv

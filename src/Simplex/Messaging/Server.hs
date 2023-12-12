@@ -357,24 +357,24 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
-  (cid, c) <- atomically $ do
-    clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
-    new <- newClient q thVersion sessionId ts
+  c <- atomically $ do
+    new@Client {clientId} <- newClient nextClientId q thVersion sessionId ts
     TM.insert clientId new active
-    pure (clientId, new)
+    pure new
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   labelMyThread $ "client $" <> sid
   liftIO $ traceEventIO ("START " <> sid <> " C")
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
-    `finally` clientDisconnected cid c
+    `finally` clientDisconnected c
   where
     sid = B.unpack $ encode sessionId
-    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (hasSubscriptions c)]
     disconnectThread_ _ _ = []
+    hasSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
 
-clientDisconnected :: Int -> Client -> M ()
-clientDisconnected cid c@Client {subscriptions, connected, sessionId} = do
+clientDisconnected :: Client -> M ()
+clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
   liftIO $ traceEventIO ("START " <> sid <> " D")
   labelMyThread $ "client $" <> sid <> " disc"
   atomically $ writeTVar connected False
@@ -383,7 +383,7 @@ clientDisconnected cid c@Client {subscriptions, connected, sessionId} = do
   atomically $ writeTVar subscriptions M.empty
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
-  asks clients >>= atomically . TM.delete cid
+  asks clients >>= atomically . TM.delete clientId
   liftIO $ traceEventIO ("STOP " <> sid <> " D")
   liftIO $ traceEventIO ("STOP " <> sid <> " C")
   where
@@ -442,13 +442,15 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
       NMSG {} -> 0
       _ -> 1
 
-disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO ()
-disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg = do
+disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg hasSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
     loop = do
       threadDelay' $ checkInterval expCfg * 1000000
+      ifM hasSubscriptions loop checkExpired
+    checkExpired = do
       old <- expireBeforeEpoch expCfg
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
       if systemSeconds ts < old then closeConnection connection else loop

@@ -345,7 +345,7 @@ runNtfClientTransport th@THandle {sessionId} = do
   raceAny_ ([liftIO $ send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
-    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (pure False)]
     disconnectThread_ _ _ = []
 
 clientDisconnected :: NtfServerClient -> IO ()

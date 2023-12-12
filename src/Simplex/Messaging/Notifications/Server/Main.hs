@@ -17,10 +17,11 @@ import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
-import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
+import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -86,7 +87,12 @@ ntfServerCLI cfgPath logPath =
             <> "log_tls_errors: off\n\
                \# delay between command batches sent to SMP relays (microseconds), 0 to disable\n"
             <> ("smp_batch_delay: " <> show defaultSMPBatchDelay <> "\n")
-            <> "websockets: off\n"
+            <> "websockets: off\n\n\
+                \[INACTIVE_CLIENTS]\n\
+                \# TTL and interval to check inactive clients\n\
+                \disconnect: off\n"
+            <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -115,7 +121,12 @@ ntfServerCLI cfgPath logPath =
               smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {batchDelay}},
               apnsConfig = defaultAPNSPushClientConfig,
               subsBatchSize = 900,
-              inactiveClientExpiration = Nothing,
+              inactiveClientExpiration =
+                settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
+                  $> ExpirationConfig
+                    { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
+                      checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
+                    },
               storeLogFile = enableStoreLog $> storeLogFilePath,
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,

@@ -89,8 +89,8 @@ defaultMessageExpiration =
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 86400, -- seconds, 24 hours
-      checkInterval = 43200 -- seconds, 12 hours
+    { ttl = 43200, -- seconds, 12 hours
+      checkInterval = 3600 -- seconds, 1 hours
     }
 
 data Env = Env
@@ -117,7 +117,8 @@ data Server = Server
   }
 
 data Client = Client
-  { subscriptions :: TMap RecipientId (TVar Sub),
+  { clientId :: Int,
+    subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
@@ -145,8 +146,9 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
-newClient qSize thVersion sessionId createdAt = do
+newClient :: TVar Int -> Natural -> Version -> ByteString -> SystemTime -> STM Client
+newClient nextClientId qSize thVersion sessionId createdAt = do
+  clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
@@ -154,7 +156,7 @@ newClient qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
