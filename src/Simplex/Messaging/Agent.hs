@@ -849,23 +849,21 @@ getNotificationMessage' c nonce encNtfInfo = do
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       maxMsgs <- asks $ ntfMaxMessages . config
-      (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId maxMsgs ntfMsgMeta []
+      (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId ntfMsgMeta maxMsgs
     _ -> throwError $ CMD PROHIBITED
   where
-    getNtfMessages ntfConnId maxMs nMeta ms
-      | length ms < maxMs =
-          getConnectionMessage' c ntfConnId >>= \case
-            Just m@SMP.SMPMsgMeta {msgId, msgTs, msgFlags} -> case nMeta of
-              Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'}
-                | msgId == msgId' || msgTs > msgTs' -> pure $ reverse (m : ms)
-                | otherwise -> getMsg (m : ms)
-              _
-                | SMP.notification msgFlags -> pure $ reverse (m : ms)
-                | otherwise -> getMsg (m : ms)
-            _ -> pure $ reverse ms
-      | otherwise = pure $ reverse ms
+    getNtfMessages ntfConnId nMeta = getMsg
       where
-        getMsg = getNtfMessages ntfConnId maxMs nMeta
+        getMsg 0 = pure []
+        getMsg n =
+          getConnectionMessage' c ntfConnId >>= \case
+            Just m
+              | lastMsg m -> pure [m]
+              | otherwise -> (m :) <$> getMsg (n - 1)
+            Nothing -> pure []
+        lastMsg SMP.SMPMsgMeta {msgId, msgTs, msgFlags} = case nMeta of
+          Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'} -> msgId == msgId' || msgTs > msgTs'
+          Nothing -> SMP.notification msgFlags
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
@@ -1103,20 +1101,23 @@ resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
       >>= \a -> atomically (TM.insert qKey a $ smpQueueMsgDeliveries c)
   unlessM msgsQueued $
     withStore' c (\db -> getPendingMsgs db connId sq)
-      >>= queuePendingMsgs c sq
+      >>= queuePendingMsgs' c False sq
   where
     queueDelivering qKey = atomically $ TM.member qKey (smpQueueMsgDeliveries c)
     msgsQueued = atomically $ isJust <$> TM.lookupInsert (server, sndId) True (pendingMsgsQueued c)
 
 queuePendingMsgs :: AgentMonad' m => AgentClient -> SndQueue -> [InternalId] -> m ()
-queuePendingMsgs c sq msgIds = atomically $ do
-  modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
+queuePendingMsgs c = queuePendingMsgs' c True
+
+queuePendingMsgs' :: AgentMonad' m => AgentClient -> Bool -> SndQueue -> [InternalId] -> m ()
+queuePendingMsgs' c setDeliveryOps sq msgIds = atomically $ do
+  when setDeliveryOps $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
   -- s <- readTVar (msgDeliveryOp c)
   -- unsafeIOToSTM $ putStrLn $ "msgDeliveryOp: " <> show (opsInProgress s)
   (mq, _) <- getPendingMsgQ c sq
-  mapM_ (writeTQueue mq) msgIds
+  mapM_ (writeTQueue mq . (,setDeliveryOps)) msgIds
 
-getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId, TMVar ())
+getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue (InternalId, Bool), TMVar ())
 getPendingMsgQ c SndQueue {server, sndId} = do
   let qKey = (server, sndId)
   maybe (newMsgQueue qKey) pure =<< TM.lookup qKey (smpQueueMsgQueues c)
@@ -1134,9 +1135,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
     atomically $ endAgentOperation c AOSndNetwork
     atomically $ throwWhenInactive c
     atomically $ throwWhenNoDelivery c sq
-    msgId <- atomically $ readTQueue mq
+    (msgId, deliveryOp) <- atomically $ readTQueue mq
     atomically $ beginAgentOperation c AOSndNetwork
-    atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in queuePendingMsgs
+    when deliveryOp $ atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in queuePendingMsgs
     let mId = unId msgId
     tryAgentError (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left e -> notify $ MERR mId e
@@ -1884,11 +1885,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
       conn
       cData@ConnData {userId, connId, duplexHandshake, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
-            handleNotifyAck $
-              decryptSMPMessage v rq msg >>= \case
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> 
+            handleNotifyAck $ do
+              msg' <- decryptSMPMessage v rq msg
+              handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
+              whenM (atomically $ hasGetLock c rq) $
+                notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
             where
               queueDrained = case conn of
                 DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ QCONT (sndAddress rq)

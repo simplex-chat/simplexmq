@@ -460,7 +460,14 @@ data SMPMsgMeta = SMPMsgMeta
     msgTs :: SystemTime,
     msgFlags :: MsgFlags
   }
-  deriving (Show)
+  deriving (Eq, Show)
+
+instance StrEncoding SMPMsgMeta where
+  strEncode SMPMsgMeta {msgId, msgTs, msgFlags} =
+    strEncode (msgId, msgTs, msgFlags)
+  strP = do
+    (msgId, msgTs, msgFlags) <- strP
+    pure SMPMsgMeta {msgId, msgTs, msgFlags}
 
 rcvMessageMeta :: MsgId -> ClientRcvMsgBody -> SMPMsgMeta
 rcvMessageMeta msgId = \case
