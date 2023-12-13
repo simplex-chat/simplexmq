@@ -67,6 +67,7 @@ module Simplex.Messaging.Agent
     sendMessage,
     sendMessageB,
     AgentBatch,
+    AgentDB,
     processAgentBatch,
     ackMessage,
     switchConnection,
@@ -287,17 +288,14 @@ type instance BatchArgs AgentDB = DB.Connection
 type instance BatchError AgentDB = AgentErrorType
 type AgentBatch m = BatchVar AgentDB m
 
-processAgentBatch :: AgentMonad m => AgentClient -> [Batch AgentDB m] -> BatchT AgentErrorType m ()
+processAgentBatch :: AgentMonad' m => AgentClient -> [Batch AgentDB m] -> BatchT AgentErrorType m ()
 processAgentBatch c batch = do
-  results <- lift . withStore' c $ \db ->
+  results <- liftEContError . withStore' c $ \db ->
     forM batch $ \(Batch action next) -> next <$> action db
   sequence_ results
 
-sendMessageB :: AgentMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
-sendMessageB = sendMessageB_
-
--- sendMessageB :: AgentErrorMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
--- sendMessageB c bs = withAgentEnv c .:. sendMessageB' c bs
+sendMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
+sendMessageB = sendMessageB_ -- already in some Env-providing context, avoid changing the `m`, breaking the tie with AgentBatch
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
 ackMessage c = withAgentEnv c .:. ackMessage' c
@@ -902,7 +900,7 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
       enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
 -- | Send message to the connection (SEND command) using provided batch
-sendMessageB_ :: AgentMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
+sendMessageB_ :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
 sendMessageB_ c agentBatch connId msgFlags msg = do -- withConnLock c connId "sendMessage" $ do -- TODO: extract conn locks
   SomeConn _ conn <- batchOperation agentBatch $ \db -> first storeError <$> getConn db connId
   (cData, sq, sqs) <- case conn of
@@ -914,17 +912,17 @@ sendMessageB_ c agentBatch connId msgFlags msg = do -- withConnLock c connId "se
   forM_ @[] sqs $ enqueueSavedMessageB c agentBatch cData msgId
   pure msgId
 
-enqueueMessageB :: AgentMonad m => AgentClient -> AgentBatch m -> ConnData -> SndQueue -> MsgFlags -> AMessage -> BatchT AgentErrorType m AgentMsgId
+enqueueMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnData -> SndQueue -> MsgFlags -> AMessage -> BatchT AgentErrorType m AgentMsgId
 enqueueMessageB c agentBatch cData sq msgFlags aMessage = do
-  lift $ resumeMsgDelivery c cData sq
+  liftEContError $ resumeMsgDelivery c cData sq
   let aVRange = smpAgentVRange . config $ agentEnv c
   msgId <- batchOperation agentBatch $ \db -> fmap (first storeError) . runExceptT $ storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
   lift $ queuePendingMsgs c sq [msgId]
   pure $ unId msgId
 
-enqueueSavedMessageB :: AgentMonad m => AgentClient -> AgentBatch m -> ConnData -> AgentMsgId -> SndQueue -> BatchT AgentErrorType m ()
+enqueueSavedMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnData -> AgentMsgId -> SndQueue -> BatchT AgentErrorType m ()
 enqueueSavedMessageB c agentBatch cData@ConnData {connId} msgId sq = do
-  lift $ resumeMsgDelivery c cData sq
+  liftEContError $ resumeMsgDelivery c cData sq
   let mId = InternalId msgId
   lift $ queuePendingMsgs c sq [mId]
   batchOperation agentBatch $ \db -> Right <$> createSndMsgDelivery db connId sq mId

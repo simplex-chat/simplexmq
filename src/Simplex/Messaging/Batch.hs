@@ -8,15 +8,14 @@
 module Simplex.Messaging.Batch where
 
 import Control.Monad (unless)
-import Control.Monad.Error.Class (MonadError (..))
-import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.Error.Class (MonadError (..), liftEither)
 import Control.Monad.Trans (MonadTrans (..))
 import GHC.Stack (HasCallStack)
-import UnliftIO (TVar, atomically, modifyTVar')
-import UnliftIO.MVar (newEmptyMVar, tryPutMVar, tryTakeMVar)
 import UnliftIO
+import Control.Monad.Except (runExceptT)
+import Control.Monad.Trans.Except (ExceptT)
 
--- * ContT fused with ExceptT
+-- * ContT fused with ExceptT to provide natural MonadError
 
 newtype EContT e x m r = EContT {runEContT :: (Either e r -> m x) -> m x}
 
@@ -30,6 +29,9 @@ instance MonadError e (EContT e x m) where
       Left e -> runEContT (e_ma e) er_mx
       Right r -> er_mx (Right r)
   {-# INLINE catchError #-}
+
+liftEContError :: Monad m => ExceptT e m r -> EContT e x m r
+liftEContError action = lift (runExceptT action) >>= liftEither
 
 instance Functor (EContT e x m) where
   fmap f ma = EContT $ \er_mx -> runEContT ma $ er_mx . fmap f
