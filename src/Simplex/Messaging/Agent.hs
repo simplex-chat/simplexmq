@@ -123,7 +123,6 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
-import Data.Either (partitionEithers)
 import Data.Foldable (foldl')
 import Data.Functor (($>))
 import Data.List (find)
@@ -149,7 +148,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Batch (Batch (..), BatchStep, BatchT, BatchVar, batchOperation)
+import Simplex.Messaging.Batch
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
@@ -284,24 +283,20 @@ sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody
 sendMessage c = withAgentEnv c .:. sendMessage' c
 
 data AgentDB
-type instance BatchStep AgentDB _m a = DB.Connection -> ExceptT StoreError IO a
+type instance BatchArgs AgentDB = DB.Connection
+type instance BatchError AgentDB = AgentErrorType
 type AgentBatch m = BatchVar AgentDB m
 
-processAgentBatch :: (MonadError e m, FromAgentError e) => MonadUnliftIO m => AgentClient -> [Batch AgentDB m] -> BatchT m ()
+processAgentBatch :: AgentMonad m => AgentClient -> [Batch AgentDB m] -> BatchT AgentErrorType m ()
 processAgentBatch c batch = do
-  results' <- liftIO . withAgentEnv c $
-    runExceptT . withStore' c $ \db -> -- dive into DB transaction bracket
-      forM batch $ \(Batch action next) ->
-        runExceptT $ -- collect individual store errors?
-          next <$> action db -- run DB action and attach to continuation without running it
-  results <- liftAgentError results'
-  let (failed, passed) = partitionEithers results -- TODO: aggregate/report individual errors?
-  sequence_ passed -- enact prepared continuations outside the bracket
+  results <- lift . withStore' c $ \db ->
+    forM batch $ \(Batch action next) -> next <$> action db
+  sequence_ results
 
-sendMessageB :: (MonadError e m, FromAgentError e) => MonadIO m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT m AgentMsgId
+sendMessageB :: AgentMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
 sendMessageB = sendMessageB_
 
--- sendMessageB :: AgentErrorMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT m AgentMsgId
+-- sendMessageB :: AgentErrorMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
 -- sendMessageB c bs = withAgentEnv c .:. sendMessageB' c bs
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
@@ -906,50 +901,33 @@ sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
       when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
       enqueueMessages c cData sqs msgFlags $ A_MSG msg
 
--- sendMessageB' :: AgentErrorMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> ReaderT Env (BatchT m) AgentMsgId
--- sendMessageB' = undefined
-
 -- | Send message to the connection (SEND command) using provided batch
-sendMessageB_ :: (MonadError e m, FromAgentError e) => MonadIO m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT m AgentMsgId
+sendMessageB_ :: AgentMonad m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
 sendMessageB_ c agentBatch connId msgFlags msg = do -- withConnLock c connId "sendMessage" $ do -- TODO: extract conn locks
-  conn' <- batchOperation agentBatch $ \db -> liftIO $ getConn db connId
-  SomeConn _ conn <- liftStoreError conn'
-  (cData, sq, sqs) <- liftAgentError $ case conn of
-    DuplexConnection cData _ (sq :| sqs) -> Right (cData, sq, filter isActiveSndQ sqs)
-    SndConnection cData sq -> Right (cData, sq, mempty)
-    _ -> Left $ CONN SIMPLEX
-  when (ratchetSyncSendProhibited cData) $ liftAgentError $ Left $ CMD PROHIBITED
+  SomeConn _ conn <- batchOperation agentBatch $ \db -> first storeError <$> getConn db connId
+  (cData, sq, sqs) <- case conn of
+    DuplexConnection cData _ (sq :| sqs) -> pure (cData, sq, filter isActiveSndQ sqs)
+    SndConnection cData sq -> pure (cData, sq, mempty)
+    _ -> throwError $ CONN SIMPLEX
+  when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
   msgId <- enqueueMessageB c agentBatch cData sq msgFlags $ A_MSG msg
   forM_ @[] sqs $ enqueueSavedMessageB c agentBatch cData msgId
   pure msgId
 
-class FromAgentError e where
-  fromAgentError :: AgentErrorType -> e
-
-liftAgentError :: (MonadError e m, FromAgentError e) => Either AgentErrorType a -> BatchT m a
-liftAgentError = undefined -- liftEitherWith fromAgentError
-
-enqueueMessageB :: (MonadError e m, FromAgentError e) =>  MonadIO m => AgentClient -> AgentBatch m -> ConnData -> SndQueue -> MsgFlags -> AMessage -> BatchT m AgentMsgId
+enqueueMessageB :: AgentMonad m => AgentClient -> AgentBatch m -> ConnData -> SndQueue -> MsgFlags -> AMessage -> BatchT AgentErrorType m AgentMsgId
 enqueueMessageB c agentBatch cData sq msgFlags aMessage = do
-  r1 <- liftIO . runExceptT . withAgentEnv c $ resumeMsgDelivery c cData sq
-  liftAgentError r1
+  lift $ resumeMsgDelivery c cData sq
   let aVRange = smpAgentVRange . config $ agentEnv c
-  msgId <- batchOperation agentBatch $ \db -> storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
-  r2 <- liftIO . runExceptT . withAgentEnv c $ queuePendingMsgs c sq [msgId]
-  liftAgentError r2
+  msgId <- batchOperation agentBatch $ \db -> fmap (first storeError) . runExceptT $ storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
+  lift $ queuePendingMsgs c sq [msgId]
   pure $ unId msgId
 
-liftStoreError :: (MonadError e m, FromAgentError e) => Either StoreError a -> BatchT m a
-liftStoreError = either (liftAgentError . Left . storeError) pure
-
-enqueueSavedMessageB :: (MonadError e m, FromAgentError e) => MonadIO m => AgentClient -> AgentBatch m -> ConnData -> AgentMsgId -> SndQueue -> BatchT m ()
+enqueueSavedMessageB :: AgentMonad m => AgentClient -> AgentBatch m -> ConnData -> AgentMsgId -> SndQueue -> BatchT AgentErrorType m ()
 enqueueSavedMessageB c agentBatch cData@ConnData {connId} msgId sq = do
-  r1 <- liftIO . runExceptT . withAgentEnv c $ resumeMsgDelivery c cData sq
-  liftAgentError r1
+  lift $ resumeMsgDelivery c cData sq
   let mId = InternalId msgId
-  r2 <- liftIO . runExceptT . withAgentEnv c $ queuePendingMsgs c sq [mId]
-  liftAgentError r2
-  batchOperation agentBatch $ \db -> liftIO $ createSndMsgDelivery db connId sq mId
+  lift $ queuePendingMsgs c sq [mId]
+  batchOperation agentBatch $ \db -> Right <$> createSndMsgDelivery db connId sq mId
 
 ------------------------
 

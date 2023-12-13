@@ -1,5 +1,3 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -9,106 +7,103 @@
 
 module Simplex.Messaging.Batch where
 
+import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError (..))
-import Control.Monad.Trans
-import Control.Monad.Trans.Cont (ContT (..))
-import Data.Kind (Type)
+import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.Trans (MonadTrans (..))
+import GHC.Stack (HasCallStack)
 import UnliftIO (TVar, atomically, modifyTVar')
+import UnliftIO.MVar (newEmptyMVar, tryPutMVar, tryTakeMVar)
+import UnliftIO
 
-type BatchT m = ContT () m
+-- * ContT fused with ExceptT
 
-batchOperation :: MonadIO m => BatchVar op m -> BatchStep op m r -> BatchT m r
-batchOperation st action = do
-  -- traceM $ "batchOperation for " <> show (typeRep op)
-  ContT $ \next -> do
-    -- traceM $ "batchOperation for " <> show (typeRep op) <> " (inside)"
-    let batch = Batch action $ \r -> ContT $ \now -> now () >> next r
-    atomically $ modifyTVar' st (batch :)
-
-type BatchVar op m = TVar [Batch op m]
-
-data Batch op m = forall a. Batch (BatchStep op m a) (a -> BatchT m ())
-
-type family BatchStep op (m :: Type -> Type) a
-
--- XXX: Doesn't appear to work on tests
--- instance MonadError e m => MonadError e (ContT r m) where
---   throwError = lift . throwError
---   {-# INLINE throwError #-}
---   catchError op h = ContT $ \k -> catchError (runContT op k) (\e -> runContT (h e) k)
---   {-# INLINE catchError #-}
-
--- XXX: Unusable to translate between (MonadError e m, MonadError f n) => ContT x n r -> ContT x m r
--- unless errors `e` and `f` can accomodate each other (which if false in our case, with ChatErrorType > AgentErrorType)
--- can be solved with functor encoding and Fix, but...
-isoContT :: (forall a. n a -> m a) -> (forall a. m a -> n a) -> ContT x n r -> ContT x m r
-isoContT n_m m_n cxnr = ContT $ \r_mx -> n_m . runContT cxnr $ m_n . r_mx
-
--- XXX: The errors can be subsumed, but the monads are still ISO
--- Should not be a problem, as the ISO is most likely "dropping to IO and applying a different ReaderT"
-isoEContT :: (forall a. n a -> m a) -> (forall a. m a -> n a) -> (e -> f) -> EContT x n e r -> EContT x m f r
-isoEContT n_m m_n e_f xner = EContT $ \fr_mx ->
-  n_m $ runEContT xner $ \case
-    Left e -> m_n $ fr_mx (Left $ e_f e)
-    Right r -> m_n $ fr_mx (Right r)
-
--- Much easier, with shared m (which is common base like IO, from which other context can be restored)
-mapEContT :: (e -> f) -> EContT x m e r -> EContT x m f r
-mapEContT e_f xmer = EContT $ \er_mx ->
-  runEContT xmer $ \case
-    Left e -> er_mx (Left $ e_f e)
-    Right r -> er_mx (Right r)
-
-newtype EContT x m e r = EContT {runEContT :: (Either e r -> m x) -> m x}
+newtype EContT e x m r = EContT {runEContT :: (Either e r -> m x) -> m x}
 
 -- pretty straight-forward embedding of ExceptT
-instance MonadError e (EContT x m e) where
+instance MonadError e (EContT e x m) where
   throwError e = EContT $ \er_mx -> er_mx $ Left e
+  {-# INLINE throwError #-}
+
   catchError ma e_ma = EContT $ \er_mx ->
     runEContT ma $ \case
       Left e -> runEContT (e_ma e) er_mx
       Right r -> er_mx (Right r)
+  {-# INLINE catchError #-}
 
-instance Functor (EContT x m e) where
+instance Functor (EContT e x m) where
   fmap f ma = EContT $ \er_mx -> runEContT ma $ er_mx . fmap f
+  {-# INLINE fmap #-}
 
-instance Applicative (EContT x m e) where
+instance Applicative (EContT e x m) where
   pure x = EContT $ \er_mx -> er_mx (Right x)
+  {-# INLINE pure #-}
+
   mf <*> ma = EContT $ \er_mx ->
     runEContT mf $ \case
       Left e -> er_mx (Left e)
       Right f -> runEContT ma $ \case
         Left e -> er_mx (Left e)
         Right a -> er_mx (Right $ f a)
+  {-# INLINE (<*>) #-}
 
-instance Monad (EContT x m e) where
+instance Monad (EContT e x m) where
   ma >>= amb = EContT $ \er_mx ->
     runEContT ma $ \case
       Right a -> runEContT (amb a) er_mx
       Left e -> er_mx (Left e)
+  {-# INLINE (>>=) #-}
 
--- instance MonadTrans (EContT x e) where
-instance MonadIO m => MonadIO (EContT x m e) where
-  liftIO io = EContT $ \er_mx ->
-    liftIO io >>= er_mx . Right
+instance MonadTrans (EContT e x) where
+  lift a = EContT $ \er_mx -> a >>= er_mx . Right
+  {-# INLINE lift #-}
 
-type EBatchT m e = EContT () m e
+instance MonadIO m => MonadIO (EContT e x m) where
+  liftIO io = EContT $ \er_mx -> liftIO io >>= er_mx . Right
+  {-# INLINE liftIO #-}
 
-type EBatchVar op m = TVar [EBatch op m]
+-- XXX: The errors can be subsumed, but the monads are still ISO
+-- Should not be a problem, as the ISO is most likely "dropping to IO and applying a different ReaderT"
+isoEContT :: (forall a. n a -> m a) -> (forall a. m a -> n a) -> (e -> f) -> EContT e x n r -> EContT f x m r
+isoEContT n_m m_n e_f xner = EContT $ \fr_mx ->
+  n_m $ runEContT xner $ \case
+    Left e -> m_n $ fr_mx (Left $ e_f e)
+    Right r -> m_n $ fr_mx (Right r)
 
--- data Batch op m = forall a. Batch (BatchStep op m a) (a -> BatchT m ())
-data EBatch op m = forall a. EBatch (EBatchStep op a) (Either (EBatchError op) a -> EBatchT m (EBatchError op) ())
+-- Much easier, with shared m (which is common base like IO, from which other context can be restored)
+mapEContT :: (e -> f) -> EContT e x m r -> EContT f x m r
+mapEContT e_f xmer = EContT $ \er_mx ->
+  runEContT xmer $ \case
+    Left e -> er_mx (Left $ e_f e)
+    Right r -> er_mx (Right r)
 
-type family EBatchArgs op
-type family EBatchError op
-type EBatchStep op a = EBatchArgs op -> IO (Either (EBatchError op) a) -- enforce step structure
+-- | Recover final continuation result via mutable var.
+execEContT :: (HasCallStack, MonadIO m) => EContT e () m r -> m (m (Either e r))
+execEContT action = do
+  result <- newEmptyMVar
+  runEContT action $ \r -> liftIO (tryPutMVar result r) >>= \ok -> unless ok (error "already ran")
+  pure $ tryTakeMVar result >>= maybe (error "did not run") pure
 
-ebatchOperation :: MonadIO m => TVar [EBatch op m] -> (EBatchArgs op -> IO (Either (EBatchError op) r)) -> EBatchT m (EBatchError op) r
-ebatchOperation st action =
+-- * Continuation batching
+
+type BatchT e m = EContT e () m
+
+type BatchVar op m = TVar [Batch op m]
+
+data Batch op m = forall a.
+  Batch
+  { step :: BatchStep op a,
+    next :: Either (BatchError op) a -> BatchT (BatchError op) m ()
+  }
+
+-- | Basic step structure for `batchOperation` wrappers.
+type BatchStep op a = BatchArgs op -> IO (Either (BatchError op) a)
+
+type family BatchArgs op
+type family BatchError op
+
+batchOperation :: MonadIO m => TVar [Batch op m] -> BatchStep op r -> BatchT (BatchError op) m r
+batchOperation st action =
   EContT $ \er_Mu -> do
-    let batch = EBatch action $ \er -> EContT $ \eu_Mu__Mu -> eu_Mu__Mu (Right ()) >> er_Mu er
+    let batch = Batch action $ \er -> EContT $ \eu_Mu__Mu -> eu_Mu__Mu (Right ()) >> er_Mu er
     atomically $ modifyTVar' st (batch :)
-
-type EContT' x m e r = ContT x m (Either e r) -- sure... but
--- instance MonadError e (ContT x m (Either e r)) where -- XXX: syntactically impossible due to `r` has to be outside so the kind would be `T->T`
--- instance MonadError e (\r -> ContT x m (Either e r)) where -- like this
