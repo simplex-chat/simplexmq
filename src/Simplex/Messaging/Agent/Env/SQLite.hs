@@ -34,6 +34,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.ByteArray (ScrubbedBytes)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
@@ -163,7 +164,7 @@ defaultAgentConfig =
       ntfWorkerDelay = 100000, -- microseconds
       ntfSMPWorkerDelay = 500000, -- microseconds
       ntfSubCheckInterval = nominalDay,
-      ntfMaxMessages = 4,
+      ntfMaxMessages = 3,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
@@ -196,8 +197,8 @@ newSMPAgentEnv config@AgentConfig {initialClientId} store = do
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, clientCounter, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
-createAgentStore :: FilePath -> String -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
-createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
+createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
+createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),

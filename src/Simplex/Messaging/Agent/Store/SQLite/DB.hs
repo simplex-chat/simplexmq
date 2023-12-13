@@ -48,7 +48,7 @@ timeIt slow sql a = do
   r <- a
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
-  atomically $ when (diff > 50) $ TM.alter (updateQueryStats diff) sql slow
+  atomically $ when (diff > 5) $ TM.alter (updateQueryStats diff) sql slow
   pure r
   where
     updateQueryStats :: Int64 -> Maybe SlowQueryStats -> Maybe SlowQueryStats

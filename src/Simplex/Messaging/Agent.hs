@@ -876,23 +876,21 @@ getNotificationMessage' c nonce encNtfInfo = do
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       maxMsgs <- asks $ ntfMaxMessages . config
-      (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId maxMsgs ntfMsgMeta []
+      (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId ntfMsgMeta maxMsgs
     _ -> throwError $ CMD PROHIBITED
   where
-    getNtfMessages ntfConnId maxMs nMeta ms
-      | length ms < maxMs =
-          getConnectionMessage' c ntfConnId >>= \case
-            Just m@SMP.SMPMsgMeta {msgId, msgTs, msgFlags} -> case nMeta of
-              Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'}
-                | msgId == msgId' || msgTs > msgTs' -> pure $ reverse (m : ms)
-                | otherwise -> getMsg (m : ms)
-              _
-                | SMP.notification msgFlags -> pure $ reverse (m : ms)
-                | otherwise -> getMsg (m : ms)
-            _ -> pure $ reverse ms
-      | otherwise = pure $ reverse ms
+    getNtfMessages ntfConnId nMeta = getMsg
       where
-        getMsg = getNtfMessages ntfConnId maxMs nMeta
+        getMsg 0 = pure []
+        getMsg n =
+          getConnectionMessage' c ntfConnId >>= \case
+            Just m
+              | lastMsg m -> pure [m]
+              | otherwise -> (m :) <$> getMsg (n - 1)
+            Nothing -> pure []
+        lastMsg SMP.SMPMsgMeta {msgId, msgTs, msgFlags} = case nMeta of
+          Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'} -> msgId == msgId' || msgTs > msgTs'
+          Nothing -> SMP.notification msgFlags
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
@@ -1960,11 +1958,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
       conn
       cData@ConnData {userId, connId, duplexHandshake, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
-            handleNotifyAck $
-              decryptSMPMessage v rq msg >>= \case
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> 
+            handleNotifyAck $ do
+              msg' <- decryptSMPMessage v rq msg
+              handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
+              whenM (atomically $ hasGetLock c rq) $
+                notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
             where
               queueDrained = case conn of
                 DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ QCONT (sndAddress rq)

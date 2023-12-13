@@ -5,6 +5,7 @@
 module Main where
 
 import Control.Logger.Simple
+import Data.ByteArray (ScrubbedBytes)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Env.SQLite
@@ -19,7 +20,7 @@ cfg = defaultAgentConfig
 agentDbFile :: String
 agentDbFile = "smp-agent.db"
 
-agentDbKey :: String
+agentDbKey :: ScrubbedBytes
 agentDbKey = ""
 
 servers :: InitialAgentServers
@@ -38,5 +39,5 @@ main :: IO ()
 main = do
   putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
   setLogLevel LogInfo -- LogError
-  Right st <- createAgentStore agentDbFile agentDbKey MCConsole
+  Right st <- createAgentStore agentDbFile agentDbKey False MCConsole
   withGlobalLogging logCfg $ runSMPAgent (transport @TLS) cfg servers st
