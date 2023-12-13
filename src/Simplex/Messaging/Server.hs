@@ -487,7 +487,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
       where
         createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
-          (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
+          (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
               qRec (recipientId, senderId) =
@@ -542,7 +542,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
-          (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
+          (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvNtfDhSecret = C.dh' dhKey privDhKey
           (corrId,queueId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
           where
@@ -688,7 +688,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                       Just msg -> time "SEND ok" $ do
                         stats <- asks serverStats
                         when (notification msgFlags) $ do
-                          atomically . trySendNotification msg =<< asks idsDrg
+                          atomically . trySendNotification msg =<< asks random
                           atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                           atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
@@ -723,7 +723,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
             mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
-              cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
+              cbNonce <- C.randomCbNonce ntfNonceDrg
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
@@ -822,9 +822,7 @@ timed name qId a = do
     sec = 1000_000000
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
-randomId n = do
-  gVar <- asks idsDrg
-  atomically (C.pseudoRandomBytes n gVar)
+randomId n = atomically . C.randomBytes n =<< asks random
 
 saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => Bool -> m ()
 saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages

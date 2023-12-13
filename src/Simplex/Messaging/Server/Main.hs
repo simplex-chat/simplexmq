@@ -8,8 +8,8 @@
 
 module Simplex.Messaging.Server.Main where
 
+import Control.Concurrent.STM
 import Control.Monad (void)
-import Crypto.Random (getRandomBytes)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -95,7 +95,7 @@ smpServerCLI cfgPath logPath =
           where
             createServerPassword = \case
               ServerPassword s -> pure s
-              SPRandom -> BasicAuth . strEncode <$> (getRandomBytes 32 :: IO B.ByteString)
+              SPRandom -> BasicAuth . strEncode <$> (atomically . C.randomBytes 32 =<< C.newRandom)
             iniFileContent host basicAuth =
               "[STORE_LOG]\n\
               \# The server uses STM memory for persistence,\n\

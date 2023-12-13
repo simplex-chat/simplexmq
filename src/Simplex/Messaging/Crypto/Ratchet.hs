@@ -15,11 +15,11 @@
 module Simplex.Messaging.Crypto.Ratchet where
 
 import Control.Monad.Except
-import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
+import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
@@ -40,6 +40,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Version
+import UnliftIO.STM
 
 currentE2EEncryptVersion :: Version
 currentE2EEncryptVersion = 2
@@ -81,10 +82,10 @@ instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"
 
-generateE2EParams :: (AlgorithmI a, DhAlgorithm a) => Version -> IO (PrivateKey a, PrivateKey a, E2ERatchetParams a)
-generateE2EParams v = do
-  (k1, pk1) <- generateKeyPair'
-  (k2, pk2) <- generateKeyPair'
+generateE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> STM (PrivateKey a, PrivateKey a, E2ERatchetParams a)
+generateE2EParams g v = do
+  (k1, pk1) <- generateKeyPair g
+  (k2, pk2) <- generateKeyPair g
   pure (pk1, pk2, E2ERatchetParams v k1 k2)
 
 data RatchetInitParams = RatchetInitParams
@@ -345,11 +346,12 @@ maxSkip = 512
 rcDecrypt ::
   forall a.
   (AlgorithmI a, DhAlgorithm a) =>
+  TVar ChaChaDRG ->
   Ratchet a ->
   SkippedMsgKeys ->
   ByteString ->
   ExceptT CryptoError IO (DecryptResult a)
-rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
+rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
   encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError smpP msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, cipher-text, AD)
@@ -389,7 +391,7 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
             Left e -> throwE e
             Right (rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
               -- DHRatchetHE(state, header)
-              (_, rcDHRs') <- liftIO $ generateKeyPair' @a
+              (_, rcDHRs') <- atomically $ generateKeyPair @a g
               -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
               let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs
                   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))

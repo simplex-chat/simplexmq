@@ -16,7 +16,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
-import Crypto.Random (getRandomBytes)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
@@ -318,9 +317,10 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
         Just path -> do
-          (sDhKey, spDhKey) <- liftIO C.generateKeyPair'
+          g <- asks random
+          (sDhKey, spDhKey) <- atomically $ C.generateKeyPair g
           let dhSecret = C.dh' rDhKey spDhKey
-          cbNonce <- liftIO C.randomCbNonce
+          cbNonce <- atomically $ C.randomCbNonce g
           case LC.cbInit dhSecret cbNonce of
             Right sbState -> do
               stats <- asks serverStats
@@ -360,12 +360,12 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       pure FROk
 
 randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
-randomId n = do
-  gVar <- asks idsDrg
-  atomically (C.pseudoRandomBytes n gVar)
+randomId n = atomically . C.randomBytes n =<< asks random
 
 getFileId :: M XFTPFileId
-getFileId = liftIO . getRandomBytes =<< asks (fileIdSize . config)
+getFileId = do
+  size <- asks (fileIdSize . config)
+  atomically . C.randomBytes size =<< asks random
 
 withFileLog :: (MonadIO m, MonadReader XFTPEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog

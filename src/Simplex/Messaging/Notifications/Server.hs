@@ -440,7 +440,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
         logDebug "TNEW - new token"
         st <- asks store
-        ks@(srvDhPubKey, srvDhPrivKey) <- liftIO C.generateKeyPair'
+        ks@(srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
@@ -565,13 +565,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           PING -> pure NRPong
       NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
-    getId = getRandomBytes =<< asks (subIdBytes . config)
+    getId = randomBytes =<< asks (subIdBytes . config)
     getRegCode :: M NtfRegCode
-    getRegCode = NtfRegCode <$> (getRandomBytes =<< asks (regCodeBytes . config))
-    getRandomBytes :: Int -> M ByteString
-    getRandomBytes n = do
-      gVar <- asks idsDrg
-      atomically (C.pseudoRandomBytes n gVar)
+    getRegCode = NtfRegCode <$> (randomBytes =<< asks (regCodeBytes . config))
+    randomBytes :: Int -> M ByteString
+    randomBytes n = atomically . C.randomBytes n =<< asks random
     cancelInvervalNotifications :: NtfTokenId -> M ()
     cancelInvervalNotifications tknId =
       atomically (TM.lookupDelete tknId intervalNotifiers)

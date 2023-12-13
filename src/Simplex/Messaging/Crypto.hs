@@ -61,8 +61,9 @@ module Simplex.Messaging.Crypto
     DhSecretX25519,
     ADhSecret (..),
     KeyHash (..),
+    newRandom,
+    generateAKeyPair,
     generateKeyPair,
-    generateKeyPair',
     generateSignatureKeyPair,
     generateDhKeyPair,
     privateToX509,
@@ -105,8 +106,8 @@ module Simplex.Messaging.Crypto
     decryptAESNoPad,
     authTagSize,
     randomAesKey,
-    randomIV,
     randomGCMIV,
+    randomGCMIV',
     ivSize,
     gcmIVSize,
     gcmIV,
@@ -121,7 +122,7 @@ module Simplex.Messaging.Crypto
     sbEncrypt_,
     cbNonce,
     randomCbNonce,
-    pseudoRandomCbNonce,
+    randomCbNonce',
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
@@ -131,9 +132,10 @@ module Simplex.Messaging.Crypto
     sbKey,
     unsafeSbKey,
     randomSbKey,
+    randomSbKey',
 
     -- * pseudo-random bytes
-    pseudoRandomBytes,
+    randomBytes,
 
     -- * digests
     sha256Hash,
@@ -180,7 +182,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import Crypto.Random (ChaChaDRG, getRandomBytes, randomBytesGenerate)
+import Crypto.Random (ChaChaDRG, MonadPseudoRandom, drgNew, getRandomBytes, randomBytesGenerate, withDRG)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -595,17 +597,23 @@ type ASignatureKeyPair = KeyPairType APrivateSignKey
 
 type ADhKeyPair = KeyPairType APrivateDhKey
 
-generateKeyPair :: AlgorithmI a => SAlgorithm a -> IO AKeyPair
-generateKeyPair a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair'
+newRandom :: IO (TVar ChaChaDRG)
+newRandom = newTVarIO =<< drgNew
 
-generateSignatureKeyPair :: (AlgorithmI a, SignatureAlgorithm a) => SAlgorithm a -> IO ASignatureKeyPair
-generateSignatureKeyPair a = bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair'
+generateAKeyPair :: AlgorithmI a => SAlgorithm a -> TVar ChaChaDRG -> STM AKeyPair
+generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair g
 
-generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> IO ADhKeyPair
-generateDhKeyPair a = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair'
+generateSignatureKeyPair :: (AlgorithmI a, SignatureAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ASignatureKeyPair
+generateSignatureKeyPair a g = bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair g
 
-generateKeyPair' :: forall a. AlgorithmI a => IO (KeyPair a)
-generateKeyPair' = case sAlgorithm @a of
+generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ADhKeyPair
+generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
+
+generateKeyPair :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (KeyPair a)
+generateKeyPair g = stateTVar g (`withDRG` generateKeyPair_)
+
+generateKeyPair_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (KeyPair a)
+generateKeyPair_ = case sAlgorithm @a of
   SEd25519 ->
     Ed25519.generateSecretKey >>= \pk ->
       let k = Ed25519.toPublic pk
@@ -974,15 +982,15 @@ initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
   AES.aeadInit AES.AEAD_GCM cipher ivBytes
 
 -- | Random AES256 key.
-randomAesKey :: IO Key
-randomAesKey = Key <$> getRandomBytes aesKeySize
+randomAesKey :: TVar ChaChaDRG -> STM Key
+randomAesKey = fmap Key . randomBytes aesKeySize
 
--- | Random IV bytes for AES256 encryption.
-randomIV :: IO IV
-randomIV = IV <$> getRandomBytes (ivSize @AES256)
+randomGCMIV :: TVar ChaChaDRG -> STM GCMIV
+randomGCMIV = fmap GCMIV . randomBytes gcmIVSize
 
-randomGCMIV :: IO GCMIV
-randomGCMIV = GCMIV <$> getRandomBytes gcmIVSize
+{-# DEPRECATED randomGCMIV' "Use randomGCMIV" #-}
+randomGCMIV' :: IO GCMIV
+randomGCMIV' = GCMIV <$> getRandomBytes gcmIVSize
 
 ivSize :: forall c. AES.BlockCipher c => Int
 ivSize = AES.blockSize (undefined :: c)
@@ -1143,14 +1151,15 @@ cbNonce s
   where
     len = B.length s
 
-randomCbNonce :: IO CbNonce
-randomCbNonce = CryptoBoxNonce <$> getRandomBytes 24
+randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
+randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
-pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
-pseudoRandomCbNonce gVar = CryptoBoxNonce <$> pseudoRandomBytes 24 gVar
+{-# DEPRECATED randomCbNonce' "Use randomCbNonce" #-}
+randomCbNonce' :: IO CbNonce
+randomCbNonce' = CryptoBoxNonce <$> getRandomBytes 24
 
-pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-pseudoRandomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
+randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce
@@ -1187,8 +1196,12 @@ sbKey s
 unsafeSbKey :: ByteString -> SbKey
 unsafeSbKey s = either error id $ sbKey s
 
-randomSbKey :: IO SbKey
-randomSbKey = SecretBoxKey <$> getRandomBytes 32
+randomSbKey :: TVar ChaChaDRG -> STM SbKey
+randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
+
+{-# DEPRECATED randomSbKey' "Use randomSbKey" #-}
+randomSbKey' :: IO SbKey
+randomSbKey' = SecretBoxKey <$> getRandomBytes 32
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 secret nonce msg = (rs, msg')

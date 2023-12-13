@@ -6,9 +6,10 @@ module RemoteControl where
 
 import AgentTests.FunctionalAPITests (runRight)
 import Control.Logger.Simple
-import Crypto.Random (ChaChaDRG, drgNew)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
@@ -62,8 +63,8 @@ testPreferAddress = do
 
 testNewPairing :: IO ()
 testNewPairing = do
-  drg <- drgNew >>= newTVarIO
-  hp <- RC.newRCHostPairing
+  drg <- C.newRandom
+  hp <- RC.newRCHostPairing drg
   invVar <- newEmptyMVar
   ctrlSessId <- async . runRight $ do
     logNote "c 1"
@@ -108,9 +109,9 @@ testNewPairing = do
 
 testExistingPairing :: IO ()
 testExistingPairing = do
-  drg <- drgNew >>= newTVarIO
+  drg <- C.newRandom
   invVar <- newEmptyMVar
-  hp <- liftIO $ RC.newRCHostPairing
+  hp <- RC.newRCHostPairing drg
   ctrl <- runCtrl drg False hp invVar
   inv <- takeMVar invVar
   let cp_ = Nothing
@@ -139,10 +140,10 @@ testExistingPairing = do
 
 testMulticast :: IO ()
 testMulticast = do
-  drg <- drgNew >>= newTVarIO
+  drg <- C.newRandom
   subscribers <- newTMVarIO 0
   invVar <- newEmptyMVar
-  hp <- liftIO RC.newRCHostPairing
+  hp <- RC.newRCHostPairing drg
   ctrl <- runCtrl drg False hp invVar
   inv <- takeMVar invVar
   let cp_ = Nothing

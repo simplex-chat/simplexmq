@@ -83,10 +83,10 @@ helloBlockSize = 12288
 encInvitationSize :: Int
 encInvitationSize = 900
 
-newRCHostPairing :: IO RCHostPairing
-newRCHostPairing = do
-  ((_, caKey), caCert) <- genCredentials Nothing (-25, 24 * 999999) "ca"
-  (_, idPrivKey) <- C.generateKeyPair'
+newRCHostPairing :: TVar ChaChaDRG -> IO RCHostPairing
+newRCHostPairing drg = do
+  ((_, caKey), caCert) <- genCredentials drg Nothing (-25, 24 * 999999) "ca"
+  (_, idPrivKey) <- atomically $ C.generateKeyPair drg
   pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
 data RCHostClient = RCHostClient
@@ -108,7 +108,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   r <- newEmptyTMVarIO
   found@(RCCtrlAddress {address} :| _) <- findCtrlAddress
   c@RCHClient_ {startedPort, announcer} <- liftIO mkClient
-  hostKeys <- liftIO genHostKeys
+  hostKeys <- atomically genHostKeys
   action <- runClient c r hostKeys `putRCError` r
   -- wait for the port to make invitation
   portNum <- atomically $ readTMVar startedPort
@@ -133,7 +133,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       pure RCHClient_ {startedPort, announcer, hostCAHash, endSession}
     runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> ExceptT RCErrorType IO (Async ())
     runClient RCHClient_ {startedPort, announcer, hostCAHash, endSession} r hostKeys = do
-      tlsCreds <- liftIO $ genTLSCredentials caKey caCert
+      tlsCreds <- liftIO $ genTLSCredentials drg caKey caCert
       startTLSServer port_ startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
         void . runExceptT $ do
           r' <- newEmptyTMVarIO
@@ -168,10 +168,10 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
-    genHostKeys :: IO RCHostKeys
+    genHostKeys :: STM RCHostKeys
     genHostKeys = do
-      sessKeys <- C.generateKeyPair'
-      dhKeys <- C.generateKeyPair'
+      sessKeys <- C.generateKeyPair drg
+      dhKeys <- C.generateKeyPair drg
       pure RCHostKeys {sessKeys, dhKeys}
     mkInvitation :: RCHostKeys -> TransportHost -> PortNumber -> IO RCSignedInvitation
     mkInvitation RCHostKeys {sessKeys, dhKeys} host portNum = do
@@ -190,10 +190,10 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               }
       pure $ signInvitation (snd sessKeys) idPrivKey inv
 
-genTLSCredentials :: C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
-genTLSCredentials caKey caCert = do
+genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
+genTLSCredentials drg caKey caCert = do
   let caCreds = (C.signatureKeyPair caKey, caCert)
-  leaf <- genCredentials (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
+  leaf <- genCredentials drg (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
   pure . snd $ tlsCredentials (leaf :| [caCreds])
 
 certFingerprint :: X509.SignedCertificate -> C.KeyHash
@@ -225,7 +225,7 @@ prepareHostSession
     knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
     -- TODO send error response if something fails
-    nonce' <- liftIO . atomically $ C.pseudoRandomCbNonce drg
+    nonce' <- liftIO . atomically $ C.randomCbNonce drg
     encBody' <- liftEitherWith (const RCEBlockSize) $ kcbEncrypt hybridKey nonce' (LB.toStrict $ J.encode ctrlHello) helloBlockSize
     let ctrlEncHello = RCCtrlEncHello {kem = kemCiphertext, nonce = nonce', encBody = encBody'}
     pure (ctrlEncHello, keys, hostHello, pairing {knownHost = Just knownHost'})
@@ -258,13 +258,13 @@ connectRCCtrl drg (RCVerifiedInvitation inv@RCInvitation {ca, idkey}) pairing_ h
   where
     newCtrlPairing :: IO RCCtrlPairing
     newCtrlPairing = do
-      ((_, caKey), caCert) <- genCredentials Nothing (0, 24 * 999999) "ca"
-      (_, dhPrivKey) <- C.generateKeyPair'
+      ((_, caKey), caCert) <- genCredentials drg Nothing (0, 24 * 999999) "ca"
+      (_, dhPrivKey) <- atomically $ C.generateKeyPair drg
       pure RCCtrlPairing {caKey, caCert, ctrlFingerprint = ca, idPubKey = idkey, dhPrivKey, prevDhPrivKey = Nothing}
     updateCtrlPairing :: RCCtrlPairing -> ExceptT RCErrorType IO RCCtrlPairing
     updateCtrlPairing pairing@RCCtrlPairing {ctrlFingerprint, idPubKey, dhPrivKey = currDhPrivKey} = do
       unless (ca == ctrlFingerprint && idPubKey == idkey) $ throwError RCEIdentity
-      (_, dhPrivKey) <- liftIO C.generateKeyPair'
+      (_, dhPrivKey) <- atomically $ C.generateKeyPair drg
       pure pairing {dhPrivKey, prevDhPrivKey = Just currDhPrivKey}
 
 connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
@@ -282,7 +282,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
     runClient :: RCCClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
     runClient RCCClient_ {confirmSession, endSession} r = do
       clientCredentials <-
-        liftIO (genTLSCredentials caKey caCert) >>= \case
+        liftIO (genTLSCredentials drg caKey caCert) >>= \case
           TLS.Credentials (creds : _) -> pure $ Just creds
           _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
@@ -337,7 +337,7 @@ prepareHostHello
     case compatibleVersion v supportedRCVRange of
       Nothing -> throwError RCEVersion
       Just (Compatible v') -> do
-        nonce <- liftIO . atomically $ C.pseudoRandomCbNonce drg
+        nonce <- liftIO . atomically $ C.randomCbNonce drg
         (kemPubKey, kemPrivKey) <- liftIO $ sntrup761Keypair drg
         let helloBody = RCHostHello {v = v', ca = certFingerprint caCert, app = hostAppInfo, kem = kemPubKey}
             sharedKey = C.dh' dhPubKey dhPrivKey
@@ -369,7 +369,7 @@ announceRC :: TVar ChaChaDRG -> Int -> C.PrivateKeyEd25519 -> C.PublicKeyX25519 
 announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv = withSender $ \sender -> do
   replicateM_ maxCount $ do
     logDebug "Announcing..."
-    nonce <- atomically $ C.pseudoRandomCbNonce drg
+    nonce <- atomically $ C.randomCbNonce drg
     encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce sigInvitation encInvitationSize
     liftIO . UDP.send sender $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
     threadDelay 1000000
@@ -434,7 +434,7 @@ cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
 
 rcEncryptBody :: TVar ChaChaDRG -> KEMHybridSecret -> LazyByteString -> ExceptT RCErrorType IO (C.CbNonce, LazyByteString)
 rcEncryptBody drg hybridKey s = do
-  nonce <- atomically $ C.pseudoRandomCbNonce drg
+  nonce <- atomically $ C.randomCbNonce drg
   let len = LB.length s
   ct <- liftEitherWith (const RCEEncrypt) $ LC.kcbEncryptTailTag hybridKey nonce s len (len + 8)
   pure (nonce, ct)

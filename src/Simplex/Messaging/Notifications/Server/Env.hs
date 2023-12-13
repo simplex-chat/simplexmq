@@ -76,7 +76,7 @@ data NtfEnv = NtfEnv
     pushServer :: NtfPushServer,
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    idsDrg :: TVar ChaChaDRG,
+    random :: TVar ChaChaDRG,
     tlsServerParams :: T.ServerParams,
     serverIdentity :: C.KeyHash,
     serverStats :: NtfServerStats
@@ -84,7 +84,7 @@ data NtfEnv = NtfEnv
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
 newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
-  idsDrg <- newTVarIO =<< drgNew
+  random <- liftIO C.newRandom
   store <- atomically newNtfStore
   logInfo "restoring subscriptions..."
   storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
@@ -94,7 +94,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newNtfServerStats =<< liftIO getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,

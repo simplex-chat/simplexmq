@@ -62,7 +62,7 @@ data XFTPEnv = XFTPEnv
   { config :: XFTPServerConfig,
     store :: FileStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    idsDrg :: TVar ChaChaDRG,
+    random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
     serverStats :: FileServerStats
@@ -80,7 +80,7 @@ defaultFileExpiration =
 
 newXFTPServerEnv :: (MonadUnliftIO m, MonadRandom m) => XFTPServerConfig -> m XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile} = do
-  idsDrg <- drgNew >>= newTVarIO
+  random <- liftIO C.newRandom
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
   used <- readTVarIO (usedStorage store)
@@ -90,7 +90,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
-  pure XFTPEnv {config, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey) (Maybe BasicAuth)
