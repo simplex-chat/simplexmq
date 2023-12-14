@@ -41,11 +41,11 @@ processAgentBatchAll c agentBatch = do
     runEContT (processAgentBatch c agents) $ either (logError  . tshow) pure
     processAgentBatchAll c agentBatch
 
-processAgentBatch :: AgentMonad' m => AgentClient -> [Batch AgentDB m] -> BatchT AgentErrorType m ()
+processAgentBatch :: AgentMonad' m => AgentClient -> [BatchOperation AgentDB m] -> BatchT AgentErrorType m ()
 processAgentBatch c batch = do
   actions <- liftEContError . withStore' c $ \db -> do -- XXX: may throw SEInternal when its `withTransaction` failed somehow.
     -- XXX: perhaps that error should be broadcasted to all the actions depending on it (may trigger handler stampede)
-    for batch $ \Batch {step, next} -> do
+    for batch $ \BatchOperation {step, next} -> do
       tryError (step db) >>= \case
         Right ok -> pure $ next ok
         Left err -> pure $ logError (tshow err)

@@ -91,10 +91,10 @@ execEContT action = do
 
 type BatchT e m = EContT e () m
 
-type BatchVar op m = TVar [Batch op m]
+type BatchVar op m = TVar [BatchOperation op m]
 
-data Batch op m = forall a.
-  Batch
+data BatchOperation op m = forall a.
+  BatchOperation
   { step :: BatchStep op a,
     next :: Either (BatchError op) a -> BatchT (BatchError op) m ()
   }
@@ -105,8 +105,8 @@ type BatchStep op a = BatchArgs op -> IO (Either (BatchError op) a)
 type family BatchArgs op
 type family BatchError op
 
-batchOperation :: forall op m r. MonadIO m => TVar [Batch op m] -> BatchStep op r -> BatchT (BatchError op) m r
+batchOperation :: forall op m r. MonadIO m => TVar [BatchOperation op m] -> BatchStep op r -> BatchT (BatchError op) m r
 batchOperation st step = do
   EContT $ \er_Mu -> do
     let next er = EContT $ \eu_Mu__Mu -> eu_Mu__Mu (Right ()) >> er_Mu er
-    atomically $ modifyTVar' st (Batch {step, next} :)
+    atomically $ modifyTVar' st (BatchOperation {step, next} :)
