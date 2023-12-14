@@ -369,9 +369,9 @@ runClientTransport th@THandle {thVersion, sessionId} = do
     `finally` clientDisconnected c
   where
     sid = B.unpack $ encode sessionId
-    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (hasSubscriptions c)]
+    disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
     disconnectThread_ _ _ = []
-    hasSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
+    noSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
 
 clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
@@ -443,13 +443,13 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
-disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg hasSubscriptions = do
+disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
     loop = do
       threadDelay' $ checkInterval expCfg * 1000000
-      ifM hasSubscriptions loop checkExpired
+      ifM noSubscriptions checkExpired loop
     checkExpired = do
       old <- expireBeforeEpoch expCfg
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt

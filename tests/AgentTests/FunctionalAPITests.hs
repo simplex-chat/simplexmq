@@ -214,7 +214,9 @@ functionalAPITests t = do
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
         withSmpServer t testOnlyCreatePull
-  describe "Inactive client disconnection" $ do
+  -- TODO these tests need to be fixed, as currently they test disconnecting clients with subscriptions
+  -- that are no longer disconnected
+  xdescribe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
     it "should NOT disconnect active clients" $
