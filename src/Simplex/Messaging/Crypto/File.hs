@@ -16,7 +16,6 @@ module Simplex.Messaging.Crypto.File
     hGetTag,
     plain,
     randomArgs,
-    randomArgs',
     getFileContentsSize,
   )
 where
@@ -113,10 +112,6 @@ plain = (`CryptoFile` Nothing)
 
 randomArgs :: TVar ChaChaDRG -> STM CryptoFileArgs
 randomArgs g = CFArgs <$> C.randomSbKey g <*> C.randomCbNonce g
-
-{-# DEPRECATED randomArgs' "Use randomArgs" #-}
-randomArgs' :: IO CryptoFileArgs
-randomArgs' = CFArgs <$> C.randomSbKey' <*> C.randomCbNonce'
 
 getFileContentsSize :: CryptoFile -> IO Integer
 getFileContentsSize (CryptoFile path cfArgs) = do

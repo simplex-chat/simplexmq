@@ -107,7 +107,6 @@ module Simplex.Messaging.Crypto
     authTagSize,
     randomAesKey,
     randomGCMIV,
-    randomGCMIV',
     ivSize,
     gcmIVSize,
     gcmIV,
@@ -122,7 +121,6 @@ module Simplex.Messaging.Crypto
     sbEncrypt_,
     cbNonce,
     randomCbNonce,
-    randomCbNonce',
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
@@ -132,7 +130,6 @@ module Simplex.Messaging.Crypto
     sbKey,
     unsafeSbKey,
     randomSbKey,
-    randomSbKey',
 
     -- * pseudo-random bytes
     randomBytes,
@@ -182,7 +179,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import Crypto.Random (ChaChaDRG, MonadPseudoRandom, drgNew, getRandomBytes, randomBytesGenerate, withDRG)
+import Crypto.Random (ChaChaDRG, MonadPseudoRandom, drgNew, randomBytesGenerate, withDRG)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -988,10 +985,6 @@ randomAesKey = fmap Key . randomBytes aesKeySize
 randomGCMIV :: TVar ChaChaDRG -> STM GCMIV
 randomGCMIV = fmap GCMIV . randomBytes gcmIVSize
 
-{-# DEPRECATED randomGCMIV' "Use randomGCMIV" #-}
-randomGCMIV' :: IO GCMIV
-randomGCMIV' = GCMIV <$> getRandomBytes gcmIVSize
-
 ivSize :: forall c. AES.BlockCipher c => Int
 ivSize = AES.blockSize (undefined :: c)
 
@@ -1154,10 +1147,6 @@ cbNonce s
 randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
-{-# DEPRECATED randomCbNonce' "Use randomCbNonce" #-}
-randomCbNonce' :: IO CbNonce
-randomCbNonce' = CryptoBoxNonce <$> getRandomBytes 24
-
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
@@ -1198,10 +1187,6 @@ unsafeSbKey s = either error id $ sbKey s
 
 randomSbKey :: TVar ChaChaDRG -> STM SbKey
 randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
-
-{-# DEPRECATED randomSbKey' "Use randomSbKey" #-}
-randomSbKey' :: IO SbKey
-randomSbKey' = SecretBoxKey <$> getRandomBytes 32
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 secret nonce msg = (rs, msg')
