@@ -33,7 +33,7 @@ testBasicErrors = do
     y <- batchOperation tests $ \c -> runExceptT $ do
       when (l == 'd') $ throwError 3 -- there's no d-fference throwing inside or outside
       pure $ c : x
-    pure y
+    pure $ reverse y
   processAll tests shmests
   sequence getResults
     `shouldReturn` [ Right "!a!",
@@ -69,10 +69,10 @@ processAll testBatch shmestBatch = do
   tests <- atomically $ stateTVar testBatch (,[])
   shmests <- atomically $ stateTVar shmestBatch (,[])
   runEContT (unless (null tests) $ processTestBatch tests) $ \case
-    Left e -> traceShowM e >> pure ()
+    Left e -> traceShowM e
     Right () -> pure ()
   runEContT (unless (null shmests) $ processShmestBatch shmests) $ \case
-    Left e -> traceShowM e >> pure ()
+    Left e -> traceShowM e
     Right () -> pure ()
   unless (null tests && null shmests) $ processAll testBatch shmestBatch
 

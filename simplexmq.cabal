@@ -60,6 +60,7 @@ library
       Simplex.FileTransfer.Types
       Simplex.FileTransfer.Util
       Simplex.Messaging.Agent
+      Simplex.Messaging.Agent.Batch
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
       Simplex.Messaging.Agent.Lock

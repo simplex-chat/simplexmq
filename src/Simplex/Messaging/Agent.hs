@@ -4,7 +4,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -66,8 +65,6 @@ module Simplex.Messaging.Agent
     resubscribeConnections,
     sendMessage,
     sendMessageB,
-    AgentBatch,
-    AgentDB,
     processAgentBatch,
     ackMessage,
     switchConnection,
@@ -141,6 +138,7 @@ import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, delete
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
+import Simplex.Messaging.Agent.Batch
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock (withLock)
@@ -282,20 +280,6 @@ resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c = withAgentEnv c .:. sendMessage' c
-
-data AgentDB
-type instance BatchArgs AgentDB = DB.Connection
-type instance BatchError AgentDB = AgentErrorType
-type AgentBatch m = BatchVar AgentDB m
-
-processAgentBatch :: AgentMonad' m => AgentClient -> [Batch AgentDB m] -> BatchT AgentErrorType m ()
-processAgentBatch c batch = do
-  results <- liftEContError . withStore' c $ \db ->
-    forM batch $ \(Batch action next) -> next <$> action db
-  sequence_ results
-
-sendMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
-sendMessageB = sendMessageB_ -- already in some Env-providing context, avoid changing the `m`, breaking the tie with AgentBatch
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
 ackMessage c = withAgentEnv c .:. ackMessage' c
@@ -887,22 +871,14 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection cData _ sqs -> enqueueMsgs cData sqs
-    SndConnection cData sq -> enqueueMsgs cData [sq]
-    _ -> throwError $ CONN SIMPLEX
-  where
-    enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
-    enqueueMsgs cData sqs = do
-      when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
-      enqueueMessages c cData sqs msgFlags $ A_MSG msg
+sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ execAgentBatch c $ \b -> sendMessageB c b connId msgFlags msg
 
 -- | Send message to the connection (SEND command) using provided batch
-sendMessageB_ :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
-sendMessageB_ c agentBatch connId msgFlags msg = do -- withConnLock c connId "sendMessage" $ do -- TODO: extract conn locks
-  SomeConn _ conn <- batchOperation agentBatch $ \db -> first storeError <$> getConn db connId
+--
+-- XXX: A connLock must be taken on connId!
+sendMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnId -> MsgFlags -> MsgBody -> BatchT AgentErrorType m AgentMsgId
+sendMessageB c agentBatch connId msgFlags msg = do
+  SomeConn _ conn <- batchOperation agentBatch $ \db -> first storeError <$> getConn db connId -- XXX: no need to batch here?
   (cData, sq, sqs) <- case conn of
     DuplexConnection cData _ (sq :| sqs) -> pure (cData, sq, filter isActiveSndQ sqs)
     SndConnection cData sq -> pure (cData, sq, mempty)
@@ -911,23 +887,6 @@ sendMessageB_ c agentBatch connId msgFlags msg = do -- withConnLock c connId "se
   msgId <- enqueueMessageB c agentBatch cData sq msgFlags $ A_MSG msg
   forM_ @[] sqs $ enqueueSavedMessageB c agentBatch cData msgId
   pure msgId
-
-enqueueMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnData -> SndQueue -> MsgFlags -> AMessage -> BatchT AgentErrorType m AgentMsgId
-enqueueMessageB c agentBatch cData sq msgFlags aMessage = do
-  liftEContError $ resumeMsgDelivery c cData sq
-  let aVRange = smpAgentVRange . config $ agentEnv c
-  msgId <- batchOperation agentBatch $ \db -> fmap (first storeError) . runExceptT $ storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
-  lift $ queuePendingMsgs c sq [msgId]
-  pure $ unId msgId
-
-enqueueSavedMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnData -> AgentMsgId -> SndQueue -> BatchT AgentErrorType m ()
-enqueueSavedMessageB c agentBatch cData@ConnData {connId} msgId sq = do
-  liftEContError $ resumeMsgDelivery c cData sq
-  let mId = InternalId msgId
-  lift $ queuePendingMsgs c sq [mId]
-  batchOperation agentBatch $ \db -> Right <$> createSndMsgDelivery db connId sq mId
-
-------------------------
 
 isActiveSndQ :: SndQueue -> Bool
 isActiveSndQ SndQueue {status} = status == Secured || status == Active
@@ -1111,8 +1070,8 @@ enqueueMessages c cData sqs msgFlags aMessage = do
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
 enqueueMessages' c cData (sq :| sqs) msgFlags aMessage = do
   msgId <- enqueueMessage c cData sq msgFlags aMessage
-  mapM_ (enqueueSavedMessage c cData msgId) $
-    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
+  mapM_ (enqueueSavedMessage c cData msgId) $ -- TODO: use batching
+    filter isActiveSndQ sqs
   pure msgId
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
@@ -1121,6 +1080,15 @@ enqueueMessage c cData sq msgFlags aMessage = do
   aVRange <- asks $ smpAgentVRange . config
   msgId <- withStore c $ \db -> runExceptT $ storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
   queuePendingMsgs c sq [msgId]
+  pure $ unId msgId
+
+enqueueMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnData -> SndQueue -> MsgFlags -> AMessage -> BatchT AgentErrorType m AgentMsgId
+enqueueMessageB c agentBatch cData sq msgFlags aMessage = do
+  liftEContError $ resumeMsgDelivery c cData sq
+  let aVRange = smpAgentVRange . config $ agentEnv c
+  msgId <- batchOperation agentBatch $ \db -> do
+    fmap (first storeError) . runExceptT $ storeSentMsg db cData sq msgFlags aMessage (maxVersion aVRange)
+  lift $ queuePendingMsgs c sq [msgId]
   pure $ unId msgId
 
 storeSentMsg :: DB.Connection -> ConnData -> SndQueue -> MsgFlags -> AMessage -> Version -> ExceptT StoreError IO InternalId
@@ -1145,6 +1113,13 @@ enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
   let mId = InternalId msgId
   queuePendingMsgs c sq [mId]
   withStore' c $ \db -> createSndMsgDelivery db connId sq mId
+
+enqueueSavedMessageB :: AgentMonad' m => AgentClient -> AgentBatch m -> ConnData -> AgentMsgId -> SndQueue -> BatchT AgentErrorType m ()
+enqueueSavedMessageB c agentBatch cData@ConnData {connId} msgId sq = do
+  liftEContError $ resumeMsgDelivery c cData sq
+  let mId = InternalId msgId
+  lift $ queuePendingMsgs c sq [mId]
+  batchOperation agentBatch $ \db -> Right <$> createSndMsgDelivery db connId sq mId
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
@@ -1938,7 +1913,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
       conn
       cData@ConnData {userId, connId, duplexHandshake, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> 
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             handleNotifyAck $ do
               msg' <- decryptSMPMessage v rq msg
               handleNotifyAck $ case msg' of
@@ -2487,7 +2462,7 @@ storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentM
 enqueueRatchetKeyMsgs :: forall m. AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
 enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
   msgId <- enqueueRatchetKey c cData sq e2eEncryption
-  mapM_ (enqueueSavedMessage c cData msgId) $
+  mapM_ (enqueueSavedMessage c cData msgId) $ -- TODO: use batching
     filter isActiveSndQ sqs
   pure msgId
 

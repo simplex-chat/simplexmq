@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -9,11 +10,11 @@ module Simplex.Messaging.Batch where
 
 import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError (..), liftEither)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.Trans (MonadTrans (..))
+import Control.Monad.Trans.Except (ExceptT)
 import GHC.Stack (HasCallStack)
 import UnliftIO
-import Control.Monad.Except (runExceptT)
-import Control.Monad.Trans.Except (ExceptT)
 
 -- * ContT fused with ExceptT to provide natural MonadError
 
@@ -104,8 +105,8 @@ type BatchStep op a = BatchArgs op -> IO (Either (BatchError op) a)
 type family BatchArgs op
 type family BatchError op
 
-batchOperation :: MonadIO m => TVar [Batch op m] -> BatchStep op r -> BatchT (BatchError op) m r
-batchOperation st action =
+batchOperation :: forall op m r. MonadIO m => TVar [Batch op m] -> BatchStep op r -> BatchT (BatchError op) m r
+batchOperation st step = do
   EContT $ \er_Mu -> do
-    let batch = Batch action $ \er -> EContT $ \eu_Mu__Mu -> eu_Mu__Mu (Right ()) >> er_Mu er
-    atomically $ modifyTVar' st (batch :)
+    let next er = EContT $ \eu_Mu__Mu -> eu_Mu__Mu (Right ()) >> er_Mu er
+    atomically $ modifyTVar' st (Batch {step, next} :)
