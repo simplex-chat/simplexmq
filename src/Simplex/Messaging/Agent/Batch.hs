@@ -42,10 +42,16 @@ execAgentBatch c [a] = run =<< tryError a
           Right r' -> execAgentBatch c [next r']
       ABBind {bindAction, next} -> tryError bindAction >>= \case
         Left e -> pure [ABPure $ Left e]
-        Right r' -> case r' of 
+        Right r' -> case r' of
           ABPure (Right r'') -> execAgentBatch c [next r'']
           ABPure (Left e) -> pure [ABPure $ Left e]
-          _ -> execAgentBatch c [pure $ ABBind (pure r') next]
+          r'' -> do
+            r3 <- runAgentBatch c [pure r'']
+            case r3 of
+              (Right r4 : _) -> execAgentBatch c [next r4]
+              (Left e : _) -> pure [ABPure $ Left e]
+              _ -> pure [ABPure $ Left $ INTERNAL "bad batch processing"]
+            
         
       -- ABBatch_ {actions_, next_} -> do
       --   rs <- mapM run actions
