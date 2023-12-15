@@ -29,11 +29,11 @@ class MonadError e m => BatchEffect op cxt e m | op -> cxt, op -> e where
   execBatchEffects :: cxt -> [op m a] -> m [Batch op e m a]
   batchError :: String -> e
 
-type AgentBatch m a = Batch AgentBatchOp AgentErrorType m a
+type AgentBatch m a = Batch AgentBatchEff AgentErrorType m a
 
-data AgentBatchOp m a = forall b. ABDatabase {dbAction :: DB.Connection -> IO (Either StoreError b), next :: b -> m (AgentBatch m a)}
+data AgentBatchEff m a = forall b. ABDatabase {dbAction :: DB.Connection -> IO (Either StoreError b), next :: b -> m (AgentBatch m a)}
 
-instance AgentMonad m => BatchEffect AgentBatchOp AgentClient AgentErrorType m where
+instance AgentMonad m => BatchEffect AgentBatchEff AgentClient AgentErrorType m where
   execBatchEffects c = \case
     (ABDatabase {dbAction, next} : _) ->
       runExceptT (withStore c dbAction) >>= \case
@@ -49,6 +49,13 @@ runBatch c as = mapM batchResult =<< execBatch c as
     batchResult = \case
       BPure r -> pure r
       _ -> throwError $ batchError @op @cxt @e @m "incomplete batch processing"
+
+unBatch :: forall a op cxt e m. BatchEffect op cxt e m => cxt -> m (Batch op e m a) -> m a
+unBatch c a = runBatch c [a] >>= oneResult
+  where
+    -- TODO something smarter than "head" to return error if there is more/less results
+    oneResult :: [Either e a] -> m a
+    oneResult = liftEither . head
 
 execBatch :: forall a op cxt e m. BatchEffect op cxt e m => cxt -> [m (Batch op e m a)] -> m [Batch op e m a]
 execBatch c [a] = run =<< tryError a 
@@ -73,13 +80,13 @@ execBatch c [a] = run =<< tryError a
       BEffect op -> execBatchEffects c [op]
 execBatch _ _ = throwError $ batchError @op @cxt @e @m "not implemented"
 
-pureB :: Monad m => a -> m (AgentBatch m a)
+pureB :: Monad m => a -> m (Batch op e m a)
 pureB = pure . BPure . Right
 
-(=>>=) :: Monad m => m (AgentBatch m b) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
+(=>>=) :: Monad m => m (Batch op e m b) -> (b -> m (Batch op e m a)) -> m (Batch op e m a)
 (=>>=) = pure .: BBind
 
-batch :: Monad m => [m (AgentBatch m b)] -> m (AgentBatch m a) -> m (AgentBatch m a)
+batch :: Monad m => [m (Batch op e m b)] -> m (Batch op e m a) -> m (Batch op e m a)
 batch as = pure . BBatch_ as
 
 withStoreB :: Monad m => (DB.Connection -> IO (Either StoreError b)) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
