@@ -33,6 +33,7 @@ instance MonadError e (EContT e x m) where
 
 liftEContError :: Monad m => ExceptT e m r -> EContT e x m r
 liftEContError action = lift (runExceptT action) >>= liftEither
+{-# INLINE liftEContError #-}
 
 instance Functor (EContT e x m) where
   fmap f ma = EContT $ \er_mx -> runEContT ma $ er_mx . fmap f
@@ -72,6 +73,7 @@ isoEContT n_m m_n e_f xner = EContT $ \fr_mx ->
   n_m $ runEContT xner $ \case
     Left e -> m_n $ fr_mx (Left $ e_f e)
     Right r -> m_n $ fr_mx (Right r)
+{-# INLINE isoEContT #-}
 
 -- Much easier, with shared m (which is common base like IO, from which other context can be restored)
 mapEContT :: (e -> f) -> EContT e x m r -> EContT f x m r
@@ -79,6 +81,7 @@ mapEContT e_f xmer = EContT $ \er_mx ->
   runEContT xmer $ \case
     Left e -> er_mx (Left $ e_f e)
     Right r -> er_mx (Right r)
+{-# INLINE mapEContT #-}
 
 -- | Recover final continuation result via mutable var.
 execEContT :: (HasCallStack, MonadIO m) => EContT e () m r -> m (m (Either e r))
@@ -86,6 +89,7 @@ execEContT action = do
   result <- newEmptyMVar
   runEContT action $ \r -> liftIO (tryPutMVar result r) >>= \ok -> unless ok (error "already ran")
   pure $ tryTakeMVar result >>= maybe (error "did not run") pure
+{-# INLINE execEContT #-}
 
 -- * Continuation batching
 
@@ -110,3 +114,4 @@ batchOperation st step = do
   EContT $ \er_Mu -> do
     let next er = EContT $ \eu_Mu__Mu -> eu_Mu__Mu (Right ()) >> er_Mu er
     atomically $ modifyTVar' st (BatchOperation {step, next} :)
+{-# INLINE batchOperation #-}
