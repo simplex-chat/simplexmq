@@ -136,6 +136,7 @@ import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, delete
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
+import Simplex.Messaging.Agent.Batch
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock (withLock)
@@ -865,19 +866,25 @@ getNotificationMessage' c nonce encNtfInfo = do
           Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'} -> msgId == msgId' || msgTs > msgTs'
           Nothing -> SMP.notification msgFlags
 
--- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
+sendMessage' c connId msgFlags msg = oneResult =<< runAgentBatch c [sendMessageB' c connId msgFlags msg]
+
+-- TODO something smarter than "head" to return error if there is more/less results
+oneResult :: AgentMonad m => [Either AgentErrorType a] -> m a
+oneResult = liftEither . head
+
+-- | Send message to the connection (SEND command) in Reader monad
+sendMessageB' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m (AgentBatch m AgentMsgId)
+sendMessageB' c connId msgFlags msg = withConnLockB connId "sendMessage" $
+  withStoreB (`getConn` connId) $ \(SomeConn _ conn) -> case conn of
     DuplexConnection cData _ sqs -> enqueueMsgs cData sqs
     SndConnection cData sq -> enqueueMsgs cData [sq]
     _ -> throwError $ CONN SIMPLEX
   where
-    enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
+    enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m (AgentBatch m AgentMsgId)
     enqueueMsgs cData sqs = do
       when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
-      enqueueMessages c cData sqs msgFlags $ A_MSG msg
+      enqueueMessagesB c cData sqs msgFlags $ A_MSG msg
 
 -- / async command processing v v v
 
@@ -1051,27 +1058,38 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessages c cData sqs msgFlags aMessage = do
+enqueueMessages c cData sqs msgFlags aMessage = oneResult =<< runAgentBatch c [enqueueMessagesB c cData sqs msgFlags aMessage]
+
+enqueueMessagesB :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
+enqueueMessagesB c cData sqs msgFlags aMessage = do
   when (ratchetSyncSendProhibited cData) $ throwError $ INTERNAL "enqueueMessages: ratchet is not synchronized"
-  enqueueMessages' c cData sqs msgFlags aMessage
+  enqueueMessagesB' c cData sqs msgFlags aMessage
 
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessages' c cData (sq :| sqs) msgFlags aMessage = do
-  msgId <- enqueueMessage c cData sq msgFlags aMessage
-  mapM_ (enqueueSavedMessage c cData msgId) $
-    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
-  pure msgId
+enqueueMessages' c cData sqs msgFlags aMessage = oneResult =<< runAgentBatch c [enqueueMessagesB' c cData sqs msgFlags aMessage]
+
+enqueueMessagesB' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
+enqueueMessagesB' c cData (sq :| sqs) msgFlags aMessage =
+  bindB (enqueueMessageB c cData sq msgFlags aMessage) $ \msgId -> do
+    mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
+    pureB msgId
+
+isActiveSndQ :: SndQueue -> Bool
+isActiveSndQ SndQueue {status} = status == Secured || status == Active
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessage c cData@ConnData {connId} sq msgFlags aMessage = do
+enqueueMessage c cData sq msgFlags aMessage = oneResult =<< runAgentBatch c [enqueueMessageB c cData sq msgFlags aMessage]
+
+enqueueMessageB :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
+enqueueMessageB c cData@ConnData {connId} sq msgFlags aMessage = do
   resumeMsgDelivery c cData sq
   aVRange <- asks $ smpAgentVRange . config
-  msgId <- storeSentMsg $ maxVersion aVRange
-  queuePendingMsgs c sq [msgId]
-  pure $ unId msgId
+  withStoreB (`storeSentMsg` maxVersion aVRange) $ \msgId -> do
+    queuePendingMsgs c sq [msgId]
+    pureB $ unId msgId
   where
-    storeSentMsg :: Version -> m InternalId
-    storeSentMsg agentVersion = withStore c $ \db -> runExceptT $ do
+    storeSentMsg :: DB.Connection -> Version -> IO (Either StoreError InternalId)
+    storeSentMsg db agentVersion = runExceptT $ do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
@@ -1086,7 +1104,7 @@ enqueueMessage c cData@ConnData {connId} sq msgFlags aMessage = do
       liftIO $ createSndMsgDelivery db connId sq internalId
       pure internalId
 
-enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
+enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m()
 enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
   resumeMsgDelivery c cData sq
   let mId = InternalId msgId
@@ -2434,8 +2452,7 @@ storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentM
 enqueueRatchetKeyMsgs :: forall m. AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
 enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
   msgId <- enqueueRatchetKey c cData sq e2eEncryption
-  mapM_ (enqueueSavedMessage c cData msgId) $
-    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
+  mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
   pure msgId
 
 enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
