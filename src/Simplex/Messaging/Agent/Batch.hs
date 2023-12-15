@@ -83,8 +83,13 @@ execBatch _ _ = throwError $ batchError @op @cxt @e @m "not implemented"
 pureB :: Monad m => a -> m (Batch op e m a)
 pureB = pure . BPure . Right
 
-(=>>=) :: Monad m => m (Batch op e m b) -> (b -> m (Batch op e m a)) -> m (Batch op e m a)
-(=>>=) = pure .: BBind
+infixl 0 @>>=, @>>
+
+(@>>=) :: Monad m => m (Batch op e m b) -> (b -> m (Batch op e m a)) -> m (Batch op e m a)
+(@>>=) = pure .: BBind
+
+(@>>) :: Monad m => m (Batch op e m b) -> m (Batch op e m a) -> m (Batch op e m a)
+(@>>) m = (m @>>=) . const
 
 batch :: Monad m => [m (Batch op e m b)] -> m (Batch op e m a) -> m (Batch op e m a)
 batch as = pure . BBatch_ as

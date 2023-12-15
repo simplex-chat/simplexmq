@@ -1070,7 +1070,7 @@ enqueueMessages' c = unBatch c .:: enqueueMessagesB' c
 
 enqueueMessagesB' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
 enqueueMessagesB' c cData (sq :| sqs) msgFlags aMessage =
-  enqueueMessageB c cData sq msgFlags aMessage =>>= \msgId ->
+  enqueueMessageB c cData sq msgFlags aMessage @>>= \msgId ->
     batch (map (enqueueSavedMessageB c cData msgId) (filter isActiveSndQ sqs)) $ pureB msgId
 
 isActiveSndQ :: SndQueue -> Bool
