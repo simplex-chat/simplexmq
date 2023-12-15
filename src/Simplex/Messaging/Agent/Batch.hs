@@ -92,7 +92,7 @@ infixl 0 @>>=, @>>
 (@>>) m = (m @>>=) . const
 
 batch :: Monad m => [m (Batch op e m b)] -> m (Batch op e m a) -> m (Batch op e m a)
-batch as = pure . BBatch_ as
+batch = pure .: BBatch_
 
 withStoreB :: Monad m => (DB.Connection -> IO (Either StoreError b)) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
 withStoreB = pure . BEffect .: ABDatabase
