@@ -866,16 +866,20 @@ getNotificationMessage' c nonce encNtfInfo = do
           Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'} -> msgId == msgId' || msgTs > msgTs'
           Nothing -> SMP.notification msgFlags
 
-sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = oneResult =<< runAgentBatch c [sendMessageB' c connId msgFlags msg]
+-- | Send message to the connection (SEND command) in Reader monad
+sendMessage' :: AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
+sendMessage' c connId msgFlags msg =
+  withConnLock c connId "sendMessage" $
+    oneResult =<< runBatch c [sendMessageB' c connId msgFlags msg]
 
 -- TODO something smarter than "head" to return error if there is more/less results
 oneResult :: AgentMonad m => [Either AgentErrorType a] -> m a
 oneResult = liftEither . head
 
--- | Send message to the connection (SEND command) in Reader monad
+-- | Send message to the connection (SEND command) using provided batch
+-- A connLock must be taken on connId!
 sendMessageB' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m (AgentBatch m AgentMsgId)
-sendMessageB' c connId msgFlags msg = withConnLockB connId "sendMessage" $
+sendMessageB' c connId msgFlags msg =
   withStoreB (`getConn` connId) $ \(SomeConn _ conn) -> case conn of
     DuplexConnection cData _ sqs -> enqueueMsgs cData sqs
     SndConnection cData sq -> enqueueMsgs cData [sq]
@@ -1058,7 +1062,7 @@ runCommandProcessing c@AgentClient {subQ} server_ = do
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessages c cData sqs msgFlags aMessage = oneResult =<< runAgentBatch c [enqueueMessagesB c cData sqs msgFlags aMessage]
+enqueueMessages c cData sqs msgFlags aMessage = oneResult =<< runBatch c [enqueueMessagesB c cData sqs msgFlags aMessage]
 
 enqueueMessagesB :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
 enqueueMessagesB c cData sqs msgFlags aMessage = do
@@ -1066,19 +1070,18 @@ enqueueMessagesB c cData sqs msgFlags aMessage = do
   enqueueMessagesB' c cData sqs msgFlags aMessage
 
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessages' c cData sqs msgFlags aMessage = oneResult =<< runAgentBatch c [enqueueMessagesB' c cData sqs msgFlags aMessage]
+enqueueMessages' c cData sqs msgFlags aMessage = oneResult =<< runBatch c [enqueueMessagesB' c cData sqs msgFlags aMessage]
 
 enqueueMessagesB' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
 enqueueMessagesB' c cData (sq :| sqs) msgFlags aMessage =
-  bindB (enqueueMessageB c cData sq msgFlags aMessage) $ \msgId -> do
-    mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
-    pureB msgId
+  enqueueMessageB c cData sq msgFlags aMessage =>>= \msgId ->
+    batch (map (enqueueSavedMessageB c cData msgId) (filter isActiveSndQ sqs)) $ pureB msgId
 
 isActiveSndQ :: SndQueue -> Bool
 isActiveSndQ SndQueue {status} = status == Secured || status == Active
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessage c cData sq msgFlags aMessage = oneResult =<< runAgentBatch c [enqueueMessageB c cData sq msgFlags aMessage]
+enqueueMessage c cData sq msgFlags aMessage = oneResult =<< runBatch c [enqueueMessageB c cData sq msgFlags aMessage]
 
 enqueueMessageB :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
 enqueueMessageB c cData@ConnData {connId} sq msgFlags aMessage = do
@@ -1104,12 +1107,15 @@ enqueueMessageB c cData@ConnData {connId} sq msgFlags aMessage = do
       liftIO $ createSndMsgDelivery db connId sq internalId
       pure internalId
 
-enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m()
-enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
+enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
+enqueueSavedMessage c cData msgId sq = oneResult =<< runBatch c [enqueueSavedMessageB c cData msgId sq]
+
+enqueueSavedMessageB :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m (AgentBatch m ())
+enqueueSavedMessageB c cData@ConnData {connId} msgId sq = do
   resumeMsgDelivery c cData sq
   let mId = InternalId msgId
   queuePendingMsgs c sq [mId]
-  withStore' c $ \db -> createSndMsgDelivery db connId sq mId
+  withStoreB' (\db -> createSndMsgDelivery db connId sq mId) pureB
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do

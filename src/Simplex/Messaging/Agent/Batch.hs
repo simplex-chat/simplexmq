@@ -1,75 +1,89 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Agent.Batch where
 
 import Control.Monad.Except
-import Data.Composition ((.:), (.:.))
+import Data.Composition ((.:))
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnId)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store
 
-data AgentBatch m a
-  = ABPure (Either AgentErrorType a)
-  | ABLock {lockConnId :: ConnId, lockName :: String, next_ :: m (AgentBatch m a)}
-  | forall b. ABDatabase {dbAction :: DB.Connection -> IO (Either StoreError b), next :: b -> m (AgentBatch m a)}
-  | forall b. ABBind {bindAction :: m (AgentBatch m b), next :: b -> m (AgentBatch m a)}
-  -- | forall b. ABBatch_ {actions_ :: [m (AgentBatch m b)], next_ :: m (AgentBatch m a)}
+data Batch op e m a
+  = BPure (Either e a)
+  | forall b. BBind {bindAction :: m (Batch op e m b), next :: b -> m (Batch op e m a)}
+  | forall b. BBatch_ {actions_ :: [m (Batch op e m b)], next_ :: m (Batch op e m a)}
+  | BEffect (op m a)
 
-runAgentBatch :: forall a m. AgentMonad m => AgentClient -> [m (AgentBatch m a)] -> m [Either AgentErrorType a]
-runAgentBatch c as = mapM batchResult =<< execAgentBatch c as
+class MonadError e m => BatchEffect op cxt e m | op -> cxt, op -> e where
+  execBatchEffects :: cxt -> [op m a] -> m [Batch op e m a]
+  batchError :: String -> e
+
+type AgentBatch m a = Batch AgentBatchOp AgentErrorType m a
+
+data AgentBatchOp m a = forall b. ABDatabase {dbAction :: DB.Connection -> IO (Either StoreError b), next :: b -> m (AgentBatch m a)}
+
+instance AgentMonad m => BatchEffect AgentBatchOp AgentClient AgentErrorType m where
+  execBatchEffects c = \case
+    (ABDatabase {dbAction, next} : _) ->
+      runExceptT (withStore c dbAction) >>= \case
+        Left e -> pure [BPure $ Left e]
+        Right r' -> execBatch c [next r']
+    _ -> throwError $ INTERNAL "not implemented"
+  batchError = INTERNAL
+
+runBatch :: forall a op cxt e m. BatchEffect op cxt e m => cxt -> [m (Batch op e m a)] -> m [Either e a]
+runBatch c as = mapM batchResult =<< execBatch c as
   where
-    batchResult :: AgentBatch m a -> m (Either AgentErrorType a)
+    batchResult :: Batch op e m a -> m (Either e a)
     batchResult = \case
-      ABPure r -> pure r
-      _ -> throwError $ INTERNAL "incomplete batch processing"
+      BPure r -> pure r
+      _ -> throwError $ batchError @op @cxt @e @m "incomplete batch processing"
 
-execAgentBatch :: AgentMonad m => AgentClient -> [m (AgentBatch m a)] -> m [AgentBatch m a]
-execAgentBatch c [a] = run =<< tryError a 
+execBatch :: forall a op cxt e m. BatchEffect op cxt e m => cxt -> [m (Batch op e m a)] -> m [Batch op e m a]
+execBatch c [a] = run =<< tryError a 
   where
-    run (Left e) = pure [ABPure $ Left e]
+    run (Left e) = pure [BPure $ Left e]
     run (Right r) = case r of
-      ABPure r' -> pure [ABPure r']
-      ABLock {lockConnId, lockName, next_} -> withConnLock c lockConnId lockName $ execAgentBatch c [next_]
-      ABDatabase {dbAction, next} -> do
-        runExceptT (withStore c dbAction) >>= \case
-          Left e -> pure [ABPure $ Left e]
-          Right r' -> execAgentBatch c [next r']
-      ABBind {bindAction, next} -> tryError bindAction >>= \case
-        Left e -> pure [ABPure $ Left e]
+      BPure r' -> pure [BPure r']
+      BBind {bindAction, next} -> tryError bindAction >>= \case
+        Left e -> pure [BPure $ Left e]
         Right r' -> case r' of
-          ABPure (Right r'') -> execAgentBatch c [next r'']
-          ABPure (Left e) -> pure [ABPure $ Left e]
+          BPure (Right r'') -> execBatch c [next r'']
+          BPure (Left e) -> pure [BPure $ Left e]
           r'' -> do
-            r3 <- runAgentBatch c [pure r'']
+            r3 <- runBatch c [pure r'']
             case r3 of
-              (Right r4 : _) -> execAgentBatch c [next r4]
-              (Left e : _) -> pure [ABPure $ Left e]
-              _ -> pure [ABPure $ Left $ INTERNAL "bad batch processing"]
-            
-        
-      -- ABBatch_ {actions_, next_} -> do
-      --   rs <- mapM run actions
-      --   forM_ rs $ \r -> execAgentBatch c [pure r]
-      --   next_
-execAgentBatch _ _ = throwError $ INTERNAL "not implemented"
-
--- mapMB_ :: Monad m => (b -> m (AgentBatch m a)) -> [b] -> m (AgentBatch m ()) -> m (AgentBatch m ())
--- mapMB_ f as next = (`ABBatch_` next) <$> mapM f as
+              (Right r4 : _) -> execBatch c [next r4]
+              (Left e : _) -> pure [BPure $ Left e]
+              _ -> pure [BPure $ Left $ batchError @op @cxt @e @m "bad batch processing"]
+      BBatch_ {actions_, next_} -> do
+        sequence actions_ >>= mapM_ (\r' -> execBatch c [pure r'])
+        execBatch c [next_]
+      BEffect op -> execBatchEffects c [op]
+execBatch _ _ = throwError $ batchError @op @cxt @e @m "not implemented"
 
 pureB :: Monad m => a -> m (AgentBatch m a)
-pureB = pure . ABPure . Right
+pureB = pure . BPure . Right
 
-withConnLockB :: Monad m => ConnId -> String -> m (AgentBatch m a) -> m (AgentBatch m a)
-withConnLockB = pure .:. ABLock
+(=>>=) :: Monad m => m (AgentBatch m b) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
+(=>>=) = pure .: BBind
+
+batch :: Monad m => [m (AgentBatch m b)] -> m (AgentBatch m a) -> m (AgentBatch m a)
+batch as = pure . BBatch_ as
 
 withStoreB :: Monad m => (DB.Connection -> IO (Either StoreError b)) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
-withStoreB = pure .: ABDatabase
+withStoreB = pure . BEffect .: ABDatabase
 
-bindB :: Monad m => m (AgentBatch m b) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
-bindB = pure .: ABBind
+withStoreB' :: Monad m => (DB.Connection -> IO b) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
+withStoreB' f = withStoreB (fmap Right . f)
