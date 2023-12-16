@@ -282,7 +282,7 @@ sendMessage c = withAgentEnv c .:. sendMessage' c
 type MsgReq = (ConnId, MsgFlags, MsgBody)
 
 -- | Send multiple messages to different connections (SEND command)
-sendMessages :: AgentErrorMonad m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
+sendMessages :: MonadUnliftIO m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
 sendMessages c = withAgentEnv c . sendMessages' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
@@ -881,13 +881,13 @@ sendMessage' c connId msgFlags msg =
   oneResult $ \r -> sendMessagesB c [(r, (connId, msgFlags, msg))]
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
-sendMessages' :: forall m. AgentMonad m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
+sendMessages' :: forall m. AgentMonad' m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
 sendMessages' c msgReqs = do
   rs <- replicateM (length msgReqs) (newIORef $ Left $ INTERNAL "skipped in batch")
   sendMessagesB c $ zip rs msgReqs
   mapM readIORef rs
 
-sendMessagesB :: forall m. AgentMonad m => AgentClient -> [(EIORef AgentMsgId, MsgReq)] -> m ()
+sendMessagesB :: forall m. AgentMonad' m => AgentClient -> [(EIORef AgentMsgId, MsgReq)] -> m ()
 sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
   reqs' <- zip reqs <$> withStoreBatch c (\db -> map (getConn db) connIds)
   reqs'' <- catMaybes <$> mapM prepareConn reqs'
@@ -1086,7 +1086,7 @@ enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue
 enqueueMessages' c cData sqs msgFlags aMessage =
   oneResult $ \r -> enqueueMessagesB c [(r, (cData, sqs, msgFlags, aMessage))]
 
-enqueueMessagesB :: AgentMonad m => AgentClient -> [(EIORef AgentMsgId, (ConnData, NonEmpty SndQueue, MsgFlags, AMessage))] -> m ()
+enqueueMessagesB :: AgentMonad' m => AgentClient -> [(EIORef AgentMsgId, (ConnData, NonEmpty SndQueue, MsgFlags, AMessage))] -> m ()
 enqueueMessagesB _ [] = pure ()
 enqueueMessagesB c reqs = enqueueMessageB c reqs >>= enqueueSavedMessageB c
 
@@ -1098,10 +1098,10 @@ enqueueMessage c cData sq msgFlags aMessage =
   oneResult $ \r -> enqueueMessageB c [(r, (cData, [sq], msgFlags, aMessage))]
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
-enqueueMessageB :: forall m. AgentMonad m => AgentClient -> [(EIORef AgentMsgId, (ConnData, NonEmpty SndQueue, MsgFlags, AMessage))] -> m [(ConnData, [SndQueue], AgentMsgId)]
+enqueueMessageB :: forall m. AgentMonad' m => AgentClient -> [(EIORef AgentMsgId, (ConnData, NonEmpty SndQueue, MsgFlags, AMessage))] -> m [(ConnData, [SndQueue], AgentMsgId)]
 enqueueMessageB c reqs = do
   forM_ reqs $ \(_, (cData, sq :| _, _, _)) ->
-    resumeMsgDelivery c cData sq
+    runExceptT $ resumeMsgDelivery c cData sq
   aVRange <- asks $ smpAgentVRange . config
   mIds <- withStoreBatch c $ \db ->
     map (storeSentMsg db $ maxVersion aVRange) reqs
@@ -1132,16 +1132,16 @@ enqueueMessageB c reqs = do
         let sqs' = filter isActiveSndQ sqs
         pure $ if null sqs' then Nothing else Just (cData, sqs', msgId)
 
-enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
+enqueueSavedMessage :: AgentMonad' m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
 enqueueSavedMessage c cData msgId sq = enqueueSavedMessageB c [(cData, [sq], msgId)]
 
-enqueueSavedMessageB :: AgentMonad m => AgentClient -> [(ConnData, [SndQueue], AgentMsgId)] -> m ()
+enqueueSavedMessageB :: AgentMonad' m => AgentClient -> [(ConnData, [SndQueue], AgentMsgId)] -> m ()
 enqueueSavedMessageB c reqs = do
   -- saving to the database moved to the start to avoid race conditions when delivery is read from queue before it is saved
   void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) reqs
   forM_ reqs $ \(cData, sqs, msgId) ->
     forM sqs $ \sq -> do
-      resumeMsgDelivery c cData sq
+      void . runExceptT $ resumeMsgDelivery c cData sq
       let mId = InternalId msgId
       queuePendingMsgs c sq [mId]
   where
