@@ -123,28 +123,18 @@ execBatch' c as = do
       (r, BEffects_ cont) -> (vs, bs, effs, (r, cont) : effs_)
 
 execBatch :: forall a op cxt e m. BatchEffect op cxt e m => cxt -> [m (Batch op e m a)] -> m [Batch op e m a]
-execBatch c [a] = run =<< tryError a 
+execBatch c [a] = run =<< tryError (evaluateB a)
   where
-    run (Left e) = pure [BPure $ Left e]
-    run (Right r) = case r of
-      BPure r' -> pure [BPure r']
-      BBind (BindCont {bindAction, next}) -> tryError bindAction >>= \case
-        Left e -> pure [BPure $ Left e]
-        Right r' -> case r' of
-          BPure (Right r'') -> execBatch c [next r'']
-          BPure (Left e) -> pure [BPure $ Left e]
-          r'' -> do
-            r3 <- runBatch c [pure r'']
-            case r3 of
-              (Right r4 : _) -> execBatch c [next r4]
-              (Left e : _) -> pure [BPure $ Left e]
-              _ -> pure [BPure $ Left $ batchError @op @cxt @e @m "bad batch processing"]
-      BEffect (EffectCont op next) -> execBatchEffects c [op] >>= \case
-        Left e : _ -> pure [BPure $ Left e]
-        Right r' : _ -> execBatch c [next r']
-        _ -> pure [BPure $ Left $ batchError @op @cxt @e @m "not implemented"]
-      BEffects_ (EffectsCont_ {effects_, next_}) ->
-        execBatchEffects c effects_ >> execBatch c [next_]
+    run = \case
+      Left e -> pure [BPure $ Left e]
+      Right r -> case r of
+        EPure r' -> pure [BPure r']
+        EEffect (EffectCont op next) -> execBatchEffects c [op] >>= \case
+          Left e : _ -> pure [BPure $ Left e]
+          Right r' : _ -> execBatch c [next r']
+          _ -> pure [BPure $ Left $ batchError @op @cxt @e @m "not implemented"]
+        EEffects_ (EffectsCont_ {effects_, next_}) ->
+          execBatchEffects c effects_ >> execBatch c [next_]
 execBatch _ _ = throwError $ batchError @op @cxt @e @m "not implemented"
 
 pureB :: Monad m => a -> m (Batch op e m a)
