@@ -1069,9 +1069,12 @@ enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue
 enqueueMessages' c = unBatch c .:: enqueueMessagesB' c
 
 enqueueMessagesB' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m (AgentBatch m AgentMsgId)
-enqueueMessagesB' c cData (sq :| sqs) msgFlags aMessage =
-  enqueueMessageB c cData sq msgFlags aMessage @>>= \msgId ->
-    batch (map (enqueueSavedMessageB c cData msgId) (filter isActiveSndQ sqs)) $ pureB msgId
+enqueueMessagesB' c cData@ConnData {connId} (sq :| sqs) msgFlags aMessage =
+  enqueueMessageB c cData sq msgFlags aMessage @>>= \msgId -> do
+    let sqs' = filter isActiveSndQ sqs
+    withStoreBatchB'
+      (map (\sq' -> \db -> createSndMsgDelivery db connId sq' $ InternalId msgId) sqs')
+      (mapM_ (enqueueSavedMessage c cData msgId) sqs' >> pureB msgId)
 
 isActiveSndQ :: SndQueue -> Bool
 isActiveSndQ SndQueue {status} = status == Secured || status == Active
@@ -1104,14 +1107,10 @@ enqueueMessageB c cData@ConnData {connId} sq msgFlags aMessage = do
       pure internalId
 
 enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
-enqueueSavedMessage c = unBatch c .:. enqueueSavedMessageB c
-
-enqueueSavedMessageB :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m (AgentBatch m ())
-enqueueSavedMessageB c cData@ConnData {connId} msgId sq = do
+enqueueSavedMessage c cData msgId sq = do
   resumeMsgDelivery c cData sq
   let mId = InternalId msgId
   queuePendingMsgs c sq [mId]
-  withStoreB' (\db -> createSndMsgDelivery db connId sq mId) pureB
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
@@ -2452,9 +2451,11 @@ storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentM
   pure internalId
 
 enqueueRatchetKeyMsgs :: forall m. AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
-enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
+enqueueRatchetKeyMsgs c cData@ConnData {connId} (sq :| sqs) e2eEncryption = do
   msgId <- enqueueRatchetKey c cData sq e2eEncryption
-  mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
+  forM_ (filter isActiveSndQ sqs) $ \sq' -> do
+    withStore' c $ \db -> createSndMsgDelivery db connId sq' $ InternalId msgId
+    enqueueSavedMessage c cData msgId sq'
   pure msgId
 
 enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
