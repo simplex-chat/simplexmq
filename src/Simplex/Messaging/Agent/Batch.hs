@@ -27,7 +27,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store
 import UnliftIO
 
-data Batch op e m a
+data Batch op e (m :: * -> *) a
   = BPure (Either e a)
   | BBind (BindCont op e m a)
   | BBatch_ (BatchCont_ op e m a)
@@ -39,32 +39,28 @@ data Batch op e m a
 --   | EBatch_ (EBatchCont_ op e m a)
 --   | EEffect (EffectCont op e m a)
 
-data BindCont op e (m :: * -> *) a = forall b. BindCont {bindAction :: m (Batch op e m b), next :: b -> m (Batch op e m a)}
+data BindCont op e m a = forall b. BindCont {bindAction :: m (Batch op e m b), next :: b -> m (Batch op e m a)}
 
 -- data EvaluaterCont op e m a = 
 
 -- TODO should batch be failable? probably so, it is failable in the current code. but then mixing batch effects with other effects can break the batch?
-data BatchCont_ op e (m :: * -> *) a = forall b. BatchCont_ {actions_ :: [m (Batch op e m b)], next_ :: m (Batch op e m a)}
+data BatchCont_ op e m a = forall b. BatchCont_ {actions_ :: [m (Batch op e m b)], next_ :: m (Batch op e m a)}
 
 -- data EBatchCont_ op e m a = forall b. EBatchCont_ {effects :: [op m b]], next_ :: m (Batch op e m a)}
 
-data EffectCont op e (m :: * -> *) a = EffectCont {effect :: op m a}
--- forall b. EffectCont {effect :: op m b, next :: b -> m (Batch op e m a)
+data EffectCont op e m a = forall b. EffectCont {effect :: op m b, next :: b -> m (Batch op e m a)}
 
 class (MonadError e m, MonadIO m) => BatchEffect op cxt e m | op -> cxt, op -> e where
-  execBatchEffects :: cxt -> [op m a] -> m [Batch op e m a]
+  execBatchEffects :: cxt -> [op m a] -> m [Either e a]
   batchError :: String -> e
 
 type AgentBatch m a = Batch AgentBatchEff AgentErrorType m a
 
-data AgentBatchEff m a = forall b. ABDatabase {dbAction :: DB.Connection -> IO (Either StoreError b), next :: b -> m (AgentBatch m a)}
+data AgentBatchEff (m :: * -> *) b = ABDatabase {dbAction :: DB.Connection -> IO (Either StoreError b)}
 
 instance AgentMonad m => BatchEffect AgentBatchEff AgentClient AgentErrorType m where
   execBatchEffects c = \case
-    (ABDatabase {dbAction, next} : _) ->
-      runExceptT (withStore c dbAction) >>= \case
-        Left e -> pure [BPure $ Left e]
-        Right r' -> execBatch c [next r']
+    (ABDatabase dbAction : _) -> (: []) <$> runExceptT (withStore c dbAction)
     _ -> throwError $ INTERNAL "not implemented"
   batchError = INTERNAL
 
@@ -133,7 +129,10 @@ execBatch c [a] = run =<< tryError a
       BBatch_ (BatchCont_ {actions_, next_}) -> do
         sequence actions_ >>= mapM_ (\r' -> execBatch c [pure r'])
         execBatch c [next_]
-      BEffect (EffectCont op) -> execBatchEffects c [op]
+      BEffect (EffectCont op next) -> execBatchEffects c [op] >>= \case
+        Left e : _ -> pure [BPure $ Left e]
+        Right r' : _ -> execBatch c [next r']
+        _ -> pure [BPure $ Left $ batchError @op @cxt @e @m "not implemented"]
 execBatch _ _ = throwError $ batchError @op @cxt @e @m "not implemented"
 
 pureB :: Monad m => a -> m (Batch op e m a)
@@ -151,7 +150,7 @@ batch :: Monad m => [m (Batch op e m b)] -> m (Batch op e m a) -> m (Batch op e 
 batch = pure . BBatch_ .: BatchCont_
 
 withStoreB :: Monad m => (DB.Connection -> IO (Either StoreError b)) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
-withStoreB = pure . BEffect . EffectCont .: ABDatabase
+withStoreB f = pure . BEffect . EffectCont (ABDatabase f)
 
 withStoreB' :: Monad m => (DB.Connection -> IO b) -> (b -> m (AgentBatch m a)) -> m (AgentBatch m a)
 withStoreB' f = withStoreB (fmap Right . f)
