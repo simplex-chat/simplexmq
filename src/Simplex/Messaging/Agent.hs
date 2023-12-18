@@ -1098,14 +1098,19 @@ enqueueMessage c cData sq msgFlags aMessage =
   oneResult $ \r -> enqueueMessageB c [(r, (cData, [sq], msgFlags, aMessage))]
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
-enqueueMessageB :: forall m. AgentMonad' m => AgentClient -> [(EIORef AgentMsgId, (ConnData, NonEmpty SndQueue, MsgFlags, AMessage))] -> m [(ConnData, [SndQueue], AgentMsgId)]
+enqueueMessageB :: forall m. AgentMonad' m => AgentClient -> [Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage))] -> m [Either AgentErrorType (ConnData, [SndQueue], AgentMsgId)]
 enqueueMessageB c reqs = do
-  forM_ reqs $ \(_, (cData, sq :| _, _, _)) ->
+  forME_ reqs $ \(_, (cData, sq :| _, _, _)) ->
     runExceptT $ resumeMsgDelivery c cData sq
   aVRange <- asks $ smpAgentVRange . config
   mIds <- withStoreBatch c $ \db ->
-    map (storeSentMsg db $ maxVersion aVRange) reqs
-  catMaybes <$> mapM processResults (zip reqs mIds)
+    map (mapE $ storeSentMsg db $ maxVersion aVRange) reqs
+  forME mIds $ \mId -> do
+    let InternalId msgId = mId
+    queuePendingMsgs c sq [mId]
+    let sqs' = filter isActiveSndQ sqs
+    pure $ Right (cData, sqs', msgId)
+  -- catMaybes <$> mapM processResults (zip reqs mIds)
   where
     storeSentMsg :: DB.Connection -> Version -> (EIORef AgentMsgId, (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)) -> IO (Either StoreError InternalId)
     storeSentMsg db agentVersion (_, (ConnData {connId}, sq :| _, msgFlags, aMessage)) = runExceptT $ do

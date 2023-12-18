@@ -85,6 +85,26 @@ unlessM b = ifM b $ pure ()
 ($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
 f $>>= g = f >>= fmap join . mapM g
 
+mapME :: Monad m => (a -> m (Either e b)) -> [Either e a] -> m [Either e b]
+mapME f = mapM (mapE f)
+{-# INLINE mapME #-}
+
+mapME_ :: Monad m => (a -> m (Either e b)) -> [Either e a] -> m ()
+mapME_ f = mapM_ (mapE f)
+{-# INLINE mapME_ #-}
+
+mapE :: Monad m => (a -> m (Either e b)) -> Either e a -> m (Either e b)
+mapE f = either (pure . Left) f
+{-# INLINE mapE #-}
+
+forME :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m [Either e b]
+forME = flip mapME
+{-# INLINE forME #-}
+
+forME_ :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m [Either e b]
+forME_ = void . flip mapME_
+{-# INLINE forME_ #-}
+
 catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
 catchAll = E.catch
 {-# INLINE catchAll #-}
