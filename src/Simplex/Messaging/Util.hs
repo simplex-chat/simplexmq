@@ -94,15 +94,15 @@ mapME_ f = mapM_ (mapE f)
 {-# INLINE mapME_ #-}
 
 mapE :: Monad m => (a -> m (Either e b)) -> Either e a -> m (Either e b)
-mapE f = either (pure . Left) f
+mapE = either (pure . Left)
 {-# INLINE mapE #-}
 
 forME :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m [Either e b]
 forME = flip mapME
 {-# INLINE forME #-}
 
-forME_ :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m [Either e b]
-forME_ = void . flip mapME_
+forME_ :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m ()
+forME_ f = void . forME f
 {-# INLINE forME_ #-}
 
 catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
