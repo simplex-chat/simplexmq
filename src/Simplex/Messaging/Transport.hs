@@ -73,7 +73,6 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
-import Debug.Trace (traceEventIO)
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import qualified Network.TLS as T
@@ -83,7 +82,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
-import Simplex.Messaging.Util (bshow, catchAll)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
@@ -187,7 +186,7 @@ closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
     `E.finally` T.contextClose ctx
-    `catchAll` \(E.SomeException e) -> traceEventIO ("closeTLS/" <> takeWhile (/= ' ') (show e))
+    `catchAll_` pure ()
 
 supportedParameters :: T.Supported
 supportedParameters =

@@ -59,7 +59,6 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
-import Debug.Trace (traceEventIO)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -240,17 +239,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           threadDelay' interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
-    runClient tp h = bracket_ start end $ do
+    runClient tp h = do
       kh <- asks serverIdentity
       smpVRange <- asks $ smpServerVRange . config
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout 120000000 . runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
-      where
-        sid = B.unpack . encode $ tlsUnique h
-        start = liftIO $ traceEventIO ("START " <> sid <> " S")
-        end = liftIO $ traceEventIO ("STOP " <> sid <> " S")
 
     controlPortThread_ :: ServerConfig -> [M ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
@@ -364,7 +359,6 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   labelMyThread $ "client $" <> sid
-  liftIO $ traceEventIO ("START " <> sid <> " C")
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
@@ -375,7 +369,6 @@ runClientTransport th@THandle {thVersion, sessionId} = do
 
 clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
-  liftIO $ traceEventIO ("START " <> sid <> " D")
   labelMyThread $ "client $" <> sid <> " disc"
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
@@ -384,8 +377,6 @@ clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
   asks clients >>= atomically . TM.delete clientId
-  liftIO $ traceEventIO ("STOP " <> sid <> " D")
-  liftIO $ traceEventIO ("STOP " <> sid <> " C")
   where
     sid = B.unpack $ encode sessionId
     deleteCurrentClient :: Client -> Maybe Client
@@ -404,15 +395,12 @@ cancelSub sub =
 
 receive :: Transport c => THandle c -> Client -> M ()
 receive th Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
-  -- labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
-    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / tGet"
     ts <- L.toList <$> liftIO (tGet th)
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
     as <- partitionEithers <$> mapM cmdAction ts
-    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / write snd"
     write sndQ $ fst as
-    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive / write rcv"
     write rcvQ $ snd as
   where
     cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
@@ -428,11 +416,9 @@ receive th Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
 
 send :: Transport c => THandle c -> Client -> IO ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
-  -- labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
-    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send / read"
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-    labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send / tPut"
     void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
@@ -883,9 +869,7 @@ randomId n = do
   atomically (C.pseudoRandomBytes n gVar)
 
 saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => Bool -> m ()
-saveServerMessages keepMsgs = do
-  liftIO $ traceEventIO "saveServerMessages"
-  asks (storeMsgsFile . config) >>= mapM_ saveMessages
+saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
     saveMessages f = do
       logInfo $ "saving messages to file " <> T.pack f
