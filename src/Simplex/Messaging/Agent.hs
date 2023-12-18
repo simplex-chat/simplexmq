@@ -109,7 +109,6 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Applicative (liftA2)
 import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad
 import Control.Monad.Except
@@ -884,7 +883,7 @@ sendMessages' c msgReqs = sendMessagesB c $ Right <$> msgReqs
 
 sendMessagesB :: forall m. AgentMonad' m => AgentClient -> [Either AgentErrorType MsgReq] -> m [Either AgentErrorType AgentMsgId]
 sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
-  reqs' <- zipWith (liftA2 (,)) reqs <$> withStoreBatch c (\db -> map (first storeError <$$> getConn db) connIds)
+  reqs' <- withStoreBatch c (\db -> map (mapE $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   reqs'' <- mapME prepareConn reqs'
   enqueueMessagesB c reqs''
   where
@@ -1097,16 +1096,15 @@ enqueueMessageB c reqs = do
   void . forME reqs $ \(cData, sq :| _, _, _) ->
     runExceptT $ resumeMsgDelivery c cData sq
   aVRange <- asks $ maxVersion . smpAgentVRange . config
-  mIds <- withStoreBatch c $ \db ->
-    map (mapE (first storeError <$$> storeSentMsg db aVRange)) reqs
-  forME (zipWith (liftA2 (,)) reqs mIds) $ \((cData, sq :| sqs, _, _), mId) -> do
+  reqMids <- withStoreBatch c $ \db -> map (mapE $ storeSentMsg db aVRange) reqs
+  forME reqMids $ \((cData, sq :| sqs, _, _), mId) -> do
     let InternalId msgId = mId
     queuePendingMsgs c sq [mId]
     let sqs' = filter isActiveSndQ sqs
     pure $ Right (msgId, if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
-    storeSentMsg :: DB.Connection -> Version -> (ConnData, NonEmpty SndQueue, MsgFlags, AMessage) -> IO (Either StoreError InternalId)
-    storeSentMsg db agentVersion (ConnData {connId}, sq :| _, msgFlags, aMessage) = runExceptT $ do
+    storeSentMsg :: DB.Connection -> Version -> (ConnData, NonEmpty SndQueue, MsgFlags, AMessage) -> IO (Either AgentErrorType ((ConnData, NonEmpty SndQueue, MsgFlags, AMessage), InternalId))
+    storeSentMsg db agentVersion req@(ConnData {connId}, sq :| _, msgFlags, aMessage) = bimap storeError (req,) <$$> runExceptT $ do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
