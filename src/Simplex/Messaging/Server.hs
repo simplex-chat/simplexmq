@@ -358,18 +358,17 @@ runClientTransport th@THandle {thVersion, sessionId} = do
     pure new
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  labelMyThread $ "client $" <> sid
+  labelMyThread . B.unpack $ "client $" <> encode sessionId
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
-    sid = B.unpack $ encode sessionId
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
     disconnectThread_ _ _ = []
     noSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
 
 clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
-  labelMyThread $ "client $" <> sid <> " disc"
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
   liftIO $ mapM_ cancelSub subs
@@ -378,7 +377,6 @@ clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
   asks clients >>= atomically . TM.delete clientId
   where
-    sid = B.unpack $ encode sessionId
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
       | sameClientSession c c' = Nothing
@@ -788,9 +786,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 s -> s
               where
                 subscriber = do
-                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name <> " peekMsg"
+                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name
                   msg <- atomically $ peekMsg q
-                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name <> " sndQ"
                   time "subscriber" . atomically $ do
                     let encMsg = encryptMsg qr msg
                     writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
