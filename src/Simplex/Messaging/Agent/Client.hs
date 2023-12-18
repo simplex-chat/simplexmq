@@ -1303,7 +1303,7 @@ withStoreCtx_ ctx_ c action = do
     handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
     handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
 
-withStoreBatch :: AgentMonad' m => AgentClient -> (DB.Connection -> [IO (Either AgentErrorType a)]) -> m [Either AgentErrorType a]
+withStoreBatch :: (AgentMonad' m, Traversable t) => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> m (t (Either AgentErrorType a))
 withStoreBatch c actions = do
   st <- asks store
   liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $
@@ -1312,8 +1312,8 @@ withStoreBatch c actions = do
     handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
     handleInternal = pure . Left . INTERNAL . show
 
-withStoreBatch' :: AgentMonad' m => AgentClient -> (DB.Connection -> [IO a]) -> m [Either AgentErrorType a]
-withStoreBatch' c actions = withStoreBatch c $ map (Right <$>) . actions
+withStoreBatch' :: (AgentMonad' m, Traversable t) => AgentClient -> (DB.Connection -> t (IO a)) -> m (t (Either AgentErrorType a))
+withStoreBatch' c actions = withStoreBatch c $ \db -> fmap Right <$> actions db
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case

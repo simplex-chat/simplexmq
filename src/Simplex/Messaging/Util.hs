@@ -85,11 +85,11 @@ unlessM b = ifM b $ pure ()
 ($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
 f $>>= g = f >>= fmap join . mapM g
 
-mapME :: Monad m => (a -> m (Either e b)) -> [Either e a] -> m [Either e b]
+mapME :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> m (t (Either e b))
 mapME f = mapM (mapE f)
 {-# INLINE mapME #-}
 
-mapME_ :: Monad m => (a -> m (Either e b)) -> [Either e a] -> m ()
+mapME_ :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> m ()
 mapME_ f = mapM_ (mapE f)
 {-# INLINE mapME_ #-}
 
@@ -97,11 +97,11 @@ mapE :: Monad m => (a -> m (Either e b)) -> Either e a -> m (Either e b)
 mapE = either (pure . Left)
 {-# INLINE mapE #-}
 
-forME :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m [Either e b]
+forME :: (Monad m, Traversable t) => t (Either e a) -> (a -> m (Either e b)) -> m (t (Either e b))
 forME = flip mapME
 {-# INLINE forME #-}
 
-forME_ :: Monad m => [Either e a] -> (a -> m (Either e b)) -> m ()
+forME_ :: (Monad m, Traversable t) => t (Either e a) -> (a -> m (Either e b)) -> m ()
 forME_ f = void . forME f
 {-# INLINE forME_ #-}
 
