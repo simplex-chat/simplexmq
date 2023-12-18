@@ -109,6 +109,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Applicative (liftA2)
 import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad
 import Control.Monad.Except
