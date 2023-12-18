@@ -130,6 +130,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -898,7 +899,7 @@ sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
         prepareMsgs cData sqs
           | ratchetSyncSendProhibited cData = Left $ CMD PROHIBITED
           | otherwise = Right (cData, sqs, msgFlags, A_MSG msg)
-    connIds = map (\(connId, _, _) -> connId) $ rights $ toList reqs
+    connIds = foldl' (\cs -> either (\_ -> cs) (\(connId, _, _) -> S.insert connId cs)) S.empty reqs
 
 -- / async command processing v v v
 
