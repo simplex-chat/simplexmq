@@ -48,6 +48,7 @@ import UnliftIO.STM
 
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
+    tlsSetupTimeout :: Int,
     transportTimeout :: Int
   }
   deriving (Eq, Show)
@@ -56,6 +57,7 @@ defaultTransportServerConfig :: TransportServerConfig
 defaultTransportServerConfig =
   TransportServerConfig
     { logTLSErrors = True,
+      tlsSetupTimeout = 60000000,
       transportTimeout = 40000000
     }
 
@@ -76,13 +78,10 @@ runTransportServerSocketState ss started getSocket threadLabel serverParams cfg 
     E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (unliftIO u . server)
   where
     tCfg = serverTransportConfig cfg
-    setup conn = timeout 60000000 $ do
-      labelMyThread $ threadLabel <> "/connectTLS"
+    setup conn = timeout (tlsSetupTimeout cfg) $ do
+      labelMyThread $ threadLabel <> "/setup"
       tls <- connectTLS Nothing tCfg serverParams conn
-      labelMyThread $ threadLabel <> "/getServer"
-      ready <- getServerConnection tCfg tls
-      labelMyThread $ threadLabel <> "/tls"
-      pure ready
+      getServerConnection tCfg tls
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --

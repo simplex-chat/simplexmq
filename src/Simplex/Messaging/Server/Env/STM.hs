@@ -39,6 +39,7 @@ import UnliftIO.STM
 
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
+    smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
     -- serverTbqSize :: Natural,
     msgQueueQuota :: Int,

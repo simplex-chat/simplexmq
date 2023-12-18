@@ -241,9 +241,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runClient :: Transport c => TProxy c -> c -> M ()
     runClient tp h = do
       kh <- asks serverIdentity
-      smpVRange <- asks $ smpServerVRange . config
+      ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout 120000000 . runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake h kh smpServerVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 
