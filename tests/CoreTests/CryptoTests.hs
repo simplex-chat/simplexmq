@@ -16,7 +16,9 @@ import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Crypto.SHA512.FFI (cryptoHashSHA512)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
+import Simplex.Messaging.Encoding.String (strEncode)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -89,6 +91,8 @@ cryptoTests = do
     describe "Ed448" $ testEncoding C.SEd448
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
+  describe "SHA512" $
+    it "produces correct test vectors" testSha512
   describe "sntrup761" $
     it "should enc/dec key" testSNTRUP761
 
@@ -209,3 +213,9 @@ testSNTRUP761 = do
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk
   k' `shouldBe` k
+
+testSha512 :: IO ()
+testSha512 = do
+  strEncode (cryptoHashSHA512 "") `shouldBe` "z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg_SpIdNs6c5H0NE8XYXysP-DGNKHfuwvY7kxvUdBeoGlODJ6-SfaPg=="
+  strEncode (cryptoHashSHA512 "abc") `shouldBe` "3a81oZNherrMQXNJriBBMRLm-k6JqX6iCp7u5ktV05ohkpkqJ0_BqDa6PCOj_uu9RU1EI2Q86A4qmslPpUyknw=="
+  strEncode (cryptoHashSHA512 $ B.concat $ replicate 1024 "abcd") `shouldBe` "MBaHEYHkzFLUEfhwkkv2SYuuN7DBugXOVLh-arnNk658yzGWnqeZg-6jyruKz49qQURwRczko3zqTUB2GVr1WA=="

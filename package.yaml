@@ -20,6 +20,7 @@ category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
   - CHANGELOG.md
+  - cbits/openssl_sha.h
   - cbits/sha512.h
   - cbits/sntrup761.h
 
@@ -103,10 +104,10 @@ when:
 library:
   source-dirs: src
   c-sources:
+    - cbits/openssl_sha512.c
     - cbits/sha512.c
     - cbits/sntrup761.c
   include-dirs: cbits
-  extra-libraries: crypto
 
 executables:
   smp-server:

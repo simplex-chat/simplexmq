@@ -26,6 +26,7 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
+    cbits/openssl_sha.h
     cbits/sha512.h
     cbits/sntrup761.h
 
@@ -106,6 +107,7 @@ library
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Crypto.SHA512.FFI
       Simplex.Messaging.Crypto.SNTRUP761
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
@@ -166,10 +168,9 @@ library
   include-dirs:
       cbits
   c-sources:
+      cbits/openssl_sha512.c
       cbits/sha512.c
       cbits/sntrup761.c
-  extra-libraries:
-      crypto
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
