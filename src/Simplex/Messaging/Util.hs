@@ -89,10 +89,6 @@ mapME :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> 
 mapME f = mapM (bindRight f)
 {-# INLINE mapME #-}
 
-mapME_ :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> m ()
-mapME_ f = mapM_ (bindRight f)
-{-# INLINE mapME_ #-}
-
 bindRight :: Monad m => (a -> m (Either e b)) -> Either e a -> m (Either e b)
 bindRight = either (pure . Left)
 {-# INLINE bindRight #-}
@@ -100,10 +96,6 @@ bindRight = either (pure . Left)
 forME :: (Monad m, Traversable t) => t (Either e a) -> (a -> m (Either e b)) -> m (t (Either e b))
 forME = flip mapME
 {-# INLINE forME #-}
-
-forME_ :: (Monad m, Traversable t) => t (Either e a) -> (a -> m (Either e b)) -> m ()
-forME_ f = void . forME f
-{-# INLINE forME_ #-}
 
 catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
 catchAll = E.catch
