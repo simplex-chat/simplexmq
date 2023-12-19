@@ -214,9 +214,7 @@ functionalAPITests t = do
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
         withSmpServer t testOnlyCreatePull
-  -- TODO these tests need to be fixed, as currently they test disconnecting clients with subscriptions
-  -- that are no longer disconnected
-  xdescribe "Inactive client disconnection" $ do
+  describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
     it "should NOT disconnect active clients" $
@@ -1061,9 +1059,9 @@ testInactiveClientDisconnected t = do
   let cfg' = cfg {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
   withSmpServerConfigOn t cfg' testPort $ \_ -> do
     alice <- getSMPAgentClient' agentCfg initAgentServers testDB
-    runRight_ $ do
-      (connId, _cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-      nGet alice ##> ("", "", DOWN testSMPServer [connId])
+    runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate -- do not subscribe to pass noSubscriptions check
+    (_, _, APC SAENone (CONNECT _ _)) <- atomically (readTBQueue $ subQ alice)
+    (_, _, APC SAENone (DISCONNECT _ _)) <- atomically (readTBQueue $ subQ alice)
     disconnectAgentClient alice
 
 testActiveClientNotDisconnected :: ATransport -> IO ()
@@ -1090,8 +1088,8 @@ testActiveClientNotDisconnected t = do
           -- check that nothing is sent from agent
           Nothing <- 800000 `timeout` get alice
           liftIO $ threadDelay 1200000
-          -- and after 2 sec of inactivity DOWN is sent
-          nGet alice ##> ("", "", DOWN testSMPServer [connId])
+          -- and after 2 sec of inactivity no DOWN is sent as we have a live subscription
+          liftIO $ timeout 1200000 (get alice) `shouldReturn` Nothing
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
 
 testSuspendingAgent :: IO ()
