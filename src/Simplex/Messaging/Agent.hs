@@ -171,14 +171,17 @@ import UnliftIO.STM
 -- import GHC.Conc (unsafeIOToSTM)
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> m AgentClient
-getSMPAgentClient cfg initServers store =
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient cfg initServers store backgroundMode =
   liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
-      void $ raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c] `forkFinally` const (disconnectAgentClient c)
+      void $ runAgentThreads c `forkFinally` const (disconnectAgentClient c)
       pure c
+    runAgentThreads c
+      | backgroundMode = subscriber c
+      | otherwise = raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c]
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
@@ -419,8 +422,9 @@ rcDiscoverCtrl' pairings = do
   liftError RCP $ discoverRCCtrl subs pairings
 
 -- | Activate operations
-foregroundAgent :: MonadUnliftIO m => AgentClient -> m ()
-foregroundAgent c = withAgentEnv c $ foregroundAgent' c
+-- stopPending = True is used in iOS NSE
+foregroundAgent :: MonadUnliftIO m => AgentClient -> Bool -> m ()
+foregroundAgent c stopPending = withAgentEnv c $ foregroundAgent' c stopPending
 
 -- | Suspend operations with max delay to deliver pending messages
 suspendAgent :: MonadUnliftIO m => AgentClient -> Int -> m ()
@@ -1749,8 +1753,11 @@ sendNtfConnCommands c cmd = do
 setNtfServers' :: AgentMonad' m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c = atomically . writeTVar (ntfServers c)
 
-foregroundAgent' :: AgentMonad' m => AgentClient -> m ()
-foregroundAgent' c = do
+-- stopPending = True is used in iOS NSE
+foregroundAgent' :: AgentMonad' m => AgentClient -> Bool -> m ()
+foregroundAgent' c stopPending = do
+  -- to prevent race conditions with message deliveries and async commands in the app
+  when stopPending $ stopPendingActions c
   atomically $ writeTVar (agentState c) ASForeground
   mapM_ activate $ reverse agentOperations
   where

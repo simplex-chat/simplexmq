@@ -28,6 +28,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
+    stopPendingActions,
     runSMPServerTest,
     runXFTPServerTest,
     getXFTPWorkPath,
@@ -601,16 +602,25 @@ closeAgentClient c = liftIO $ do
   closeProtocolServerClients c xftpClients
   cancelActions . actions $ reconnections c
   cancelActions . actions $ asyncClients c
-  cancelActions $ smpQueueMsgDeliveries c
-  cancelActions $ asyncCmdProcesses c
+  stopPendingActions c
   atomically . RQ.clear $ activeSubs c
   atomically . RQ.clear $ pendingSubs c
   clear subscrConns
+  clear getMsgLocks
+  where
+    clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
+    clear sel = atomically $ writeTVar (sel c) mempty
+
+stopPendingActions :: MonadIO m => AgentClient -> m ()
+stopPendingActions c = liftIO $ do
+  -- messages
+  cancelActions $ smpQueueMsgDeliveries c
   clear pendingMsgsQueued
   clear smpQueueMsgQueues
+  -- commands
+  cancelActions $ asyncCmdProcesses c
   clear connCmdsQueued
   clear asyncCmdQueues
-  clear getMsgLocks
   where
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
