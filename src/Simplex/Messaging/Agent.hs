@@ -890,12 +890,12 @@ sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
   where
     prepareConn :: (MsgReq, SomeConn) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
     prepareConn ((_, msgFlags, msg), SomeConn _ conn) = case conn of
-      DuplexConnection cData _ sqs -> prepareMsgs cData sqs
-      SndConnection cData sq -> prepareMsgs cData [sq]
+      DuplexConnection cData _ sqs -> prepareMsg cData sqs
+      SndConnection cData sq -> prepareMsg cData [sq]
       _ -> Left $ CONN SIMPLEX
       where
-        prepareMsgs :: ConnData -> NonEmpty SndQueue -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
-        prepareMsgs cData sqs
+        prepareMsg :: ConnData -> NonEmpty SndQueue -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
+        prepareMsg cData sqs
           | ratchetSyncSendProhibited cData = Left $ CMD PROHIBITED
           | otherwise = Right (cData, sqs, msgFlags, A_MSG msg)
     connIds = map (\(connId, _, _) -> connId) $ rights $ toList reqs
