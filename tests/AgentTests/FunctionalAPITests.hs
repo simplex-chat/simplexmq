@@ -215,8 +215,10 @@ functionalAPITests t = do
       it "messages delivered only when polled" $
         withSmpServer t testOnlyCreatePull
   describe "Inactive client disconnection" $ do
-    it "should disconnect clients if it was inactive longer than TTL" $
-      testInactiveClientDisconnected t
+    it "should disconnect clients without subs if they were inactive longer than TTL" $
+      testInactiveNoSubs t
+    it "should NOT disconnect inactive clients when they have subscriptions" $
+      testInactiveWithSubs t
     it "should NOT disconnect active clients" $
       testActiveClientNotDisconnected t
   describe "Suspending agent" $ do
@@ -1054,14 +1056,26 @@ makeConnectionForUsers alice aliceUserId bob bobUserId = do
   get bob ##> ("", aliceId, CON)
   pure (aliceId, bobId)
 
-testInactiveClientDisconnected :: ATransport -> IO ()
-testInactiveClientDisconnected t = do
+testInactiveNoSubs :: ATransport -> IO ()
+testInactiveNoSubs t = do
   let cfg' = cfg {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
   withSmpServerConfigOn t cfg' testPort $ \_ -> do
     alice <- getSMPAgentClient' agentCfg initAgentServers testDB
     runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate -- do not subscribe to pass noSubscriptions check
     Just (_, _, APC SAENone (CONNECT _ _)) <- timeout 2000000 $ atomically (readTBQueue $ subQ alice)
     Just (_, _, APC SAENone (DISCONNECT _ _)) <- timeout 5000000 $ atomically (readTBQueue $ subQ alice)
+    disconnectAgentClient alice
+
+testInactiveWithSubs :: ATransport -> IO ()
+testInactiveWithSubs t = do
+  let cfg' = cfg {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+  withSmpServerConfigOn t cfg' testPort $ \_ -> do
+    alice <- getSMPAgentClient' agentCfg initAgentServers testDB
+    runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    Nothing <- 800000 `timeout` get alice
+    liftIO $ threadDelay 1200000
+    -- and after 2 sec of inactivity no DOWN is sent as we have a live subscription
+    liftIO $ timeout 1200000 (get alice) `shouldReturn` Nothing
     disconnectAgentClient alice
 
 testActiveClientNotDisconnected :: ATransport -> IO ()
