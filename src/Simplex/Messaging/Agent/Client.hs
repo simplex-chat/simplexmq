@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Client
     ProtocolTestStep (..),
     newAgentClient,
     withConnLock,
+    withConnLocks,
     withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
@@ -99,6 +100,8 @@ module Simplex.Messaging.Agent.Client
     withStore',
     withStoreCtx,
     withStoreCtx',
+    withStoreBatch,
+    withStoreBatch',
     storeError,
     userServers,
     pickServer,
@@ -658,8 +661,17 @@ withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId
 withInvLock :: MonadUnliftIO m => AgentClient -> ByteString -> String -> m a -> m a
 withInvLock AgentClient {invLocks} = withLockMap_ invLocks
 
+withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
+withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
+
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
-withLockMap_ locks key = withGetLock $ TM.lookup key locks >>= maybe newLock pure
+withLockMap_ = withGetLock . getMapLock
+
+withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
+withLocksMap_ = withGetLocks . getMapLock
+
+getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
+getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
   where
     newLock = createLock >>= \l -> TM.insert key l locks $> l
 
@@ -1290,6 +1302,18 @@ withStoreCtx_ ctx_ c action = do
   where
     handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
     handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
+
+withStoreBatch :: (AgentMonad' m, Traversable t) => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> m (t (Either AgentErrorType a))
+withStoreBatch c actions = do
+  st <- asks store
+  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $
+      withTransaction st $ mapM (`E.catch` handleInternal) . actions
+  where
+    handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
+    handleInternal = pure . Left . INTERNAL . show
+
+withStoreBatch' :: (AgentMonad' m, Traversable t) => AgentClient -> (DB.Connection -> t (IO a)) -> m (t (Either AgentErrorType a))
+withStoreBatch' c actions = withStoreBatch c $ \db -> fmap Right <$> actions db
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case
