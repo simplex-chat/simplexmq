@@ -66,15 +66,29 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
   -- TransportConfig {logTLSErrors, transportTimeout = Just transportTimeout}
   TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
+-- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
+--
+-- All accepted connections are passed to the passed function.
+runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
+runTransportServer started port params cfg server = do
+  ss <- atomically newSocketState
+  runTransportServerState ss started port params cfg server
+
 runTransportServerState :: forall c m. (Transport c, MonadUnliftIO m) => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
 runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started port) (transportName (TProxy :: TProxy c))
+
+-- | Run a transport server with provided connection setup and handler.
+runTransportServerSocket :: (MonadUnliftIO m, T.TLSParams p, Transport a) => TMVar Bool -> IO Socket -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
+runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
+  ss <- atomically newSocketState
+  runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocketState :: (MonadUnliftIO m, T.TLSParams p, Transport a) => SocketState -> TMVar Bool -> IO Socket -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
 runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server = do
   u <- askUnliftIO
   labelMyThread $ "transport server for " <> threadLabel
-  liftIO . runTCPServerSocketState ss started getSocket $ \conn ->
+  liftIO . runTCPServerSocket ss started getSocket $ \conn ->
     E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (unliftIO u . server)
   where
     tCfg = serverTransportConfig cfg
@@ -83,36 +97,15 @@ runTransportServerSocketState ss started getSocket threadLabel serverParams cfg 
       tls <- connectTLS Nothing tCfg serverParams conn
       getServerConnection tCfg tls
 
--- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
---
--- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
-runTransportServer started port = runTransportServerSocket started (startTCPServer started port) (transportName (TProxy :: TProxy c))
-
--- | Run a transport server with provided connection setup and handler.
-runTransportServerSocket :: (MonadUnliftIO m, T.TLSParams p, Transport a) => TMVar Bool -> IO Socket -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
-runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
-  u <- askUnliftIO
-  let tCfg = serverTransportConfig cfg
-  labelMyThread $ "transport server for " <> threadLabel
-  liftIO . runTCPServerSocket started getSocket $ \conn ->
-    E.bracket
-      (connectTLS Nothing tCfg serverParams conn >>= getServerConnection tCfg)
-      closeConnection
-      (unliftIO u . server)
-
 -- | Run TCP server without TLS
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
-runTCPServer started port = runTCPServerSocket started $ startTCPServer started port
-
-type SocketState = (TVar Int, TVar Int, TMap Int (Weak ThreadId))
-
-newSocketState :: STM SocketState
-newSocketState = (,,) <$> newTVar 0 <*> newTVar 0 <*> newTVar mempty
+runTCPServer started port server = do
+  ss <- atomically newSocketState
+  runTCPServerSocket ss started (startTCPServer started port) server
 
 -- | Wrap socket provider in a TCP server bracket.
-runTCPServerSocketState :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
-runTCPServerSocketState (accepted, gracefullyClosed, clients) started getSocket server =
+runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
+runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket server =
   E.bracket getSocket (closeServer started clients) $ \sock ->
     forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
@@ -123,20 +116,10 @@ runTCPServerSocketState (accepted, gracefullyClosed, clients) started getSocket 
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
       atomically $ TM.insert cId tId clients
 
--- | Wrap socket provider in a TCP server bracket.
-runTCPServerSocket :: TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
-runTCPServerSocket started getSocket server = do
-  clients <- atomically TM.empty
-  clientId <- newTVarIO 0
-  E.bracket
-    getSocket
-    (closeServer started clients)
-    $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
-      -- catchAll_ is needed here in case the connection was closed earlier
-      cId <- atomically $ stateTVar clientId $ \cId -> let cId' = cId + 1 in (cId', cId')
-      let closeConn _ = atomically (TM.delete cId clients) >> gracefulClose conn 5000 `catchAll_` pure ()
-      tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
-      atomically $ TM.insert cId tId clients
+type SocketState = (TVar Int, TVar Int, TMap Int (Weak ThreadId))
+
+newSocketState :: STM SocketState
+newSocketState = (,,) <$> newTVar 0 <*> newTVar 0 <*> newTVar mempty
 
 closeServer :: TMVar Bool -> TMap Int (Weak ThreadId) -> Socket -> IO ()
 closeServer started clients sock = do
