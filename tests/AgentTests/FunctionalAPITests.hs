@@ -1060,8 +1060,8 @@ testInactiveClientDisconnected t = do
   withSmpServerConfigOn t cfg' testPort $ \_ -> do
     alice <- getSMPAgentClient' agentCfg initAgentServers testDB
     runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate -- do not subscribe to pass noSubscriptions check
-    (_, _, APC SAENone (CONNECT _ _)) <- atomically (readTBQueue $ subQ alice)
-    (_, _, APC SAENone (DISCONNECT _ _)) <- atomically (readTBQueue $ subQ alice)
+    Just (_, _, APC SAENone (CONNECT _ _)) <- timeout 2000000 $ atomically (readTBQueue $ subQ alice)
+    Just (_, _, APC SAENone (DISCONNECT _ _)) <- timeout 5000000 $ atomically (readTBQueue $ subQ alice)
     disconnectAgentClient alice
 
 testActiveClientNotDisconnected :: ATransport -> IO ()
