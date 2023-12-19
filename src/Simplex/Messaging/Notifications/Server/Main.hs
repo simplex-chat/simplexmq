@@ -30,7 +30,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 ntfServerVersion :: String
-ntfServerVersion = "1.6.4"
+ntfServerVersion = "1.7.0.0"
 
 defaultSMPBatchDelay :: Int
 defaultSMPBatchDelay = 10000
