@@ -86,16 +86,16 @@ unlessM b = ifM b $ pure ()
 f $>>= g = f >>= fmap join . mapM g
 
 mapME :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> m (t (Either e b))
-mapME f = mapM (mapE f)
+mapME f = mapM (bindRight f)
 {-# INLINE mapME #-}
 
 mapME_ :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> m ()
-mapME_ f = mapM_ (mapE f)
+mapME_ f = mapM_ (bindRight f)
 {-# INLINE mapME_ #-}
 
-mapE :: Monad m => (a -> m (Either e b)) -> Either e a -> m (Either e b)
-mapE = either (pure . Left)
-{-# INLINE mapE #-}
+bindRight :: Monad m => (a -> m (Either e b)) -> Either e a -> m (Either e b)
+bindRight = either (pure . Left)
+{-# INLINE bindRight #-}
 
 forME :: (Monad m, Traversable t) => t (Either e a) -> (a -> m (Either e b)) -> m (t (Either e b))
 forME = flip mapME

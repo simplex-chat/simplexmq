@@ -884,7 +884,7 @@ sendMessages' c = sendMessagesB c . map Right
 
 sendMessagesB :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
 sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
-  reqs' <- withStoreBatch c (\db -> fmap (mapE $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
+  reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   let reqs'' = fmap (>>= prepareConn) reqs'
   enqueueMessagesB c reqs''
   where
@@ -1099,7 +1099,7 @@ enqueueMessageB c reqs = do
   void . forME reqs $ \(cData, sq :| _, _, _) ->
     runExceptT $ resumeMsgDelivery c cData sq
   aVRange <- asks $ maxVersion . smpAgentVRange . config
-  reqMids <- withStoreBatch c $ \db -> fmap (mapE $ storeSentMsg db aVRange) reqs
+  reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db aVRange) reqs
   forME reqMids $ \((cData, sq :| sqs, _, _), mId) -> do
     let InternalId msgId = mId
     queuePendingMsgs c sq [mId]
