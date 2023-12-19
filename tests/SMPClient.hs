@@ -82,6 +82,7 @@ cfg :: ServerConfig
 cfg =
   ServerConfig
     { transports = undefined,
+      smpHandshakeTimeout = 60000000,
       tbqSize = 1,
       -- serverTbqSize = 1,
       msgQueueQuota = 4,
