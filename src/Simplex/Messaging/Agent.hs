@@ -1127,7 +1127,7 @@ enqueueSavedMessage c cData msgId sq = enqueueSavedMessageB c $ Identity (cData,
 
 enqueueSavedMessageB :: (AgentMonad' m, Foldable t) => AgentClient -> t (ConnData, [SndQueue], AgentMsgId) -> m ()
 enqueueSavedMessageB c reqs = do
-  -- saving to the database moved to the start to avoid race conditions when delivery is read from queue before it is saved
+  -- saving to the database is in the start to avoid race conditions when delivery is read from queue before it is saved
   void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) reqs
   forM_ reqs $ \(cData, sqs, msgId) ->
     forM sqs $ \sq -> do
