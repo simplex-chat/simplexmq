@@ -72,7 +72,7 @@ Below considers this design.
 
 4. Traffic between the client and destination relays must be e2e encrypted, with MITM-by-proxy mitigated, relying on the relay identity (certificate fingerprint), ideally without any additional fingerprint in relay address.
 
-5. SMP proxy should implement retry logic and hold messages while they are delivered. They also should return relay replies to the client. To avoid any additional traffic the client should just add "sent to proxy" status and only show "sent" once proxy returns the response from the destination relay - there should be no additional response from the proxy confirming acceptance to delivery.
+5. SMP proxy should implement retry logic and hold messages while they are delivered. They also should return relay replies to the client. To avoid any additional traffic the client should just add "sent to proxy" status and only show "sent" once proxy returns the response from the destination relay - there should be no additional response from the proxy confirming acceptance to delivery. This would also reduce the difference in how the traffic looks to the observer - sending via proxy may look similar to sending to the usual server (which can be further supported by friendly destination relays that could add latency for direct requests and reply quickly when response came via proxy and be undermined by hostile relays that would introduce some latency pattern to help traffic correlation. The latter problem can be mitigated by having a fixed response latency from proxy that may be "come back later for destination response").
 
 6. Sending messages to groups have to be batched in the client to avoid multiple requests for destination relay sessions - such requests can be batched to proxy, even though it leaks _some_ metadata - which destination relays are used by a given sender's IP address, it also reduces the overhead from proxies – it could be an option based on the privacy slider.
 
@@ -89,7 +89,7 @@ Below considers this design.
 
 3. We probably should aim to avoid changing agent/client logic and see it instead as transport concern that can be dynamically decided at a point of sending a message, based on the current configuration.
 
-4. Configuration should probably allow to choose between not using proxies (particularly, during testing, when it would be the default), using proxies only for unknown relays, and using proxies for all relays (extra traffic, but more complex transport correlation). The clients can aim to use proxy from another provider, to reduce the risks of sharing the information.
+4. Configuration should probably allow to choose between not using proxies (particularly, during testing, when it would be the default), using proxies only for unknown relays, and using proxies for all relays (extra traffic, but more complex transport correlation - although randomizing this choice can be more beneficial to the transport privacy). The clients can aim to use proxy from another provider, to reduce the risks of sharing the information.
 
 ### SMP-proxy protocol
 
@@ -97,7 +97,7 @@ The flow of the messages will be:
 
 1. Client requests proxy to create session with the relay by sending `server` command with the SMP relay address and optional proxy basic AUTH (below). It should be possible to batch multiple session requests into one block, to reduce traffic.
 
-2. Proxy connects to SMP relay, negotiating a shared secret in the handshake that will be used to encrypt all sender blocks inside TLS (proxy-relay encryption). SMP relay also returns in handshake its temporary DH key to agree e2e encryption with the client (sender-relay encryption, to protect metadata from proxy).
+2. Proxy connects to SMP relay, negotiating a shared secret in the handshake that will be used to encrypt all sender blocks inside TLS (proxy-relay encryption). SMP relay also returns in handshake its temporary DH key to agree e2e encryption with the client (sender-relay encryption, to hide metadata sent to the destination relay from proxy).
 
 3. Proxy replies with `server_id` command including relay session ID to identify it in further requests, relay DH key for e2e encryption with the client - this key is signed with the TLS online private key associated with the certificate (its fingerprint is included in the relay address), and the TLS session ID between proxy and relay (this session ID must be used in transmissions, to mitigate replay attacks as before).
 
@@ -106,6 +106,10 @@ A possible attack here is that proxy can use this TLS session to replay commands
 With 32 bits per key there will be ~1/1,000,000 false positives (see https://en.wikipedia.org/wiki/Bloom_filter), and the filter would use ~32mb per each proxy connection if we reset relay key every 1000000 messages or more frequently. Given that the only commands accepted via relay would be SEND, replaying it would be interpreted by the receiving client as duplicate message delivery, so a small number of replayed messages won't cause any problems. But without mitigation it could be used to flood the receiving SMP relay queues with repeated messages, effectively causing DoS on these queues, even in case when SMP relays require basic auth to create queues.
 
 Given that the client chooses proxy it has some trust to, maybe this replay attack risk can be accepted.
+
+It is important that the same public key from destination relay is returned to all clients, so proxy does not need to repeat this request to know relays while the key did not expire, as using different keys for different clients would allow destination relays to correlate requests to the clients. A proxy that colludes with the destination relay can pass different public keys to the same client, but it is not changing threat model as colluding proxy can share information as well. It is also important that the client uses a new random key for each command, as using the same key would allow the destination relay to identify these commands as comming from the same user, and using a different key for each queue while would protect privacy of the user from the destination relay, would make it visible to the proxy how many different queues the client has on destination relay.
+
+*Unrelated cosideration for SMP protocol privacy improvement*: instead of signing commands to the destination relay, the sender could have a ratchet per queue agreed with the destination relay that would simply use authenticated encryption with per-message symmetric key to encrypt the message on the way to relay, and this encryption would be used as a proof of sender.
 
 4. Now the client sends `forward` to proxy, which it then forwards to SMP relay, applying additional encryption layer.
 
@@ -173,7 +177,7 @@ proxy_command = server / server_id / forward / response / error
 server = "S" address [relay_basic_auth] ; creates transport session between proxy and relay
 server_id = "I" relay_session_id tls_session_id signed_relay_key ;
     ; session_id is the TLS session ID between proxy and relay, it has to be included inside encrypted block to prevent replay attacks
-forward = %s"F" random_dh_pub_key encrypted_block
+forward = %s"F" random_dh_pub_key encrypted_block ; it's important that a new key is used for each command, to prevent any correlation by proxy or by destination relay
 response = %s"R" encrypted_block; response received from the destination SMP relay
 relay_session_id = length *8 OCTET
 error = %s"E" error
