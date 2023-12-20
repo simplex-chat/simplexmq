@@ -54,19 +54,7 @@
 // #include "internal/cryptlib.h"
 // #include "crypto/sha.h"
 
-/*
- * Pointer to memset is volatile so that compiler must de-reference
- * the pointer and can't assume that it points to any function in
- * particular (such as memset, which it then might further "optimize")
- */
-typedef void *(*memset_t)(void *, int, size_t);
-
-static volatile memset_t memset_func = memset;
-
-void OPENSSL_cleanse(void *ptr, size_t len)
-{
-    memset_func(ptr, 0, len);
-}
+#include "openssl_mem_clr.c"
 
 #if defined(__i386) || defined(__i386__) || defined(_M_IX86) || \
     defined(__x86_64) || defined(_M_AMD64) || defined(_M_X64) || \

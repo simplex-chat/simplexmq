@@ -26,6 +26,7 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
+    cbits/openssl_mem_clr.inc
     cbits/openssl_sha.h
     cbits/sha512.h
     cbits/sntrup761.h

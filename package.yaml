@@ -20,9 +20,11 @@ category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
   - CHANGELOG.md
+  - cbits/openssl_mem_clr.inc
   - cbits/openssl_sha.h
   - cbits/sha512.h
   - cbits/sntrup761.h
+
 
 dependencies:
   - aeson == 2.2.*
