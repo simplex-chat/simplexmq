@@ -64,6 +64,7 @@ module Simplex.Messaging.Agent
     resubscribeConnection,
     resubscribeConnections,
     sendMessage,
+    sendMessages,
     ackMessage,
     switchConnection,
     abortConnectionSwitch,
@@ -119,14 +120,16 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
-import Data.Foldable (foldl')
+import Data.Either (rights)
+import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
+import Data.Functor.Identity
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -279,6 +282,12 @@ resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c = withAgentEnv c .:. sendMessage' c
+
+type MsgReq = (ConnId, MsgFlags, MsgBody)
+
+-- | Send multiple messages to different connections (SEND command)
+sendMessages :: MonadUnliftIO m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
+sendMessages c = withAgentEnv c . sendMessages' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
 ackMessage c = withAgentEnv c .:. ackMessage' c
@@ -871,17 +880,29 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = withConnLock c connId "sendMessage" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection cData _ sqs -> enqueueMsgs cData sqs
-    SndConnection cData sq -> enqueueMsgs cData [sq]
-    _ -> throwError $ CONN SIMPLEX
+sendMessage' c connId msgFlags msg = liftEither . runIdentity =<< sendMessagesB c (Identity (Right (connId, msgFlags, msg)))
+
+-- | Send multiple messages to different connections (SEND command) in Reader monad
+sendMessages' :: forall m. AgentMonad' m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
+sendMessages' c = sendMessagesB c . map Right
+
+sendMessagesB :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
+  reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
+  let reqs'' = fmap (>>= prepareConn) reqs'
+  enqueueMessagesB c reqs''
   where
-    enqueueMsgs :: ConnData -> NonEmpty SndQueue -> m AgentMsgId
-    enqueueMsgs cData sqs = do
-      when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
-      enqueueMessages c cData sqs msgFlags $ A_MSG msg
+    prepareConn :: (MsgReq, SomeConn) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
+    prepareConn ((_, msgFlags, msg), SomeConn _ conn) = case conn of
+      DuplexConnection cData _ sqs -> prepareMsg cData sqs
+      SndConnection cData sq -> prepareMsg cData [sq]
+      _ -> Left $ CONN SIMPLEX
+      where
+        prepareMsg :: ConnData -> NonEmpty SndQueue -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
+        prepareMsg cData sqs
+          | ratchetSyncSendProhibited cData = Left $ CMD PROHIBITED
+          | otherwise = Right (cData, sqs, msgFlags, A_MSG msg)
+    connIds = map (\(connId, _, _) -> connId) $ rights $ toList reqs
 
 -- / async command processing v v v
 
@@ -1060,22 +1081,37 @@ enqueueMessages c cData sqs msgFlags aMessage = do
   enqueueMessages' c cData sqs msgFlags aMessage
 
 enqueueMessages' :: AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessages' c cData (sq :| sqs) msgFlags aMessage = do
-  msgId <- enqueueMessage c cData sq msgFlags aMessage
-  mapM_ (enqueueSavedMessage c cData msgId) $
-    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
-  pure msgId
+enqueueMessages' c cData sqs msgFlags aMessage =
+  liftEither . runIdentity =<< enqueueMessagesB c (Identity (Right (cData, sqs, msgFlags, aMessage)))
+
+enqueueMessagesB :: (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)) -> m (t (Either AgentErrorType AgentMsgId))
+enqueueMessagesB c reqs = do
+  reqs' <- enqueueMessageB c reqs
+  enqueueSavedMessageB c $ mapMaybe snd $ rights $ toList reqs'
+  pure $ fst <$$> reqs'
+
+isActiveSndQ :: SndQueue -> Bool
+isActiveSndQ SndQueue {status} = status == Secured || status == Active
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
-enqueueMessage c cData@ConnData {connId} sq msgFlags aMessage = do
-  resumeMsgDelivery c cData sq
-  aVRange <- asks $ smpAgentVRange . config
-  msgId <- storeSentMsg $ maxVersion aVRange
-  queuePendingMsgs c sq [msgId]
-  pure $ unId msgId
+enqueueMessage c cData sq msgFlags aMessage =
+  liftEither . fmap fst . runIdentity =<< enqueueMessageB c (Identity (Right (cData, [sq], msgFlags, aMessage)))
+
+-- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
+enqueueMessageB :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)) -> m (t (Either AgentErrorType (AgentMsgId, Maybe (ConnData, [SndQueue], AgentMsgId))))
+enqueueMessageB c reqs = do
+  void . forME reqs $ \(cData, sq :| _, _, _) ->
+    runExceptT $ resumeMsgDelivery c cData sq
+  aVRange <- asks $ maxVersion . smpAgentVRange . config
+  reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db aVRange) reqs
+  forME reqMids $ \((cData, sq :| sqs, _, _), mId) -> do
+    let InternalId msgId = mId
+    queuePendingMsgs c sq [mId]
+    let sqs' = filter isActiveSndQ sqs
+    pure $ Right (msgId, if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
-    storeSentMsg :: Version -> m InternalId
-    storeSentMsg agentVersion = withStore c $ \db -> runExceptT $ do
+    storeSentMsg :: DB.Connection -> Version -> (ConnData, NonEmpty SndQueue, MsgFlags, AMessage) -> IO (Either AgentErrorType ((ConnData, NonEmpty SndQueue, MsgFlags, AMessage), InternalId))
+    storeSentMsg db agentVersion req@(ConnData {connId}, sq :| _, msgFlags, aMessage) = fmap (first storeError) $ runExceptT $ do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
@@ -1088,14 +1124,25 @@ enqueueMessage c cData@ConnData {connId} sq msgFlags aMessage = do
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
       liftIO $ createSndMsgDelivery db connId sq internalId
-      pure internalId
+      pure (req, internalId)
 
-enqueueSavedMessage :: AgentMonad m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
-enqueueSavedMessage c cData@ConnData {connId} msgId sq = do
-  resumeMsgDelivery c cData sq
-  let mId = InternalId msgId
-  queuePendingMsgs c sq [mId]
-  withStore' c $ \db -> createSndMsgDelivery db connId sq mId
+enqueueSavedMessage :: AgentMonad' m => AgentClient -> ConnData -> AgentMsgId -> SndQueue -> m ()
+enqueueSavedMessage c cData msgId sq = enqueueSavedMessageB c $ Identity (cData, [sq], msgId)
+
+enqueueSavedMessageB :: (AgentMonad' m, Foldable t) => AgentClient -> t (ConnData, [SndQueue], AgentMsgId) -> m ()
+enqueueSavedMessageB c reqs = do
+  -- saving to the database is in the start to avoid race conditions when delivery is read from queue before it is saved
+  void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) reqs
+  forM_ reqs $ \(cData, sqs, msgId) ->
+    forM sqs $ \sq -> do
+      void . runExceptT $ resumeMsgDelivery c cData sq
+      let mId = InternalId msgId
+      queuePendingMsgs c sq [mId]
+  where
+    storeDeliveries :: DB.Connection -> (ConnData, [SndQueue], AgentMsgId) -> [IO ()]
+    storeDeliveries db (ConnData {connId}, sqs, msgId) = do
+      let mId = InternalId msgId
+       in map (\sq -> createSndMsgDelivery db connId sq mId) sqs
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
@@ -1892,7 +1939,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
       conn
       cData@ConnData {userId, connId, duplexHandshake, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> 
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             handleNotifyAck $ do
               msg' <- decryptSMPMessage v rq msg
               handleNotifyAck $ case msg' of
@@ -2441,8 +2488,7 @@ storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentM
 enqueueRatchetKeyMsgs :: forall m. AgentMonad m => AgentClient -> ConnData -> NonEmpty SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
 enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
   msgId <- enqueueRatchetKey c cData sq e2eEncryption
-  mapM_ (enqueueSavedMessage c cData msgId) $
-    filter (\SndQueue {status} -> status == Secured || status == Active) sqs
+  mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
   pure msgId
 
 enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
