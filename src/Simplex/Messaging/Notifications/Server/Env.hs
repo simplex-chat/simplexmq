@@ -66,8 +66,8 @@ data NtfServerConfig = NtfServerConfig
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 7200, -- 2 hours
-      checkInterval = 3600 -- seconds, 1 hour
+    { ttl = 43200, -- seconds, 12 hours
+      checkInterval = 3600 -- seconds, 1 hours
     }
 
 data NtfEnv = NtfEnv
@@ -160,7 +160,8 @@ data NtfServerClient = NtfServerClient
     sndQ :: TBQueue (Transmission NtfResponse),
     sessionId :: ByteString,
     connected :: TVar Bool,
-    activeAt :: TVar SystemTime
+    rcvActiveAt :: TVar SystemTime,
+    sndActiveAt :: TVar SystemTime
   }
 
 newNtfServerClient :: Natural -> ByteString -> SystemTime -> STM NtfServerClient
@@ -168,5 +169,6 @@ newNtfServerClient qSize sessionId ts = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
-  activeAt <- newTVar ts
-  return NtfServerClient {rcvQ, sndQ, sessionId, connected, activeAt}
+  rcvActiveAt <- newTVar ts
+  sndActiveAt <- newTVar ts
+  return NtfServerClient {rcvQ, sndQ, sessionId, connected, rcvActiveAt, sndActiveAt}

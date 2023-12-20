@@ -32,7 +32,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
-import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
 import Simplex.Messaging.Version
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -40,6 +40,7 @@ import UnliftIO.STM
 
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
+    smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
     -- serverTbqSize :: Natural,
     msgQueueQuota :: Int,
@@ -90,8 +91,8 @@ defaultMessageExpiration =
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 86400, -- seconds, 24 hours
-      checkInterval = 43200 -- seconds, 12 hours
+    { ttl = 43200, -- seconds, 12 hours
+      checkInterval = 3600 -- seconds, 1 hours
     }
 
 data Env = Env
@@ -103,7 +104,10 @@ data Env = Env
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
-    serverStats :: ServerStats
+    serverStats :: ServerStats,
+    sockets :: SocketState,
+    clientSeq :: TVar Int,
+    clients :: TMap Int Client
   }
 
 data Server = Server
@@ -115,14 +119,17 @@ data Server = Server
   }
 
 data Client = Client
-  { subscriptions :: TMap RecipientId (TVar Sub),
+  { clientId :: Int,
+    subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
-    activeAt :: TVar SystemTime
+    createdAt :: SystemTime,
+    rcvActiveAt :: TVar SystemTime,
+    sndActiveAt :: TVar SystemTime
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
@@ -141,15 +148,17 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
-newClient qSize thVersion sessionId ts = do
+newClient :: TVar Int -> Natural -> Version -> ByteString -> SystemTime -> STM Client
+newClient nextClientId qSize thVersion sessionId createdAt = do
+  clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
-  activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt}
+  rcvActiveAt <- newTVar createdAt
+  sndActiveAt <- newTVar createdAt
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -167,7 +176,10 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats}
+  sockets <- atomically newSocketState
+  clientSeq <- newTVarIO 0
+  clients <- atomically TM.empty
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
