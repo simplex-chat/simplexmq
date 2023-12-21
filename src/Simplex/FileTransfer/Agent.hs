@@ -286,8 +286,8 @@ xftpSendFile' c userId file numRecipients = do
   prefixPath <- getPrefixPath "snd.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
-  key <- liftIO C.randomSbKey
-  nonce <- liftIO C.randomCbNonce
+  key <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce
   addXFTPSndWorker c Nothing

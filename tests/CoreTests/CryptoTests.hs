@@ -5,7 +5,6 @@ module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Crypto.Random (drgNew, getRandomBytes)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
@@ -105,14 +104,16 @@ testPadUnpadFile = do
 
 testSignature :: (C.AlgorithmI a, C.SignatureAlgorithm a) => C.SAlgorithm a -> Spec
 testSignature alg = it "should sign / verify string" . ioProperty $ do
-  (k, pk) <- C.generateSignatureKeyPair alg
+  g <- C.newRandom
+  (k, pk) <- atomically $ C.generateSignatureKeyPair alg g
   pure $ \s -> let b = encodeUtf8 $ T.pack s in C.verify k (C.sign pk b) b
 
 testDHCryptoBox :: Spec
 testDHCryptoBox = it "should encrypt / decrypt string with asymmetric DH keys" . ioProperty $ do
-  (sk, spk) <- C.generateKeyPair'
-  (rk, rpk) <- C.generateKeyPair'
-  nonce <- C.randomCbNonce
+  g <- C.newRandom
+  (sk, spk) <- atomically $ C.generateKeyPair g
+  (rk, rpk) <- atomically $ C.generateKeyPair g
+  nonce <- atomically $ C.randomCbNonce g
   pure $ \(s, pad) ->
     let b = encodeUtf8 $ T.pack s
         paddedLen = B.length b + abs pad + 2
@@ -122,8 +123,9 @@ testDHCryptoBox = it "should encrypt / decrypt string with asymmetric DH keys" .
 
 testSecretBox :: Spec
 testSecretBox = it "should encrypt / decrypt string with a random symmetric key" . ioProperty $ do
-  k <- C.randomSbKey
-  nonce <- C.randomCbNonce
+  g <- C.newRandom
+  k <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
   pure $ \(s, pad) ->
     let b = encodeUtf8 $ T.pack s
         pad' = min (abs pad) 100000
@@ -134,8 +136,9 @@ testSecretBox = it "should encrypt / decrypt string with a random symmetric key"
 
 testLazySecretBox :: Spec
 testLazySecretBox = it "should lazily encrypt / decrypt string with a random symmetric key" . ioProperty $ do
-  k <- C.randomSbKey
-  nonce <- C.randomCbNonce
+  g <- C.newRandom
+  k <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
   pure $ \(s, pad) ->
     let b = LE.encodeUtf8 $ LT.pack s
         len = LB.length b
@@ -147,8 +150,9 @@ testLazySecretBox = it "should lazily encrypt / decrypt string with a random sym
 
 testLazySecretBoxFile :: Spec
 testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random symmetric key" $ do
-  k <- C.randomSbKey
-  nonce <- C.randomCbNonce
+  g <- C.newRandom
+  k <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
   let f = "tests/tmp/testsecretbox"
       paddedLen = 4 * 1024 * 1024
       len = 4 * 1000 * 1000 :: Int64
@@ -160,8 +164,9 @@ testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random s
 
 testLazySecretBoxTailTag :: Spec
 testLazySecretBoxTailTag = it "should lazily encrypt / decrypt string with a random symmetric key (tail tag)" . ioProperty $ do
-  k <- C.randomSbKey
-  nonce <- C.randomCbNonce
+  g <- C.newRandom
+  k <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
   pure $ \(s, pad) ->
     let b = LE.encodeUtf8 $ LT.pack s
         len = LB.length b
@@ -173,8 +178,9 @@ testLazySecretBoxTailTag = it "should lazily encrypt / decrypt string with a ran
 
 testLazySecretBoxFileTailTag :: Spec
 testLazySecretBoxFileTailTag = it "should lazily encrypt / decrypt file with a random symmetric key (tail tag)" $ do
-  k <- C.randomSbKey
-  nonce <- C.randomCbNonce
+  g <- C.newRandom
+  k <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
   let f = "tests/tmp/testsecretbox"
       paddedLen = 4 * 1024 * 1024
       len = 4 * 1000 * 1000 :: Int64
@@ -187,9 +193,10 @@ testLazySecretBoxFileTailTag = it "should lazily encrypt / decrypt file with a r
 
 testAESGCM :: Spec
 testAESGCM = it "should encrypt / decrypt string with a random symmetric key" $ do
-  k <- C.randomAesKey
-  iv <- C.randomGCMIV
-  s <- getRandomBytes 100
+  g <- C.newRandom
+  k <- atomically $ C.randomAesKey g
+  iv <- atomically $ C.randomGCMIV g
+  s <- atomically $ C.randomBytes 100 g
   Right (tag, cipher) <- runExceptT $ C.encryptAESNoPad k iv s
   Right plain <- runExceptT $ C.decryptAESNoPad k iv cipher tag
   cipher `shouldNotBe` plain
@@ -197,14 +204,15 @@ testAESGCM = it "should encrypt / decrypt string with a random symmetric key" $ 
 
 testEncoding :: C.AlgorithmI a => C.SAlgorithm a -> Spec
 testEncoding alg = it "should encode / decode key" . ioProperty $ do
-  (k, pk) <- C.generateKeyPair alg
+  g <- C.newRandom
+  (k, pk) <- atomically $ C.generateAKeyPair alg g
   pure $ \(_ :: Int) ->
     C.decodePubKey (C.encodePubKey k) == Right k
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do
-  drg <- newTVarIO =<< drgNew
+  drg <- C.newRandom
   (pk, sk) <- sntrup761Keypair drg
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk

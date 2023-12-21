@@ -88,10 +88,11 @@ testNotificationSubscription :: ATransport -> Spec
 testNotificationSubscription (ATransport t) =
   -- hangs on Ubuntu 20/22
   xit' "should create notification subscription and notify when message is received" $ do
-    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
-    (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
-    (tknPub, tknKey) <- C.generateSignatureKeyPair C.SEd25519
-    (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+    (tknPub, tknKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+    (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = DeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \APNSMockServer {apnsQ} ->
       smpTest2 t $ \rh sh ->
@@ -110,7 +111,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY code)
           RespNtf "2a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("2a", tId, TCHK)
           -- enable queue notifications
-          (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- C.generateKeyPair'
+          (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
           Resp "3" _ (NID nId rcvNtfSrvPubDhKey) <- signSendRecv rh rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
           let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
               q = SMPQueueNtf srv nId

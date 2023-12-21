@@ -8,6 +8,7 @@ module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, getSMPAgentClient', rfGet, runRight, runRight_, sfGet)
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -24,6 +25,7 @@ import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -107,9 +109,10 @@ testXFTPAgentSendReceive = withXFTPServer $ do
 
 testXFTPAgentSendReceiveEncrypted :: HasCallStack => IO ()
 testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
+  g <- C.newRandom
   filePath <- createRandomFile
   s <- LB.readFile filePath
-  file <- CryptoFile (senderFiles </> "encrypted_testfile") . Just <$> CF.randomArgs
+  file <- atomically $ CryptoFile (senderFiles </> "encrypted_testfile") . Just <$> CF.randomArgs g
   runRight_ $ CF.writeFile file s
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   (rfd1, rfd2) <- runRight $ do
@@ -117,12 +120,12 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
     xftpDeleteSndFileInternal sndr sfId
     pure (rfd1, rfd2)
   -- receive file, delete rcv file
-  testReceiveDelete rfd1 filePath
-  testReceiveDelete rfd2 filePath
+  testReceiveDelete rfd1 filePath g
+  testReceiveDelete rfd2 filePath g
   where
-    testReceiveDelete rfd originalFilePath = do
+    testReceiveDelete rfd originalFilePath g = do
       rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
-      cfArgs <- Just <$> CF.randomArgs
+      cfArgs <- atomically $ Just <$> CF.randomArgs g
       runRight_ $ do
         rfId <- testReceiveCF rcp rfd cfArgs originalFilePath
         xftpDeleteRcvFile rcp rfId

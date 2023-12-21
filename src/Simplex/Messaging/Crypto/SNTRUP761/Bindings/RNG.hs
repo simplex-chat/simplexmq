@@ -18,7 +18,7 @@ withDRG drg = bracket (createRNGFunc drg) freeHaskellFunPtr
 createRNGFunc :: TVar ChaChaDRG -> IO (FunPtr RNGFunc)
 createRNGFunc drg =
   mkRNGFunc $ \_ctx sz buf -> do
-    bs <- atomically $ C.pseudoRandomBytes (fromIntegral sz) drg
+    bs <- atomically $ C.randomBytes (fromIntegral sz) drg
     copyByteArrayToPtr bs buf
 
 type RNGContext = ()

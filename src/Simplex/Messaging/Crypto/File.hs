@@ -23,6 +23,7 @@ where
 import Control.Exception
 import Control.Monad
 import Control.Monad.Except
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
@@ -109,8 +110,8 @@ data FTCryptoError
 plain :: FilePath -> CryptoFile
 plain = (`CryptoFile` Nothing)
 
-randomArgs :: IO CryptoFileArgs
-randomArgs = CFArgs <$> C.randomSbKey <*> C.randomCbNonce
+randomArgs :: TVar ChaChaDRG -> STM CryptoFileArgs
+randomArgs g = CFArgs <$> C.randomSbKey g <*> C.randomCbNonce g
 
 getFileContentsSize :: CryptoFile -> IO Integer
 getFileContentsSize (CryptoFile path cfArgs) = do

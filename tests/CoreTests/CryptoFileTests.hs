@@ -3,12 +3,13 @@
 module CoreTests.CryptoFileTests (cryptoFileTests) where
 
 import AgentTests.FunctionalAPITests (runRight_)
+import Control.Concurrent.STM
 import Control.Monad.Except
 import Control.Monad.IO.Class
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Lazy as LB
 import GHC.IO.IOMode (IOMode (..))
-import qualified Simplex.FileTransfer.Types as C
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
 import qualified Simplex.Messaging.Crypto.File as CF
 import System.Directory (getFileSize)
@@ -27,8 +28,9 @@ testFilePath = "tests/tmp/testcryptofile"
 
 testWriteReadFile :: IO ()
 testWriteReadFile = do
-  s <- LB.fromStrict <$> getRandomBytes 100000
-  file <- mkCryptoFile
+  g <- C.newRandom
+  s <- atomically $ LB.fromStrict <$> C.randomBytes 100000 g
+  file <- atomically $ mkCryptoFile g
   runRight_ $ do
     CF.writeFile file s
     liftIO $ CF.getFileContentsSize file `shouldReturn` 100000
@@ -38,9 +40,10 @@ testWriteReadFile = do
 
 testPutGetFile :: IO ()
 testPutGetFile = do
-  s <- LB.fromStrict <$> getRandomBytes 50000
-  s' <- LB.fromStrict <$> getRandomBytes 50000
-  file <- mkCryptoFile
+  g <- C.newRandom
+  s <- atomically $ LB.fromStrict <$> C.randomBytes 50000 g
+  s' <- atomically $ LB.fromStrict <$> C.randomBytes 50000 g
+  file <- atomically $ mkCryptoFile g
   runRight_ $ do
     CF.withFile file WriteMode $ \h -> liftIO $ do
       CF.hPut h s
@@ -57,8 +60,9 @@ testPutGetFile = do
 
 testWriteGetFile :: IO ()
 testWriteGetFile = do
-  s <- LB.fromStrict <$> getRandomBytes 100000
-  file <- mkCryptoFile
+  g <- C.newRandom
+  s <- atomically $ LB.fromStrict <$> C.randomBytes 100000 g
+  file <- atomically $ mkCryptoFile g
   runRight_ $ do
     CF.writeFile file s
     CF.withFile file ReadMode $ \h -> do
@@ -70,9 +74,10 @@ testWriteGetFile = do
 
 testPutReadFile :: IO ()
 testPutReadFile = do
-  s <- LB.fromStrict <$> getRandomBytes 50000
-  s' <- LB.fromStrict <$> getRandomBytes 50000
-  file <- mkCryptoFile
+  g <- C.newRandom
+  s <- atomically $ LB.fromStrict <$> C.randomBytes 50000 g
+  s' <- atomically $ LB.fromStrict <$> C.randomBytes 50000 g
+  file <- atomically $ mkCryptoFile g
   runRight_ $ do
     CF.withFile file WriteMode $ \h -> liftIO $ do
       CF.hPut h s
@@ -88,11 +93,12 @@ testPutReadFile = do
 
 testSmallFile :: IO ()
 testSmallFile = do
-  file <- mkCryptoFile
+  g <- C.newRandom
+  file <- atomically $ mkCryptoFile g
   LB.writeFile testFilePath ""
   runExceptT (CF.readFile file) `shouldReturn` Left FTCEInvalidFileSize
   LB.writeFile testFilePath "123"
   runExceptT (CF.readFile file) `shouldReturn` Left FTCEInvalidFileSize
 
-mkCryptoFile :: IO CryptoFile
-mkCryptoFile = CryptoFile testFilePath . Just <$> CF.randomArgs
+mkCryptoFile :: TVar ChaChaDRG -> STM CryptoFile
+mkCryptoFile g = CryptoFile testFilePath . Just <$> CF.randomArgs g
