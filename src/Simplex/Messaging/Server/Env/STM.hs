@@ -21,6 +21,7 @@ import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Crypto (KeyHash (..))
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.STM
@@ -100,7 +101,7 @@ data Env = Env
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
-    idsDrg :: TVar ChaChaDRG,
+    random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
@@ -169,7 +170,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
-  idsDrg <- drgNew >>= newTVarIO
+  random <- liftIO C.newRandom
   storeLog <- restoreQueues queueStore `mapM` storeLogFile
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
@@ -178,7 +179,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- atomically TM.empty
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

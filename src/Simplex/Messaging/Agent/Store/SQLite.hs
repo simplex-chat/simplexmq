@@ -2106,7 +2106,7 @@ createWithRandomId gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = atomically $ U.encode <$> C.pseudoRandomBytes n gVar
+randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)

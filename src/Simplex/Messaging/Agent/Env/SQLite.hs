@@ -189,7 +189,7 @@ data Env = Env
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config@AgentConfig {initialClientId} store = do
-  random <- newTVarIO =<< drgNew
+  random <- C.newRandom
   clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config

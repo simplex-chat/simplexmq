@@ -9,6 +9,8 @@ module Simplex.Messaging.Transport.Credentials
   )
 where
 
+import Control.Concurrent.STM
+import Crypto.Random (ChaChaDRG)
 import Data.ASN1.Types (getObjectID)
 import Data.ASN1.Types.String (ASN1StringEncoding (UTF8))
 import Data.Hourglass (Hours (..), timeAdd)
@@ -45,9 +47,9 @@ privateToTls (C.APrivateSignKey _ k) = case k of
 
 type Credentials = (C.ASignatureKeyPair, X509.SignedCertificate)
 
-genCredentials :: Maybe Credentials -> (Hours, Hours) -> Text -> IO Credentials
-genCredentials parent (before, after) subjectName = do
-  subjectKeys <- C.generateSignatureKeyPair C.SEd25519
+genCredentials :: TVar ChaChaDRG -> Maybe Credentials -> (Hours, Hours) -> Text -> IO Credentials
+genCredentials g parent (before, after) subjectName = do
+  subjectKeys <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
   let (issuerKeys, issuer) = case parent of
         Nothing -> (subjectKeys, subject) -- self-signed
         Just (keys, cert) -> (keys, X509.certSubjectDN . X509.signedObject $ X509.getSigned cert)

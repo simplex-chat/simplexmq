@@ -18,7 +18,7 @@ import Control.Monad.IO.Class
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
 import qualified Crypto.PubKey.ECC.Types as ECT
-import Crypto.Random (ChaChaDRG, drgNew)
+import Crypto.Random (ChaChaDRG)
 import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding (DER (..))
 import Data.ASN1.Encoding
@@ -232,7 +232,7 @@ createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, auth
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
-  nonceDrg <- drgNew >>= newTVarIO
+  nonceDrg <- C.newRandom
   pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsHost, apnsCfg}
 
 getApnsJWTToken :: APNSPushClient -> IO SignedJWTToken
@@ -337,7 +337,7 @@ $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
 apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
-  nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
+  nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
   -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect
