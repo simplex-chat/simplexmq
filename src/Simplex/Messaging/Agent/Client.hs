@@ -823,6 +823,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
       ts <- liftIO getCurrentTime
       let isoTime = formatTime defaultTimeLocale "%Y-%m-%dT%H%M%S.%6q" ts
       uniqueCombine workPath isoTime
+    -- this creates a new DRG on purpose to avoid blocking the one used in the agent
     createTestChunk :: FilePath -> IO ()
     createTestChunk fp = B.writeFile fp =<< atomically . C.randomBytes chSize =<< C.newRandom
 
