@@ -109,7 +109,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateSndMsgRcpt,
     getPendingQueueMsg,
     updatePendingMsgRIState,
-    -- getPendingMsgs,
     deletePendingMsgs,
     setMsgUserAck,
     getRcvMsg,
