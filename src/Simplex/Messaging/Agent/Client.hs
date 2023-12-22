@@ -85,6 +85,8 @@ module Simplex.Messaging.Agent.Client
     AgentState (..),
     AgentLocks (..),
     AgentStatsKey (..),
+    waitForWork,
+    withWork,
     agentOperations,
     agentOperationBracket,
     waitUntilActive,
@@ -133,6 +135,7 @@ import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isNothing)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, listToMaybe)
@@ -1223,6 +1226,19 @@ cryptoError = \case
   e -> INTERNAL $ show e
   where
     c = AGENT . A_CRYPTO
+
+waitForWork :: AgentMonad m => TMVar () -> m ()
+waitForWork = void . atomically . readTMVar
+
+withWork :: AgentMonad m => AgentClient -> TMVar () -> (DB.Connection -> IO (Maybe a)) -> (a -> m ()) -> m ()
+withWork c doWork getWork action = do
+  r <- withStore' c $ \db -> do
+    r' <- getWork db
+    when (isNothing r') noWorkToDo
+    pure r'
+  mapM_ action r
+  where
+    noWorkToDo = void . atomically $ tryTakeTMVar doWork
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c op = endOperation c op $ case op of

@@ -159,24 +159,21 @@ runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -
 runNtfWorker c srv doWork = do
   delay <- asks $ ntfWorkerDelay . config
   forever $ do
-    void . atomically $ readTMVar doWork
+    waitForWork doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfOperation
     threadDelay delay
   where
     runNtfOperation :: m ()
-    runNtfOperation = do
-      nextSub_ <- withStore' c (`getNextNtfSubNTFAction` srv)
-      logInfo $ "runNtfWorker, nextSub_ " <> tshow nextSub_
-      case nextSub_ of
-        Nothing -> noWorkToDo
-        Just a@(NtfSubscription {connId}, _, _) -> do
+    runNtfOperation =
+      withWork c doWork (`getNextNtfSubNTFAction` srv) $
+        \nextSub@(NtfSubscription {connId}, _, _) -> do
+          logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop ->
-            processAction a
+            processSub nextSub
               `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
-    noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    processAction :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> m ()
-    processAction (sub@NtfSubscription {connId, smpServer, ntfSubId}, action, actionTs) = do
+    processSub :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> m ()
+    processSub (sub@NtfSubscription {connId, smpServer, ntfSubId}, action, actionTs) = do
       ts <- liftIO getCurrentTime
       unlessM (rescheduleAction doWork ts actionTs) $
         case action of
@@ -244,23 +241,20 @@ runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar (
 runNtfSMPWorker c srv doWork = do
   delay <- asks $ ntfSMPWorkerDelay . config
   forever $ do
-    void . atomically $ readTMVar doWork
+    waitForWork doWork
     agentOperationBracket c AONtfNetwork throwWhenInactive runNtfSMPOperation
     threadDelay delay
   where
-    runNtfSMPOperation = do
-      nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
-      logInfo $ "runNtfSMPWorker, nextSub_ " <> tshow nextSub_
-      case nextSub_ of
-        Nothing -> noWorkToDo
-        Just a@(NtfSubscription {connId}, _, _) -> do
+    runNtfSMPOperation =
+      withWork c doWork (`getNextNtfSubSMPAction` srv) $
+        \nextSub@(NtfSubscription {connId}, _, _) -> do
+          logInfo $ "runNtfSMPWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop ->
-            processAction a
+            processSub nextSub
               `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
-    noWorkToDo = void . atomically $ tryTakeTMVar doWork
-    processAction :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> m ()
-    processAction (sub@NtfSubscription {connId, ntfServer}, smpAction, actionTs) = do
+    processSub :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> m ()
+    processSub (sub@NtfSubscription {connId, ntfServer}, smpAction, actionTs) = do
       ts <- liftIO getCurrentTime
       unlessM (rescheduleAction doWork ts actionTs) $
         case smpAction of
