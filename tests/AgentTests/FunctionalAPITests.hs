@@ -163,13 +163,13 @@ getInAnyOrder c rs = do
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  fdescribe "Establishing duplex connection" $ do
+  describe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientTest
-  fdescribe "Establish duplex connection via contact address" $
+  describe "Establish duplex connection via contact address" $
     testMatrix2 t runAgentClientContactTest
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientContactTest
@@ -235,7 +235,7 @@ functionalAPITests t = do
     xit "should subscribe to multiple (6) subscriptions with batching" $
       testBatchedSubscriptions 6 3 t
   describe "Async agent commands" $ do
-    it "should connect using async agent commands" $
+    fit "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore t
@@ -334,7 +334,7 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  fit "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest

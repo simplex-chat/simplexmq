@@ -26,8 +26,6 @@ module Simplex.Messaging.Agent.Client
     withConnLock,
     withConnLocks,
     withInvLock,
-    withDeliveryLock,
-    withAsyncCmdLock,
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
@@ -88,6 +86,7 @@ module Simplex.Messaging.Agent.Client
     AgentLocks (..),
     AgentStatsKey (..),
     newWorker,
+    runWorkerAsync,
     waitForWork,
     hasWorkToDo,
     hasWorkToDo',
@@ -214,6 +213,7 @@ import System.Timeout (timeout)
 import UnliftIO (mapConcurrently)
 import UnliftIO.Async (async)
 import UnliftIO.Directory (getTemporaryDirectory)
+import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -249,9 +249,7 @@ data AgentClient = AgentClient
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
-    smpDeliveryLocks :: TMap SndQAddr Lock,
     asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
-    asyncCmdLocks :: TMap (Maybe SMPServer) Lock,
     connCmdsQueued :: TMap ConnId Bool,
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
@@ -275,14 +273,23 @@ data AgentClient = AgentClient
     agentEnv :: Env
   }
 
-data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: Async ()}
+data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: TMVar (Maybe (Async ()))}
 
-newWorker :: AgentMonad' m => AgentClient -> (Int -> TMVar () -> m ()) -> m Worker
-newWorker c runWorker = do
-  workerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
-  doWork <- newTMVarIO ()
-  action <- async $ runWorker workerId doWork
+newWorker :: AgentClient -> STM Worker
+newWorker c = do
+  workerId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
+  doWork <- newTMVar ()
+  action <- newTMVar Nothing
   pure Worker {workerId, doWork, action}
+
+runWorkerAsync :: AgentMonad' m => Worker -> m () -> m ()
+runWorkerAsync Worker {action} worker =
+  bracket
+    (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
+    (\a_ -> atomically $ tryPutTMVar action a_) -- if run crashes put it back, but don't lock if it succeeds
+    (maybe run $ \_ -> pure ()) -- run worker if it's not running
+  where
+    run = atomically . putTMVar action . Just =<< async worker
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
@@ -340,9 +347,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   removedSubs <- TM.empty
   workerSeq <- newTVar 0
   smpDeliveryWorkers <- TM.empty
-  smpDeliveryLocks <- TM.empty
   asyncCmdWorkers <- TM.empty
-  asyncCmdLocks <- TM.empty
   connCmdsQueued <- TM.empty
   ntfNetworkOp <- newTVar $ AgentOpState False 0
   rcvNetworkOp <- newTVar $ AgentOpState False 0
@@ -378,9 +383,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         removedSubs,
         workerSeq,
         smpDeliveryWorkers,
-        smpDeliveryLocks,
         asyncCmdWorkers,
-        asyncCmdLocks,
         connCmdsQueued,
         ntfNetworkOp,
         rcvNetworkOp,
@@ -639,7 +642,7 @@ closeAgentClient c = liftIO $ do
 cancelWorker :: Worker -> IO ()
 cancelWorker Worker {doWork, action} = do
   noWorkToDo doWork
-  uninterruptibleCancel action
+  atomically (tryTakeTMVar action) >>= mapM_ (mapM_ uninterruptibleCancel)
 
 waitUntilActive :: AgentClient -> STM ()
 waitUntilActive c = unlessM (readTVar $ active c) retry
@@ -684,12 +687,6 @@ withInvLock AgentClient {invLocks} = withLockMap_ invLocks
 
 withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
 withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
-
-withDeliveryLock :: MonadUnliftIO m => AgentClient -> SndQAddr -> String -> m a -> m a
-withDeliveryLock AgentClient {smpDeliveryLocks} = withLockMap_ smpDeliveryLocks
-
-withAsyncCmdLock :: MonadUnliftIO m => AgentClient -> Maybe SMPServer -> String -> m a -> m a
-withAsyncCmdLock AgentClient {asyncCmdLocks} = withLockMap_ asyncCmdLocks
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ = withGetLock . getMapLock

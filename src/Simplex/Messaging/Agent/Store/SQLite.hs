@@ -1244,7 +1244,7 @@ getPendingServerCommand db server_ = do
         FROM commands c
         JOIN connections cs USING (conn_id)
         WHERE c.host = ? AND c.port = ?
-        ORDER BY c.created_at, c.command_id ASC
+        ORDER BY c.created_at ASC, c.command_id ASC
         LIMIT 1
       |]
       (host, port)

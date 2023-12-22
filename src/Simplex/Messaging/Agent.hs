@@ -925,20 +925,19 @@ resumeConnCmds c connId =
 
 getAsyncCmdWorker :: AgentMonad' m => AgentClient -> Maybe SMPServer -> m Worker
 getAsyncCmdWorker c server =
-  -- withAsyncCmdLock c server "getAsyncCmdWorker" $
-    atomically resumeWorker >>= maybe createWorker pure
+  atomically (getWorker >>= maybe createWorker resumeWorker) >>= \w -> runWorker w $> w
   where
     getWorker = TM.lookup server $ asyncCmdWorkers c
-    resumeWorker = getWorker >>= mapM (\w -> w <$ hasWorkToDo w)
-    deleteWorker wId = getWorker >>= mapM_ (\w -> when (wId == workerId w) $ TM.delete server $ asyncCmdWorkers c)
+    resumeWorker w = hasWorkToDo w $> w
+    deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server $ asyncCmdWorkers c
     createWorker = do
-      w <- newWorker c runWorker
-      atomically $ TM.insert server w $ asyncCmdWorkers c
+      w <- newWorker c
+      TM.insert server w $ asyncCmdWorkers c
       pure w
-    runWorker wId doWork =
-      void . runExceptT $
+    runWorker w@Worker {workerId = wId, doWork} =
+      runWorkerAsync w . void . runExceptT $
         runCommandProcessing c server doWork
-          `agentFinally` atomically (deleteWorker wId)
+          `agentFinally` atomically (getWorker >>= deleteWorker wId)
 
 runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> TMVar () -> m ()
 runCommandProcessing c@AgentClient {subQ} server_ doWork = do
@@ -1134,24 +1133,22 @@ resumeMsgDelivery :: forall m. AgentMonad' m => AgentClient -> ConnData -> SndQu
 resumeMsgDelivery = void .:. getDeliveryWorker
 
 getDeliveryWorker :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
-getDeliveryWorker c cData sq@SndQueue {server, sndId} =
-  -- withDeliveryLock c qKey "getDeliveryWorker" $
-    atomically resumeWorker >>= maybe createWorker pure
+getDeliveryWorker c cData sq = do
+  atomically (getWorker >>= maybe createWorker resumeWorker) >>= \wl -> runWorker wl $> wl
   where
-    qKey = (server, sndId)
-    getWorker = TM.lookup qKey $ smpDeliveryWorkers c
-    resumeWorker = getWorker >>= mapM (\wl -> wl <$ hasWorkToDo (fst wl))
-    deleteWorker wId = getWorker >>= mapM_ (\(w, _) -> when (wId == workerId w) $ TM.delete qKey $ smpDeliveryWorkers c)
+    qAddr = qAddress sq
+    getWorker = TM.lookup qAddr $ smpDeliveryWorkers c
+    resumeWorker wl = hasWorkToDo (fst wl) $> wl
+    deleteWorker wId = mapM_ $ \(w, _) -> when (wId == workerId w) $ TM.delete qAddr $ smpDeliveryWorkers c
     createWorker = do
-      retryLock <- newEmptyTMVarIO
-      w <- newWorker c $ runWorker retryLock
-      let wl = (w, retryLock)
-      atomically $ TM.insert qKey wl $ smpDeliveryWorkers c
+      retryLock <- newEmptyTMVar
+      wl <- (,retryLock) <$> newWorker c
+      TM.insert qAddr wl $ smpDeliveryWorkers c
       pure wl
-    runWorker retryLock wId doWork =
-      void . runExceptT $
+    runWorker (w@Worker {workerId = wId, doWork}, retryLock) =
+      runWorkerAsync w . void . runExceptT $
         runSmpQueueMsgDelivery c cData sq doWork retryLock
-          `agentFinally` atomically (deleteWorker wId)
+          `agentFinally` atomically (getWorker >>= deleteWorker wId)
 
 
 hasPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
@@ -2195,14 +2192,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                 _ -> prohibited
 
           continueSending :: (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> m ()
-          continueSending addr (DuplexConnection cData' _ sqs) =
+          continueSending addr (DuplexConnection _ _ sqs) =
             case findQ addr sqs of
               Just sq -> do
                 logServer "<--" c srv rId "MSG <QCONT>"
-                -- TODO make lock change atomic
-                (_, qLock) <- getDeliveryWorker c cData' sq
-                atomically $ do
-                  void $ tryPutTMVar qLock ()
+                atomically $ 
+                  TM.lookup (qAddress sq) (smpDeliveryWorkers c)
+                    >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
               Nothing -> qError "QCONT: queue address not found"
 
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> m ()

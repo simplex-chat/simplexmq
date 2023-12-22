@@ -480,4 +480,4 @@ CREATE INDEX idx_encrypted_rcv_message_hashes_created_at ON encrypted_rcv_messag
   created_at
 );
 CREATE INDEX idx_messages_internal_ts ON messages(internal_ts);
-CREATE INDEX idx_commands_created_at ON commands(created_at);
+CREATE INDEX idx_commands_created_at ON commands(created_at, command_id);
