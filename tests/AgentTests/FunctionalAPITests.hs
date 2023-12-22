@@ -235,7 +235,7 @@ functionalAPITests t = do
     xit "should subscribe to multiple (6) subscriptions with batching" $
       testBatchedSubscriptions 6 3 t
   describe "Async agent commands" $ do
-    fit "should connect using async agent commands" $
+    it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore t

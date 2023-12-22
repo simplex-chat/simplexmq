@@ -1235,8 +1235,19 @@ getPendingCommandServers db connId = do
     smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
 
 getPendingServerCommand :: DB.Connection -> Maybe SMPServer -> IO (Maybe PendingCommand)
-getPendingServerCommand db server_ = do
-  maybeFirstRow pendingCommand $
+getPendingServerCommand db srv_ = maybeFirstRow pendingCommand $ case srv_ of
+  Nothing ->
+    DB.query_
+      db
+      [sql|
+        SELECT c.command_id, c.corr_id, cs.user_id, c.conn_id, c.command
+        FROM commands c
+        JOIN connections cs USING (conn_id)
+        WHERE c.host IS NULL AND c.port IS NULL
+        ORDER BY c.created_at ASC, c.command_id ASC
+        LIMIT 1
+      |]
+  Just (SMPServer host port _) ->
     DB.query
       db
       [sql|
@@ -1250,9 +1261,6 @@ getPendingServerCommand db server_ = do
       (host, port)
   where
     pendingCommand (cmdId, corrId, userId, connId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
-    (host, port) = case server_ of
-      Just (SMPServer h p _) -> (Just h, Just p)
-      Nothing -> (Nothing, Nothing)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =
