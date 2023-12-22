@@ -1273,8 +1273,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                             Just (sq', sq'' : sqs') -> do
                               checkSQSwchStatus sq' SSSendingQTEST
                               -- remove the delivery from the map to stop the thread when the delivery loop is complete
-                              let addr' = qAddress sq'
-                              atomically $ TM.delete addr' $ smpDeliveryWorkers c
+                              atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
                               withStore' c $ \db -> do
                                 when primary $ setSndQueuePrimary db connId sq
                                 deletePendingMsgs db connId sq'
