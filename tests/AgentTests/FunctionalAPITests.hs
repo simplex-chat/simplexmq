@@ -956,7 +956,7 @@ testRatchetSyncSuspendForeground t = do
 
   suspendAgent bob2 0
   threadDelay 100000
-  foregroundAgent bob2
+  foregroundAgent bob2 False
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
@@ -1119,7 +1119,7 @@ testSuspendingAgent =
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
-    foregroundAgent b
+    foregroundAgent b False
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
 
 testSuspendingAgentCompleteSending :: ATransport -> IO ()
@@ -2065,7 +2065,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 getSMPAgentClient' :: AgentConfig -> InitialAgentServers -> FilePath -> IO AgentClient
 getSMPAgentClient' cfg' initServers dbPath = do
   Right st <- liftIO $ createAgentStore dbPath "" False MCError
-  getSMPAgentClient cfg' initServers st
+  getSMPAgentClient cfg' initServers st False
 
 testServerMultipleIdentities :: HasCallStack => IO ()
 testServerMultipleIdentities =
