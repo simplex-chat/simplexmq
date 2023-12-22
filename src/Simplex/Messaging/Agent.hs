@@ -946,9 +946,8 @@ runCommandProcessing c@AgentClient {subQ} server_ doWork = do
     atomically $ endAgentOperation c AOSndNetwork
     waitForWork doWork
     atomically $ throwWhenInactive c
-    withWork c doWork (\db -> getPendingServerCommand db server_) $ \cmd -> do
-      atomically $ beginAgentOperation c AOSndNetwork
-      processCmd (riFast ri) cmd
+    atomically $ beginAgentOperation c AOSndNetwork
+    withWork c doWork (\db -> getPendingServerCommand db server_) $ processCmd (riFast ri)
   where
     processCmd :: RetryInterval -> PendingCommand -> m ()
     processCmd ri PendingCommand {cmdId, corrId, userId, connId, command} = case command of
