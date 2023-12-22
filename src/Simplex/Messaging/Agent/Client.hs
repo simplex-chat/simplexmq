@@ -652,8 +652,8 @@ throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
 
 -- this function is used to remove workers once delivery is complete, not when it is removed from the map
 throwWhenNoDelivery :: AgentClient -> SndQueue -> STM ()
-throwWhenNoDelivery c SndQueue {server, sndId} =
-  unlessM (TM.member (server, sndId) $ smpDeliveryWorkers c) $
+throwWhenNoDelivery c sq =
+  unlessM (TM.member (qAddress sq) $ smpDeliveryWorkers c) $
     throwSTM ThreadKilled
 
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
