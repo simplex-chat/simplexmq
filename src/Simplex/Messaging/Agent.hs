@@ -1149,12 +1149,10 @@ getDeliveryWorker c cData sq = do
         runSmpQueueMsgDelivery c cData sq doWork retryLock
           `agentFinally` atomically (getWorker >>= deleteWorker wId)
 
-
 submitPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
 submitPendingMsg c cData sq = do
   atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
   resumeMsgDelivery c cData sq
-
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> TMVar () -> TMVar () -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq doWork qLock = do
