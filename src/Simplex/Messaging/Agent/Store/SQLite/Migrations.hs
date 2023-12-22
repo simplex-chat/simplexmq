@@ -65,6 +65,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -98,7 +99,8 @@ schemaMigrations =
     ("m20230720_delete_expired_messages", m20230720_delete_expired_messages, Just down_m20230720_delete_expired_messages),
     ("m20230722_indexes", m20230722_indexes, Just down_m20230722_indexes),
     ("m20230814_indexes", m20230814_indexes, Just down_m20230814_indexes),
-    ("m20230829_crypto_files", m20230829_crypto_files, Just down_m20230829_crypto_files)
+    ("m20230829_crypto_files", m20230829_crypto_files, Just down_m20230829_crypto_files),
+    ("m20231222_command_created_at", m20231222_command_created_at, Just down_m20231222_command_created_at)
   ]
 
 -- | The list of migrations in ascending order by date

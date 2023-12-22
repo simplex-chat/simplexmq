@@ -229,6 +229,7 @@ CREATE TABLE commands(
   command BLOB NOT NULL,
   agent_version INTEGER NOT NULL DEFAULT 1,
   server_key_hash BLOB,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 );
@@ -479,3 +480,4 @@ CREATE INDEX idx_encrypted_rcv_message_hashes_created_at ON encrypted_rcv_messag
   created_at
 );
 CREATE INDEX idx_messages_internal_ts ON messages(internal_ts);
+CREATE INDEX idx_commands_created_at ON commands(created_at);

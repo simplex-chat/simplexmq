@@ -26,10 +26,11 @@ module Simplex.Messaging.Agent.Client
     withConnLock,
     withConnLocks,
     withInvLock,
+    withDeliveryLock,
+    withAsyncCmdLock,
     closeAgentClient,
     closeProtocolServerClients,
     closeXFTPServerClient,
-    stopPendingActions,
     runSMPServerTest,
     runXFTPServerTest,
     getXFTPWorkPath,
@@ -78,6 +79,7 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
+    Worker (..),
     SubscriptionsInfo (..),
     SubInfo (..),
     AgentOperation (..),
@@ -85,7 +87,10 @@ module Simplex.Messaging.Agent.Client
     AgentState (..),
     AgentLocks (..),
     AgentStatsKey (..),
+    newWorker,
     waitForWork,
+    hasWorkToDo,
+    hasWorkToDo',
     withWork,
     agentOperations,
     agentOperationBracket,
@@ -138,7 +143,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, listToMaybe)
+import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -207,6 +212,7 @@ import Simplex.Messaging.Version
 import System.Random (randomR)
 import System.Timeout (timeout)
 import UnliftIO (mapConcurrently)
+import UnliftIO.Async (async)
 import UnliftIO.Directory (getTemporaryDirectory)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -241,12 +247,12 @@ data AgentClient = AgentClient
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
-    pendingMsgsQueued :: TMap SndQAddr Bool,
-    smpQueueMsgQueues :: TMap SndQAddr (TQueue (InternalId, Bool), TMVar ()),
-    smpQueueMsgDeliveries :: TMap SndQAddr (Async ()),
+    workerSeq :: TVar Int,
+    smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
+    smpDeliveryLocks :: TMap SndQAddr Lock,
+    asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
+    asyncCmdLocks :: TMap (Maybe SMPServer) Lock,
     connCmdsQueued :: TMap ConnId Bool,
-    asyncCmdQueues :: TMap (Maybe SMPServer) (TQueue AsyncCmdId),
-    asyncCmdProcesses :: TMap (Maybe SMPServer) (Async ()),
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
     msgDeliveryOp :: TVar AgentOpState,
@@ -268,6 +274,15 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env
   }
+
+data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: Async ()}
+
+newWorker :: AgentMonad' m => AgentClient -> (Int -> TMVar () -> m ()) -> m Worker
+newWorker c runWorker = do
+  workerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
+  doWork <- newTMVarIO ()
+  action <- async $ runWorker workerId doWork
+  pure Worker {workerId, doWork, action}
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
@@ -323,12 +338,12 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
   removedSubs <- TM.empty
-  pendingMsgsQueued <- TM.empty
-  smpQueueMsgQueues <- TM.empty
-  smpQueueMsgDeliveries <- TM.empty
+  workerSeq <- newTVar 0
+  smpDeliveryWorkers <- TM.empty
+  smpDeliveryLocks <- TM.empty
+  asyncCmdWorkers <- TM.empty
+  asyncCmdLocks <- TM.empty
   connCmdsQueued <- TM.empty
-  asyncCmdQueues <- TM.empty
-  asyncCmdProcesses <- TM.empty
   ntfNetworkOp <- newTVar $ AgentOpState False 0
   rcvNetworkOp <- newTVar $ AgentOpState False 0
   msgDeliveryOp <- newTVar $ AgentOpState False 0
@@ -361,12 +376,12 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         activeSubs,
         pendingSubs,
         removedSubs,
-        pendingMsgsQueued,
-        smpQueueMsgQueues,
-        smpQueueMsgDeliveries,
+        workerSeq,
+        smpDeliveryWorkers,
+        smpDeliveryLocks,
+        asyncCmdWorkers,
+        asyncCmdLocks,
         connCmdsQueued,
-        asyncCmdQueues,
-        asyncCmdProcesses,
         ntfNetworkOp,
         rcvNetworkOp,
         msgDeliveryOp,
@@ -608,28 +623,23 @@ closeAgentClient c = liftIO $ do
   closeProtocolServerClients c xftpClients
   cancelActions . actions $ reconnections c
   cancelActions . actions $ asyncClients c
-  stopPendingActions c
+  clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
+  clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
+  clear connCmdsQueued
   atomically . RQ.clear $ activeSubs c
   atomically . RQ.clear $ pendingSubs c
   clear subscrConns
   clear getMsgLocks
   where
+    clearWorkers :: Ord k => (AgentClient -> TMap k a) -> IO (Map k a)
+    clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
 
-stopPendingActions :: MonadIO m => AgentClient -> m ()
-stopPendingActions c = liftIO $ do
-  -- messages
-  cancelActions $ smpQueueMsgDeliveries c
-  clear pendingMsgsQueued
-  clear smpQueueMsgQueues
-  -- commands
-  cancelActions $ asyncCmdProcesses c
-  clear connCmdsQueued
-  clear asyncCmdQueues
-  where
-    clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
-    clear sel = atomically $ writeTVar (sel c) mempty
+cancelWorker :: Worker -> IO ()
+cancelWorker Worker {doWork, action} = do
+  noWorkToDo doWork
+  uninterruptibleCancel action
 
 waitUntilActive :: AgentClient -> STM ()
 waitUntilActive c = unlessM (readTVar $ active c) retry
@@ -637,13 +647,11 @@ waitUntilActive c = unlessM (readTVar $ active c) retry
 throwWhenInactive :: AgentClient -> STM ()
 throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
 
+-- this function is used to remove workers once delivery is complete, not when it is removed from the map
 throwWhenNoDelivery :: AgentClient -> SndQueue -> STM ()
 throwWhenNoDelivery c SndQueue {server, sndId} =
-  unlessM (isJust <$> TM.lookup k (smpQueueMsgQueues c)) $ do
-    TM.delete k $ smpQueueMsgDeliveries c
+  unlessM (TM.member (server, sndId) $ smpDeliveryWorkers c) $
     throwSTM ThreadKilled
-  where
-    k = (server, sndId)
 
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
@@ -676,6 +684,12 @@ withInvLock AgentClient {invLocks} = withLockMap_ invLocks
 
 withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
 withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
+
+withDeliveryLock :: MonadUnliftIO m => AgentClient -> SndQAddr -> String -> m a -> m a
+withDeliveryLock AgentClient {smpDeliveryLocks} = withLockMap_ smpDeliveryLocks
+
+withAsyncCmdLock :: MonadUnliftIO m => AgentClient -> Maybe SMPServer -> String -> m a -> m a
+withAsyncCmdLock AgentClient {asyncCmdLocks} = withLockMap_ asyncCmdLocks
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ = withGetLock . getMapLock
@@ -1227,18 +1241,25 @@ cryptoError = \case
   where
     c = AGENT . A_CRYPTO
 
-waitForWork :: AgentMonad m => TMVar () -> m ()
+waitForWork :: AgentMonad' m => TMVar () -> m ()
 waitForWork = void . atomically . readTMVar
 
 withWork :: AgentMonad m => AgentClient -> TMVar () -> (DB.Connection -> IO (Maybe a)) -> (a -> m ()) -> m ()
 withWork c doWork getWork action = do
   r <- withStore' c $ \db -> do
     r' <- getWork db
-    when (isNothing r') noWorkToDo
+    liftIO $ when (isNothing r') $ noWorkToDo doWork
     pure r'
   mapM_ action r
-  where
-    noWorkToDo = void . atomically $ tryTakeTMVar doWork
+
+noWorkToDo :: TMVar () -> IO ()  
+noWorkToDo = void . atomically . tryTakeTMVar
+
+hasWorkToDo :: Worker -> STM ()
+hasWorkToDo = hasWorkToDo' . doWork
+
+hasWorkToDo' :: TMVar () -> STM ()
+hasWorkToDo' = void . (`tryPutTMVar` ())
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c op = endOperation c op $ case op of

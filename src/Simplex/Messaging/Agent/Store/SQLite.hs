@@ -107,9 +107,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSndMsgDelivery,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
-    getPendingMsgData,
+    getPendingQueueMsg,
     updatePendingMsgRIState,
-    getPendingMsgs,
+    -- getPendingMsgs,
     deletePendingMsgs,
     setMsgUserAck,
     getRcvMsg,
@@ -133,8 +133,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRatchet,
     -- Async commands
     createCommand,
-    getPendingCommands,
-    getPendingCommand,
+    getPendingCommandServers,
+    getPendingServerCommand,
     deleteCommand,
     -- Notification device token persistence
     createNtfToken,
@@ -272,7 +272,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, groupOn, ifM, safeDecodeUtf8, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -974,23 +974,26 @@ updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
     "UPDATE snd_messages SET rcpt_internal_id = ?, rcpt_status = ? WHERE conn_id = ? AND internal_snd_id = ?"
     (agentMsgId, msgRcptStatus, connId, sndMsgId)
 
-getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
-getPendingMsgData db connId msgId = do
+getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Maybe (Maybe RcvQueue, PendingMsgData))
+getPendingQueueMsg db connId SndQueue {dbQueueId} = do
   rq_ <- L.head <$$> getRcvQueuesByConnId_ db connId
-  (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
+  (rq_,) <$$> maybeFirstRow pendingMsgData getMsgData_
   where
     getMsgData_ =
       DB.query
         db
         [sql|
-          SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
-          FROM messages m
-          JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
-          WHERE m.conn_id = ? AND m.internal_id = ?
+          SELECT m.internal_id, m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
+          FROM snd_message_deliveries d
+          JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id
+          JOIN snd_messages s ON s.conn_id = d.conn_id AND s.internal_id = d.internal_id
+          WHERE d.conn_id = ? AND d.snd_queue_id = ?
+          ORDER BY d.internal_id ASC
+          LIMIT 1
         |]
-        (connId, msgId)
-    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
-    pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
+        (connId, dbQueueId)
+    pendingMsgData :: (InternalId, AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
+    pendingMsgData (msgId, msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
       let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
           msgRetryState = RI2State <$> riSlow_ <*> riFast_
        in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
@@ -998,11 +1001,6 @@ getPendingMsgData db connId msgId = do
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
   DB.execute db "UPDATE snd_messages SET retry_int_slow = ?, retry_int_fast = ? WHERE conn_id = ? AND internal_id = ?" (slowInterval, fastInterval, connId, msgId)
-
-getPendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
-getPendingMsgs db connId SndQueue {dbQueueId} =
-  map fromOnly
-    <$> DB.query db "SELECT internal_id FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? ORDER BY internal_id ASC" (connId, dbQueueId)
 
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deletePendingMsgs db connId SndQueue {dbQueueId} =
@@ -1202,7 +1200,7 @@ updateRatchet db connId rc skipped = do
         forM_ (M.assocs mks) $ \(msgN, mk) ->
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
-createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO (Either StoreError AsyncCmdId)
+createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO (Either StoreError ())
 createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
   liftIO $ do
@@ -1210,7 +1208,6 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
       db
       "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash) VALUES (?,?,?,?,?,?,?)"
       (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_)
-    insertedRowId db
   where
     serverFields :: ExceptT StoreError IO (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash)
     serverFields = case srv_ of
@@ -1221,38 +1218,41 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
-getPendingCommands :: DB.Connection -> ConnId -> IO [(Maybe SMPServer, [AsyncCmdId])]
-getPendingCommands db connId = do
-  -- `groupOn` is used instead of `groupAllOn` to avoid extra sorting by `server + cmdId`, as the query already sorts by them.
+getPendingCommandServers :: DB.Connection -> ConnId -> IO [Maybe SMPServer]
+getPendingCommandServers db connId = do
   -- TODO review whether this can break if, e.g., the server has another key hash.
-  map (\ids -> (fst $ head ids, map snd ids)) . groupOn fst . map srvCmdId
+  map smpServer
     <$> DB.query
       db
       [sql|
-        SELECT c.host, c.port, COALESCE(c.server_key_hash, s.key_hash), c.command_id
+        SELECT DISTINCT c.host, c.port, COALESCE(c.server_key_hash, s.key_hash)
         FROM commands c
         LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
         WHERE conn_id = ?
-        ORDER BY c.host, c.port, c.command_id ASC
       |]
       (Only connId)
   where
-    srvCmdId (host, port, keyHash, cmdId) = (SMPServer <$> host <*> port <*> keyHash, cmdId)
+    smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
 
-getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError PendingCommand)
-getPendingCommand db msgId = do
-  firstRow pendingCommand SECmdNotFound $
+getPendingServerCommand :: DB.Connection -> Maybe SMPServer -> IO (Maybe PendingCommand)
+getPendingServerCommand db server_ = do
+  maybeFirstRow pendingCommand $
     DB.query
       db
       [sql|
-        SELECT c.corr_id, cs.user_id, c.conn_id, c.command
+        SELECT c.command_id, c.corr_id, cs.user_id, c.conn_id, c.command
         FROM commands c
         JOIN connections cs USING (conn_id)
-        WHERE c.command_id = ?
+        WHERE c.host = ? AND c.port = ?
+        ORDER BY c.created_at, c.command_id ASC
+        LIMIT 1
       |]
-      (Only msgId)
+      (host, port)
   where
-    pendingCommand (corrId, userId, connId, command) = PendingCommand {corrId, userId, connId, command}
+    pendingCommand (cmdId, corrId, userId, connId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+    (host, port) = case server_ of
+      Just (SMPServer h p _) -> (Just h, Just p)
+      Nothing -> (Nothing, Nothing)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =

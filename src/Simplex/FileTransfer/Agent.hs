@@ -155,8 +155,7 @@ addWorker c wsSel runWorker runWorkerNoSrv srv_ = do
             Nothing -> runWorkerNoSrv c doWork
       worker <- async $ runWorker' `agentFinally` atomically (TM.delete srv_ ws)
       atomically $ TM.insert srv_ (doWork, worker) ws
-    Just (doWork, _) ->
-      void . atomically $ tryPutTMVar doWork ()
+    Just (doWork, _) -> atomically $ hasWorkToDo' doWork
 
 runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPRcvWorker c srv doWork = do
@@ -526,8 +525,7 @@ addXFTPDelWorker c srv = do
       doWork <- newTMVarIO ()
       worker <- async $ runXFTPDelWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
       atomically $ TM.insert srv (doWork, worker) ws
-    Just (doWork, _) ->
-      void . atomically $ tryPutTMVar doWork ()
+    Just (doWork, _) -> atomically $ hasWorkToDo' doWork
 
 runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPDelWorker c srv doWork = do

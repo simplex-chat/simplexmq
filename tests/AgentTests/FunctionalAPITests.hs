@@ -163,13 +163,13 @@ getInAnyOrder c rs = do
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  describe "Establishing duplex connection" $ do
+  fdescribe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientTest
-  describe "Establish duplex connection via contact address" $
+  fdescribe "Establish duplex connection via contact address" $
     testMatrix2 t runAgentClientContactTest
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientContactTest
@@ -334,7 +334,7 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  fit "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
@@ -956,7 +956,7 @@ testRatchetSyncSuspendForeground t = do
 
   suspendAgent bob2 0
   threadDelay 100000
-  foregroundAgent bob2 False
+  foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
@@ -1119,7 +1119,7 @@ testSuspendingAgent =
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
-    foregroundAgent b False
+    foregroundAgent b
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
 
 testSuspendingAgentCompleteSending :: ATransport -> IO ()

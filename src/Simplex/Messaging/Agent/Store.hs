@@ -316,7 +316,8 @@ ratchetSyncSendProhibited ConnData {ratchetSyncState} =
   ratchetSyncState `elem` ([RSRequired, RSStarted, RSAgreed] :: [RatchetSyncState])
 
 data PendingCommand = PendingCommand
-  { corrId :: ACorrId,
+  { cmdId :: AsyncCmdId,
+    corrId :: ACorrId,
     userId :: UserId,
     connId :: ConnId,
     command :: AgentCommand
