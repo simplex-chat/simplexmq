@@ -286,10 +286,10 @@ runWorkerAsync :: AgentMonad' m => Worker -> m () -> m ()
 runWorkerAsync Worker {action} worker =
   bracket
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
-    (\a_ -> atomically $ tryPutTMVar action a_) -- if run crashes put it back, but don't lock if it succeeds
-    (maybe run $ \_ -> pure ()) -- run worker if it's not running
+    (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
+    (\a -> when (isNothing a) start) -- start worker if it's not running
   where
-    run = atomically . putTMVar action . Just =<< async worker
+    start = atomically . putTMVar action . Just =<< async worker
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
