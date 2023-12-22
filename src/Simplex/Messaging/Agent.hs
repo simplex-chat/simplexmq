@@ -1094,7 +1094,7 @@ enqueueMessageB c reqs = do
   aVRange <- asks $ maxVersion . smpAgentVRange . config
   reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db aVRange) reqs
   forME reqMids $ \((cData, sq :| sqs, _, _), InternalId msgId) -> do
-    hasPendingMsg c cData sq
+    submitPendingMsg c cData sq
     let sqs' = filter isActiveSndQ sqs
     pure $ Right (msgId, if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
@@ -1122,7 +1122,7 @@ enqueueSavedMessageB c reqs = do
   -- saving to the database is in the start to avoid race conditions when delivery is read from queue before it is saved
   void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) reqs
   forM_ reqs $ \(cData, sqs, _) ->
-    forM sqs $ hasPendingMsg c cData
+    forM sqs $ submitPendingMsg c cData
   where
     storeDeliveries :: DB.Connection -> (ConnData, [SndQueue], AgentMsgId) -> [IO ()]
     storeDeliveries db (ConnData {connId}, sqs, msgId) = do
@@ -1151,8 +1151,8 @@ getDeliveryWorker c cData sq = do
           `agentFinally` atomically (getWorker >>= deleteWorker wId)
 
 
-hasPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
-hasPendingMsg c cData sq = do
+submitPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
+submitPendingMsg c cData sq = do
   atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
   resumeMsgDelivery c cData sq
 
@@ -1168,7 +1168,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
       \(rq_, PendingMsgData {msgId, msgType, msgBody, msgFlags, msgRetryState, internalTs}) -> do
         atomically $ beginAgentOperation c AOSndNetwork
-        atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in hasPendingMsg
+        atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
@@ -2423,7 +2423,7 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = 
 confirmQueueAsync :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> SubscriptionMode -> m ()
 confirmQueueAsync v c cData sq srv connInfo e2eEncryption_ subMode = do
   storeConfirmation c cData sq e2eEncryption_ =<< mkAgentConfirmation v c cData sq srv connInfo subMode
-  hasPendingMsg c cData sq
+  submitPendingMsg c cData sq
 
 confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> SubscriptionMode -> m ()
 confirmQueue v@(Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption_ subMode = do
@@ -2447,7 +2447,7 @@ mkAgentConfirmation (Compatible agentVersion) c cData sq srv connInfo subMode
 enqueueConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
 enqueueConfirmation c cData sq connInfo e2eEncryption_ = do
   storeConfirmation c cData sq e2eEncryption_ $ AgentConnInfo connInfo
-  hasPendingMsg c cData sq
+  submitPendingMsg c cData sq
 
 storeConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Maybe (CR.E2ERatchetParams 'C.X448) -> AgentMessage -> m ()
 storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentMsg = withStore c $ \db -> runExceptT $ do
@@ -2471,7 +2471,7 @@ enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQue
 enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
   aVRange <- asks $ smpAgentVRange . config
   msgId <- storeRatchetKey $ maxVersion aVRange
-  hasPendingMsg c cData sq
+  submitPendingMsg c cData sq
   pure $ unId msgId
   where
     storeRatchetKey :: Version -> m InternalId
