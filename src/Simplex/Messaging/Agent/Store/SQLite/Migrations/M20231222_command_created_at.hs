@@ -9,12 +9,12 @@ m20231222_command_created_at :: Query
 m20231222_command_created_at =
   [sql|
 ALTER TABLE commands ADD COLUMN created_at TEXT NOT NULL DEFAULT(datetime('now'));
-CREATE INDEX idx_commands_created_at ON commands(created_at, command_id);
+CREATE INDEX idx_commands_server_commands ON commands(host, port, created_at, command_id);
 |]
 
 down_m20231222_command_created_at :: Query
 down_m20231222_command_created_at =
   [sql|
-DROP INDEX idx_commands_created_at;
+DROP INDEX idx_commands_server_commands;
 ALTER TABLE commands DROP COLUMN created_at;
 |]
