@@ -413,11 +413,11 @@ testSetQueueStatusDuplex =
     setRcvQueueStatus db rq Secured
       `shouldReturn` ()
     let rq' = (rq :: RcvQueue) {status = Secured}
-        sq' = (sq :: SndQueue) {status = Confirmed}
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq']))
-    setSndQueueStatus db sq' Confirmed
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq]))
+    setSndQueueStatus db sq Confirmed
       `shouldReturn` ()
+    let sq' = (sq :: SndQueue) {status = Confirmed}
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq']))
 
