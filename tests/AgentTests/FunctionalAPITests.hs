@@ -115,30 +115,40 @@ pattern Rcvd :: AgentMsgId -> ACommand 'Agent e
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
 
 smpCfgVPrev :: ProtocolClientConfig
-smpCfgVPrev = (smpCfg agentCfg) {serverVRange = serverVRangePrev}
-  where
-    serverVRangePrev = prevRange $ serverVRange $ smpCfg agentCfg
+smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
+
+smpCfgV1 :: ProtocolClientConfig
+smpCfgV1 = (smpCfg agentCfg) {serverVRange = v1Range}
 
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
-    { smpAgentVRange = smpAgentVRangePrev,
-      smpClientVRange = smpClientVRangePrev,
-      e2eEncryptVRange = e2eEncryptVRangePrev,
+    { smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
+      smpClientVRange = prevRange $ smpClientVRange agentCfg,
+      e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
       smpCfg = smpCfgVPrev
     }
-  where
-    smpAgentVRangePrev = prevRange $ smpAgentVRange agentCfg
-    smpClientVRangePrev = prevRange $ smpClientVRange agentCfg
-    e2eEncryptVRangePrev = prevRange $ e2eEncryptVRange agentCfg
+
+agentCfgV1 :: AgentConfig
+agentCfgV1 =
+  agentCfg
+    { smpAgentVRange = v1Range,
+      smpClientVRange = v1Range,
+      e2eEncryptVRange = v1Range,
+      smpCfg = smpCfgV1
+    }
 
 agentCfgRatchetVPrev :: AgentConfig
-agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = e2eEncryptVRangePrev}
-  where
-    e2eEncryptVRangePrev = prevRange $ e2eEncryptVRange agentCfg
+agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
+
+agentCfgRatchetV1 :: AgentConfig
+agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = v1Range}
 
 prevRange :: VersionRange -> VersionRange
 prevRange vr = vr {maxVersion = maxVersion vr - 1}
+
+v1Range :: VersionRange
+v1Range = mkVersionRange 1 1
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
@@ -338,6 +348,9 @@ testMatrix2 t runTest = do
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
+  it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
+  it "v1 to current" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
+  it "current to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
 
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
@@ -345,6 +358,9 @@ testRatchetMatrix2 t runTest = do
   it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
   it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
   it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
+  it "ratchet v1" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfgRatchetV1 3 runTest
+  it "ratchets v1 to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfg 3 runTest
+  it "ratchets current to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetV1 3 runTest
 
 testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -521,9 +537,6 @@ testAsyncServerOffline t = withAgentClients2 $ \alice bob -> do
 testAsyncHelloTimeout :: HasCallStack => IO ()
 testAsyncHelloTimeout = do
   -- this test would only work if any of the agent is v1, there is no HELLO timeout in v2
-  let vr11 = mkVersionRange 1 1
-      smpCfgV1 = (smpCfg agentCfg) {serverVRange = vr11}
-      agentCfgV1 = agentCfg {smpAgentVRange = vr11, smpClientVRange = vr11, e2eEncryptVRange = vr11, smpCfg = smpCfgV1}
   withAgentClientsCfg2 agentCfgV1 agentCfg {helloTimeout = 1} $ \alice bob -> runRight_ $ do
     (_, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     disconnectAgentClient alice
@@ -956,7 +969,7 @@ testRatchetSyncSuspendForeground t = do
 
   suspendAgent bob2 0
   threadDelay 100000
-  foregroundAgent bob2 False
+  foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
@@ -1119,7 +1132,7 @@ testSuspendingAgent =
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
-    foregroundAgent b False
+    foregroundAgent b
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
 
 testSuspendingAgentCompleteSending :: ATransport -> IO ()

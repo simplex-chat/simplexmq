@@ -98,6 +98,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client

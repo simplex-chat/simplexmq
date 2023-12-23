@@ -149,8 +149,7 @@ processNtfSub c (connId, cmd) = do
           doWork <- newTMVarIO ()
           worker <- async $ runWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
           atomically $ TM.insert srv (doWork, worker) ws
-        Just (doWork, _) ->
-          void . atomically $ tryPutTMVar doWork ()
+        Just (doWork, _) -> atomically $ hasWorkToDo' doWork
 
 withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
 withNtfServer c action = getNtfServer c >>= mapM_ action
@@ -288,7 +287,7 @@ rescheduleAction doWork ts actionTs
       void . atomically $ tryTakeTMVar doWork
       void . forkIO $ do
         liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
-        void . atomically $ tryPutTMVar doWork ()
+        atomically $ hasWorkToDo' doWork
       pure True
 
 retryOnError :: AgentMonad' m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
