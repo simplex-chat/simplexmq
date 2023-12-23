@@ -229,7 +229,7 @@ CREATE TABLE commands(
   command BLOB NOT NULL,
   agent_version INTEGER NOT NULL DEFAULT 1,
   server_key_hash BLOB,
-  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  created_at TEXT NOT NULL DEFAULT('1970-01-01 00:00:00'),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 );

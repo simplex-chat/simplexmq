@@ -8,7 +8,7 @@ import Database.SQLite.Simple.QQ (sql)
 m20231222_command_created_at :: Query
 m20231222_command_created_at =
   [sql|
-ALTER TABLE commands ADD COLUMN created_at TEXT NOT NULL DEFAULT(datetime('now'));
+ALTER TABLE commands ADD COLUMN created_at TEXT NOT NULL DEFAULT('1970-01-01 00:00:00');
 CREATE INDEX idx_commands_server_commands ON commands(host, port, created_at, command_id);
 |]
 
