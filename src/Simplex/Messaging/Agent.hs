@@ -626,10 +626,11 @@ newRcvConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SCon
 newRcvConnSrv c userId connId enableNtfs cMode clientData subMode srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   (rq, qUri) <- newRcvQueue c userId connId srv smpClientVRange subMode `catchAgentError` \e -> liftIO (print e) >> throwError e
-  void . withStore c $ \db -> updateNewConnRcv db connId rq
+  dbQueueId <- withStore c $ \db -> updateNewConnRcv db connId rq
+  let rq' = (rq :: RcvQueue) {dbQueueId}
   case subMode of
     SMOnlyCreate -> pure ()
-    SMSubscribe -> addSubscription c rq
+    SMSubscribe -> addSubscription c rq'
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
@@ -673,11 +674,11 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv 
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
     g <- asks random
-    connId' <- withStore c $ \db -> runExceptT $ do
-      connId' <- ExceptT $ createSndConn db g cData q
+    (connId', dbQueueId) <- withStore c $ \db -> runExceptT $ do
+      r@(connId', _) <- ExceptT $ createSndConn db g cData q
       liftIO $ createRatchet db connId' rc
-      pure connId'
-    let sq = (q :: SndQueue) {connId = connId'}
+      pure r
+    let sq = (q :: SndQueue) {connId = connId', dbQueueId}
         cData' = (cData :: ConnData) {connId = connId'}
         duplexHS = connAgentVersion /= 1
     tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
@@ -715,10 +716,11 @@ createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Subsc
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   (rq, qUri) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode
   let qInfo = toVersionT qUri smpClientVersion
+  dbQueueId <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
+  let rq' = (rq :: RcvQueue) {dbQueueId}
   case subMode of
     SMOnlyCreate -> pure ()
-    SMSubscribe -> addSubscription c rq
-  void . withStore c $ \db -> upgradeSndConnToDuplex db connId rq
+    SMSubscribe -> addSubscription c rq'
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
@@ -1367,11 +1369,12 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
   (q, qUri) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe
   let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-  void . withStore c $ \db -> addConnRcvQueue db connId rq'
-  addSubscription c rq'
+  dbQueueId' <- withStore c $ \db -> addConnRcvQueue db connId rq'
+  let rq'' = (rq' :: RcvQueue) {dbQueueId = dbQueueId'}
+  addSubscription c rq''
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
-  let rqs' = updatedQs rq1 rqs <> [rq']
+  let rqs' = updatedQs rq1 rqs <> [rq'']
   pure . connectionStats $ DuplexConnection cData rqs' sqs
 
 abortConnectionSwitch' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
@@ -2235,7 +2238,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                         -- move inside case?
                         withStore' c $ \db -> mapM_ (deleteConnSndQueue db connId) delSqs
                         sq_@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue userId connId qInfo
-                        let sq'' = (sq_ :: SndQueue) {primary = True, dbQueueId, dbReplaceQueueId = Just dbQueueId}
+                        let sq'' = (sq_ :: SndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
                         dbId <- withStore c $ \db -> addConnSndQueue db connId sq''
                         let sq2 = (sq'' :: SndQueue) {dbQueueId = dbId}
                         case (sndPublicKey, e2ePubKey) of

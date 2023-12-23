@@ -209,7 +209,7 @@ testCreateRcvConn =
   it "should create RcvConnection and add SndQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
     createRcvConn db g cData1 rcvQueue1 SCMInvitation
-      `shouldReturn` Right "conn1"
+      `shouldReturn` Right ("conn1", 1)
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
     upgradeRcvConnToDuplex db "conn1" sndQueue1
@@ -221,13 +221,13 @@ testCreateRcvConnRandomId :: SpecWith SQLiteStore
 testCreateRcvConnRandomId =
   it "should create RcvConnection and add SndQueue with random ID" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    Right connId <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
-    let rq' = (rcvQueue1 :: RcvQueue) {connId}
-        sq' = (sndQueue1 :: SndQueue) {connId}
+    Right (connId, dbQueueId) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
+    let rq' = (rcvQueue1 :: RcvQueue) {connId, dbQueueId}
     getConn db connId
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rq'))
-    upgradeRcvConnToDuplex db connId sndQueue1
-      `shouldReturn` Right 1
+    Right dbQueueId' <- upgradeRcvConnToDuplex db connId sndQueue1
+    dbQueueId' `shouldBe` 1
+    let sq' = (sndQueue1 :: SndQueue) {connId, dbQueueId = dbQueueId'}
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
 
@@ -244,7 +244,7 @@ testCreateSndConn =
   it "should create SndConnection and add RcvQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
     createSndConn db g cData1 sndQueue1
-      `shouldReturn` Right "conn1"
+      `shouldReturn` Right ("conn1", 1)
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1))
     upgradeSndConnToDuplex db "conn1" rcvQueue1
@@ -256,13 +256,13 @@ testCreateSndConnRandomID :: SpecWith SQLiteStore
 testCreateSndConnRandomID =
   it "should create SndConnection and add RcvQueue with random ID" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    Right connId <- createSndConn db g cData1 {connId = ""} sndQueue1
-    let rq' = (rcvQueue1 :: RcvQueue) {connId}
-        sq' = (sndQueue1 :: SndQueue) {connId}
+    Right (connId, dbQueueId) <- createSndConn db g cData1 {connId = ""} sndQueue1
+    let sq' = (sndQueue1 :: SndQueue) {connId, dbQueueId}
     getConn db connId
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq'))
-    upgradeSndConnToDuplex db connId rcvQueue1
-      `shouldReturn` Right 1
+    Right dbQueueId' <- upgradeSndConnToDuplex db connId rcvQueue1
+    dbQueueId' `shouldBe` 1
+    let rq' = (rcvQueue1 :: RcvQueue) {connId, dbQueueId = dbQueueId'}
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
 

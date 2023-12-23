@@ -50,7 +50,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
-    createRcvConn,
+    createRcvConn, -- no longer used
     createSndConn,
     getConn,
     getDeletedConn,
@@ -529,16 +529,18 @@ deleteUsersWithoutConns db = do
 createConn_ ::
   TVar ChaChaDRG ->
   ConnData ->
-  (ByteString -> IO ()) ->
-  IO (Either StoreError ByteString)
+  (ConnId -> IO a) ->
+  IO (Either StoreError (ConnId, a))
 createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
-  ConnData {connId = ""} -> createWithRandomId gVar create
-  ConnData {connId} -> create connId $> Right connId
+  ConnData {connId = ""} -> createWithRandomId' gVar create
+  ConnData {connId} -> Right . (connId,) <$> create connId
 
 createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
-createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode =
-  createConn_ gVar cData $ \connId -> do
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
+createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode = do
+  fst <$$> createConn_ gVar cData create
+  where
+    create connId =
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
 
 updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError Int64)
 updateNewConnRcv db connId rq =
@@ -560,21 +562,21 @@ updateNewConnSnd db connId sq =
     updateConn :: IO (Either StoreError Int64)
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
-createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
+createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, Int64))
 createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
-    void $ insertRcvQueue_ db connId q serverKeyHash_
+    insertRcvQueue_ db connId q serverKeyHash_
 
-createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
+createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError (ConnId, Int64))
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
     createConn_ gVar cData $ \connId -> do
       serverKeyHash_ <- createServer_ db server
       DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
-      void $ insertSndQueue_ db connId q serverKeyHash_
+      insertSndQueue_ db connId q serverKeyHash_
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> SndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
@@ -2100,14 +2102,17 @@ updateHashSnd_ dbConn connId SndMsgData {..} =
 
 -- create record with a random ID
 createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
-createWithRandomId gVar create = tryCreate 3
+createWithRandomId gVar create = fst <$$> createWithRandomId' gVar create
+
+createWithRandomId' :: forall a. TVar ChaChaDRG -> (ByteString -> IO a) -> IO (Either StoreError (ByteString, a))
+createWithRandomId' gVar create = tryCreate 3
   where
-    tryCreate :: Int -> IO (Either StoreError ByteString)
+    tryCreate :: Int -> IO (Either StoreError (ByteString, a))
     tryCreate 0 = pure $ Left SEUniqueID
     tryCreate n = do
       id' <- randomId gVar 12
       E.try (create id') >>= \case
-        Right _ -> pure $ Right id'
+        Right r -> pure $ Right (id', r)
         Left e
           | SQL.sqlError e == SQL.ErrorConstraint -> tryCreate (n - 1)
           | otherwise -> pure . Left . SEInternal $ bshow e
