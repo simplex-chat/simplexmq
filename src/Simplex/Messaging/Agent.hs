@@ -626,8 +626,7 @@ newRcvConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> SCon
 newRcvConnSrv c userId connId enableNtfs cMode clientData subMode srv = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   (rq, qUri) <- newRcvQueue c userId connId srv smpClientVRange subMode `catchAgentError` \e -> liftIO (print e) >> throwError e
-  dbQueueId <- withStore c $ \db -> updateNewConnRcv db connId rq
-  let rq' = (rq :: RcvQueue) {dbQueueId}
+  rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
   case subMode of
     SMOnlyCreate -> pure ()
     SMSubscribe -> addSubscription c rq'
@@ -651,7 +650,7 @@ joinConn c userId connId enableNtfs cReq cInfo subMode = do
     _ -> getSMPServer c userId
   joinConnSrv c userId connId enableNtfs cReq cInfo subMode srv
 
-startJoinInvitation :: AgentMonad m => UserId -> ConnId -> Bool -> ConnectionRequestUri 'CMInvitation -> m (Compatible Version, ConnData, SndQueue, CR.Ratchet 'C.X448, CR.E2ERatchetParams 'C.X448)
+startJoinInvitation :: AgentMonad m => UserId -> ConnId -> Bool -> ConnectionRequestUri 'CMInvitation -> m (Compatible Version, ConnData, NewSndQueue, CR.Ratchet 'C.X448, CR.E2ERatchetParams 'C.X448)
 startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   case ( qUri `compatibleVersion` smpClientVRange,
@@ -674,12 +673,11 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv 
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
     g <- asks random
-    (connId', dbQueueId) <- withStore c $ \db -> runExceptT $ do
+    (connId', sq) <- withStore c $ \db -> runExceptT $ do
       r@(connId', _) <- ExceptT $ createSndConn db g cData q
       liftIO $ createRatchet db connId' rc
       pure r
-    let sq = (q :: SndQueue) {connId = connId', dbQueueId}
-        cData' = (cData :: ConnData) {connId = connId'}
+    let cData' = (cData :: ConnData) {connId = connId'}
         duplexHS = connAgentVersion /= 1
     tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
       Right _ -> do
@@ -704,10 +702,9 @@ joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRan
 joinConnSrvAsync :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> m ()
 joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv = do
   (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
-  dbQueueId <- withStore c $ \db -> runExceptT $ do
+  q' <- withStore c $ \db -> runExceptT $ do
     liftIO $ createRatchet db connId rc
     ExceptT $ updateNewConnSnd db connId q
-  let q' = (q :: SndQueue) {dbQueueId}
   confirmQueueAsync aVersion c cData q' srv cInfo (Just e2eSndParams) subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _srv = do
   throwError $ CMD PROHIBITED
@@ -716,8 +713,7 @@ createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Subsc
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   (rq, qUri) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode
   let qInfo = toVersionT qUri smpClientVersion
-  dbQueueId <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
-  let rq' = (rq :: RcvQueue) {dbQueueId}
+  rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   case subMode of
     SMOnlyCreate -> pure ()
     SMSubscribe -> addSubscription c rq'
@@ -1361,16 +1357,15 @@ switchConnection' c connId =
       _ -> throwError $ CMD PROHIBITED
 
 switchDuplexConnection :: AgentMonad m => AgentClient -> Connection 'CDuplex -> RcvQueue -> m ConnectionStats
-switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId, sndId} = do
+switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBQueueId dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
   (q, qUri) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe
-  let rq' = (q :: RcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-  dbQueueId' <- withStore c $ \db -> addConnRcvQueue db connId rq'
-  let rq'' = (rq' :: RcvQueue) {dbQueueId = dbQueueId'}
+  let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
+  rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   addSubscription c rq''
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
@@ -2231,16 +2226,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               Just qInfo@(Compatible sqInfo@SMPQueueInfo {queueAddress}) ->
                 case (findQ (qAddress sqInfo) sqs, findQ addr sqs) of
                   (Just _, _) -> qError "QADD: queue address is already used in connection"
-                  (_, Just sq@SndQueue {dbQueueId}) -> do
+                  (_, Just sq@SndQueue {dbQueueId = DBQueueId dbQueueId}) -> do
                     let (delSqs, keepSqs) = L.partition ((Just dbQueueId ==) . dbReplaceQId) sqs
                     case L.nonEmpty keepSqs of
                       Just sqs' -> do
                         -- move inside case?
                         withStore' c $ \db -> mapM_ (deleteConnSndQueue db connId) delSqs
                         sq_@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue userId connId qInfo
-                        let sq'' = (sq_ :: SndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-                        dbId <- withStore c $ \db -> addConnSndQueue db connId sq''
-                        let sq2 = (sq'' :: SndQueue) {dbQueueId = dbId}
+                        let sq'' = (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
+                        sq2 <- withStore c $ \db -> addConnSndQueue db connId sq''
                         case (sndPublicKey, e2ePubKey) of
                           (Just sndPubKey, Just dhPublicKey) -> do
                             logServer "<--" c srv rId $ "MSG <QADD> " <> logSecret (senderId queueAddress)
@@ -2416,8 +2410,8 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = 
     Nothing -> throwError $ AGENT A_VERSION
     Just qInfo' -> do
       sq <- newSndQueue userId connId qInfo'
-      dbQueueId <- withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
-      enqueueConfirmation c cData sq {dbQueueId} ownConnInfo Nothing
+      sq' <- withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
+      enqueueConfirmation c cData sq' ownConnInfo Nothing
 
 confirmQueueAsync :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> SubscriptionMode -> m ()
 confirmQueueAsync v c cData sq srv connInfo e2eEncryption_ subMode = do
@@ -2508,7 +2502,7 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
   liftIO $ updateRatchet db connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
 
-newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => UserId -> ConnId -> Compatible SMPQueueInfo -> m SndQueue
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => UserId -> ConnId -> Compatible SMPQueueInfo -> m NewSndQueue
 newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
   C.SignAlg a <- asks $ cmdSignAlg . config
   g <- asks random
@@ -2525,7 +2519,7 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
         e2ePubKey = Just e2ePubKey,
         status = New,
-        dbQueueId = 0,
+        dbQueueId = DBNewQueue,
         primary = True,
         dbReplaceQueueId = Nothing,
         sndSwchStatus = Nothing,

@@ -871,7 +871,7 @@ mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 getSessionMode :: AgentMonad' m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
-newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> SubscriptionMode -> m (RcvQueue, SMPQueueUri)
+newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> SubscriptionMode -> m (NewRcvQueue, SMPQueueUri)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   C.SignAlg a <- asks (cmdSignAlg . config)
   g <- asks random
@@ -895,7 +895,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
             e2eDhSecret = Nothing,
             sndId,
             status = New,
-            dbQueueId = 0,
+            dbQueueId = DBNewQueue,
             primary = True,
             dbReplaceQueueId = Nothing,
             rcvSwchStatus = Nothing,

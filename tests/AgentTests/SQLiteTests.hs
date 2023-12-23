@@ -118,16 +118,16 @@ testConcurrentWrites :: SpecWith (SQLiteStore, SQLiteStore)
 testConcurrentWrites =
   it "should complete multiple concurrent write transactions w/t sqlite busy errors" $ \(s1, s2) -> do
     g <- C.newRandom
-    _ <- withTransaction s1 $ \db ->
+    Right (_, rq) <- withTransaction s1 $ \db ->
       createRcvConn db g cData1 rcvQueue1 SCMInvitation
     let ConnData {connId} = cData1
-    concurrently_ (runTest s1 connId) (runTest s2 connId)
+    concurrently_ (runTest s1 connId rq) (runTest s2 connId rq)
   where
-    runTest :: SQLiteStore -> ConnId -> IO ()
-    runTest st connId = replicateM_ 100 . withTransaction st $ \db -> do
+    runTest :: SQLiteStore -> ConnId -> RcvQueue -> IO ()
+    runTest st connId rq = replicateM_ 100 . withTransaction st $ \db -> do
       (internalId, internalRcvId, _, _) <- updateRcvIds db connId
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
-      createRcvMsg db connId rcvQueue1 rcvMsgData
+      createRcvMsg db connId rq rcvMsgData
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe =
@@ -163,7 +163,7 @@ testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOp
 testDhSecret :: C.DhSecretX25519
 testDhSecret = "01234567890123456789012345678901"
 
-rcvQueue1 :: RcvQueue
+rcvQueue1 :: NewRcvQueue
 rcvQueue1 =
   RcvQueue
     { userId = 1,
@@ -176,7 +176,7 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = "2345",
       status = New,
-      dbQueueId = 1,
+      dbQueueId = DBNewQueue,
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,
@@ -185,7 +185,7 @@ rcvQueue1 =
       deleteErrors = 0
     }
 
-sndQueue1 :: SndQueue
+sndQueue1 :: NewSndQueue
 sndQueue1 =
   SndQueue
     { userId = 1,
@@ -197,7 +197,7 @@ sndQueue1 =
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
-      dbQueueId = 1,
+      dbQueueId = DBNewQueue,
       primary = True,
       dbReplaceQueueId = Nothing,
       sndSwchStatus = Nothing,
@@ -208,28 +208,27 @@ testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn =
   it "should create RcvConnection and add SndQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    createRcvConn db g cData1 rcvQueue1 SCMInvitation
-      `shouldReturn` Right ("conn1", 1)
+    Right (connId, rq@RcvQueue {dbQueueId}) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
+    connId `shouldBe` "conn1"
+    dbQueueId `shouldBe` DBQueueId 1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
-    upgradeRcvConnToDuplex db "conn1" sndQueue1
-      `shouldReturn` Right 1
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
+    Right sq@SndQueue {dbQueueId = dbQueueId'} <- upgradeRcvConnToDuplex db "conn1" sndQueue1
+    dbQueueId' `shouldBe` DBQueueId 1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
 
 testCreateRcvConnRandomId :: SpecWith SQLiteStore
 testCreateRcvConnRandomId =
   it "should create RcvConnection and add SndQueue with random ID" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    Right (connId, dbQueueId) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
-    let rq' = (rcvQueue1 :: RcvQueue) {connId, dbQueueId}
+    Right (connId, rq) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
     getConn db connId
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rq'))
-    Right dbQueueId' <- upgradeRcvConnToDuplex db connId sndQueue1
-    dbQueueId' `shouldBe` 1
-    let sq' = (sndQueue1 :: SndQueue) {connId, dbQueueId = dbQueueId'}
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rq))
+    Right sq@SndQueue {dbQueueId = dbQueueId'} <- upgradeRcvConnToDuplex db connId sndQueue1
+    dbQueueId' `shouldBe` DBQueueId 1
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
 
 testCreateRcvConnDuplicate :: SpecWith SQLiteStore
 testCreateRcvConnDuplicate =
@@ -243,28 +242,27 @@ testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn =
   it "should create SndConnection and add RcvQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    createSndConn db g cData1 sndQueue1
-      `shouldReturn` Right ("conn1", 1)
+    Right (connId, sq@SndQueue {dbQueueId}) <- createSndConn db g cData1 sndQueue1
+    connId `shouldBe` "conn1"
+    dbQueueId `shouldBe` DBQueueId 1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1))
-    upgradeSndConnToDuplex db "conn1" rcvQueue1
-      `shouldReturn` Right 1
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
+    Right rq@RcvQueue {dbQueueId = dbQueueId'} <- upgradeSndConnToDuplex db "conn1" rcvQueue1
+    dbQueueId' `shouldBe` DBQueueId 1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
 
 testCreateSndConnRandomID :: SpecWith SQLiteStore
 testCreateSndConnRandomID =
   it "should create SndConnection and add RcvQueue with random ID" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    Right (connId, dbQueueId) <- createSndConn db g cData1 {connId = ""} sndQueue1
-    let sq' = (sndQueue1 :: SndQueue) {connId, dbQueueId}
+    Right (connId, sq) <- createSndConn db g cData1 {connId = ""} sndQueue1
     getConn db connId
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq'))
-    Right dbQueueId' <- upgradeSndConnToDuplex db connId rcvQueue1
-    dbQueueId' `shouldBe` 1
-    let rq' = (rcvQueue1 :: RcvQueue) {connId, dbQueueId = dbQueueId'}
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq))
+    Right (rq@RcvQueue {dbQueueId = dbQueueId'}) <- upgradeSndConnToDuplex db connId rcvQueue1
+    dbQueueId' `shouldBe` DBQueueId 1
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq'] [sq']))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
 
 testCreateSndConnDuplicate :: SpecWith SQLiteStore
 testCreateSndConnDuplicate =
@@ -280,17 +278,17 @@ testGetRcvConn =
     let smpServer = SMPServer "smp.simplex.im" "5223" testKeyHash
     let recipientId = "1234"
     g <- C.newRandom
-    _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
+    Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getRcvConn db smpServer recipientId
-      `shouldReturn` Right (rcvQueue1, SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
+      `shouldReturn` Right (rq, SomeConn SCRcv (RcvConnection cData1 rq))
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
   it "should create RcvConnection and delete it" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
+    Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
     deleteConn db "conn1"
       `shouldReturn` ()
     getConn db "conn1"
@@ -300,9 +298,9 @@ testDeleteSndConn :: SpecWith SQLiteStore
 testDeleteSndConn =
   it "should create SndConnection and delete it" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    _ <- createSndConn db g cData1 sndQueue1
+    Right (_, sq) <- createSndConn db g cData1 sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
     deleteConn db "conn1"
       `shouldReturn` ()
     getConn db "conn1"
@@ -312,10 +310,10 @@ testDeleteDuplexConn :: SpecWith SQLiteStore
 testDeleteDuplexConn =
   it "should create DuplexConnection and delete it" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
-    _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
+    Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
+    Right sq <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
     deleteConn db "conn1"
       `shouldReturn` ()
     getConn db "conn1"
@@ -337,7 +335,7 @@ testUpgradeRcvConnToDuplex =
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
-              dbQueueId = 1,
+              dbQueueId = DBNewQueue,
               sndSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
@@ -366,7 +364,7 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = "4567",
               status = New,
-              dbQueueId = 1,
+              dbQueueId = DBNewQueue,
               rcvSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
@@ -384,41 +382,41 @@ testSetRcvQueueStatus :: SpecWith SQLiteStore
 testSetRcvQueueStatus =
   it "should update status of RcvQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
+    Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1))
-    setRcvQueueStatus db rcvQueue1 Confirmed
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
+    setRcvQueueStatus db rq Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rcvQueue1 {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq {status = Confirmed}))
 
 testSetSndQueueStatus :: SpecWith SQLiteStore
 testSetSndQueueStatus =
   it "should update status of SndQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    _ <- createSndConn db g cData1 sndQueue1
+    Right (_, sq) <- createSndConn db g cData1 sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1))
-    setSndQueueStatus db sndQueue1 Confirmed
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
+    setSndQueueStatus db sq Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sndQueue1 {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq {status = Confirmed}))
 
 testSetQueueStatusDuplex :: SpecWith SQLiteStore
 testSetQueueStatusDuplex =
   it "should update statuses of RcvQueue and SndQueue in DuplexConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
-    _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
-    _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
+    Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
+    Right sq <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rcvQueue1] [sndQueue1]))
-    setRcvQueueStatus db rcvQueue1 Secured
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
+    setRcvQueueStatus db rq Secured
       `shouldReturn` ()
-    let rq' = (rcvQueue1 :: RcvQueue) {status = Secured}
-        sq' = (sndQueue1 :: SndQueue) {status = Confirmed}
+    let rq' = (rq :: RcvQueue) {status = Secured}
+        sq' = (sq :: SndQueue) {status = Confirmed}
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sndQueue1]))
-    setSndQueueStatus db sndQueue1 Confirmed
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq']))
+    setSndQueueStatus db sq' Confirmed
       `shouldReturn` ()
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq']))
@@ -461,11 +459,11 @@ testCreateRcvMsg =
   it "should reserve internal ids and create a RcvMsg" $ \st -> do
     g <- C.newRandom
     let ConnData {connId} = cData1
-    _ <- withTransaction st $ \db -> do
+    Right (_, rq) <- withTransaction st $ \db -> do
       createRcvConn db g cData1 rcvQueue1 SCMInvitation
     withTransaction st $ \db -> do
-      testCreateRcvMsg_ db 0 "" connId rcvQueue1 $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
-      testCreateRcvMsg_ db 1 "hash_dummy" connId rcvQueue1 $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
+      testCreateRcvMsg_ db 0 "" connId rq $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
+      testCreateRcvMsg_ db 1 "hash_dummy" connId rq $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
 
 mkSndMsgData :: InternalId -> InternalSndId -> MsgHash -> SndMsgData
 mkSndMsgData internalId internalSndId internalHash =
@@ -502,15 +500,15 @@ testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
 testCreateRcvAndSndMsgs =
   it "should create multiple RcvMsg and SndMsg, correctly ordering internal Ids and returning previous state" $ \st -> do
     let ConnData {connId} = cData1
-    _ <- withTransaction st $ \db -> do
+    Right (_, rq) <- withTransaction st $ \db -> do
       g <- C.newRandom
       createRcvConn db g cData1 rcvQueue1 SCMInvitation
     withTransaction st $ \db -> do
       _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
-      testCreateRcvMsg_ db 0 "" connId rcvQueue1 $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
-      testCreateRcvMsg_ db 1 "rcv_hash_1" connId rcvQueue1 $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
+      testCreateRcvMsg_ db 0 "" connId rq $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
+      testCreateRcvMsg_ db 1 "rcv_hash_1" connId rq $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
       testCreateSndMsg_ db "" connId $ mkSndMsgData (InternalId 3) (InternalSndId 1) "snd_hash_1"
-      testCreateRcvMsg_ db 2 "rcv_hash_2" connId rcvQueue1 $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
+      testCreateRcvMsg_ db 2 "rcv_hash_2" connId rq $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
       testCreateSndMsg_ db "snd_hash_1" connId $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
 

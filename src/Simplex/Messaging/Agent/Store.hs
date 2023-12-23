@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -49,8 +50,26 @@ import Simplex.Messaging.Version
 
 -- * Queue types
 
+data QueueStored = QSStored | QSNew
+
+data SQueueStored (q :: QueueStored) where
+  SQSStored :: SQueueStored 'QSStored
+  SQSNew :: SQueueStored 'QSNew
+
+data DBQueueId (q :: QueueStored) where
+  DBQueueId :: Int64 -> DBQueueId 'QSStored
+  DBNewQueue :: DBQueueId 'QSNew
+
+deriving instance Eq (DBQueueId q)
+
+deriving instance Show (DBQueueId q)
+
+type RcvQueue = StoredRcvQueue 'QSStored
+
+type NewRcvQueue = StoredRcvQueue 'QSNew
+
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
-data RcvQueue = RcvQueue
+data StoredRcvQueue (q :: QueueStored) = RcvQueue
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -69,7 +88,7 @@ data RcvQueue = RcvQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
-    dbQueueId :: Int64,
+    dbQueueId :: DBQueueId q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
@@ -110,8 +129,12 @@ data ClientNtfCreds = ClientNtfCreds
   }
   deriving (Eq, Show)
 
+type SndQueue = StoredSndQueue 'QSStored
+
+type NewSndQueue = StoredSndQueue 'QSNew
+
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
-data SndQueue = SndQueue
+data StoredSndQueue (q :: QueueStored) = SndQueue
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -127,7 +150,7 @@ data SndQueue = SndQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
-    dbQueueId :: Int64,
+    dbQueueId :: DBQueueId q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | ID of the queue this one is replacing
@@ -194,7 +217,7 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE qUserId #-}
   qConnId RcvQueue {connId} = connId
   {-# INLINE qConnId #-}
-  dbQId RcvQueue {dbQueueId} = dbQueueId
+  dbQId RcvQueue {dbQueueId = DBQueueId qId} = qId
   {-# INLINE dbQId #-}
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
@@ -204,7 +227,7 @@ instance SMPQueueRec SndQueue where
   {-# INLINE qUserId #-}
   qConnId SndQueue {connId} = connId
   {-# INLINE qConnId #-}
-  dbQId SndQueue {dbQueueId} = dbQueueId
+  dbQId SndQueue {dbQueueId = DBQueueId qId} = qId
   {-# INLINE dbQId #-}
   dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}

@@ -542,34 +542,34 @@ createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, dupl
     create connId =
       DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
 
-updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError Int64)
+updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 updateNewConnRcv db connId rq =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn _ RcvConnection {}) -> updateConn -- to allow retries
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
   where
-    updateConn :: IO (Either StoreError Int64)
+    updateConn :: IO (Either StoreError RcvQueue)
     updateConn = Right <$> addConnRcvQueue_ db connId rq
 
-updateNewConnSnd :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError Int64)
+updateNewConnSnd :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 updateNewConnSnd db connId sq =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn _ SndConnection {}) -> updateConn -- to allow retries
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
   where
-    updateConn :: IO (Either StoreError Int64)
+    updateConn :: IO (Either StoreError SndQueue)
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
-createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, Int64))
+createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
 createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
     DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
     insertRcvQueue_ db connId q serverKeyHash_
 
-createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError (ConnId, Int64))
+createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
@@ -578,7 +578,7 @@ createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, dupl
       DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
       insertSndQueue_ db connId q serverKeyHash_
 
-checkConfirmedSndQueueExists_ :: DB.Connection -> SndQueue -> IO Bool
+checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
   fromMaybe False
     <$> maybeFirstRow
@@ -603,39 +603,39 @@ deleteConn db connId =
     "DELETE FROM connections WHERE conn_id = :conn_id;"
     [":conn_id" := connId]
 
-upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError Int64)
+upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 upgradeRcvConnToDuplex db connId sq =
   getConn db connId $>>= \case
     (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
-upgradeSndConnToDuplex :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError Int64)
+upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 upgradeSndConnToDuplex db connId rq =
   getConn db connId >>= \case
     Right (SomeConn _ SndConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
     Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
     _ -> pure $ Left SEConnNotFound
 
-addConnRcvQueue :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError Int64)
+addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 addConnRcvQueue db connId rq =
   getConn db connId >>= \case
     Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
     Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
     _ -> pure $ Left SEConnNotFound
 
-addConnRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO Int64
+addConnRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> IO RcvQueue
 addConnRcvQueue_ db connId rq@RcvQueue {server} = do
   serverKeyHash_ <- createServer_ db server
   insertRcvQueue_ db connId rq serverKeyHash_
 
-addConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError Int64)
+addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 addConnSndQueue db connId sq =
   getConn db connId >>= \case
     Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnSndQueue_ db connId sq
     Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
     _ -> pure $ Left SEConnNotFound
 
-addConnSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO Int64
+addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO SndQueue
 addConnSndQueue_ db connId sq@SndQueue {server} = do
   serverKeyHash_ <- createServer_ db server
   insertSndQueue_ db connId sq serverKeyHash_
@@ -1580,6 +1580,10 @@ instance ToField QueueStatus where toField = toField . serializeQueueStatus
 
 instance FromField QueueStatus where fromField = fromTextField_ queueStatusT
 
+instance ToField (DBQueueId 'QSStored) where toField (DBQueueId qId) = toField qId
+
+instance FromField (DBQueueId 'QSStored) where fromField x = DBQueueId <$> fromField x
+
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
 
 instance FromField InternalRcvId where fromField x = InternalRcvId <$> fromField x
@@ -1720,8 +1724,8 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 -- * createRcvConn helpers
 
-insertRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> Maybe C.KeyHash -> IO Int64
-insertRcvQueue_ db connId' RcvQueue {..} serverKeyHash_ = do
+insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> Maybe C.KeyHash -> IO RcvQueue
+insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
   qId <- newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')
   DB.execute
     db
@@ -1730,12 +1734,12 @@ insertRcvQueue_ db connId' RcvQueue {..} serverKeyHash_ = do
         (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-  pure qId
+  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
 
 -- * createSndConn helpers
 
-insertSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> Maybe C.KeyHash -> IO Int64
-insertSndQueue_ db connId' SndQueue {..} serverKeyHash_ = do
+insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO SndQueue
+insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   qId <- newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')
   DB.execute
     db
@@ -1744,11 +1748,11 @@ insertSndQueue_ db connId' SndQueue {..} serverKeyHash_ = do
         (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-  pure qId
+  pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
-newQueueId_ :: [Only Int64] -> Int64
-newQueueId_ [] = 1
-newQueueId_ (Only maxId : _) = maxId + 1
+newQueueId_ :: [Only Int64] -> DBQueueId 'QSStored
+newQueueId_ [] = DBQueueId 1
+newQueueId_ (Only maxId : _) = DBQueueId (maxId + 1)
 
 -- * getConn helpers
 
@@ -1862,7 +1866,7 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateSignKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
-    :. (Int64, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe Version, Int)
+    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe Version, Int)
     :. (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
 toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
@@ -1903,7 +1907,7 @@ sndQueueQuery =
 toSndQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId)
     :. (Maybe C.APublicVerifyKey, SndPrivateSignKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
-    :. (Int64, Bool, Maybe Int64, Maybe SndSwitchStatus, Version) ->
+    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe SndSwitchStatus, Version) ->
   SndQueue
 toSndQueue
   ( (userId, keyHash, connId, host, port, sndId)
