@@ -340,19 +340,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #endif
               CPDelete queueId -> unliftIO u $ do
                 st <- asks queueStore
-                withLog (`logDeleteQueue` queueId)
                 ms <- asks msgStore
                 stats <- asks serverStats
                 r <- atomically $
-                  deleteQueue st queueId >>= \case
-                    Left e -> pure $ Left e
-                    Right () -> do
-                      modifyTVar' (qDeleted stats) (+ 1)
-                      modifyTVar' (qCount stats) (subtract 1)
-                      Right . length <$> flushMsgQueue ms queueId
-                liftIO $ case r of
-                  Left e -> hPutStrLn h $ "error: " <> show e
-                  Right numDeleted -> hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
+                  deleteQueue st queueId $>>= \() -> do
+                    modifyTVar' (qDeleted stats) (+ 1)
+                    modifyTVar' (qCount stats) (subtract 1)
+                    Right . length <$> flushMsgQueue ms queueId
+                case r of
+                  Left e -> liftIO . hPutStrLn h $ "error: " <> show e
+                  Right numDeleted -> do
+                    withLog (`logDeleteQueue` queueId)
+                    liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
