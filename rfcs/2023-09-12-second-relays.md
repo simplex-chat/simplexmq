@@ -167,19 +167,18 @@ Below syntax aims to fit in 16kb block using spare capacity in SMP protocol.
 
 ```abnf
 proxy_block = padded(proxy_transmission, 16384)
-proxy_transmission = corr_id relay_session_id proxy_command
-corr_id = length *8 OCTET
+proxy_transmission = relay_session_id proxy_command
 proxy_command = server / server_id / forward / response / error
 server = "S" address [relay_basic_auth] ; creates transport session between proxy and relay
 server_id = "I" relay_session_id tls_session_id signed_relay_key ;
     ; session_id is the TLS session ID between proxy and relay, it has to be included inside encrypted block to prevent replay attacks
 forward = %s"F" random_dh_pub_key encrypted_block
 response = %s"R" encrypted_block; response received from the destination SMP relay
-relay_session_id = length *8 OCTET
+relay_session_id = length *2 OCTET
 error = %s"E" error
 ```
 
-The overhead is: 1+8 (corrId) + 1+8 (relay_session_id) + 1 (command) + 1+32 (random_dh_pub_key) + 2 (original length) + 16 (auth tag for e2e encryption) + 16 (auth tag for proxy to relay encryption) = 86 bytes. The reserve for sent messages in SMP is ~84 bytes, so it should about fit with some reduced bytes somewhere.
+The overhead is: 1+2 (relay_session_id) + 1 (command) + 1+32 (random_dh_pub_key) + 2 (original length) + 16 (auth tag for e2e encryption) + 16 (auth tag for proxy to relay encryption) = 71 bytes. The reserve for sent messages in SMP is ~84 bytes, so it fits with 13 bytes to spare.
 
 Another possible design is to allow mixing sent messages and normal SMP commands in the same transport connection, but it can make fitting in the block a bit harder, additional overhead would be: 1 (transmission count) + 2 (transmission size) + 1 (empty signature) = 4 bytes.
 
