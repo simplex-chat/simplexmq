@@ -1236,11 +1236,12 @@ updateRatchet db connId rc skipped = do
 createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO (Either StoreError ())
 createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
+  createdAt <- liftIO getCurrentTime
   liftIO $ do
     DB.execute
       db
-      "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash) VALUES (?,?,?,?,?,?,?)"
-      (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_)
+      "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
+      (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_, createdAt)
   where
     serverFields :: ExceptT StoreError IO (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash)
     serverFields = case srv_ of
@@ -2373,6 +2374,7 @@ deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
+-- TODO use getWorkItem
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFileChunk))
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl =
   Right <$> do
@@ -2667,6 +2669,7 @@ createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, re
       |]
       (rId, rcvId, rcvKey)
 
+-- TODO use getWorkItem
 getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe SndFileChunk))
 getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl =
   Right <$> do

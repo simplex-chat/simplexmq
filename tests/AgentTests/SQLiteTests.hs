@@ -32,6 +32,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Protocol (SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
@@ -109,6 +110,14 @@ storeTests = do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs
+      describe "Work items" $ do
+        it "should getPendingQueueMsg" testGetPendingQueueMsg
+        it "should getPendingServerCommand" testGetPendingServerCommand
+        xit "TODO should getNextRcvChunkToDownload" testGetNextRcvChunkToDownload
+        xit "TODO should getNextRcvFileToDecrypt" testGetNextRcvFileToDecrypt
+        xit "TODO should getNextSndFileToPrepare" testGetNextSndFileToPrepare
+        xit "TODO should getNextSndChunkToUpload" testGetNextSndChunkToUpload
+        xit "TODO should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
@@ -163,12 +172,15 @@ testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOp
 testDhSecret :: C.DhSecretX25519
 testDhSecret = "01234567890123456789012345678901"
 
+smpServer1 :: SMPServer
+smpServer1 = SMPServer "smp.simplex.im" "5223" testKeyHash
+
 rcvQueue1 :: NewRcvQueue
 rcvQueue1 =
   RcvQueue
     { userId = 1,
       connId = "conn1",
-      server = SMPServer "smp.simplex.im" "5223" testKeyHash,
+      server = smpServer1,
       rcvId = "1234",
       rcvPrivateKey = testPrivateSignKey,
       rcvDhSecret = testDhSecret,
@@ -190,7 +202,7 @@ sndQueue1 =
   SndQueue
     { userId = 1,
       connId = "conn1",
-      server = SMPServer "smp.simplex.im" "5223" testKeyHash,
+      server = smpServer1,
       sndId = "3456",
       sndPublicKey = Nothing,
       sndPrivateKey = testPrivateSignKey,
@@ -478,11 +490,13 @@ mkSndMsgData internalId internalSndId internalHash =
       prevMsgHash = internalHash
     }
 
-testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndMsgData -> Expectation
-testCreateSndMsg_ db expectedPrevHash connId sndMsgData@SndMsgData {..} = do
+testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndQueue -> SndMsgData -> Expectation
+testCreateSndMsg_ db expectedPrevHash connId sq sndMsgData@SndMsgData {..} = do
   updateSndIds db connId
     `shouldReturn` (internalId, internalSndId, expectedPrevHash)
   createSndMsg db connId sndMsgData
+    `shouldReturn` ()
+  createSndMsgDelivery db connId sq internalId
     `shouldReturn` ()
 
 testCreateSndMsg :: SpecWith SQLiteStore
@@ -490,11 +504,11 @@ testCreateSndMsg =
   it "should create a SndMsg and return InternalId and PrevSndMsgHash" $ \st -> do
     g <- C.newRandom
     let ConnData {connId} = cData1
-    _ <- withTransaction st $ \db -> do
+    Right (_, sq) <- withTransaction st $ \db -> do
       createSndConn db g cData1 sndQueue1
     withTransaction st $ \db -> do
-      testCreateSndMsg_ db "" connId $ mkSndMsgData (InternalId 1) (InternalSndId 1) "hash_dummy"
-      testCreateSndMsg_ db "hash_dummy" connId $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
+      testCreateSndMsg_ db "" connId sq $ mkSndMsgData (InternalId 1) (InternalSndId 1) "hash_dummy"
+      testCreateSndMsg_ db "hash_dummy" connId sq $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
 
 testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
 testCreateRcvAndSndMsgs =
@@ -504,13 +518,13 @@ testCreateRcvAndSndMsgs =
       g <- C.newRandom
       createRcvConn db g cData1 rcvQueue1 SCMInvitation
     withTransaction st $ \db -> do
-      _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
+      Right sq <- upgradeRcvConnToDuplex db "conn1" sndQueue1
       testCreateRcvMsg_ db 0 "" connId rq $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
       testCreateRcvMsg_ db 1 "rcv_hash_1" connId rq $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
-      testCreateSndMsg_ db "" connId $ mkSndMsgData (InternalId 3) (InternalSndId 1) "snd_hash_1"
+      testCreateSndMsg_ db "" connId sq $ mkSndMsgData (InternalId 3) (InternalSndId 1) "snd_hash_1"
       testCreateRcvMsg_ db 2 "rcv_hash_2" connId rq $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
-      testCreateSndMsg_ db "snd_hash_1" connId $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
-      testCreateSndMsg_ db "snd_hash_2" connId $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
+      testCreateSndMsg_ db "snd_hash_1" connId sq $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
+      testCreateSndMsg_ db "snd_hash_2" connId sq $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
 
 testCloseReopenStore :: IO ()
 testCloseReopenStore = do
@@ -562,3 +576,74 @@ hasMigrations st = getMigrations st `shouldReturn` True
 
 errorGettingMigrations :: SQLiteStore -> Expectation
 errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
+
+testGetPendingQueueMsg :: SQLiteStore -> Expectation
+testGetPendingQueueMsg st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right (connId, sq) <- createSndConn db g cData1 {connId = ""} sndQueue1
+    Right Nothing <- getPendingQueueMsg db connId sq
+    testCreateSndMsg_ db "" connId sq $ mkSndMsgData (InternalId 1) (InternalSndId 1) "hash_dummy"
+    DB.execute db "UPDATE messages SET msg_type = cast('bad' as blob) WHERE conn_id = ? AND internal_id = ?" (connId, 1 :: Int)
+    testCreateSndMsg_ db "hash_dummy" connId sq $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
+
+    Left e <- getPendingQueueMsg db connId sq
+    show e `shouldContain` "bad AgentMessageType"
+    DB.query_ db "SELECT conn_id, internal_id FROM snd_message_deliveries WHERE failed = 1" `shouldReturn` [(connId, 1 :: Int)]
+
+    Right (Just (Nothing, PendingMsgData {msgId})) <- getPendingQueueMsg db connId sq
+    msgId `shouldBe` InternalId 2
+
+testGetPendingServerCommand :: SQLiteStore -> Expectation
+testGetPendingServerCommand st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right Nothing <- getPendingServerCommand db Nothing
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right () <- createCommand db "1" connId Nothing command
+    corruptCmd db "1" connId
+    Right () <- createCommand db "2" connId Nothing command
+
+    Left e <- getPendingServerCommand db Nothing
+    show e `shouldContain` "bad AgentCmdType"
+    DB.query_ db "SELECT conn_id, corr_id FROM commands WHERE failed = 1" `shouldReturn` [(connId, "1" :: ByteString)]
+
+    Right (Just PendingCommand {corrId}) <- getPendingServerCommand db Nothing
+    corrId `shouldBe` "2"
+
+    Right _ <- updateNewConnRcv db connId rcvQueue1
+    Right Nothing <- getPendingServerCommand db $ Just smpServer1
+    Right () <- createCommand db "3" connId (Just smpServer1) command
+    corruptCmd db "3" connId
+    Right () <- createCommand db "4" connId (Just smpServer1) command
+
+    Left e' <- getPendingServerCommand db (Just smpServer1)
+    show e' `shouldContain` "bad AgentCmdType"
+    DB.query_ db "SELECT conn_id, corr_id FROM commands WHERE failed = 1" `shouldReturn` [(connId, "1" :: ByteString), (connId, "3" :: ByteString)]
+
+    Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
+    corrId' `shouldBe` "4"
+  where
+    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) SMSubscribe
+    corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
+    corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
+
+testGetNextRcvChunkToDownload :: SQLiteStore -> Expectation
+testGetNextRcvChunkToDownload _st = do
+  pure ()
+
+testGetNextRcvFileToDecrypt :: SQLiteStore -> Expectation
+testGetNextRcvFileToDecrypt _st = do
+  pure ()
+
+testGetNextSndFileToPrepare :: SQLiteStore -> Expectation
+testGetNextSndFileToPrepare _st = do
+  pure ()
+
+testGetNextSndChunkToUpload :: SQLiteStore -> Expectation
+testGetNextSndChunkToUpload _st = do
+  pure ()
+
+testGetNextDeletedSndChunkReplica :: SQLiteStore -> Expectation
+testGetNextDeletedSndChunkReplica _st = do
+  pure ()
