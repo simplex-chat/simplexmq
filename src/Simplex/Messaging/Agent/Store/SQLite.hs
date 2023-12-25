@@ -2306,7 +2306,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
         WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
           AND r.received = 0 AND r.replica_number = 1
           AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
-        ORDER BY r.created_at ASC
+        ORDER BY r.retries ASC, r.created_at ASC
         LIMIT 1
       |]
       (host, port, keyHash, RFSReceiving, cutoffTs)

@@ -8,6 +8,7 @@ module Simplex.Messaging.Agent.RetryInterval
     RetryIntervalMode (..),
     RI2State (..),
     withRetryInterval,
+    withRetryIntervalCount,
     withRetryLock2,
     updateRetryInterval2,
   )
@@ -57,6 +58,17 @@ withRetryInterval ri action = callAction 0 $ initialInterval ri
           liftIO $ threadDelay' delay
           let elapsed' = elapsed + delay
           callAction elapsed' $ nextDelay elapsed' delay ri
+
+withRetryIntervalCount :: forall m a. MonadIO m => RetryInterval -> (Int -> Int64 -> m a -> m a) -> m a
+withRetryIntervalCount ri action = callAction 0 0 $ initialInterval ri
+  where
+    callAction :: Int -> Int64 -> Int64 -> m a
+    callAction n elapsed delay = action n delay loop
+      where
+        loop = do
+          liftIO $ threadDelay' delay
+          let elapsed' = elapsed + delay
+          callAction (n + 1) elapsed' $ nextDelay elapsed' delay ri
 
 -- This function allows action to toggle between slow and fast retry intervals.
 withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()

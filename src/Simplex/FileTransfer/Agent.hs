@@ -36,6 +36,7 @@ import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -159,34 +160,42 @@ addWorker c wsSel runWorker runWorkerNoSrv srv_ = do
 
 runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPRcvWorker c srv doWork = do
+  carryoverDelayTVar <- newTVarIO 0
   forever $ do
     waitForWork doWork
     atomically $ assertAgentForeground c
-    runXFTPOperation
+    notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
+    consecutiveRetries <- asks (xftpTempErrConsecutiveRetries . config)
+    runXFTPOperation notifyOnRetry consecutiveRetries carryoverDelayTVar
   where
-    runXFTPOperation :: m ()
-    runXFTPOperation = do
+    runXFTPOperation :: Bool -> Int -> TVar Int64 -> m ()
+    runXFTPOperation notifyOnRetry consecutiveRetries carryoverDelayTVar = do
       rcvFilesTTL <- asks (rcvFilesTTL . config)
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
         RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
         fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
+          carryoverDelay <- readTVarIO carryoverDelayTVar
+          liftIO $ print $ "read replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId <> ", carryoverDelay: " <> show carryoverDelay
           ri <- asks $ reconnectInterval . config
-          let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryInterval ri' $ \delay' loop ->
-            downloadFileChunk fc replica
-              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
+          let initialInterval = max carryoverDelay (fromMaybe carryoverDelay delay)
+              ri' = ri {initialInterval, increaseAfter = 0}
+          withRetryIntervalCount ri' $ \n delay' loop ->
+            downloadFileChunk carryoverDelayTVar fc replica
+              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop n loop e delay') (retryDone e) e
           where
-            retryLoop loop e replicaDelay = do
+            retryLoop n loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
+                liftIO $ print $ "retrying " <> show n <> ": " <> show e
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
-              loop
+              if n <= consecutiveRetries
+                then loop
+                else atomically $ writeTVar carryoverDelayTVar $! replicaDelay
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
-    downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
-    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
+    downloadFileChunk :: TVar Int64 -> RcvFileChunk -> RcvFileChunkReplica -> m ()
+    downloadFileChunk carryoverDelayTVar RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
       fsFileTmpPath <- toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
@@ -202,6 +211,7 @@ runXFTPRcvWorker c srv doWork = do
         pure (complete, RFPROG rcvd total)
       notify c rcvFileEntityId progress
       when complete $ addXFTPRcvWorker c Nothing
+      atomically $ writeTVar carryoverDelayTVar $! 0
       where
         receivedSize :: [RcvFileChunk] -> Int64
         receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
