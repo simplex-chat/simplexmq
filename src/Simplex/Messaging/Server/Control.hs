@@ -4,6 +4,8 @@
 module Simplex.Messaging.Server.Control where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 
 data ControlProtocol
@@ -15,6 +17,7 @@ data ControlProtocol
   | CPThreads
   | CPSockets
   | CPSocketThreads
+  | CPDelete ByteString
   | CPSave
   | CPHelp
   | CPQuit
@@ -30,6 +33,7 @@ instance StrEncoding ControlProtocol where
     CPThreads -> "threads"
     CPSockets -> "sockets"
     CPSocketThreads -> "socket-threads"
+    CPDelete bs -> "delete " <> U.encode bs
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
@@ -44,6 +48,7 @@ instance StrEncoding ControlProtocol where
       "threads" -> pure CPThreads
       "sockets" -> pure CPSockets
       "socket-threads" -> pure CPSocketThreads
+      "delete" -> CPDelete <$> (A.space *> base64urlP)
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
