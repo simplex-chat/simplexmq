@@ -446,7 +446,7 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
       liftIO $ rfId' `shouldBe` rfId
 
-    -- create and file 2
+    -- create and send file 2
     filePath2 <- createRandomFile' "testfile2"
     (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
 
