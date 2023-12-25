@@ -213,6 +213,8 @@ CREATE TABLE ntf_subscriptions(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   smp_server_key_hash BLOB,
+  ntf_failed INTEGER DEFAULT 0,
+  smp_failed INTEGER DEFAULT 0,
   PRIMARY KEY(conn_id),
   FOREIGN KEY(smp_host, smp_port) REFERENCES servers(host, port)
   ON DELETE SET NULL ON UPDATE CASCADE,
@@ -230,6 +232,7 @@ CREATE TABLE commands(
   agent_version INTEGER NOT NULL DEFAULT 1,
   server_key_hash BLOB,
   created_at TEXT NOT NULL DEFAULT('1970-01-01 00:00:00'),
+  failed INTEGER DEFAULT 0,
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 );
@@ -238,6 +241,7 @@ CREATE TABLE snd_message_deliveries(
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   snd_queue_id INTEGER NOT NULL,
   internal_id INTEGER NOT NULL,
+  failed INTEGER DEFAULT 0,
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 );
 CREATE TABLE sqlite_sequence(name,seq);
@@ -274,6 +278,7 @@ CREATE TABLE rcv_files(
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   save_file_key BLOB,
   save_file_nonce BLOB,
+  failed INTEGER DEFAULT 0,
   UNIQUE(rcv_file_entity_id)
 );
 CREATE TABLE rcv_file_chunks(
@@ -316,7 +321,8 @@ CREATE TABLE snd_files(
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
   ,
   src_file_key BLOB,
-  src_file_nonce BLOB
+  src_file_nonce BLOB,
+  failed INTEGER DEFAULT 0
 );
 CREATE TABLE snd_file_chunks(
   snd_file_chunk_id INTEGER PRIMARY KEY,
@@ -360,6 +366,8 @@ CREATE TABLE deleted_snd_chunk_replicas(
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  failed INTEGER DEFAULT 0
 );
 CREATE TABLE encrypted_rcv_message_hashes(
   encrypted_rcv_message_hash_id INTEGER PRIMARY KEY,

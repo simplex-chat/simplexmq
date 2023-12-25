@@ -945,7 +945,7 @@ runCommandProcessing c@AgentClient {subQ} server_ doWork = do
     waitForWork doWork
     atomically $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (\db -> getPendingServerCommand db server_) $ processCmd (riFast ri)
+    withWork c doWork (`getPendingServerCommand` server_) $ processCmd (riFast ri)
   where
     processCmd :: RetryInterval -> PendingCommand -> m ()
     processCmd ri PendingCommand {cmdId, corrId, userId, connId, command} = case command of
@@ -2189,7 +2189,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             case findQ addr sqs of
               Just sq -> do
                 logServer "<--" c srv rId "MSG <QCONT>"
-                atomically $ 
+                atomically $
                   TM.lookup (qAddress sq) (smpDeliveryWorkers c)
                     >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
               Nothing -> qError "QCONT: queue address not found"
