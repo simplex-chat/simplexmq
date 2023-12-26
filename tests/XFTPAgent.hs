@@ -49,7 +49,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
-  fit "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
+  it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
   it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do

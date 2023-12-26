@@ -229,14 +229,14 @@ rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
 
 runXFTPRcvLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPRcvLocalWorker c doWork = do
+  cfg <- asks config
   forever $ do
     waitForWork doWork
     atomically $ assertAgentForeground c
-    runXFTPOperation
+    runXFTPOperation cfg
   where
-    runXFTPOperation :: m ()
-    runXFTPOperation = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+    runXFTPOperation :: AgentConfig -> m ()
+    runXFTPOperation AgentConfig {rcvFilesTTL} =
       withWork c doWork (`getNextRcvFileToDecrypt` rcvFilesTTL) $
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
@@ -295,21 +295,21 @@ addXFTPSndWorker c = addWorker c xftpSndWorkers runXFTPSndWorker runXFTPSndPrepa
 
 runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPSndPrepareWorker c doWork = do
+  cfg <- asks config
   forever $ do
     waitForWork doWork
     atomically $ assertAgentForeground c
-    runXFTPOperation
+    runXFTPOperation cfg
   where
-    runXFTPOperation :: m ()
-    runXFTPOperation = do
-      sndFilesTTL <- asks (sndFilesTTL . config)
+    runXFTPOperation :: AgentConfig -> m ()
+    runXFTPOperation cfg@AgentConfig {sndFilesTTL} =
       withWork c doWork (`getNextSndFileToPrepare` sndFilesTTL) $
         \f@SndFile {sndFileId, sndFileEntityId, prefixPath} ->
-          prepareFile f `catchAgentError` (sndWorkerInternalError c sndFileId sndFileEntityId prefixPath . show)
-    prepareFile :: SndFile -> m ()
-    prepareFile SndFile {prefixPath = Nothing} =
+          prepareFile cfg f `catchAgentError` (sndWorkerInternalError c sndFileId sndFileEntityId prefixPath . show)
+    prepareFile :: AgentConfig -> SndFile -> m ()
+    prepareFile _ SndFile {prefixPath = Nothing} =
       throwError $ INTERNAL "no prefix path"
-    prepareFile sndFile@SndFile {sndFileId, userId, prefixPath = Just ppath, status} = do
+    prepareFile cfg sndFile@SndFile {sndFileId, userId, prefixPath = Just ppath, status} = do
       SndFile {numRecipients, chunks} <-
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
           then do
@@ -322,12 +322,12 @@ runXFTPSndPrepareWorker c doWork = do
               updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
               getSndFile db sndFileId
           else pure sndFile
-      maxRecipients <- asks (xftpMaxRecipientsPerRequest . config)
       let numRecipients' = min numRecipients maxRecipients
       -- concurrently?
       forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
+        AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
         encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
         encryptFileForUpload SndFile {key, nonce, srcFile} fsEncPath = do
           let CryptoFile {filePath} = srcFile
@@ -355,7 +355,6 @@ runXFTPSndPrepareWorker c doWork = do
           addXFTPSndWorker c $ Just srv
           where
             tryCreate = do
-              ri <- asks $ messageRetryInterval . config
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
               withRetryInterval (riFast ri) $ \_ loop ->
                 createWithNextSrv usedSrvs
@@ -377,34 +376,32 @@ sndWorkerInternalError c sndFileId sndFileEntityId prefixPath internalErrStr = d
 
 runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPSndWorker c srv doWork = do
+  cfg <- asks config
   forever $ do
     waitForWork doWork
     atomically $ assertAgentForeground c
-    runXFTPOperation
+    runXFTPOperation cfg
   where
-    runXFTPOperation :: m ()
-    runXFTPOperation = do
-      sndFilesTTL <- asks (sndFilesTTL . config)
+    runXFTPOperation :: AgentConfig -> m ()
+    runXFTPOperation cfg@AgentConfig {sndFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry, xftpTempErrConsecutiveRetries} = do
       withWork c doWork (\db -> getNextSndChunkToUpload db srv sndFilesTTL) $ \case
         SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
-          ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryInterval ri' $ \delay' loop ->
-            uploadFileChunk fc replica
+          withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
+            uploadFileChunk cfg fc replica
               `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
-                when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
+                when xftpNotifyErrsOnRetry $ notify c sndFileEntityId $ SFERR e
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
-    uploadFileChunk :: SndFileChunk -> SndFileChunkReplica -> m ()
-    uploadFileChunk sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
+    uploadFileChunk :: AgentConfig -> SndFileChunk -> SndFileChunkReplica -> m ()
+    uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- toFSFilePath filePath
       unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
@@ -430,7 +427,6 @@ runXFTPSndWorker c srv doWork = do
           | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
-              maxRecipients <- asks $ xftpMaxRecipientsPerRequest . config
               let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
               rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
               cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
@@ -533,28 +529,26 @@ addXFTPDelWorker c srv = do
 
 runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPDelWorker c srv doWork = do
+  cfg <- asks config
   forever $ do
     waitForWork doWork
     atomically $ assertAgentForeground c
-    runXFTPOperation
+    runXFTPOperation cfg
   where
-    runXFTPOperation :: m ()
-    runXFTPOperation = do
+    runXFTPOperation :: AgentConfig -> m ()
+    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry, xftpTempErrConsecutiveRetries} = do
       -- no point in deleting files older than rcv ttl, as they will be expired on server
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
       withWork c doWork (\db -> getNextDeletedSndChunkReplica db srv rcvFilesTTL) processDeletedReplica
       where
         processDeletedReplica replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} = do
-          ri <- asks $ reconnectInterval . config
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryInterval ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
             deleteChunkReplica
               `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
-                when notifyOnRetry $ notify c "" $ SFERR e
+                when xftpNotifyErrsOnRetry $ notify c "" $ SFERR e
                 closeXFTPServerClient c userId server chunkDigest
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
