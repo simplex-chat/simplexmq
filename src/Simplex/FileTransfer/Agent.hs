@@ -323,6 +323,7 @@ runXFTPSndPrepareWorker c doWork = do
           else pure sndFile
       let numRecipients' = min numRecipients maxRecipients
       -- concurrently?
+      -- separate worker to create chunks? record retries and delay on snd_file_chunks?
       forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
