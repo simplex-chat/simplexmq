@@ -764,7 +764,7 @@ testGetNextDeletedSndChunkReplica st = do
     Right Nothing <- getNextDeletedSndChunkReplica db xftpServer1 86400
 
     createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId "abc") testFileReplicaKey) (FileDigest "ghi")
-    DB.execute_ db "UPDATE deleted_snd_chunk_replicas SET retries = 'bad' WHERE deleted_snd_chunk_replica_id = 1"
+    DB.execute_ db "UPDATE deleted_snd_chunk_replicas SET delay = 'bad' WHERE deleted_snd_chunk_replica_id = 1"
     createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId "abc") testFileReplicaKey) (FileDigest "ghi")
 
     Left e <- getNextDeletedSndChunkReplica db xftpServer1 86400

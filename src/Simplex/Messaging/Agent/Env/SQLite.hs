@@ -93,6 +93,7 @@ data AgentConfig = AgentConfig
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
     xftpNotifyErrsOnRetry :: Bool,
+    xftpConsecutiveRetries :: Int,
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
@@ -158,6 +159,7 @@ defaultAgentConfig =
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
       xftpNotifyErrsOnRetry = True,
+      xftpConsecutiveRetries = 3,
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
