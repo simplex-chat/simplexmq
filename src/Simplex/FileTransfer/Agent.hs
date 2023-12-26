@@ -164,18 +164,18 @@ runXFTPRcvWorker c srv doWork = do
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> m ()
-    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry, xftpTempErrConsecutiveRetries} =
+    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} =
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
         RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
         fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
             downloadFileChunk fc replica
               `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                when xftpNotifyErrsOnRetry $ notify c rcvFileEntityId $ RFERR e
+                when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
@@ -381,18 +381,18 @@ runXFTPSndWorker c srv doWork = do
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> m ()
-    runXFTPOperation cfg@AgentConfig {sndFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry, xftpTempErrConsecutiveRetries} = do
+    runXFTPOperation cfg@AgentConfig {sndFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} = do
       withWork c doWork (\db -> getNextSndChunkToUpload db srv sndFilesTTL) $ \case
         SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
             uploadFileChunk cfg fc replica
               `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                when xftpNotifyErrsOnRetry $ notify c sndFileEntityId $ SFERR e
+                when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
@@ -534,19 +534,19 @@ runXFTPDelWorker c srv doWork = do
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> m ()
-    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry, xftpTempErrConsecutiveRetries} = do
+    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} = do
       -- no point in deleting files older than rcv ttl, as they will be expired on server
       withWork c doWork (\db -> getNextDeletedSndChunkReplica db srv rcvFilesTTL) processDeletedReplica
       where
         processDeletedReplica replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
             deleteChunkReplica
               `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                when xftpNotifyErrsOnRetry $ notify c "" $ SFERR e
+                when notifyOnRetry $ notify c "" $ SFERR e
                 closeXFTPServerClient c userId server chunkDigest
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
