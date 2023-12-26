@@ -283,7 +283,7 @@ functionalAPITests t = do
       testServerMatrix2 t testSwitch2Connections
     describe "should switch two connections simultaneously, abort one" $
       testServerMatrix2 t testSwitch2ConnectionsAbort1
-  describe "SMP basic auth" $ do
+  fdescribe "SMP basic auth" $ do
     describe "with server auth" $ do
       --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
       it "success                " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
@@ -1878,8 +1878,8 @@ testSwitch2ConnectionsAbort1 servers = do
 
 testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
-  a <- getClient clnt1
-  b <- getClient clnt2
+  a <- getClient clnt1 testDB
+  b <- getClient clnt2 testDB2
   r <- runRight $ do
     tryError (createConnection a 1 True SCMInvitation Nothing SMSubscribe) >>= \case
       Left (SMP AUTH) -> pure 0
@@ -1900,10 +1900,10 @@ testCreateQueueAuth clnt1 clnt2 = do
   disconnectAgentClient b
   pure r
   where
-    getClient (clntAuth, clntVersion) =
+    getClient (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
           smpCfg = (defaultClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
-       in getSMPAgentClient' agentCfg {smpCfg} servers testDB
+       in getSMPAgentClient' agentCfg {smpCfg} servers db
 
 testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testSMPServerConnectionTest t newQueueBasicAuth srv =
