@@ -179,12 +179,12 @@ runXFTPRcvWorker c srv doWork = do
             downloadFileChunk fc replica
               `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop n loop e delay') (retryDone e) e
           where
-            retryLoop n loop e delay' = do
+            retryLoop n loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
                 liftIO $ print $ "retrying replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId <> ": " <> show n
                 closeXFTPServerClient c userId server digest
-                withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId delay'
+                withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               when (n < consecutiveRetries) loop
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
