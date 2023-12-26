@@ -46,6 +46,8 @@ data XFTPServerConfig = XFTPServerConfig
     newFileBasicAuth :: Maybe BasicAuth,
     -- | time after which the files can be removed and check interval, seconds
     fileExpiration :: Maybe ExpirationConfig,
+    -- | time after which inactive clients can be disconnected and check interval, seconds
+    inactiveClientExpiration :: Maybe ExpirationConfig,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -57,6 +59,13 @@ data XFTPServerConfig = XFTPServerConfig
     serverStatsBackupFile :: Maybe FilePath,
     transportConfig :: TransportServerConfig
   }
+
+defaultInactiveClientExpiration :: ExpirationConfig
+defaultInactiveClientExpiration =
+  ExpirationConfig
+    { ttl = 43200, -- seconds, 12 hours
+      checkInterval = 3600 -- seconds, 1 hours
+    }
 
 data XFTPEnv = XFTPEnv
   { config :: XFTPServerConfig,
