@@ -2726,21 +2726,22 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
           (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
     getChunkData :: Int64 -> IO (Either StoreError SndFileChunk)
     getChunkData sndFileChunkReplicaId = do
-      chunk_ <- firstRow toChunk SEFileNotFound $
-        DB.query
-          db
-          [sql|
-            SELECT
-              f.snd_file_id, f.snd_file_entity_id, f.user_id, f.num_recipients, f.prefix_path,
-              c.snd_file_chunk_id, c.chunk_no, c.chunk_offset, c.chunk_size, c.digest,
-              r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries
-            FROM snd_file_chunk_replicas r
-            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-            JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
-            JOIN snd_files f ON f.snd_file_id = c.snd_file_id
-            WHERE r.snd_file_chunk_replica_id = ?
-          |]
-          (Only sndFileChunkReplicaId)
+      chunk_ <-
+        firstRow toChunk SEFileNotFound $
+          DB.query
+            db
+            [sql|
+              SELECT
+                f.snd_file_id, f.snd_file_entity_id, f.user_id, f.num_recipients, f.prefix_path,
+                c.snd_file_chunk_id, c.chunk_no, c.chunk_offset, c.chunk_size, c.digest,
+                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries
+              FROM snd_file_chunk_replicas r
+              JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+              JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
+              JOIN snd_files f ON f.snd_file_id = c.snd_file_id
+              WHERE r.snd_file_chunk_replica_id = ?
+            |]
+            (Only sndFileChunkReplicaId)
       forM chunk_ $ \chunk@SndFileChunk {replicas} -> do
         replicas' <- forM replicas $ \replica@SndFileChunkReplica {sndChunkReplicaId} -> do
           rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
@@ -2750,7 +2751,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
         toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
         toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
           let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
-          in SndFileChunk
+           in SndFileChunk
                 { sndFileId,
                   sndFileEntityId,
                   userId,
