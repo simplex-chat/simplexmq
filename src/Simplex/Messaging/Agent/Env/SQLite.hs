@@ -253,4 +253,8 @@ mkInternal :: SomeException -> AgentErrorType
 mkInternal = INTERNAL . show
 {-# INLINE mkInternal #-}
 
-data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: TMVar (Maybe (Async ()))}
+data Worker = Worker
+  { workerId :: Int,
+    doWork :: TMVar (),
+    action :: TMVar (Maybe (Async ()))
+  }
