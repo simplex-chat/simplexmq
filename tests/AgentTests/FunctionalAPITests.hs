@@ -1878,8 +1878,8 @@ testSwitch2ConnectionsAbort1 servers = do
 
 testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
-  a <- getClient clnt1
-  b <- getClient clnt2
+  a <- getClient clnt1 testDB
+  b <- getClient clnt2 testDB2
   r <- runRight $ do
     tryError (createConnection a 1 True SCMInvitation Nothing SMSubscribe) >>= \case
       Left (SMP AUTH) -> pure 0
@@ -1900,10 +1900,10 @@ testCreateQueueAuth clnt1 clnt2 = do
   disconnectAgentClient b
   pure r
   where
-    getClient (clntAuth, clntVersion) =
+    getClient (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
           smpCfg = (defaultClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
-       in getSMPAgentClient' agentCfg {smpCfg} servers testDB
+       in getSMPAgentClient' agentCfg {smpCfg} servers db
 
 testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testSMPServerConnectionTest t newQueueBasicAuth srv =
