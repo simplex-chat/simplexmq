@@ -175,21 +175,22 @@ runXFTPRcvWorker c srv doWork = do
         fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
           liftIO $ print $ "read replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalCount ri' $ \n delay' loop ->
+          withRetryIntervalLimit consecutiveRetries ri' $ \delay' loop ->
             downloadFileChunk fc replica
-              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop n loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
-            retryLoop n loop e replicaDelay = do
+            retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
-                liftIO $ print $ "retrying replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId <> ": " <> show n
+                -- liftIO $ print $ "retrying replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
-              when (n < consecutiveRetries) loop
+              loop
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
+      liftIO $ print $ "trying chunk " <> show rcvChunkId <> " for file " <> show rcvFileId
       fsFileTmpPath <- toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
@@ -212,6 +213,11 @@ runXFTPRcvWorker c srv doWork = do
           | chunkReceived ch = fromIntegral (unFileSize s)
           | otherwise = 0
         chunkReceived RcvFileChunk {replicas} = any received replicas
+
+withRetryIntervalLimit :: forall m. MonadIO m => Int -> RetryInterval -> (Int64 -> m () -> m ()) -> m ()
+withRetryIntervalLimit maxN ri action =
+  withRetryIntervalCount ri $ \n delay loop ->
+    when (n <= maxN) $ action delay loop
 
 retryOnError :: AgentMonad m => Text -> m a -> m a -> AgentErrorType -> m a
 retryOnError name loop done e = do

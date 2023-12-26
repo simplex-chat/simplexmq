@@ -49,15 +49,7 @@ data RetryIntervalMode = RISlow | RIFast
   deriving (Eq, Show)
 
 withRetryInterval :: forall m a. MonadIO m => RetryInterval -> (Int64 -> m a -> m a) -> m a
-withRetryInterval ri action = callAction 0 $ initialInterval ri
-  where
-    callAction :: Int64 -> Int64 -> m a
-    callAction elapsed delay = action delay loop
-      where
-        loop = do
-          liftIO $ threadDelay' delay
-          let elapsed' = elapsed + delay
-          callAction elapsed' $ nextDelay elapsed' delay ri
+withRetryInterval ri = withRetryIntervalCount ri . const
 
 withRetryIntervalCount :: forall m a. MonadIO m => RetryInterval -> (Int -> Int64 -> m a -> m a) -> m a
 withRetryIntervalCount ri action = callAction 0 0 $ initialInterval ri
