@@ -29,7 +29,7 @@ import SMPClient (testKeyHash)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Types (NewSndChunkReplica (..), RcvFile (..), RcvFileChunk (..), SndFile (..), SndFileChunk (..))
+import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
@@ -124,7 +124,7 @@ storeTests = do
         it "should getNextRcvFileToDecrypt" testGetNextRcvFileToDecrypt
         it "should getNextSndFileToPrepare" testGetNextSndFileToPrepare
         it "should getNextSndChunkToUpload" testGetNextSndChunkToUpload
-        xit "TODO should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
+        it "should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
@@ -743,12 +743,11 @@ testGetNextSndChunkToUpload st = do
     Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
     updateSndFileEncrypted db 1 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica' db 1 newSndChunkReplica1
-    DB.execute_ db "UPDATE snd_files SET status = 'encrypted', num_recipients = 'bad' WHERE snd_file_id = 1"
+    DB.execute_ db "UPDATE snd_files SET num_recipients = 'bad' WHERE snd_file_id = 1"
     -- create file 2
     Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
     updateSndFileEncrypted db 2 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica' db 2 newSndChunkReplica1
-    DB.execute_ db "UPDATE snd_files SET status = 'encrypted' WHERE snd_file_id = 1"
 
     Left e <- getNextSndChunkToUpload db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"
@@ -758,5 +757,17 @@ testGetNextSndChunkToUpload st = do
     sndFileEntityId `shouldBe` fId2
 
 testGetNextDeletedSndChunkReplica :: SQLiteStore -> Expectation
-testGetNextDeletedSndChunkReplica _st = do
-  pure ()
+testGetNextDeletedSndChunkReplica st = do
+  withTransaction st $ \db -> do
+    Right Nothing <- getNextDeletedSndChunkReplica db xftpServer1 86400
+
+    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId "abc") testFileReplicaKey) (FileDigest "ghi")
+    DB.execute_ db "UPDATE deleted_snd_chunk_replicas SET retries = 'bad' WHERE deleted_snd_chunk_replica_id = 1"
+    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId "abc") testFileReplicaKey) (FileDigest "ghi")
+
+    Left e <- getNextDeletedSndChunkReplica db xftpServer1 86400
+    show e `shouldContain` "ConversionFailed"
+    DB.query_ db "SELECT deleted_snd_chunk_replica_id FROM deleted_snd_chunk_replicas WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+
+    Right (Just DeletedSndChunkReplica {deletedSndChunkReplicaId}) <- getNextDeletedSndChunkReplica db xftpServer1 86400
+    deletedSndChunkReplicaId `shouldBe` 2
