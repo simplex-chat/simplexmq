@@ -37,6 +37,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
+import Data.Time (NominalDiffTime)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
@@ -159,29 +160,26 @@ addWorker c wsSel runWorker runWorkerNoSrv srv_ = do
 
 runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPRcvWorker c srv doWork = do
-  ri <- asks $ reconnectInterval . config
-  notifyOnRetry <- asks (xftpNotifyErrsOnRetry . config)
-  consecutiveRetries <- asks (xftpTempErrConsecutiveRetries . config)
+  cfg <- asks config
   forever $ do
     waitForWork doWork
     atomically $ assertAgentForeground c
-    runXFTPOperation ri notifyOnRetry consecutiveRetries
+    runXFTPOperation cfg
   where
-    runXFTPOperation :: RetryInterval -> Bool -> Int -> m ()
-    runXFTPOperation ri notifyOnRetry consecutiveRetries = do
-      rcvFilesTTL <- asks (rcvFilesTTL . config)
+    runXFTPOperation :: AgentConfig -> m ()
+    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry, xftpTempErrConsecutiveRetries} =
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
         RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
         fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
           liftIO $ print $ "read replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit consecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
             downloadFileChunk fc replica
               `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
+                when xftpNotifyErrsOnRetry $ notify c rcvFileEntityId $ RFERR e
                 -- liftIO $ print $ "retrying replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
