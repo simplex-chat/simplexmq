@@ -22,9 +22,14 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
 import Data.Word (Word32)
+import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 import SMPClient (testKeyHash)
+import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
+import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol
+import Simplex.FileTransfer.Types (NewSndChunkReplica (..), RcvFile (..), RcvFileChunk (..), SndFile (..), SndFileChunk (..))
 import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
@@ -32,6 +37,8 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..))
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
@@ -113,10 +120,10 @@ storeTests = do
       describe "Work items" $ do
         it "should getPendingQueueMsg" testGetPendingQueueMsg
         it "should getPendingServerCommand" testGetPendingServerCommand
-        xit "TODO should getNextRcvChunkToDownload" testGetNextRcvChunkToDownload
-        xit "TODO should getNextRcvFileToDecrypt" testGetNextRcvFileToDecrypt
-        xit "TODO should getNextSndFileToPrepare" testGetNextSndFileToPrepare
-        xit "TODO should getNextSndChunkToUpload" testGetNextSndChunkToUpload
+        it "should getNextRcvChunkToDownload" testGetNextRcvChunkToDownload
+        it "should getNextRcvFileToDecrypt" testGetNextRcvFileToDecrypt
+        it "should getNextSndFileToPrepare" testGetNextSndFileToPrepare
+        it "should getNextSndChunkToUpload" testGetNextSndChunkToUpload
         xit "TODO should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
@@ -628,21 +635,127 @@ testGetPendingServerCommand st = do
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 
+xftpServer1 :: SMP.XFTPServer
+xftpServer1 = SMP.ProtocolServer SMP.SPXFTP "xftp.simplex.im" "5223" testKeyHash
+
+rcvFileDescr1 :: FileDescription 'FRecipient
+rcvFileDescr1 =
+  FileDescription
+    { party = SFRecipient,
+      size = FileSize $ mb 26,
+      digest = FileDigest "abc",
+      key = testFileSbKey,
+      nonce = testFileCbNonce,
+      chunkSize = defaultChunkSize,
+      chunks =
+        [ FileChunk
+            { chunkNo = 1,
+              digest = chunkDigest,
+              chunkSize = defaultChunkSize,
+              replicas = [FileChunkReplica {server = xftpServer1, replicaId, replicaKey = testFileReplicaKey}]
+            }
+        ]
+    }
+  where
+    defaultChunkSize = FileSize $ mb 8
+    replicaId = ChunkReplicaId "abc"
+    chunkDigest = FileDigest "ghi"
+
+testFileSbKey :: C.SbKey
+testFileSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTFFFOY="
+
+testFileCbNonce :: C.CbNonce
+testFileCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
+
+testFileReplicaKey :: C.APrivateSignKey
+testFileReplicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+
 testGetNextRcvChunkToDownload :: SQLiteStore -> Expectation
-testGetNextRcvChunkToDownload _st = do
-  pure ()
+testGetNextRcvChunkToDownload st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right Nothing <- getNextRcvChunkToDownload db xftpServer1 86400
+
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+
+    Left e <- getNextRcvChunkToDownload db xftpServer1 86400
+    show e `shouldContain` "ConversionFailed"
+    DB.query_ db "SELECT rcv_file_id FROM rcv_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+
+    Right (Just RcvFileChunk {rcvFileEntityId}) <- getNextRcvChunkToDownload db xftpServer1 86400
+    rcvFileEntityId `shouldBe` fId2
 
 testGetNextRcvFileToDecrypt :: SQLiteStore -> Expectation
-testGetNextRcvFileToDecrypt _st = do
-  pure ()
+testGetNextRcvFileToDecrypt st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right Nothing <- getNextRcvFileToDecrypt db 86400
+
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 1"
+    DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 2"
+
+    Left e <- getNextRcvFileToDecrypt db 86400
+    show e `shouldContain` "ConversionFailed"
+    DB.query_ db "SELECT rcv_file_id FROM rcv_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+
+    Right (Just RcvFile {rcvFileEntityId}) <- getNextRcvFileToDecrypt db 86400
+    rcvFileEntityId `shouldBe` fId2
 
 testGetNextSndFileToPrepare :: SQLiteStore -> Expectation
-testGetNextSndFileToPrepare _st = do
-  pure ()
+testGetNextSndFileToPrepare st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right Nothing <- getNextSndFileToPrepare db 86400
+
+    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
+    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    DB.execute_ db "UPDATE snd_files SET status = 'new' WHERE snd_file_id = 2"
+
+    Left e <- getNextSndFileToPrepare db 86400
+    show e `shouldContain` "ConversionFailed"
+    DB.query_ db "SELECT snd_file_id FROM snd_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+
+    Right (Just SndFile {sndFileEntityId}) <- getNextSndFileToPrepare db 86400
+    sndFileEntityId `shouldBe` fId2
+
+newSndChunkReplica1 :: NewSndChunkReplica
+newSndChunkReplica1 =
+  NewSndChunkReplica
+    { server = xftpServer1,
+      replicaId = ChunkReplicaId "abc",
+      replicaKey = testFileReplicaKey,
+      rcvIdsKeys = [(ChunkReplicaId "abc", testFileReplicaKey)]
+    }
 
 testGetNextSndChunkToUpload :: SQLiteStore -> Expectation
-testGetNextSndChunkToUpload _st = do
-  pure ()
+testGetNextSndChunkToUpload st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right Nothing <- getNextSndChunkToUpload db xftpServer1 86400
+
+    -- create file 1
+    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    updateSndFileEncrypted db 1 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
+    createSndFileReplica' db 1 newSndChunkReplica1
+    DB.execute_ db "UPDATE snd_files SET status = 'encrypted', num_recipients = 'bad' WHERE snd_file_id = 1"
+    -- create file 2
+    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    updateSndFileEncrypted db 2 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
+    createSndFileReplica' db 2 newSndChunkReplica1
+    DB.execute_ db "UPDATE snd_files SET status = 'encrypted' WHERE snd_file_id = 1"
+
+    Left e <- getNextSndChunkToUpload db xftpServer1 86400
+    show e `shouldContain` "ConversionFailed"
+    DB.query_ db "SELECT snd_file_id FROM snd_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+
+    Right (Just SndFileChunk {sndFileEntityId}) <- getNextSndChunkToUpload db xftpServer1 86400
+    sndFileEntityId `shouldBe` fId2
 
 testGetNextDeletedSndChunkReplica :: SQLiteStore -> Expectation
 testGetNextDeletedSndChunkReplica _st = do

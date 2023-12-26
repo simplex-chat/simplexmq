@@ -191,6 +191,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteSndFile',
     getSndFileDeleted,
     createSndFileReplica,
+    createSndFileReplica',
     getNextSndChunkToUpload,
     updateSndChunkReplicaDelay,
     addSndChunkReplicaRecipients,
@@ -2667,7 +2668,10 @@ getSndFileDeleted db sndFileId =
     <$> maybeFirstRow fromOnly (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
-createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
+createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica' db sndChunkId
+
+createSndFileReplica' :: DB.Connection -> Int64 -> NewSndChunkReplica -> IO ()
+createSndFileReplica' db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
   srvId <- createXFTPServer_ db server
   DB.execute
     db
