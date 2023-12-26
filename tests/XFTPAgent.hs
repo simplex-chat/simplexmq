@@ -48,9 +48,8 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
-  -- when server is fixed to correctly send AUTH error, this test should be fixed and next test will fail
-  xit "if file is deleted on server, should report error and continue receiving next file" testXFTPAgentDeleteOnServer
-  fit "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServerTimeout
+  -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
+  fit "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
   it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
@@ -164,6 +163,13 @@ testReceive rcp rfd = testReceiveCF rcp rfd Nothing
 testReceiveCF :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceiveCF rcp rfd cfArgs originalFilePath = do
   xftpStartWorkers rcp (Just recipientFiles)
+  testReceiveCF' rcp rfd cfArgs originalFilePath
+
+testReceive' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
+testReceive' rcp rfd = testReceiveCF' rcp rfd Nothing
+
+testReceiveCF' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> ExceptT AgentErrorType IO RcvFileId
+testReceiveCF' rcp rfd cfArgs originalFilePath = do
   rfId <- xftpReceiveFile rcp 1 rfd cfArgs
   rfProgress rcp $ mb 18
   ("", rfId', RFDONE path) <- rfGet rcp
@@ -444,65 +450,19 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
-    -- receive file 1 again - should fail with AUTH error
-    runRight $ do
-      rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing
-      ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
-      liftIO $ rfId' `shouldBe` rfId
-
     -- create and send file 2
     filePath2 <- createRandomFile' "testfile2"
     (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
 
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
-    -- receive file 2 successfully
-    runRight_ . void $
-      testReceive rcp rfd2 filePath2
-
-testXFTPAgentDeleteOnServerTimeout :: HasCallStack => IO ()
-testXFTPAgentDeleteOnServerTimeout = withGlobalLogging logCfgNoLogs $
-  withXFTPServer $ do
-    filePath1 <- createRandomFile' "testfile1"
-
-    -- send file 1
-    sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
-    (_, _, rfd1_1, rfd1_2) <- runRight $ testSend sndr filePath1
-
-    -- receive file 1 successfully
-    rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
-    runRight_ . void $
-      testReceive rcp rfd1_1 filePath1
-
-    serverFiles <- listDirectory xftpServerFiles
-    length serverFiles `shouldBe` 6
-
-    -- delete file 1 on server from file system
-    forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
-
-    threadDelay 1000000
-    length <$> listDirectory xftpServerFiles `shouldReturn` 0
-
-    -- create and send file 2
-    filePath2 <- createRandomFile' "testfile2"
-    (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
-
-    length <$> listDirectory xftpServerFiles `shouldReturn` 6
-
-    -- receive file 1 again - should fail with AUTH error
-    runRight $ do
+    runRight_ . void $ do
+      -- receive file 1 again
+      -- TODO should fail with AUTH error
       _rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
-      rfId2 <- xftpReceiveFile rcp 1 rfd2 Nothing
 
-      liftIO $ print 1
-
-      rfProgress rcp $ mb 18
-      liftIO $ print 2
-      ("", rfId2', RFDONE path) <- rfGet rcp
-      liftIO $ do
-        rfId2' `shouldBe` rfId2
-        receivedFile <- LB.readFile filePath2
-        runExceptT (CF.readFile $ CryptoFile path Nothing) `shouldReturn` Right receivedFile
+      -- receive file 2
+      testReceive' rcp rfd2 filePath2
 
 testXFTPAgentExpiredOnServer :: HasCallStack => IO ()
 testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
@@ -522,7 +482,7 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
     serverFiles <- listDirectory xftpServerFiles
     length serverFiles `shouldBe` 6
 
-    -- wait while file 1 expires on server
+    -- wait until file 1 expires on server
     forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
 
     threadDelay 3500000
@@ -542,7 +502,7 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
 
     -- receive file 2 successfully
     runRight_ . void $
-      testReceive rcp rfd2 filePath2
+      testReceive' rcp rfd2 filePath2
 
 testXFTPAgentRequestAdditionalRecipientIDs :: HasCallStack => IO ()
 testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
