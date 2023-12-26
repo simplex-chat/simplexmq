@@ -1703,8 +1703,8 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient e cmd ->
         ACmd SClient e <$> case cmd of
-          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> strP)
-          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> strP_ <*> binaryP)
+          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> (strP <|> pure SMP.SMSubscribe))
+          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           RJCT_ -> s (RJCT <$> A.takeByteString)

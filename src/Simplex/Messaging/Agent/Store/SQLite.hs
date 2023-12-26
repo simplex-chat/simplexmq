@@ -152,7 +152,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
     getNextNtfSubNTFAction,
+    markNtfSubActionNtfFailed_, -- exported for tests
     getNextNtfSubSMPAction,
+    markNtfSubActionSMPFailed_, -- exported for tests
     getActiveNtfToken,
     getNtfRcvQueue,
     setConnectionNtfs,
@@ -191,6 +193,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteSndFile',
     getSndFileDeleted,
     createSndFileReplica,
+    createSndFileReplica_, -- exported for tests
     getNextSndChunkToUpload,
     updateSndChunkReplicaDelay,
     addSndChunkReplicaRecipients,
@@ -222,7 +225,7 @@ import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (second)
+import Data.Bifunctor (first, second)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
@@ -271,7 +274,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -975,29 +978,60 @@ updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
     "UPDATE snd_messages SET rcpt_internal_id = ?, rcpt_status = ? WHERE conn_id = ? AND internal_snd_id = ?"
     (agentMsgId, msgRcptStatus, connId, sndMsgId)
 
-getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Maybe (Maybe RcvQueue, PendingMsgData))
-getPendingQueueMsg db connId SndQueue {dbQueueId} = do
-  rq_ <- L.head <$$> getRcvQueuesByConnId_ db connId
-  (rq_,) <$$> maybeFirstRow pendingMsgData getMsgData_
+getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError (Maybe (Maybe RcvQueue, PendingMsgData)))
+getPendingQueueMsg db connId SndQueue {dbQueueId} =
+  getWorkItem "message" getMsgId getMsgData markMsgFailed
   where
-    getMsgData_ =
-      DB.query
-        db
-        [sql|
-          SELECT m.internal_id, m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
-          FROM snd_message_deliveries d
-          JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id
-          JOIN snd_messages s ON s.conn_id = d.conn_id AND s.internal_id = d.internal_id
-          WHERE d.conn_id = ? AND d.snd_queue_id = ?
-          ORDER BY d.internal_id ASC
-          LIMIT 1
-        |]
-        (connId, dbQueueId)
-    pendingMsgData :: (InternalId, AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
-    pendingMsgData (msgId, msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
-      let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
-          msgRetryState = RI2State <$> riSlow_ <*> riFast_
-       in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
+    getMsgId :: IO (Maybe InternalId)
+    getMsgId =
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT internal_id
+            FROM snd_message_deliveries d
+            WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
+            ORDER BY internal_id ASC
+            LIMIT 1
+          |]
+          (connId, dbQueueId)
+    getMsgData :: InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
+    getMsgData msgId = runExceptT $ do
+      msg <- ExceptT $ firstRow pendingMsgData err getMsgData_
+      rq_ <- liftIO $ L.head <$$> getRcvQueuesByConnId_ db connId
+      pure (rq_, msg)
+      where
+        getMsgData_ =
+          DB.query
+            db
+            [sql|
+              SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
+              FROM messages m
+              JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
+              WHERE m.conn_id = ? AND m.internal_id = ?
+            |]
+            (connId, msgId)
+        err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
+        pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
+          let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
+              msgRetryState = RI2State <$> riSlow_ <*> riFast_
+           in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
+    markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+
+getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
+getWorkItem itemName getId getItem markFailed =
+  runExceptT $ handleErr "getId" getId >>= mapM tryGetItem
+  where
+    tryGetItem itemId = ExceptT (getItem itemId) `catchStoreErrors` \e -> mark itemId >> throwError e
+    mark itemId = handleErr ("markFailed ID " <> bshow itemId) $ markFailed itemId
+    catchStoreErrors = catchAllErrors (SEInternal . bshow)
+    -- Errors caught by this function will suspend worker as if there is no more work,
+    handleErr :: ByteString -> IO a -> ExceptT StoreError IO a
+    handleErr opName action = ExceptT $ first mkError <$> E.try action
+      where
+        mkError :: E.SomeException -> StoreError
+        mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
@@ -1095,7 +1129,7 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
 
 countPendingSndDeliveries_ :: DB.Connection -> ConnId -> InternalId -> IO Int
 countPendingSndDeliveries_ db connId msgId = do
-  (Only cnt : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+  (Only cnt : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ? AND failed = 0" (connId, msgId)
   pure cnt
 
 deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
@@ -1204,11 +1238,12 @@ updateRatchet db connId rc skipped = do
 createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> IO (Either StoreError ())
 createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
-  liftIO $ do
+  createdAt <- liftIO getCurrentTime
+  liftIO $
     DB.execute
       db
-      "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash) VALUES (?,?,?,?,?,?,?)"
-      (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_)
+      "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
+      (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_, createdAt)
   where
     serverFields :: ExceptT StoreError IO (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash)
     serverFields = case srv_ of
@@ -1235,33 +1270,47 @@ getPendingCommandServers db connId = do
   where
     smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
 
-getPendingServerCommand :: DB.Connection -> Maybe SMPServer -> IO (Maybe PendingCommand)
-getPendingServerCommand db srv_ = maybeFirstRow pendingCommand $ case srv_ of
-  Nothing ->
-    DB.query_
-      db
-      [sql|
-        SELECT c.command_id, c.corr_id, cs.user_id, c.conn_id, c.command
-        FROM commands c
-        JOIN connections cs USING (conn_id)
-        WHERE c.host IS NULL AND c.port IS NULL
-        ORDER BY c.created_at ASC, c.command_id ASC
-        LIMIT 1
-      |]
-  Just (SMPServer host port _) ->
-    DB.query
-      db
-      [sql|
-        SELECT c.command_id, c.corr_id, cs.user_id, c.conn_id, c.command
-        FROM commands c
-        JOIN connections cs USING (conn_id)
-        WHERE c.host = ? AND c.port = ?
-        ORDER BY c.created_at ASC, c.command_id ASC
-        LIMIT 1
-      |]
-      (host, port)
+getPendingServerCommand :: DB.Connection -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
+getPendingServerCommand db srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
   where
-    pendingCommand (cmdId, corrId, userId, connId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+    getCmdId :: IO (Maybe Int64)
+    getCmdId =
+      maybeFirstRow fromOnly $ case srv_ of
+        Nothing ->
+          DB.query_
+            db
+            [sql|
+              SELECT command_id FROM commands
+              WHERE host IS NULL AND port IS NULL AND failed = 0
+              ORDER BY created_at ASC, command_id ASC
+              LIMIT 1
+            |]
+        Just (SMPServer host port _) ->
+          DB.query
+            db
+            [sql|
+              SELECT command_id FROM commands
+              WHERE host = ? AND port = ? AND failed = 0
+              ORDER BY created_at ASC, command_id ASC
+              LIMIT 1
+            |]
+            (host, port)
+    getCommand :: Int64 -> IO (Either StoreError PendingCommand)
+    getCommand cmdId =
+      firstRow pendingCommand err $
+        DB.query
+          db
+          [sql|
+            SELECT c.corr_id, cs.user_id, c.conn_id, c.command
+            FROM commands c
+            JOIN connections cs USING (conn_id)
+            WHERE c.command_id = ?
+          |]
+          (Only cmdId)
+      where
+        err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
+        pendingCommand (corrId, userId, connId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+    markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =
@@ -1486,53 +1535,95 @@ deleteNtfSubscription db connId = do
           (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
       else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs))
-getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) = do
-  maybeFirstRow ntfSubAction getNtfSubAction_ $>>= \a@(NtfSubscription {connId}, _, _) -> do
-    DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-    pure $ Just a
+getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs)))
+getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
+  getWorkItem "ntf NTF" getNtfConnId getNtfSubAction (markNtfSubActionNtfFailed_ db)
   where
-    getNtfSubAction_ =
-      DB.query
-        db
-        [sql|
-          SELECT ns.conn_id, s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
-            ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
-          FROM ntf_subscriptions ns
-          JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
-          WHERE ns.ntf_host = ? AND ns.ntf_port = ? AND ns.ntf_sub_action IS NOT NULL
-          ORDER BY ns.ntf_sub_action_ts ASC
-          LIMIT 1
-        |]
-        (ntfHost, ntfPort)
-    ntfSubAction (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
-      let smpServer = SMPServer smpHost smpPort smpKeyHash
-          ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-       in (ntfSubscription, action, actionTs)
+    getNtfConnId :: IO (Maybe ConnId)
+    getNtfConnId =
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT conn_id
+            FROM ntf_subscriptions
+            WHERE ntf_host = ? AND ntf_port = ? AND ntf_sub_action IS NOT NULL
+              AND (ntf_failed = 0 OR updated_by_supervisor = 1)
+            ORDER BY ntf_sub_action_ts ASC
+            LIMIT 1
+          |]
+          (ntfHost, ntfPort)
+    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubNTFAction, NtfActionTs))
+    getNtfSubAction connId = do
+      markUpdatedByWorker db connId
+      firstRow ntfSubAction err $
+        DB.query
+          db
+          [sql|
+            SELECT s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
+              ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
+            FROM ntf_subscriptions ns
+            JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
+            WHERE ns.conn_id = ?
+          |]
+          (Only connId)
+      where
+        err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
+        ntfSubAction (smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+          let smpServer = SMPServer smpHost smpPort smpKeyHash
+              ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+           in (ntfSubscription, action, actionTs)
 
-getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe (NtfSubscription, NtfSubSMPAction, NtfActionTs))
-getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
-  maybeFirstRow ntfSubAction getNtfSubAction_ $>>= \a@(NtfSubscription {connId}, _, _) -> do
-    DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-    pure $ Just a
+markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
+markNtfSubActionNtfFailed_ db connId =
+  DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
+
+getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubSMPAction, NtfActionTs)))
+getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
+  getWorkItem "ntf SMP" getNtfConnId getNtfSubAction (markNtfSubActionSMPFailed_ db)
   where
-    getNtfSubAction_ =
-      DB.query
-        db
-        [sql|
-          SELECT ns.conn_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
-            ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
-          FROM ntf_subscriptions ns
-          JOIN ntf_servers s USING (ntf_host, ntf_port)
-          WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL AND ns.ntf_sub_action_ts IS NOT NULL
-          ORDER BY ns.ntf_sub_action_ts ASC
-          LIMIT 1
-        |]
-        (smpHost, smpPort)
-    ntfSubAction (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
-      let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
-          ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-       in (ntfSubscription, action, actionTs)
+    getNtfConnId :: IO (Maybe ConnId)
+    getNtfConnId =
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT conn_id
+            FROM ntf_subscriptions ns
+            WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
+              AND (smp_failed = 0 OR updated_by_supervisor = 1)
+            ORDER BY ntf_sub_action_ts ASC
+            LIMIT 1
+          |]
+          (smpHost, smpPort)
+    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubSMPAction, NtfActionTs))
+    getNtfSubAction connId = do
+      markUpdatedByWorker db connId
+      firstRow ntfSubAction err $
+        DB.query
+          db
+          [sql|
+            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+              ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+            FROM ntf_subscriptions ns
+            JOIN ntf_servers s USING (ntf_host, ntf_port)
+            WHERE ns.conn_id = ?
+          |]
+          (Only connId)
+      where
+        err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
+        ntfSubAction (ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+          let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
+              ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+           in (ntfSubscription, action, actionTs)
+
+markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
+markNtfSubActionSMPFailed_ db connId =
+  DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1 where conn_id = ?" (Only connId)
+
+markUpdatedByWorker :: DB.Connection -> ConnId -> IO ()
+markUpdatedByWorker db connId =
+  DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = 0 WHERE conn_id = ?" (Only connId)
 
 getActiveNtfToken :: DB.Connection -> IO (Maybe NtfToken)
 getActiveNtfToken db =
@@ -2289,60 +2380,84 @@ deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
-getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe RcvFileChunk)
+getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFileChunk))
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  maybeFirstRow toChunk $
-    DB.query
-      db
-      [sql|
-        SELECT
-          f.rcv_file_id, f.rcv_file_entity_id, f.user_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path,
-          r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.delay, r.retries
-        FROM rcv_file_chunk_replicas r
-        JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-        JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
-        JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
-        WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-          AND r.received = 0 AND r.replica_number = 1
-          AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
-        ORDER BY r.created_at ASC
-        LIMIT 1
-      |]
-      (host, port, keyHash, RFSReceiving, cutoffTs)
+  getWorkItem "rcv_file_download" getReplicaId getChunkData (markRcvFileFailed db . snd)
   where
-    toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Maybe Int64, Int)) -> RcvFileChunk
-    toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries)) =
-      RcvFileChunk
-        { rcvFileId,
-          rcvFileEntityId,
-          userId,
-          rcvChunkId,
-          chunkNo,
-          chunkSize,
-          digest,
-          fileTmpPath,
-          chunkTmpPath,
-          replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}]
-        }
+    getReplicaId :: IO (Maybe (Int64, DBRcvFileId))
+    getReplicaId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow id $
+        DB.query
+          db
+          [sql|
+            SELECT r.rcv_file_chunk_replica_id, f.rcv_file_id
+            FROM rcv_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+            JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.received = 0 AND r.replica_number = 1
+              AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
+              AND f.failed = 0
+            ORDER BY r.created_at ASC
+            LIMIT 1
+          |]
+          (host, port, keyHash, RFSReceiving, cutoffTs)
+    getChunkData :: (Int64, DBRcvFileId) -> IO (Either StoreError RcvFileChunk)
+    getChunkData (rcvFileChunkReplicaId, _fileId) =
+      firstRow toChunk SEFileNotFound $
+        DB.query
+          db
+          [sql|
+            SELECT
+              f.rcv_file_id, f.rcv_file_entity_id, f.user_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path,
+              r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.delay, r.retries
+            FROM rcv_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+            JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+            WHERE r.rcv_file_chunk_replica_id = ?
+          |]
+          (Only rcvFileChunkReplicaId)
+      where
+        toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Maybe Int64, Int)) -> RcvFileChunk
+        toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries)) =
+          RcvFileChunk
+            { rcvFileId,
+              rcvFileEntityId,
+              userId,
+              rcvChunkId,
+              chunkNo,
+              chunkSize,
+              digest,
+              fileTmpPath,
+              chunkTmpPath,
+              replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}]
+            }
 
-getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Maybe RcvFile)
-getNextRcvFileToDecrypt db ttl = do
-  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  fileId_ :: Maybe DBRcvFileId <-
-    maybeFirstRow fromOnly $
-      DB.query
-        db
-        [sql|
-          SELECT rcv_file_id
-          FROM rcv_files
-          WHERE status IN (?,?) AND deleted = 0 AND created_at >= ?
-          ORDER BY created_at ASC LIMIT 1
-        |]
-        (RFSReceived, RFSDecrypting, cutoffTs)
-  case fileId_ of
-    Nothing -> pure Nothing
-    Just fileId -> eitherToMaybe <$> getRcvFile db fileId
+getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFile))
+getNextRcvFileToDecrypt db ttl =
+  getWorkItem "rcv_file_decrypt" getFileId (getRcvFile db) (markRcvFileFailed db)
+  where
+    getFileId :: IO (Maybe DBRcvFileId)
+    getFileId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT rcv_file_id
+            FROM rcv_files
+            WHERE status IN (?,?) AND deleted = 0 AND created_at >= ?
+              AND failed = 0
+            ORDER BY created_at ASC LIMIT 1
+          |]
+          (RFSReceived, RFSDecrypting, cutoffTs)
+
+markRcvFileFailed :: DB.Connection -> DBRcvFileId -> IO ()
+markRcvFileFailed db fileId = do
+  DB.execute db "UPDATE rcv_files SET failed = 1 WHERE rcv_file_id = ?" (Only fileId)
 
 getPendingRcvFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingRcvFilesServers db ttl = do
@@ -2494,23 +2609,28 @@ getChunkReplicaRecipients_ db replicaId =
     |]
     (Only replicaId)
 
-getNextSndFileToPrepare :: DB.Connection -> NominalDiffTime -> IO (Maybe SndFile)
-getNextSndFileToPrepare db ttl = do
-  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  fileId_ :: Maybe DBSndFileId <-
-    maybeFirstRow fromOnly $
-      DB.query
-        db
-        [sql|
-          SELECT snd_file_id
-          FROM snd_files
-          WHERE status IN (?,?,?) AND deleted = 0 AND created_at >= ?
-          ORDER BY created_at ASC LIMIT 1
-        |]
-        (SFSNew, SFSEncrypting, SFSEncrypted, cutoffTs)
-  case fileId_ of
-    Nothing -> pure Nothing
-    Just fileId -> eitherToMaybe <$> getSndFile db fileId
+getNextSndFileToPrepare :: DB.Connection -> NominalDiffTime -> IO (Either StoreError (Maybe SndFile))
+getNextSndFileToPrepare db ttl =
+  getWorkItem "snd_file_prepare" getFileId (getSndFile db) (markSndFileFailed db)
+  where
+    getFileId :: IO (Maybe DBSndFileId)
+    getFileId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT snd_file_id
+            FROM snd_files
+            WHERE status IN (?,?,?) AND deleted = 0 AND created_at >= ?
+              AND failed = 0
+            ORDER BY created_at ASC LIMIT 1
+          |]
+          (SFSNew, SFSEncrypting, SFSEncrypted, cutoffTs)
+
+markSndFileFailed :: DB.Connection -> DBSndFileId -> IO ()
+markSndFileFailed db fileId =
+  DB.execute db "UPDATE snd_files SET failed = 1 WHERE snd_file_id = ?" (Only fileId)
 
 updateSndFileError :: DB.Connection -> DBSndFileId -> String -> IO ()
 updateSndFileError db sndFileId errStr = do
@@ -2554,7 +2674,10 @@ getSndFileDeleted db sndFileId =
     <$> maybeFirstRow fromOnly (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
-createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
+createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica_ db sndChunkId
+
+createSndFileReplica_ :: DB.Connection -> Int64 -> NewSndChunkReplica -> IO ()
+createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
   srvId <- createXFTPServer_ db server
   DB.execute
     db
@@ -2575,50 +2698,69 @@ createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, re
       |]
       (rId, rcvId, rcvKey)
 
-getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe SndFileChunk)
+getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe SndFileChunk))
 getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  chunk_ <-
-    maybeFirstRow toChunk $
-      DB.query
-        db
-        [sql|
-          SELECT
-            f.snd_file_id, f.snd_file_entity_id, f.user_id, f.num_recipients, f.prefix_path,
-            c.snd_file_chunk_id, c.chunk_no, c.chunk_offset, c.chunk_size, c.digest,
-            r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries
-          FROM snd_file_chunk_replicas r
-          JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-          JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
-          JOIN snd_files f ON f.snd_file_id = c.snd_file_id
-          WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-            AND r.replica_status = ? AND r.replica_number = 1
-            AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
-          ORDER BY r.created_at ASC
-          LIMIT 1
-        |]
-        (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
-  forM chunk_ $ \chunk@SndFileChunk {replicas} -> do
-    replicas' <- forM replicas $ \replica@SndFileChunkReplica {sndChunkReplicaId} -> do
-      rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
-      pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
-    pure (chunk {replicas = replicas'} :: SndFileChunk)
+  getWorkItem "snd_file_upload" getReplicaId getChunkData (markSndFileFailed db . snd)
   where
-    toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
-    toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
-      let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
-       in SndFileChunk
-            { sndFileId,
-              sndFileEntityId,
-              userId,
-              numRecipients,
-              sndChunkId,
-              chunkNo,
-              chunkSpec,
-              digest,
-              filePrefixPath,
-              replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}]
-            }
+    getReplicaId :: IO (Maybe (Int64, DBSndFileId))
+    getReplicaId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow id $
+        DB.query
+          db
+          [sql|
+            SELECT r.snd_file_chunk_replica_id, f.snd_file_id
+            FROM snd_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
+            JOIN snd_files f ON f.snd_file_id = c.snd_file_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.replica_status = ? AND r.replica_number = 1
+              AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
+              AND f.failed = 0
+            ORDER BY r.created_at ASC
+            LIMIT 1
+          |]
+          (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
+    getChunkData :: (Int64, DBSndFileId) -> IO (Either StoreError SndFileChunk)
+    getChunkData (sndFileChunkReplicaId, _fileId) = do
+      chunk_ <-
+        firstRow toChunk SEFileNotFound $
+          DB.query
+            db
+            [sql|
+              SELECT
+                f.snd_file_id, f.snd_file_entity_id, f.user_id, f.num_recipients, f.prefix_path,
+                c.snd_file_chunk_id, c.chunk_no, c.chunk_offset, c.chunk_size, c.digest,
+                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries
+              FROM snd_file_chunk_replicas r
+              JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+              JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
+              JOIN snd_files f ON f.snd_file_id = c.snd_file_id
+              WHERE r.snd_file_chunk_replica_id = ?
+            |]
+            (Only sndFileChunkReplicaId)
+      forM chunk_ $ \chunk@SndFileChunk {replicas} -> do
+        replicas' <- forM replicas $ \replica@SndFileChunkReplica {sndChunkReplicaId} -> do
+          rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
+          pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
+        pure (chunk {replicas = replicas'} :: SndFileChunk)
+      where
+        toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
+        toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
+          let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
+           in SndFileChunk
+                { sndFileId,
+                  sndFileEntityId,
+                  userId,
+                  numRecipients,
+                  sndChunkId,
+                  chunkNo,
+                  chunkSpec,
+                  digest,
+                  filePrefixPath,
+                  replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}]
+                }
 
 updateSndChunkReplicaDelay :: DB.Connection -> Int64 -> Int64 -> IO ()
 updateSndChunkReplicaDelay db replicaId delay = do
@@ -2723,25 +2865,29 @@ getDeletedSndChunkReplica db deletedSndChunkReplicaId =
       let server = XFTPServer host port keyHash
        in DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, replicaId, replicaKey, chunkDigest, delay, retries}
 
-getNextDeletedSndChunkReplica :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Maybe DeletedSndChunkReplica)
-getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl = do
-  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  replicaId_ :: Maybe Int64 <-
-    maybeFirstRow fromOnly $
-      DB.query
-        db
-        [sql|
-          SELECT r.deleted_snd_chunk_replica_id
-          FROM deleted_snd_chunk_replicas r
-          JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-          WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-            AND r.created_at >= ?
-          ORDER BY r.created_at ASC LIMIT 1
-        |]
-        (host, port, keyHash, cutoffTs)
-  case replicaId_ of
-    Nothing -> pure Nothing
-    Just replicaId -> eitherToMaybe <$> getDeletedSndChunkReplica db replicaId
+getNextDeletedSndChunkReplica :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe DeletedSndChunkReplica))
+getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl =
+  getWorkItem "deleted replica" getReplicaId (getDeletedSndChunkReplica db) markReplicaFailed
+  where
+    getReplicaId :: IO (Maybe Int64)
+    getReplicaId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT r.deleted_snd_chunk_replica_id
+            FROM deleted_snd_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.created_at >= ?
+              AND failed = 0
+            ORDER BY r.created_at ASC LIMIT 1
+          |]
+          (host, port, keyHash, cutoffTs)
+    markReplicaFailed :: Int64 -> IO ()
+    markReplicaFailed replicaId = do
+      DB.execute db "UPDATE deleted_snd_chunk_replicas SET failed = 1 WHERE deleted_snd_chunk_replica_id = ?" (Only replicaId)
 
 updateDeletedSndChunkReplicaDelay :: DB.Connection -> Int64 -> Int64 -> IO ()
 updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId delay = do

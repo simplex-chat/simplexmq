@@ -908,10 +908,10 @@ sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
 enqueueCommand :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> m ()
 enqueueCommand c corrId connId server aCommand = do
   withStore c $ \db -> createCommand db corrId connId server aCommand
-  resumeSrvCmds c server
+  void $ getAsyncCmdWorker (\w -> hasWorkToDo w $> w) c server
 
 resumeSrvCmds :: forall m. AgentMonad' m => AgentClient -> Maybe SMPServer -> m ()
-resumeSrvCmds = void .: getAsyncCmdWorker
+resumeSrvCmds = void .: getAsyncCmdWorker pure
 
 resumeConnCmds :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resumeConnCmds c connId =
@@ -921,12 +921,11 @@ resumeConnCmds c connId =
   where
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
 
-getAsyncCmdWorker :: AgentMonad' m => AgentClient -> Maybe SMPServer -> m Worker
-getAsyncCmdWorker c server =
-  atomically (getWorker >>= maybe createWorker resumeWorker) >>= \w -> runWorker w $> w
+getAsyncCmdWorker :: AgentMonad' m => (Worker -> STM Worker) -> AgentClient -> Maybe SMPServer -> m Worker
+getAsyncCmdWorker whenExists c server =
+  atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
   where
     getWorker = TM.lookup server $ asyncCmdWorkers c
-    resumeWorker w = hasWorkToDo w $> w
     deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server $ asyncCmdWorkers c
     createWorker = do
       w <- newWorker c
@@ -945,7 +944,7 @@ runCommandProcessing c@AgentClient {subQ} server_ doWork = do
     waitForWork doWork
     atomically $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (\db -> getPendingServerCommand db server_) $ processCmd (riFast ri)
+    withWork c doWork (`getPendingServerCommand` server_) $ processCmd (riFast ri)
   where
     processCmd :: RetryInterval -> PendingCommand -> m ()
     processCmd ri PendingCommand {cmdId, corrId, userId, connId, command} = case command of
@@ -1127,15 +1126,14 @@ enqueueSavedMessageB c reqs = do
        in map (\sq -> createSndMsgDelivery db connId sq mId) sqs
 
 resumeMsgDelivery :: forall m. AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
-resumeMsgDelivery = void .:. getDeliveryWorker
+resumeMsgDelivery = void .:. getDeliveryWorker pure
 
-getDeliveryWorker :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
-getDeliveryWorker c cData sq = do
-  atomically (getWorker >>= maybe createWorker resumeWorker) >>= \wl -> runWorker wl $> wl
+getDeliveryWorker :: AgentMonad' m => ((Worker, TMVar ()) -> STM (Worker, TMVar ())) -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
+getDeliveryWorker whenExists c cData sq = do
+  atomically (getWorker >>= maybe createWorker whenExists) >>= \wl -> runWorker wl $> wl
   where
     qAddr = qAddress sq
     getWorker = TM.lookup qAddr $ smpDeliveryWorkers c
-    resumeWorker wl = hasWorkToDo (fst wl) $> wl
     deleteWorker wId = mapM_ $ \(w, _) -> when (wId == workerId w) $ TM.delete qAddr $ smpDeliveryWorkers c
     createWorker = do
       retryLock <- newEmptyTMVar
@@ -1150,7 +1148,7 @@ getDeliveryWorker c cData sq = do
 submitPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
 submitPendingMsg c cData sq = do
   atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
-  resumeMsgDelivery c cData sq
+  void $ getDeliveryWorker (\wl -> hasWorkToDo (fst wl) $> wl) c cData sq
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> TMVar () -> TMVar () -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq doWork qLock = do
@@ -2189,7 +2187,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             case findQ addr sqs of
               Just sq -> do
                 logServer "<--" c srv rId "MSG <QCONT>"
-                atomically $ 
+                atomically $
                   TM.lookup (qAddress sq) (smpDeliveryWorkers c)
                     >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
               Nothing -> qError "QCONT: queue address not found"
