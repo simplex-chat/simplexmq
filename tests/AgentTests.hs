@@ -44,7 +44,7 @@ agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "Migration tests" migrationTests
   describe "SMP agent protocol syntax" $ syntaxTests t
-  describe "Establishing duplex connection" $ do
+  describe "Establishing duplex connection (via agent protocol)" $ do
     it "should connect via one server and one agent" $ do
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $ do

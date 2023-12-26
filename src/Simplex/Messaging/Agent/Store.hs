@@ -645,4 +645,6 @@ data StoreError
     SEFileNotFound
   | -- | XFTP Deleted snd chunk replica not found.
     SEDeletedSndChunkReplicaNotFound
+  | -- | Error when reading work item that suspends worker - do not use!
+    SEWorkItemError ByteString
   deriving (Eq, Show, Exception)
