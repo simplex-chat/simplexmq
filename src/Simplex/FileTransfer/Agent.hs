@@ -137,26 +137,27 @@ resumeXFTPRcvWork :: forall m. AgentMonad' m => AgentClient -> Maybe XFTPServer 
 resumeXFTPRcvWork = void .: getXFTPRcvWorker pure
 
 getXFTPRcvWorker :: forall m. AgentMonad' m => (Worker -> STM Worker) -> AgentClient -> Maybe XFTPServer -> m Worker
-getXFTPRcvWorker whenExists c server = do
-  ws <- asks $ xftpRcvWorkers . xftpAgent
-  getXFTPRcvWorker' ws
+getXFTPRcvWorker whenExists c server =
+  getXFTPWorker whenExists c server xftpRcvWorkers $ case server of
+    Just srv -> runXFTPRcvWorker c srv
+    Nothing -> runXFTPRcvLocalWorker c
+
+getXFTPWorker :: (AgentMonad' m, Ord k) => (Worker -> STM Worker) -> AgentClient -> k -> (XFTPAgent -> TMap k Worker) -> (TMVar () -> ExceptT AgentErrorType m ()) -> m Worker
+getXFTPWorker whenExists c key workers work =
+  get =<< asks (workers . xftpAgent)
   where
-    getXFTPRcvWorker' :: TMap (Maybe XFTPServer) Worker -> m Worker
-    getXFTPRcvWorker' ws = atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
+    get ws = atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
       where
-        getWorker = TM.lookup server ws
-        deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server ws
+        getWorker = TM.lookup key ws
+        deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete key ws
         createWorker = do
           w <- newWorker c
-          TM.insert server w ws
+          TM.insert key w ws
           pure w
         runWorker w@Worker {workerId = wId, doWork} =
           runWorkerAsync w . void . runExceptT $
-            runWorkerF doWork
+            work doWork
               `agentFinally` atomically (getWorker >>= deleteWorker wId)
-        runWorkerF = case server of
-          Just srv -> runXFTPRcvWorker c srv
-          Nothing -> runXFTPRcvLocalWorker c
 
 runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPRcvWorker c srv doWork = do
@@ -201,7 +202,8 @@ runXFTPRcvWorker c srv doWork = do
         pure (complete, RFPROG rcvd total)
       notify c rcvFileEntityId progress
       when complete $
-        void $ getXFTPRcvWorker (\w -> hasWorkToDo w $> w) c Nothing
+        void $
+          getXFTPRcvWorker (\w -> hasWorkToDo w $> w) c Nothing
       where
         receivedSize :: [RcvFileChunk] -> Int64
         receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
@@ -296,26 +298,10 @@ resumeXFTPSndWork :: forall m. AgentMonad' m => AgentClient -> Maybe XFTPServer 
 resumeXFTPSndWork = void .: getXFTPSndWorker pure
 
 getXFTPSndWorker :: forall m. AgentMonad' m => (Worker -> STM Worker) -> AgentClient -> Maybe XFTPServer -> m Worker
-getXFTPSndWorker whenExists c server = do
-  ws <- asks $ xftpSndWorkers . xftpAgent
-  getXFTPSndWorker' ws
-  where
-    getXFTPSndWorker' :: TMap (Maybe XFTPServer) Worker -> m Worker
-    getXFTPSndWorker' ws = atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
-      where
-        getWorker = TM.lookup server ws
-        deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server ws
-        createWorker = do
-          w <- newWorker c
-          TM.insert server w ws
-          pure w
-        runWorker w@Worker {workerId = wId, doWork} =
-          runWorkerAsync w . void . runExceptT $
-            runWorkerF doWork
-              `agentFinally` atomically (getWorker >>= deleteWorker wId)
-        runWorkerF = case server of
-          Just srv -> runXFTPSndWorker c srv
-          Nothing -> runXFTPSndPrepareWorker c
+getXFTPSndWorker whenExists c server =
+  getXFTPWorker whenExists c server xftpSndWorkers $ case server of
+    Just srv -> runXFTPSndWorker c srv
+    Nothing -> runXFTPSndPrepareWorker c
 
 runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
 runXFTPSndPrepareWorker c doWork = do
@@ -546,23 +532,8 @@ resumeXFTPDelWork :: forall m. AgentMonad' m => AgentClient -> XFTPServer -> m (
 resumeXFTPDelWork = void .: getXFTPDelWorker pure
 
 getXFTPDelWorker :: forall m. AgentMonad' m => (Worker -> STM Worker) -> AgentClient -> XFTPServer -> m Worker
-getXFTPDelWorker whenExists c server = do
-  ws <- asks $ xftpDelWorkers . xftpAgent
-  getXFTPDelWorker' ws
-  where
-    getXFTPDelWorker' :: TMap XFTPServer Worker -> m Worker
-    getXFTPDelWorker' ws = atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
-      where
-        getWorker = TM.lookup server ws
-        deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server ws
-        createWorker = do
-          w <- newWorker c
-          TM.insert server w ws
-          pure w
-        runWorker w@Worker {workerId = wId, doWork} =
-          runWorkerAsync w . void . runExceptT $
-            runXFTPDelWorker c server doWork
-              `agentFinally` atomically (getWorker >>= deleteWorker wId)
+getXFTPDelWorker whenExists c server =
+  getXFTPWorker whenExists c server xftpDelWorkers $ runXFTPDelWorker c server
 
 runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
 runXFTPDelWorker c srv doWork = do
