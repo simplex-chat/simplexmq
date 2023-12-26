@@ -1085,7 +1085,7 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueue
 
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq "ACK" $ \smp ->
+  withSMPClient c rq ("ACK (" <> logSecret msgId <> ")") $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq
 
