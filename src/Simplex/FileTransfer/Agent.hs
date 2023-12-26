@@ -69,26 +69,24 @@ startXFTPWorkers :: AgentMonad m => AgentClient -> Maybe FilePath -> m ()
 startXFTPWorkers c workDir = do
   wd <- asks $ xftpWorkDir . xftpAgent
   atomically $ writeTVar wd workDir
-  startRcvFiles
-  startSndFiles
-  startDelFiles
+  cfg <- asks config
+  startRcvFiles cfg
+  startSndFiles cfg
+  startDelFiles cfg
   where
-    startRcvFiles = do
-      rcvFilesTTL <- asks $ rcvFilesTTL . config
+    startRcvFiles AgentConfig {rcvFilesTTL} = do
       pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
       forM_ pendingRcvServers $ \s -> addXFTPRcvWorker c (Just s)
       -- start local worker for files pending decryption,
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
       addXFTPRcvWorker c Nothing
-    startSndFiles = do
-      sndFilesTTL <- asks $ sndFilesTTL . config
+    startSndFiles AgentConfig {sndFilesTTL} = do
       -- start worker for files pending encryption/creation
       addXFTPSndWorker c Nothing
       pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
       forM_ pendingSndServers $ \s -> addXFTPSndWorker c (Just s)
-    startDelFiles = do
-      rcvFilesTTL <- asks $ rcvFilesTTL . config
+    startDelFiles AgentConfig {rcvFilesTTL} = do
       pendingDelServers <- withStore' c (`getPendingDelFilesServers` rcvFilesTTL)
       forM_ pendingDelServers $ addXFTPDelWorker c
 
