@@ -125,8 +125,8 @@ storeTests = do
         it "should getNextSndFileToPrepare" testGetNextSndFileToPrepare
         it "should getNextSndChunkToUpload" testGetNextSndChunkToUpload
         it "should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
-        it "should markNtfSubActionNtfFailed" testMarkNtfSubActionNtfFailed
-        it "should markNtfSubActionSMPFailed" testMarkNtfSubActionSMPFailed
+        it "should markNtfSubActionNtfFailed_" testMarkNtfSubActionNtfFailed
+        it "should markNtfSubActionSMPFailed_" testMarkNtfSubActionSMPFailed
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
