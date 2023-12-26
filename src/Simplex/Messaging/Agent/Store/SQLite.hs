@@ -1003,12 +1003,11 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
             db
             [sql|
               SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
-              FROM snd_message_deliveries d
-              JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id
-              JOIN snd_messages s ON s.conn_id = d.conn_id AND s.internal_id = d.internal_id
-              WHERE d.internal_id = ?
+              FROM messages m
+              JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
+              WHERE m.conn_id = ? AND m.internal_id = ?
             |]
-            (Only msgId)
+            (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
         pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
         pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
@@ -1237,7 +1236,7 @@ createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentC
 createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
   createdAt <- liftIO getCurrentTime
-  liftIO $ do
+  liftIO $
     DB.execute
       db
       "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
