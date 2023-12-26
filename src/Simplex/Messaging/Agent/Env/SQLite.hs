@@ -27,6 +27,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
     XFTPAgent (..),
+    Worker (..),
   )
 where
 
@@ -223,9 +224,9 @@ newNtfSubSupervisor qSize = do
 data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory
     xftpWorkDir :: TVar (Maybe FilePath),
-    xftpRcvWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    xftpDelWorkers :: TMap XFTPServer (TMVar (), Async ())
+    xftpRcvWorkers :: TMap (Maybe XFTPServer) Worker,
+    xftpSndWorkers :: TMap (Maybe XFTPServer) Worker,
+    xftpDelWorkers :: TMap XFTPServer Worker
   }
 
 newXFTPAgent :: STM XFTPAgent
@@ -251,3 +252,5 @@ agentFinally = allFinally mkInternal
 mkInternal :: SomeException -> AgentErrorType
 mkInternal = INTERNAL . show
 {-# INLINE mkInternal #-}
+
+data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: TMVar (Maybe (Async ()))}

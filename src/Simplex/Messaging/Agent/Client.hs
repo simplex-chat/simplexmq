@@ -87,6 +87,7 @@ module Simplex.Messaging.Agent.Client
     AgentStatsKey (..),
     newWorker,
     runWorkerAsync,
+    cancelWorker,
     waitForWork,
     hasWorkToDo,
     hasWorkToDo',
@@ -271,8 +272,6 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env
   }
-
-data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: TMVar (Maybe (Async ()))}
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
