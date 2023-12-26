@@ -2374,48 +2374,65 @@ deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
--- TODO use getWorkItem
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFileChunk))
-getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl =
-  Right <$> do
-    cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-    maybeFirstRow toChunk $
-      DB.query
-        db
-        [sql|
-          SELECT
-            f.rcv_file_id, f.rcv_file_entity_id, f.user_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path,
-            r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.delay, r.retries
-          FROM rcv_file_chunk_replicas r
-          JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-          JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
-          JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
-          WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-            AND r.received = 0 AND r.replica_number = 1
-            AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
-          ORDER BY r.created_at ASC
-          LIMIT 1
-        |]
-        (host, port, keyHash, RFSReceiving, cutoffTs)
+getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
+  getWorkItem "rcv_file_download" getReplicaId getChunkData (markRcvFileFailed db)
   where
-    toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Maybe Int64, Int)) -> RcvFileChunk
-    toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries)) =
-      RcvFileChunk
-        { rcvFileId,
-          rcvFileEntityId,
-          userId,
-          rcvChunkId,
-          chunkNo,
-          chunkSize,
-          digest,
-          fileTmpPath,
-          chunkTmpPath,
-          replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}]
-        }
+    getReplicaId :: IO (Maybe Int64)
+    getReplicaId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT r.rcv_file_chunk_replica_id
+            FROM rcv_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+            JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.received = 0 AND r.replica_number = 1
+              AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
+              AND f.failed = 0
+            ORDER BY r.created_at ASC
+            LIMIT 1
+          |]
+          (host, port, keyHash, RFSReceiving, cutoffTs)
+    getChunkData :: Int64 -> IO (Either StoreError RcvFileChunk)
+    getChunkData rcvFileChunkReplicaId =
+      firstRow toChunk SEFileNotFound $
+        DB.query
+          db
+          [sql|
+            SELECT
+              f.rcv_file_id, f.rcv_file_entity_id, f.user_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path,
+              r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.delay, r.retries
+            FROM rcv_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+            JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+            WHERE r.rcv_file_chunk_replica_id = ?
+          |]
+          (Only rcvFileChunkReplicaId)
+      where
+        toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateSignKey, Bool, Maybe Int64, Int)) -> RcvFileChunk
+        toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries)) =
+          RcvFileChunk
+            { rcvFileId,
+              rcvFileEntityId,
+              userId,
+              rcvChunkId,
+              chunkNo,
+              chunkSize,
+              digest,
+              fileTmpPath,
+              chunkTmpPath,
+              replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}]
+            }
 
 getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFile))
 getNextRcvFileToDecrypt db ttl =
-  getWorkItem "rcv_file" getFileId (getRcvFile db) markRcvFileFailed
+  getWorkItem "rcv_file_decrypt" getFileId (getRcvFile db) (markRcvFileFailed db)
   where
     getFileId :: IO (Maybe DBRcvFileId)
     getFileId = do
@@ -2431,8 +2448,10 @@ getNextRcvFileToDecrypt db ttl =
             ORDER BY created_at ASC LIMIT 1
           |]
           (RFSReceived, RFSDecrypting, cutoffTs)
-    markRcvFileFailed fileId = do
-      DB.execute db "UPDATE rcv_files SET failed = 1 WHERE rcv_file_id = ?" (Only fileId)
+
+markRcvFileFailed :: DB.Connection -> DBRcvFileId -> IO ()
+markRcvFileFailed db fileId = do
+  DB.execute db "UPDATE rcv_files SET failed = 1 WHERE rcv_file_id = ?" (Only fileId)
 
 getPendingRcvFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingRcvFilesServers db ttl = do
@@ -2586,7 +2605,7 @@ getChunkReplicaRecipients_ db replicaId =
 
 getNextSndFileToPrepare :: DB.Connection -> NominalDiffTime -> IO (Either StoreError (Maybe SndFile))
 getNextSndFileToPrepare db ttl =
-  getWorkItem "snd_file" getFileId (getSndFile db) markSndFileFailed
+  getWorkItem "snd_file_prepare" getFileId (getSndFile db) (markSndFileFailed db)
   where
     getFileId :: IO (Maybe DBSndFileId)
     getFileId = do
@@ -2602,9 +2621,10 @@ getNextSndFileToPrepare db ttl =
             ORDER BY created_at ASC LIMIT 1
           |]
           (SFSNew, SFSEncrypting, SFSEncrypted, cutoffTs)
-    markSndFileFailed :: DBSndFileId -> IO ()
-    markSndFileFailed fileId =
-      DB.execute db "UPDATE snd_files SET failed = 1 WHERE snd_file_id = ?" (Only fileId)
+
+markSndFileFailed :: DB.Connection -> DBSndFileId -> IO ()
+markSndFileFailed db fileId =
+  DB.execute db "UPDATE snd_files SET failed = 1 WHERE snd_file_id = ?" (Only fileId)
 
 updateSndFileError :: DB.Connection -> DBSndFileId -> String -> IO ()
 updateSndFileError db sndFileId errStr = do
@@ -2669,13 +2689,33 @@ createSndFileReplica db SndFileChunk {sndChunkId} NewSndChunkReplica {server, re
       |]
       (rId, rcvId, rcvKey)
 
--- TODO use getWorkItem
 getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe SndFileChunk))
-getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl =
-  Right <$> do
-    cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-    chunk_ <-
-      maybeFirstRow toChunk $
+getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
+  getWorkItem "snd_file_upload" getReplicaId getChunkData (markSndFileFailed db)
+  where
+    getReplicaId :: IO (Maybe Int64)
+    getReplicaId = do
+      cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT r.snd_file_chunk_replica_id
+            FROM snd_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
+            JOIN snd_files f ON f.snd_file_id = c.snd_file_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.replica_status = ? AND r.replica_number = 1
+              AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
+              AND f.failed = 0
+            ORDER BY r.created_at ASC
+            LIMIT 1
+          |]
+          (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
+    getChunkData :: Int64 -> IO (Either StoreError SndFileChunk)
+    getChunkData sndFileChunkReplicaId = do
+      chunk_ <- firstRow toChunk SEFileNotFound $
         DB.query
           db
           [sql|
@@ -2687,34 +2727,30 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl =
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
             JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
             JOIN snd_files f ON f.snd_file_id = c.snd_file_id
-            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-              AND r.replica_status = ? AND r.replica_number = 1
-              AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
-            ORDER BY r.created_at ASC
-            LIMIT 1
+            WHERE r.snd_file_chunk_replica_id = ?
           |]
-          (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
-    forM chunk_ $ \chunk@SndFileChunk {replicas} -> do
-      replicas' <- forM replicas $ \replica@SndFileChunkReplica {sndChunkReplicaId} -> do
-        rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
-        pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
-      pure (chunk {replicas = replicas'} :: SndFileChunk)
-  where
-    toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
-    toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
-      let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
-       in SndFileChunk
-            { sndFileId,
-              sndFileEntityId,
-              userId,
-              numRecipients,
-              sndChunkId,
-              chunkNo,
-              chunkSpec,
-              digest,
-              filePrefixPath,
-              replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}]
-            }
+          (Only sndFileChunkReplicaId)
+      forM chunk_ $ \chunk@SndFileChunk {replicas} -> do
+        replicas' <- forM replicas $ \replica@SndFileChunkReplica {sndChunkReplicaId} -> do
+          rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
+          pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
+        pure (chunk {replicas = replicas'} :: SndFileChunk)
+      where
+        toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateSignKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
+        toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
+          let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
+          in SndFileChunk
+                { sndFileId,
+                  sndFileEntityId,
+                  userId,
+                  numRecipients,
+                  sndChunkId,
+                  chunkNo,
+                  chunkSpec,
+                  digest,
+                  filePrefixPath,
+                  replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}]
+                }
 
 updateSndChunkReplicaDelay :: DB.Connection -> Int64 -> Int64 -> IO ()
 updateSndChunkReplicaDelay db replicaId delay = do
