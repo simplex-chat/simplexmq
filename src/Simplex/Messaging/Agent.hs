@@ -1118,7 +1118,7 @@ resumeMsgDelivery :: forall m. AgentMonad' m => AgentClient -> ConnData -> SndQu
 resumeMsgDelivery = void .:. getDeliveryWorker False
 
 getDeliveryWorker :: AgentMonad' m => Bool -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
-getDeliveryWorker hasWork c cData sq = do
+getDeliveryWorker hasWork c cData sq =
   getAgentWorker' fst mkLock hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
   where
     mkLock w = do
