@@ -548,10 +548,10 @@ resumeXFTPDelWork = void .: getXFTPDelWorker pure
 getXFTPDelWorker :: forall m. AgentMonad' m => (Worker -> STM Worker) -> AgentClient -> XFTPServer -> m Worker
 getXFTPDelWorker whenExists c server = do
   ws <- asks $ xftpDelWorkers . xftpAgent
-  getXFTPRcvWorker' ws
+  getXFTPDelWorker' ws
   where
-    getXFTPRcvWorker' :: TMap XFTPServer Worker -> m Worker
-    getXFTPRcvWorker' ws = atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
+    getXFTPDelWorker' :: TMap XFTPServer Worker -> m Worker
+    getXFTPDelWorker' ws = atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
       where
         getWorker = TM.lookup server ws
         deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server ws
