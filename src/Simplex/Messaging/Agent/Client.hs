@@ -139,10 +139,9 @@ import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isNothing)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isNothing, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -1086,7 +1085,7 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueue
 
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq "ACK" $ \smp ->
+  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq
 
@@ -1241,15 +1240,18 @@ cryptoError = \case
 waitForWork :: AgentMonad' m => TMVar () -> m ()
 waitForWork = void . atomically . readTMVar
 
-withWork :: AgentMonad m => AgentClient -> TMVar () -> (DB.Connection -> IO (Maybe a)) -> (a -> m ()) -> m ()
-withWork c doWork getWork action = do
-  r <- withStore' c $ \db -> do
-    r' <- getWork db
-    liftIO $ when (isNothing r') $ noWorkToDo doWork
-    pure r'
-  mapM_ action r
+withWork :: AgentMonad m => AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> m ()) -> m ()
+withWork c doWork getWork action =
+  withStore' c getWork >>= \case
+    Right (Just r) -> action r
+    Right Nothing -> noWork
+    Left e@SEWorkItemError {} -> noWork >> notifyErr e
+    Left e -> notifyErr e
+  where
+    noWork = liftIO $ noWorkToDo doWork
+    notifyErr e = atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ show e)
 
-noWorkToDo :: TMVar () -> IO ()  
+noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
 
 hasWorkToDo :: Worker -> STM ()
@@ -1356,14 +1358,15 @@ withStoreCtx_ ctx_ c action = do
 withStoreBatch :: (AgentMonad' m, Traversable t) => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> m (t (Either AgentErrorType a))
 withStoreBatch c actions = do
   st <- asks store
-  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $
-      withTransaction st $ mapM (`E.catch` handleInternal) . actions
+  liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
+    withTransaction st $
+      mapM (`E.catch` handleInternal) . actions
   where
     handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
     handleInternal = pure . Left . INTERNAL . show
 
 withStoreBatch' :: (AgentMonad' m, Traversable t) => AgentClient -> (DB.Connection -> t (IO a)) -> m (t (Either AgentErrorType a))
-withStoreBatch' c actions = withStoreBatch c $ \db -> fmap Right <$> actions db
+withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case

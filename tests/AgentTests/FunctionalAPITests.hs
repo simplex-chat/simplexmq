@@ -177,6 +177,8 @@ functionalAPITests t = do
     testMatrix2 t runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
+    it "should connect with two peers" $
+      withSmpServer t testAgentClient3
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
@@ -416,6 +418,32 @@ runAgentClientTest alice bob baseId = do
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId
+
+testAgentClient3 :: HasCallStack => IO ()
+testAgentClient3 = do
+  a <- getSMPAgentClient' agentCfg initAgentServers testDB
+  b <- getSMPAgentClient' agentCfg initAgentServers testDB2
+  c <- getSMPAgentClient' agentCfg initAgentServers testDB3
+  runRight_ $ do
+    (aIdForB, bId) <- makeConnection a b
+    (aIdForC, cId) <- makeConnection a c
+
+    4 <- sendMessage a bId SMP.noMsgFlags "b4"
+    4 <- sendMessage a cId SMP.noMsgFlags "c4"
+    5 <- sendMessage a bId SMP.noMsgFlags "b5"
+    5 <- sendMessage a cId SMP.noMsgFlags "c5"
+    get a =##> \case ("", connId, SENT 4) -> connId == bId || connId == cId; _ -> False
+    get a =##> \case ("", connId, SENT 4) -> connId == bId || connId == cId; _ -> False
+    get a =##> \case ("", connId, SENT 5) -> connId == bId || connId == cId; _ -> False
+    get a =##> \case ("", connId, SENT 5) -> connId == bId || connId == cId; _ -> False
+    get b =##> \case ("", connId, Msg "b4") -> connId == aIdForB; _ -> False
+    ackMessage b aIdForB 4 Nothing
+    get b =##> \case ("", connId, Msg "b5") -> connId == aIdForB; _ -> False
+    ackMessage b aIdForB 5 Nothing
+    get c =##> \case ("", connId, Msg "c4") -> connId == aIdForC; _ -> False
+    ackMessage c aIdForC 4 Nothing
+    get c =##> \case ("", connId, Msg "c5") -> connId == aIdForC; _ -> False
+    ackMessage c aIdForC 5 Nothing
 
 runAgentClientContactTest :: HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientContactTest alice bob baseId = do
@@ -1850,8 +1878,8 @@ testSwitch2ConnectionsAbort1 servers = do
 
 testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
-  a <- getClient clnt1
-  b <- getClient clnt2
+  a <- getClient clnt1 testDB
+  b <- getClient clnt2 testDB2
   r <- runRight $ do
     tryError (createConnection a 1 True SCMInvitation Nothing SMSubscribe) >>= \case
       Left (SMP AUTH) -> pure 0
@@ -1872,10 +1900,10 @@ testCreateQueueAuth clnt1 clnt2 = do
   disconnectAgentClient b
   pure r
   where
-    getClient (clntAuth, clntVersion) =
+    getClient (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
           smpCfg = (defaultClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
-       in getSMPAgentClient' agentCfg {smpCfg} servers testDB
+       in getSMPAgentClient' agentCfg {smpCfg} servers db
 
 testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testSMPServerConnectionTest t newQueueBasicAuth srv =

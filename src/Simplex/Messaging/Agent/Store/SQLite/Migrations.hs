@@ -66,6 +66,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -100,7 +101,8 @@ schemaMigrations =
     ("m20230722_indexes", m20230722_indexes, Just down_m20230722_indexes),
     ("m20230814_indexes", m20230814_indexes, Just down_m20230814_indexes),
     ("m20230829_crypto_files", m20230829_crypto_files, Just down_m20230829_crypto_files),
-    ("m20231222_command_created_at", m20231222_command_created_at, Just down_m20231222_command_created_at)
+    ("m20231222_command_created_at", m20231222_command_created_at, Just down_m20231222_command_created_at),
+    ("m20231225_failed_work_items", m20231225_failed_work_items, Just down_m20231225_failed_work_items)
   ]
 
 -- | The list of migrations in ascending order by date
