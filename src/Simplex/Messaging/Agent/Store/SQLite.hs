@@ -1017,7 +1017,7 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
            in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
-    markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE internal_id = ?" (Only msgId)
+    markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
 getWorkItem itemName getId getItem markFailed =
@@ -2382,11 +2382,7 @@ deleteRcvFile' db rcvFileId =
 
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFileChunk))
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
-  getWorkItem
-    "rcv_file_download"
-    getReplicaId
-    (\(rId, _fId) -> getChunkData rId)
-    (\(_rId, fId) -> markRcvFileFailed db fId)
+  getWorkItem "rcv_file_download" getReplicaId getChunkData (markRcvFileFailed db . snd)
   where
     getReplicaId :: IO (Maybe (Int64, DBRcvFileId))
     getReplicaId = do
@@ -2408,8 +2404,8 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
             LIMIT 1
           |]
           (host, port, keyHash, RFSReceiving, cutoffTs)
-    getChunkData :: Int64 -> IO (Either StoreError RcvFileChunk)
-    getChunkData rcvFileChunkReplicaId =
+    getChunkData :: (Int64, DBRcvFileId) -> IO (Either StoreError RcvFileChunk)
+    getChunkData (rcvFileChunkReplicaId, _fileId) =
       firstRow toChunk SEFileNotFound $
         DB.query
           db
@@ -2704,11 +2700,7 @@ createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, repli
 
 getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe SndFileChunk))
 getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
-  getWorkItem
-    "snd_file_upload"
-    getReplicaId
-    (\(rId, _fId) -> getChunkData rId)
-    (\(_rId, fId) -> markSndFileFailed db fId)
+  getWorkItem "snd_file_upload" getReplicaId getChunkData (markSndFileFailed db . snd)
   where
     getReplicaId :: IO (Maybe (Int64, DBSndFileId))
     getReplicaId = do
@@ -2730,8 +2722,8 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
             LIMIT 1
           |]
           (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
-    getChunkData :: Int64 -> IO (Either StoreError SndFileChunk)
-    getChunkData sndFileChunkReplicaId = do
+    getChunkData :: (Int64, DBSndFileId) -> IO (Either StoreError SndFileChunk)
+    getChunkData (sndFileChunkReplicaId, _fileId) = do
       chunk_ <-
         firstRow toChunk SEFileNotFound $
           DB.query
