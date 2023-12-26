@@ -206,10 +206,11 @@ runXFTPRcvWorker c srv doWork = do
           | otherwise = 0
         chunkReceived RcvFileChunk {replicas} = any received replicas
 
+-- The first call of action has n == 0, maxN is max number of retries
 withRetryIntervalLimit :: forall m. MonadIO m => Int -> RetryInterval -> (Int64 -> m () -> m ()) -> m ()
 withRetryIntervalLimit maxN ri action =
   withRetryIntervalCount ri $ \n delay loop ->
-    when (n <= maxN) $ action delay loop
+    when (n < maxN) $ action delay loop
 
 retryOnError :: AgentMonad m => Text -> m a -> m a -> AgentErrorType -> m a
 retryOnError name loop done e = do
