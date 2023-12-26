@@ -125,6 +125,8 @@ storeTests = do
         it "should getNextSndFileToPrepare" testGetNextSndFileToPrepare
         it "should getNextSndChunkToUpload" testGetNextSndChunkToUpload
         it "should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
+        it "should markNtfSubActionNtfFailed" testMarkNtfSubActionNtfFailed
+        it "should markNtfSubActionSMPFailed" testMarkNtfSubActionSMPFailed
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
@@ -742,12 +744,12 @@ testGetNextSndChunkToUpload st = do
     -- create file 1
     Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
     updateSndFileEncrypted db 1 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
-    createSndFileReplica' db 1 newSndChunkReplica1
+    createSndFileReplica_ db 1 newSndChunkReplica1
     DB.execute_ db "UPDATE snd_files SET num_recipients = 'bad' WHERE snd_file_id = 1"
     -- create file 2
     Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
     updateSndFileEncrypted db 2 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
-    createSndFileReplica' db 2 newSndChunkReplica1
+    createSndFileReplica_ db 2 newSndChunkReplica1
 
     Left e <- getNextSndChunkToUpload db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"
@@ -771,3 +773,13 @@ testGetNextDeletedSndChunkReplica st = do
 
     Right (Just DeletedSndChunkReplica {deletedSndChunkReplicaId}) <- getNextDeletedSndChunkReplica db xftpServer1 86400
     deletedSndChunkReplicaId `shouldBe` 2
+
+testMarkNtfSubActionNtfFailed :: SQLiteStore -> Expectation
+testMarkNtfSubActionNtfFailed st = do
+  withTransaction st $ \db -> do
+    markNtfSubActionNtfFailed_ db "abc"
+
+testMarkNtfSubActionSMPFailed :: SQLiteStore -> Expectation
+testMarkNtfSubActionSMPFailed st = do
+  withTransaction st $ \db -> do
+    markNtfSubActionSMPFailed_ db "abc"

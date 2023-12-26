@@ -152,7 +152,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
     getNextNtfSubNTFAction,
+    markNtfSubActionNtfFailed_, -- exported for tests
     getNextNtfSubSMPAction,
+    markNtfSubActionSMPFailed_, -- exported for tests
     getActiveNtfToken,
     getNtfRcvQueue,
     setConnectionNtfs,
@@ -191,7 +193,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteSndFile',
     getSndFileDeleted,
     createSndFileReplica,
-    createSndFileReplica',
+    createSndFileReplica_, -- exported for tests
     getNextSndChunkToUpload,
     updateSndChunkReplicaDelay,
     addSndChunkReplicaRecipients,
@@ -1535,7 +1537,7 @@ deleteNtfSubscription db connId = do
 
 getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs)))
 getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
-  getWorkItem "ntf NTF" getNtfConnId getNtfSubAction markNtfSubActionFailed
+  getWorkItem "ntf NTF" getNtfConnId getNtfSubAction (markNtfSubActionNtfFailed_ db)
   where
     getNtfConnId :: IO (Maybe ConnId)
     getNtfConnId =
@@ -1571,12 +1573,14 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
               ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (ntfSubscription, action, actionTs)
-    markNtfSubActionFailed connId =
-      DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
+
+markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
+markNtfSubActionNtfFailed_ db connId =
+  DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
 
 getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubSMPAction, NtfActionTs)))
 getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
-  getWorkItem "ntf SMP" getNtfConnId getNtfSubAction markNtfSubActionFailed
+  getWorkItem "ntf SMP" getNtfConnId getNtfSubAction (markNtfSubActionSMPFailed_ db)
   where
     getNtfConnId :: IO (Maybe ConnId)
     getNtfConnId =
@@ -1612,8 +1616,10 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
           let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
               ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (ntfSubscription, action, actionTs)
-    markNtfSubActionFailed connId =
-      DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1 where conn_id = ?" (Only connId)
+
+markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
+markNtfSubActionSMPFailed_ db connId =
+  DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1 where conn_id = ?" (Only connId)
 
 markUpdatedByWorker :: DB.Connection -> ConnId -> IO ()
 markUpdatedByWorker db connId =
@@ -2672,10 +2678,10 @@ getSndFileDeleted db sndFileId =
     <$> maybeFirstRow fromOnly (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
-createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica' db sndChunkId
+createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica_ db sndChunkId
 
-createSndFileReplica' :: DB.Connection -> Int64 -> NewSndChunkReplica -> IO ()
-createSndFileReplica' db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
+createSndFileReplica_ :: DB.Connection -> Int64 -> NewSndChunkReplica -> IO ()
+createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
   srvId <- createXFTPServer_ db server
   DB.execute
     db
