@@ -51,9 +51,9 @@ agentTests (ATransport t) = do
       smpAgentTest2_1_1 $ testDuplexConnection t
     xit "should connect via one server and one agent (random IDs)" $ do
       smpAgentTest2_1_1 $ testDuplexConnRandomIds t
-    fit "should connect via one server and 2 agents" $ do
+    it "should connect via one server and 2 agents" $ do
       smpAgentTest2_2_1 $ testDuplexConnection t
-    fit "should connect via one server and 2 agents (random IDs)" $ do
+    it "should connect via one server and 2 agents (random IDs)" $ do
       smpAgentTest2_2_1 $ testDuplexConnRandomIds t
     it "should connect via 2 servers and 2 agents" $ do
       smpAgentTest2_2_2 $ testDuplexConnection t
