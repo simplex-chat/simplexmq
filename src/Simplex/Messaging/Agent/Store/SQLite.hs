@@ -2376,16 +2376,20 @@ deleteRcvFile' db rcvFileId =
 
 getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFileChunk))
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
-  getWorkItem "rcv_file_download" getReplicaId getChunkData (markRcvFileFailed db)
+  getWorkItem
+    "rcv_file_download"
+    getReplicaId
+    (\(rId, _fId) -> getChunkData rId)
+    (\(_rId, fId) -> markRcvFileFailed db fId)
   where
-    getReplicaId :: IO (Maybe Int64)
+    getReplicaId :: IO (Maybe (Int64, DBRcvFileId))
     getReplicaId = do
       cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-      maybeFirstRow fromOnly $
+      maybeFirstRow id $
         DB.query
           db
           [sql|
-            SELECT r.rcv_file_chunk_replica_id
+            SELECT r.rcv_file_chunk_replica_id, f.rcv_file_id
             FROM rcv_file_chunk_replicas r
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
             JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
@@ -2694,16 +2698,20 @@ createSndFileReplica' db sndChunkId NewSndChunkReplica {server, replicaId, repli
 
 getNextSndChunkToUpload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe SndFileChunk))
 getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
-  getWorkItem "snd_file_upload" getReplicaId getChunkData (markSndFileFailed db)
+  getWorkItem
+    "snd_file_upload"
+    getReplicaId
+    (\(rId, _fId) -> getChunkData rId)
+    (\(_rId, fId) -> markSndFileFailed db fId)
   where
-    getReplicaId :: IO (Maybe Int64)
+    getReplicaId :: IO (Maybe (Int64, DBSndFileId))
     getReplicaId = do
       cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-      maybeFirstRow fromOnly $
+      maybeFirstRow id $
         DB.query
           db
           [sql|
-            SELECT r.snd_file_chunk_replica_id
+            SELECT r.snd_file_chunk_replica_id, f.snd_file_id
             FROM snd_file_chunk_replicas r
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
             JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
