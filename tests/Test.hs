@@ -1,5 +1,5 @@
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentTests)
 import AgentTests.SchemaDump (schemaDumpTest)
@@ -68,8 +68,9 @@ main = do
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of
   0 -> action
-  n -> action `E.catch` \ioe@IOError {ioe_type, ioe_filename} -> case ioe_type of
-    IOException.UnsatisfiedConstraints | ioe_filename == Just path -> threadDelay 1000000 >> eventuallyRemove path (n - 1)
-    _ -> E.throwIO ioe
+  n ->
+    action `E.catch` \ioe@IOError {ioe_type, ioe_filename} -> case ioe_type of
+      IOException.UnsatisfiedConstraints | ioe_filename == Just path -> threadDelay 1000000 >> eventuallyRemove path (n - 1)
+      _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
