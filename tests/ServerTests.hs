@@ -874,10 +874,10 @@ testTiming (ATransport t) =
   where
     timingTests :: [(Int, Int, Int)]
     timingTests =
-      [ (32, 32, 200),
-        (32, 57, 100),
-        (57, 32, 200),
-        (57, 57, 100)
+      [ (32, 32, 300),
+        (32, 57, 150),
+        (57, 32, 300),
+        (57, 57, 150)
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25
