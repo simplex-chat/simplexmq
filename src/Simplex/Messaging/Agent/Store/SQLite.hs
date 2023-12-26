@@ -2718,7 +2718,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
               AND r.replica_status = ? AND r.replica_number = 1
               AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
               AND f.failed = 0
-            ORDER BY r.created_at ASC
+            ORDER BY r.retries ASC, r.created_at ASC
             LIMIT 1
           |]
           (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
@@ -2882,7 +2882,8 @@ getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl =
             WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
               AND r.created_at >= ?
               AND failed = 0
-            ORDER BY r.created_at ASC LIMIT 1
+            ORDER BY r.retries ASC, r.created_at ASC
+            LIMIT 1
           |]
           (host, port, keyHash, cutoffTs)
     markReplicaFailed :: Int64 -> IO ()
