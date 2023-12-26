@@ -37,7 +37,6 @@ import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Data.Time (NominalDiffTime)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
