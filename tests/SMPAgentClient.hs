@@ -192,7 +192,7 @@ agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      tbqSize = 512,
+      tbqSize = 4,
       -- database = testDB,
       smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS)},
       ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
