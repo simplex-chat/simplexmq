@@ -171,7 +171,6 @@ runXFTPRcvWorker c srv doWork = do
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
         RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
         fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
-          liftIO $ print $ "read replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpTempErrConsecutiveRetries ri' $ \delay' loop ->
             downloadFileChunk fc replica
@@ -180,7 +179,6 @@ runXFTPRcvWorker c srv doWork = do
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
                 when xftpNotifyErrsOnRetry $ notify c rcvFileEntityId $ RFERR e
-                -- liftIO $ print $ "retrying replica " <> show rcvChunkReplicaId <> " for file " <> show rcvFileId
                 closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
@@ -188,7 +186,6 @@ runXFTPRcvWorker c srv doWork = do
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> m ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
-      liftIO $ print $ "trying chunk " <> show rcvChunkId <> " for file " <> show rcvFileId
       fsFileTmpPath <- toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
