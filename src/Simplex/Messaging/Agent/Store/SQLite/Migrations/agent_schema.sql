@@ -494,3 +494,6 @@ CREATE INDEX idx_commands_server_commands ON commands(
   created_at,
   command_id
 );
+CREATE INDEX idx_rcv_files_status_created_at ON rcv_files(status, created_at);
+CREATE INDEX idx_snd_files_status_created_at ON snd_files(status, created_at);
+CREATE INDEX idx_snd_files_snd_file_entity_id ON snd_files(snd_file_entity_id);
