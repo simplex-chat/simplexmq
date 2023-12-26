@@ -83,7 +83,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
+import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
@@ -304,7 +304,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
-              CPStatsRTS -> getRTSStats >>= hPutStrLn h . show
+              CPStatsRTS -> getRTSStats >>= hPrint h
               CPThreads -> do
 #if MIN_VERSION_base(4,18,0)
                 threads <- liftIO listThreads
@@ -344,7 +344,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 stats <- asks serverStats
                 r <- atomically $
                   deleteQueue st queueId $>>= \() ->
-                    Right . length <$> flushMsgQueue ms queueId
+                    Right <$> delMsgQueueSize ms queueId
                 case r of
                   Left e -> liftIO . hPutStrLn h $ "error: " <> show e
                   Right numDeleted -> do
