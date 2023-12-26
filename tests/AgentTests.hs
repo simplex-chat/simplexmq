@@ -44,9 +44,9 @@ agentTests (ATransport t) = do
   describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
   describe "Migration tests" migrationTests
-  fdescribe "SMP agent protocol syntax" $ syntaxTests t
+  describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection (via agent protocol)" $ do
-    -- These are tests are disabled because the agent does not work correctly
+    -- These tests are disabled because the agent does not work correctly with multiple connected TCP clients
     xit "should connect via one server and one agent" $ do
       smpAgentTest2_1_1 $ testDuplexConnection t
     xit "should connect via one server and one agent (random IDs)" $ do
