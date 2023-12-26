@@ -283,7 +283,7 @@ functionalAPITests t = do
       testServerMatrix2 t testSwitch2Connections
     describe "should switch two connections simultaneously, abort one" $
       testServerMatrix2 t testSwitch2ConnectionsAbort1
-  fdescribe "SMP basic auth" $ do
+  describe "SMP basic auth" $ do
     describe "with server auth" $ do
       --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
       it "success                " $ testBasicAuth t True (Just "abcd", 5) (Just "abcd", 5) (Just "abcd", 5) `shouldReturn` 2
