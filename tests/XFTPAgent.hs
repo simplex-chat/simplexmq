@@ -39,7 +39,7 @@ import XFTPCLI
 import XFTPClient
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . fdescribe "agent XFTP API" $ do
+xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
