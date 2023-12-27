@@ -33,7 +33,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 xftpServerVersion :: String
-xftpServerVersion = "1.2.0.1"
+xftpServerVersion = "1.2.0.2"
 
 xftpServerCLI :: FilePath -> FilePath -> IO ()
 xftpServerCLI cfgPath logPath = do
@@ -105,9 +105,9 @@ xftpServerCLI cfgPath logPath = do
             <> ("path: " <> filesPath <> "\n")
             <> ("storage_quota: " <> B.unpack (strEncode fileSizeQuota) <> "\n")
             <> "\n\
-                \[INACTIVE_CLIENTS]\n\
-                \# TTL and interval to check inactive clients\n\
-                \disconnect: off\n"
+               \[INACTIVE_CLIENTS]\n\
+               \# TTL and interval to check inactive clients\n\
+               \disconnect: off\n"
             <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do

@@ -30,7 +30,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 ntfServerVersion :: String
-ntfServerVersion = "1.7.0.1"
+ntfServerVersion = "1.7.0.2"
 
 defaultSMPBatchDelay :: Int
 defaultSMPBatchDelay = 10000
@@ -88,9 +88,9 @@ ntfServerCLI cfgPath logPath =
                \# delay between command batches sent to SMP relays (microseconds), 0 to disable\n"
             <> ("smp_batch_delay: " <> show defaultSMPBatchDelay <> "\n")
             <> "websockets: off\n\n\
-                \[INACTIVE_CLIENTS]\n\
-                \# TTL and interval to check inactive clients\n\
-                \disconnect: off\n"
+               \[INACTIVE_CLIENTS]\n\
+               \# TTL and interval to check inactive clients\n\
+               \disconnect: off\n"
             <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
