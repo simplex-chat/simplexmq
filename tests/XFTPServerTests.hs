@@ -20,14 +20,15 @@ import Data.List (isInfixOf)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
+import Simplex.FileTransfer.Protocol (FileCommand (..), FileInfo (..), XFTPErrorType (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
-import Simplex.Messaging.Protocol (BasicAuth, SenderId)
+import Simplex.Messaging.Protocol (BasicAuth, CommandError (..), SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Util (liftIOEither)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -49,6 +50,7 @@ xftpServerTests =
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
+      it "should disconnect inactive clients" testInactiveClientExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
@@ -213,6 +215,24 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   where
     fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testInactiveClientExpiration :: Expectation
+testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> do
+  g <- liftIO C.newRandom
+  (_sndKey, spKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+  disconnected <- newEmptyTMVarIO
+  runRight_ $ do
+    c <- liftIOEither $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
+    void (sendXFTPCommand c spKey "" PING Nothing) `catchError` (liftIO . (`shouldBe` PCEProtocolError CMD {cmdErr = HAS_AUTH}))
+    liftIO $ threadDelay 100000
+    void (sendXFTPCommand c spKey "" PING Nothing) `catchError` (liftIO . (`shouldBe` PCEProtocolError CMD {cmdErr = HAS_AUTH}))
+    liftIO $ do
+      threadDelay 2000000
+      atomically (tryTakeTMVar disconnected) `shouldReturn` Just ()
+  where
+    -- void (sendXFTPCommand c spKey "" PING Nothing) `catchError` (liftIO . (`shouldBe` PCEResponseTimeout))
+
+    inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
 testFileStorageQuota :: Expectation
 testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2} $
