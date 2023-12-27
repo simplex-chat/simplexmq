@@ -28,6 +28,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Util (liftIOEither)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -49,6 +50,7 @@ xftpServerTests =
       it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
+      it "should disconnect inactive clients" testInactiveClientExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
@@ -213,6 +215,21 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   where
     fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testInactiveClientExpiration :: Expectation
+testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
+  disconnected <- newEmptyTMVarIO
+  c <- liftIOEither $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
+  pingXFTP c
+  liftIO $ do
+    threadDelay 100000
+    atomically (tryReadTMVar disconnected) `shouldReturn` Nothing
+  pingXFTP c
+  liftIO $ do
+    threadDelay 3000000
+    atomically (tryTakeTMVar disconnected) `shouldReturn` Just ()
+  where
+    inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
 testFileStorageQuota :: Expectation
 testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2} $
