@@ -3,6 +3,7 @@
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
+    updateLock,
     withLock,
     withGetLock,
     withGetLock',
@@ -10,7 +11,7 @@ module Simplex.Messaging.Agent.Lock
   )
 where
 
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
 import UnliftIO.Async (forConcurrently)
@@ -22,6 +23,12 @@ type Lock = TMVar String
 createLock :: STM Lock
 createLock = newEmptyTMVar
 {-# INLINE createLock #-}
+
+-- only updates lock if it's taken and has the same name
+updateLock :: MonadUnliftIO m => Lock -> String -> String -> m ()
+updateLock lock oldName newName = atomically $ do
+  name <- tryReadTMVar lock
+  when (name == Just oldName) $ writeTMVar lock newName
 
 withLock :: MonadUnliftIO m => Lock -> String -> m a -> m a
 withLock lock name =

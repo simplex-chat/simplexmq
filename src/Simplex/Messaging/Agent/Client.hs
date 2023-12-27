@@ -518,30 +518,30 @@ reconnectSMPClient n c tSess@(_, srv, _) = do
   ts <- liftIO getCurrentTime
   let label = unwords ["reconnect", show n, show ts]
   withLockMap (reconnectLocks c) tSess label $ \lock -> do
-    atomically $ writeTMVar lock (label <> " 0")
+    updateLock lock label (label <> " 0")
     qs <- atomically (RQ.getSessQueues tSess $ pendingSubs c)
-    atomically $ writeTMVar lock (label <> " 1")
+    updateLock lock (label <> " 0") (label <> " 1")
     mapM_ (resubscribe lock label) $ L.nonEmpty qs
   where
     resubscribe :: Lock -> String -> NonEmpty RcvQueue -> m ()
     resubscribe lock label qs = do
-      atomically $ writeTMVar lock (label <> " start")
+      updateLock lock (label <> " 1") (label <> " 2")
       cs <- atomically . RQ.getConns $ activeSubs c
-      atomically $ writeTMVar lock (label <> " 2")
-      rs <- subscribeQueues c $ L.toList qs
-      atomically $ writeTMVar lock (label <> " 3")
+      updateLock lock (label <> " 2") label
+      rs <- subscribeQueues' (Just lock) label c $ L.toList qs
+      updateLock lock label (label <> " 3")
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      atomically $ writeTMVar lock (label <> " 4")
+      updateLock lock (label <> " 3") (label <> " 4")
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
-      atomically $ writeTMVar lock (label <> " 5")
+      updateLock lock (label <> " 4") (label <> " 5")
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
-      atomically $ writeTMVar lock (label <> " 6")
+      updateLock lock (label <> " 5") (label <> " 6")
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      atomically $ writeTMVar lock (label <> " 8")
+      updateLock lock (label <> " 6") (label <> " 7")
       mapM_ (throwError . snd) $ listToMaybe tempErrs
-      atomically $ writeTMVar lock (label <> " end")
+      updateLock lock (label <> " 7") (label <> " 8")
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
@@ -964,14 +964,21 @@ temporaryOrHostError = \case
 
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
-subscribeQueues c qs = do
+subscribeQueues = subscribeQueues' Nothing ""
+
+subscribeQueues' :: forall m. AgentMonad m => Maybe Lock -> String -> AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues' l_ label c qs = do
+  forM_ l_ $ \l -> updateLock l label (label <> " sub 1")
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
+  forM_ l_ $ \l -> updateLock l (label <> " sub 1") (label <> " sub 2")
   u <- askUnliftIO
   -- only "checked" queues are subscribed
-  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
+  rs <- (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
+  forM_ l_ $ \l -> updateLock l (label <> " sub 2") label
+  pure rs
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
