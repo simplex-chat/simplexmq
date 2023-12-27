@@ -12,6 +12,7 @@ module Simplex.Messaging.Server.MsgStore.STM
     newMsgStore,
     getMsgQueue,
     delMsgQueue,
+    delMsgQueueSize,
     flushMsgQueue,
     snapshotMsgQueue,
     writeMsg,
@@ -59,6 +60,9 @@ getMsgQueue st rId quota = maybe newQ pure =<< TM.lookup rId st
 
 delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
 delMsgQueue st rId = TM.delete rId st
+
+delMsgQueueSize :: STMMsgStore -> RecipientId -> STM Int
+delMsgQueueSize st rId = TM.lookupDelete rId st >>= maybe (pure 0) (\MsgQueue {size} -> readTVar size)
 
 flushMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
 flushMsgQueue st rId = TM.lookupDelete rId st >>= maybe (pure []) (flushTQueue . msgQueue)

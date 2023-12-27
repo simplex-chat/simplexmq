@@ -30,7 +30,8 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
-import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory)
+import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 import Test.Hspec
@@ -47,6 +48,9 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
+  -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
+  it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
+  it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
@@ -132,8 +136,11 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
       disconnectAgentClient rcp
 
 createRandomFile :: HasCallStack => IO FilePath
-createRandomFile = do
-  let filePath = senderFiles </> "testfile"
+createRandomFile = createRandomFile' "testfile"
+
+createRandomFile' :: HasCallStack => FilePath -> IO FilePath
+createRandomFile' fileName = do
+  let filePath = senderFiles </> fileName
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   getFileSize filePath `shouldReturn` mb 17
   pure filePath
@@ -156,6 +163,13 @@ testReceive rcp rfd = testReceiveCF rcp rfd Nothing
 testReceiveCF :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceiveCF rcp rfd cfArgs originalFilePath = do
   xftpStartWorkers rcp (Just recipientFiles)
+  testReceiveCF' rcp rfd cfArgs originalFilePath
+
+testReceive' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
+testReceive' rcp rfd = testReceiveCF' rcp rfd Nothing
+
+testReceiveCF' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> ExceptT AgentErrorType IO RcvFileId
+testReceiveCF' rcp rfd cfArgs originalFilePath = do
   rfId <- xftpReceiveFile rcp 1 rfd cfArgs
   rfProgress rcp $ mb 18
   ("", rfId', RFDONE path) <- rfGet rcp
@@ -412,6 +426,83 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
       rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
       ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
       liftIO $ rfId' `shouldBe` rfId
+
+testXFTPAgentDeleteOnServer :: HasCallStack => IO ()
+testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
+  withXFTPServer $ do
+    filePath1 <- createRandomFile' "testfile1"
+
+    -- send file 1
+    sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+    (_, _, rfd1_1, rfd1_2) <- runRight $ testSend sndr filePath1
+
+    -- receive file 1 successfully
+    rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
+    runRight_ . void $
+      testReceive rcp rfd1_1 filePath1
+
+    serverFiles <- listDirectory xftpServerFiles
+    length serverFiles `shouldBe` 6
+
+    -- delete file 1 on server from file system
+    forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
+
+    threadDelay 1000000
+    length <$> listDirectory xftpServerFiles `shouldReturn` 0
+
+    -- create and send file 2
+    filePath2 <- createRandomFile' "testfile2"
+    (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
+
+    length <$> listDirectory xftpServerFiles `shouldReturn` 6
+
+    runRight_ . void $ do
+      -- receive file 1 again
+      -- TODO should fail with AUTH error
+      _rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
+
+      -- receive file 2
+      testReceive' rcp rfd2 filePath2
+
+testXFTPAgentExpiredOnServer :: HasCallStack => IO ()
+testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
+  let fastExpiration = ExpirationConfig {ttl = 2, checkInterval = 1}
+  withXFTPServerCfg testXFTPServerConfig {fileExpiration = Just fastExpiration} . const $ do
+    filePath1 <- createRandomFile' "testfile1"
+
+    -- send file 1
+    sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
+    (_, _, rfd1_1, rfd1_2) <- runRight $ testSend sndr filePath1
+
+    -- receive file 1 successfully
+    rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
+    runRight_ . void $
+      testReceive rcp rfd1_1 filePath1
+
+    serverFiles <- listDirectory xftpServerFiles
+    length serverFiles `shouldBe` 6
+
+    -- wait until file 1 expires on server
+    forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
+
+    threadDelay 3500000
+    length <$> listDirectory xftpServerFiles `shouldReturn` 0
+
+    -- receive file 1 again - should fail with AUTH error
+    runRight $ do
+      rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing
+      ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
+      liftIO $ rfId' `shouldBe` rfId
+
+    -- create and send file 2
+    filePath2 <- createRandomFile' "testfile2"
+    (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
+
+    length <$> listDirectory xftpServerFiles `shouldReturn` 6
+
+    -- receive file 2 successfully
+    runRight_ . void $
+      testReceive' rcp rfd2 filePath2
 
 testXFTPAgentRequestAdditionalRecipientIDs :: HasCallStack => IO ()
 testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do

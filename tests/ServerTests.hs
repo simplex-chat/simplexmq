@@ -874,13 +874,13 @@ testTiming (ATransport t) =
   where
     timingTests :: [(Int, Int, Int)]
     timingTests =
-      [ (32, 32, 200),
-        (32, 57, 100),
-        (57, 32, 200),
-        (57, 57, 100)
+      [ (32, 32, 300),
+        (32, 57, 150),
+        (57, 32, 300),
+        (57, 57, 150)
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25 `shouldBe` True
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25
     testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (goodKeySize, badKeySize, n) = do
       g <- C.newRandom
@@ -907,20 +907,24 @@ testTiming (ATransport t) =
           57 -> atomically $ C.generateSignatureKeyPair C.SEd448 g
           _ -> error "unsupported key size"
         runTimingTest h badKey qId cmd = do
+          threadDelay 100000
           timeWrongKey <- timeRepeat n $ do
             Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
             return ()
+          threadDelay 100000
           timeNoQueue <- timeRepeat n $ do
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
-          -- (putStrLn . unwords . map show)
-          --   [ fromIntegral goodKeySize,
-          --     fromIntegral badKeySize,
-          --     timeWrongKey,
-          --     timeNoQueue,
-          --     timeWrongKey / timeNoQueue - 1
-          --   ]
-          similarTime timeNoQueue timeWrongKey
+          let ok = similarTime timeNoQueue timeWrongKey
+          unless ok $
+            (putStrLn . unwords . map show)
+              [ fromIntegral goodKeySize,
+                fromIntegral badKeySize,
+                timeWrongKey,
+                timeNoQueue,
+                abs (timeWrongKey / timeNoQueue - 1)
+              ]
+          ok `shouldBe` True
 
 testMessageNotifications :: ATransport -> Spec
 testMessageNotifications (ATransport t) =

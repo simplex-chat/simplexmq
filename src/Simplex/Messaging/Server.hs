@@ -83,7 +83,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, hSetNewlineMode, universalNewlineMode)
+import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
@@ -304,7 +304,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
-              CPStatsRTS -> getRTSStats >>= hPutStrLn h . show
+              CPStatsRTS -> getRTSStats >>= hPrint h
               CPThreads -> do
 #if MIN_VERSION_base(4,18,0)
                 threads <- liftIO listThreads
@@ -338,11 +338,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
+              CPDelete queueId -> unliftIO u $ do
+                st <- asks queueStore
+                ms <- asks msgStore
+                stats <- asks serverStats
+                r <- atomically $
+                  deleteQueue st queueId $>>= \() ->
+                    Right <$> delMsgQueueSize ms queueId
+                case r of
+                  Left e -> liftIO . hPutStrLn h $ "error: " <> show e
+                  Right numDeleted -> do
+                    withLog (`logDeleteQueue` queueId)
+                    atomically $ modifyTVar' (qDeleted stats) (+ 1)
+                    atomically $ modifyTVar' (qCount stats) (subtract 1)
+                    liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, save, help, quit"
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, delete, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
 
