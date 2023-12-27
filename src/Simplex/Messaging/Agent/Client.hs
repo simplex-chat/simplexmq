@@ -469,7 +469,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getClientVar tSess smpClients)
     >>= either
-      (newProtocolClient c tSess smpClients connectClient reconnectSMPClient)
+      (newProtocolClient c tSess smpClients connectClient $ reconnectSMPClient 0)
       (waitForProtocolClient c tSess)
   where
     connectClient :: m SMPClient
@@ -509,26 +509,39 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
   where
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop ->
-        reconnectSMPClient c tSess `catchAgentError` const loop
+      withRetryIntervalCount ri $ \n _ loop ->
+        reconnectSMPClient n c tSess `catchAgentError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
-reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient c tSess@(_, srv, _) =
-  withLockMap_ (reconnectLocks c) tSess "reconnect" $
-    atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
+reconnectSMPClient :: forall m. AgentMonad m => Int -> AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient n c tSess@(_, srv, _) = do
+  ts <- liftIO getCurrentTime
+  let label = unwords ["reconnect", show n, show ts]
+  withLockMap (reconnectLocks c) tSess label $ \lock -> do
+    atomically $ writeTMVar lock (label <> " 0")
+    qs <- atomically (RQ.getSessQueues tSess $ pendingSubs c)
+    atomically $ writeTMVar lock (label <> " 1")
+    mapM_ (resubscribe lock label) $ L.nonEmpty qs
   where
-    resubscribe :: NonEmpty RcvQueue -> m ()
-    resubscribe qs = do
+    resubscribe :: Lock -> String -> NonEmpty RcvQueue -> m ()
+    resubscribe lock label qs = do
+      atomically $ writeTMVar lock (label <> " start")
       cs <- atomically . RQ.getConns $ activeSubs c
+      atomically $ writeTMVar lock (label <> " 2")
       rs <- subscribeQueues c $ L.toList qs
+      atomically $ writeTMVar lock (label <> " 3")
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+      atomically $ writeTMVar lock (label <> " 4")
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
+      atomically $ writeTMVar lock (label <> " 5")
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
+      atomically $ writeTMVar lock (label <> " 6")
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
+      atomically $ writeTMVar lock (label <> " 8")
       mapM_ (throwError . snd) $ listToMaybe tempErrs
+      atomically $ writeTMVar lock (label <> " end")
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
@@ -709,6 +722,9 @@ withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . 
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ = withGetLock . getMapLock
+
+withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> (Lock -> m a) -> m a
+withLockMap = withGetLock' . getMapLock
 
 withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
 withLocksMap_ = withGetLocks . getMapLock

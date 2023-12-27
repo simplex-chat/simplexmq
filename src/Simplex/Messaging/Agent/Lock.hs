@@ -5,6 +5,7 @@ module Simplex.Messaging.Agent.Lock
     createLock,
     withLock,
     withGetLock,
+    withGetLock',
     withGetLocks,
   )
 where
@@ -29,11 +30,13 @@ withLock lock name =
     (void . atomically $ takeTMVar lock)
 
 withGetLock :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> m a -> m a
-withGetLock getLock key name a =
+withGetLock getLock key name = withGetLock' getLock key name . const
+
+withGetLock' :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> (Lock -> m a) -> m a
+withGetLock' getLock key name =
   E.bracket
     (atomically $ getPutLock getLock key name)
     (atomically . takeTMVar)
-    (const a)
 
 withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> [k] -> String -> m a -> m a
 withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
