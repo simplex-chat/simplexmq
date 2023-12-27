@@ -17,7 +17,8 @@ import Simplex.Messaging.Transport (SessionId, TLS, closeConnection)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
-import UnliftIO.Concurrent (forkIO)
+import UnliftIO (finally)
+import UnliftIO.Concurrent (forkIO, killThread)
 
 type HTTP2ServerFunc = SessionId -> Request -> (Response -> IO ()) -> IO ()
 
@@ -73,8 +74,8 @@ runHTTP2ServerWith = runHTTP2ServerWith_ Nothing
 runHTTP2ServerWith_ :: Maybe ExpirationConfig -> BufferSize -> ((TLS -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith_ expCfg_ bufferSize setup http2Server = setup $ \tls -> do
   activeAt <- newTVarIO =<< getSystemTime
-  forM_ expCfg_ $ forkIO . watchdog tls activeAt
-  withHTTP2 bufferSize (run activeAt) tls
+  pid_ <- mapM (forkIO . watchdog tls activeAt) expCfg_
+  withHTTP2 bufferSize (run activeAt) tls `finally` mapM_ killThread pid_
   where
     run activeAt cfg sessId = H.run cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
