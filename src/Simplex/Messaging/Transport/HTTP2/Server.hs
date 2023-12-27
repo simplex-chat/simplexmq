@@ -74,16 +74,18 @@ runHTTP2ServerWith = runHTTP2ServerWith_ Nothing
 runHTTP2ServerWith_ :: Maybe ExpirationConfig -> BufferSize -> ((TLS -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith_ expCfg_ bufferSize setup http2Server = setup $ \tls -> do
   activeAt <- newTVarIO =<< getSystemTime
-  pid_ <- mapM (forkIO . watchdog tls activeAt) expCfg_
-  withHTTP2 bufferSize (run activeAt) tls `finally` mapM_ killThread pid_
+  tid_ <- mapM (forkIO . expireInactiveClient tls activeAt) expCfg_
+  withHTTP2 bufferSize (run activeAt) tls `finally` mapM_ killThread tid_
   where
     run activeAt cfg sessId = H.run cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
       http2Server sessId req (`sendResp` [])
-    watchdog tls activeAt expCfg = do
-      threadDelay' $ checkInterval expCfg * 1000000
-      old <- expireBeforeEpoch expCfg
-      ts <- readTVarIO activeAt
-      if systemSeconds ts < old
-        then closeConnection tls
-        else watchdog tls activeAt expCfg
+    expireInactiveClient tls activeAt expCfg = loop
+      where
+        loop = do
+          threadDelay' $ checkInterval expCfg * 1000000
+          old <- expireBeforeEpoch expCfg
+          ts <- readTVarIO activeAt
+          if systemSeconds ts < old
+            then closeConnection tls
+            else loop
