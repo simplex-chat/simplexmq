@@ -339,6 +339,8 @@ data XFTPErrorType
     HAS_FILE
   | -- | file IO error
     FILE_IO
+  | -- | unexpected reply to PING
+    NO_PONG
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -364,6 +366,7 @@ instance Encoding XFTPErrorType where
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
+    NO_PONG -> "NO_PONG"
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -380,6 +383,7 @@ instance Encoding XFTPErrorType where
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO
+      "NO_PONG" -> pure NO_PONG
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"
