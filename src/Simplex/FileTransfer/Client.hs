@@ -219,7 +219,7 @@ pingXFTP c@XFTPClient {http2Client = HTTP2Client {sessionId}} = do
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()
-    _ -> throwError $ PCEResponseError NO_PONG
+    _ -> throwError $ PCEUnexpectedResponse $ bshow r
 
 okResponse :: (FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO ()
 okResponse = \case
