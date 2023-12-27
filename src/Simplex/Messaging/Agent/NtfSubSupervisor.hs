@@ -37,9 +37,7 @@ import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, ProtocolServer, SMPServer, sameSrvAddr)
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Protocol (NtfServer, SMPServer, sameSrvAddr)
 import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
@@ -79,11 +77,11 @@ processNtfSub c (connId, cmd) = do
               Just ClientNtfCreds {notifierId} -> do
                 let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey
                 withStore c $ \db -> createNtfSubscription db newSub $ NtfSubNTFAction NSACreate
-                addNtfNTFWorker ntfServer
+                void $ getNtfNTFWorker True c ntfServer
               Nothing -> do
                 let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew
                 withStore c $ \db -> createNtfSubscription db newSub $ NtfSubSMPAction NSASmpKey
-                addNtfSMPWorker smpServer
+                void $ getNtfSMPWorker True c smpServer
         (Just (sub@NtfSubscription {ntfSubStatus, ntfServer = subNtfServer, smpServer = smpServer', ntfQueueId}, action_)) -> do
           case (clientNtfCreds, ntfQueueId) of
             (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
@@ -103,59 +101,53 @@ processNtfSub c (connId, cmd) = do
                       then resetSubscription
                       else withNtfServer c $ \ntfServer -> do
                         withStore' c $ \db -> supervisorUpdateNtfSub db sub {ntfServer} (NtfSubNTFAction NSACreate)
-                        addNtfNTFWorker ntfServer
+                        void $ getNtfNTFWorker True c ntfServer
                 | otherwise -> case action of
-                    NtfSubNTFAction _ -> addNtfNTFWorker subNtfServer
-                    NtfSubSMPAction _ -> addNtfSMPWorker smpServer
+                    NtfSubNTFAction _ -> void $ getNtfNTFWorker True c subNtfServer
+                    NtfSubSMPAction _ -> void $ getNtfSMPWorker True c smpServer
             rotate :: m ()
             rotate = do
               withStore' c $ \db -> supervisorUpdateNtfSub db sub (NtfSubNTFAction NSARotate)
-              addNtfNTFWorker subNtfServer
+              void $ getNtfNTFWorker True c subNtfServer
             resetSubscription :: m ()
             resetSubscription =
               withNtfServer c $ \ntfServer -> do
                 let sub' = sub {ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
                 withStore' c $ \db -> supervisorUpdateNtfSub db sub' (NtfSubSMPAction NSASmpKey)
-                addNtfSMPWorker smpServer
+                void $ getNtfSMPWorker True c smpServer
     NSCDelete -> do
       sub_ <- withStore' c $ \db -> do
         supervisorUpdateNtfAction db connId (NtfSubNTFAction NSADelete)
         getNtfSubscription db connId
       logInfo $ "processNtfSub, NSCDelete - sub_ = " <> tshow sub_
       case sub_ of
-        (Just (NtfSubscription {ntfServer}, _)) -> addNtfNTFWorker ntfServer
+        (Just (NtfSubscription {ntfServer}, _)) -> void $ getNtfNTFWorker True c ntfServer
         _ -> pure () -- err "NSCDelete - no subscription"
     NSCSmpDelete -> do
       withStore' c (`getPrimaryRcvQueue` connId) >>= \case
         Right rq@RcvQueue {server = smpServer} -> do
           logInfo $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
           withStore' c $ \db -> supervisorUpdateNtfAction db connId (NtfSubSMPAction NSASmpDelete)
-          addNtfSMPWorker smpServer
+          void $ getNtfSMPWorker True c smpServer
         _ -> notifyInternalError c connId "NSCSmpDelete - no rcv queue"
-    NSCNtfWorker ntfServer -> addNtfNTFWorker ntfServer
-    NSCNtfSMPWorker smpServer -> addNtfSMPWorker smpServer
-  where
-    addNtfNTFWorker = addWorker ntfWorkers runNtfWorker
-    addNtfSMPWorker = addWorker ntfSMPWorkers runNtfSMPWorker
-    addWorker ::
-      (NtfSupervisor -> TMap (ProtocolServer s) (TMVar (), Async ())) ->
-      (AgentClient -> ProtocolServer s -> TMVar () -> m ()) ->
-      ProtocolServer s ->
-      m ()
-    addWorker wsSel runWorker srv = do
-      ws <- asks $ wsSel . ntfSupervisor
-      atomically (TM.lookup srv ws) >>= \case
-        Nothing -> do
-          doWork <- newTMVarIO ()
-          worker <- async $ runWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
-          atomically $ TM.insert srv (doWork, worker) ws
-        Just (doWork, _) -> atomically $ hasWorkToDo' doWork
+    NSCNtfWorker ntfServer -> void $ getNtfNTFWorker True c ntfServer
+    NSCNtfSMPWorker smpServer -> void $ getNtfSMPWorker True c smpServer
+
+getNtfNTFWorker :: AgentMonad' m => Bool -> AgentClient -> NtfServer -> m Worker
+getNtfNTFWorker hasWork c server = do
+  ws <- asks $ ntfWorkers . ntfSupervisor
+  getAgentWorker hasWork c server ws $ runNtfWorker c server
+
+getNtfSMPWorker :: AgentMonad' m => Bool -> AgentClient -> SMPServer -> m Worker
+getNtfSMPWorker hasWork c server = do
+  ws <- asks $ ntfSMPWorkers . ntfSupervisor
+  getAgentWorker hasWork c server ws $ runNtfSMPWorker c server
 
 withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
 withNtfServer c action = getNtfServer c >>= mapM_ action
 
-runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-runNtfWorker c srv doWork = do
+runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> Worker -> m ()
+runNtfWorker c srv Worker {doWork} = do
   delay <- asks $ ntfWorkerDelay . config
   forever $ do
     waitForWork doWork
@@ -236,8 +228,8 @@ runNtfWorker c srv doWork = do
           withStore' c $ \db ->
             updateNtfSubscription db sub {ntfSubStatus = toStatus} toAction actionTs'
 
-runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
-runNtfSMPWorker c srv doWork = do
+runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> Worker -> m ()
+runNtfSMPWorker c srv Worker {doWork} = do
   delay <- asks $ ntfSMPWorkerDelay . config
   forever $ do
     waitForWork doWork
@@ -336,13 +328,10 @@ instantNotifications = \case
 
 closeNtfSupervisor :: MonadUnliftIO m => NtfSupervisor -> m ()
 closeNtfSupervisor ns = do
-  cancelNtfWorkers_ $ ntfWorkers ns
-  cancelNtfWorkers_ $ ntfSMPWorkers ns
-
-cancelNtfWorkers_ :: MonadUnliftIO m => TMap (ProtocolServer s) (TMVar (), Async ()) -> m ()
-cancelNtfWorkers_ wsVar = do
-  ws <- atomically $ stateTVar wsVar (,M.empty)
-  mapM_ (uninterruptibleCancel . snd) ws
+  stopWorkers $ ntfWorkers ns
+  stopWorkers $ ntfSMPWorkers ns
+  where
+    stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 getNtfServer :: AgentMonad' m => AgentClient -> m (Maybe NtfServer)
 getNtfServer c = do

@@ -206,8 +206,8 @@ createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey k
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
-    ntfWorkers :: TMap NtfServer (TMVar (), Async ()),
-    ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
+    ntfWorkers :: TMap NtfServer Worker,
+    ntfSMPWorkers :: TMap SMPServer Worker
   }
 
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer

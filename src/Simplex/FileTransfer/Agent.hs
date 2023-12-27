@@ -7,7 +7,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
