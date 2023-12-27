@@ -19,7 +19,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
@@ -104,6 +104,12 @@ xftpServerCLI cfgPath logPath = do
                \[FILES]\n"
             <> ("path: " <> filesPath <> "\n")
             <> ("storage_quota: " <> B.unpack (strEncode fileSizeQuota) <> "\n")
+            <> "\n\
+                \[INACTIVE_CLIENTS]\n\
+                \# TTL and interval to check inactive clients\n\
+                \disconnect: off\n"
+            <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -118,13 +124,16 @@ xftpServerCLI cfgPath logPath = do
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
-        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile, fileExpiration} = do
+        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile, fileExpiration, inactiveClientExpiration} = do
           putStrLn $ case storeLogFile of
             Just f -> "Store log: " <> f
             _ -> "Store log disabled."
           putStrLn $ case fileExpiration of
             Just ExpirationConfig {ttl} -> "expiring files after " <> showTTL ttl
             _ -> "not expiring files"
+          putStrLn $ case inactiveClientExpiration of
+            Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
+            _ -> "not expiring inactive clients"
           putStrLn $
             "Uploading new files "
               <> if allowNewFiles
@@ -146,6 +155,12 @@ xftpServerCLI cfgPath logPath = do
                 Just
                   defaultFileExpiration
                     { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
+                    },
+              inactiveClientExpiration =
+                settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
+                  $> ExpirationConfig
+                    { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
+                      checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
