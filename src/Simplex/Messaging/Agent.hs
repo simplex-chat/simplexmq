@@ -908,10 +908,10 @@ sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
 enqueueCommand :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> m ()
 enqueueCommand c corrId connId server aCommand = do
   withStore c $ \db -> createCommand db corrId connId server aCommand
-  void $ getAsyncCmdWorker (\w -> hasWorkToDo w $> w) c server
+  void $ getAsyncCmdWorker True c server
 
 resumeSrvCmds :: forall m. AgentMonad' m => AgentClient -> Maybe SMPServer -> m ()
-resumeSrvCmds = void .: getAsyncCmdWorker pure
+resumeSrvCmds = void .: getAsyncCmdWorker False
 
 resumeConnCmds :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resumeConnCmds c connId =
@@ -921,23 +921,12 @@ resumeConnCmds c connId =
   where
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
 
-getAsyncCmdWorker :: AgentMonad' m => (Worker -> STM Worker) -> AgentClient -> Maybe SMPServer -> m Worker
-getAsyncCmdWorker whenExists c server =
-  atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
-  where
-    getWorker = TM.lookup server $ asyncCmdWorkers c
-    deleteWorker wId = mapM_ $ \w -> when (wId == workerId w) $ TM.delete server $ asyncCmdWorkers c
-    createWorker = do
-      w <- newWorker c
-      TM.insert server w $ asyncCmdWorkers c
-      pure w
-    runWorker w@Worker {workerId = wId, doWork} =
-      runWorkerAsync w . void . runExceptT $
-        runCommandProcessing c server doWork
-          `agentFinally` atomically (getWorker >>= deleteWorker wId)
+getAsyncCmdWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe SMPServer -> m Worker
+getAsyncCmdWorker hasWork c server =
+  getAgentWorker hasWork c server (asyncCmdWorkers c) (runCommandProcessing c server)
 
-runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> TMVar () -> m ()
-runCommandProcessing c@AgentClient {subQ} server_ doWork = do
+runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> Worker -> m ()
+runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
   ri <- asks $ messageRetryInterval . config -- different retry interval?
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -1126,32 +1115,23 @@ enqueueSavedMessageB c reqs = do
        in map (\sq -> createSndMsgDelivery db connId sq mId) sqs
 
 resumeMsgDelivery :: forall m. AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
-resumeMsgDelivery = void .:. getDeliveryWorker pure
+resumeMsgDelivery = void .:. getDeliveryWorker False
 
-getDeliveryWorker :: AgentMonad' m => ((Worker, TMVar ()) -> STM (Worker, TMVar ())) -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
-getDeliveryWorker whenExists c cData sq = do
-  atomically (getWorker >>= maybe createWorker whenExists) >>= \wl -> runWorker wl $> wl
+getDeliveryWorker :: AgentMonad' m => Bool -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
+getDeliveryWorker hasWork c cData sq =
+  getAgentWorker' fst mkLock hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
   where
-    qAddr = qAddress sq
-    getWorker = TM.lookup qAddr $ smpDeliveryWorkers c
-    deleteWorker wId = mapM_ $ \(w, _) -> when (wId == workerId w) $ TM.delete qAddr $ smpDeliveryWorkers c
-    createWorker = do
+    mkLock w = do
       retryLock <- newEmptyTMVar
-      wl <- (,retryLock) <$> newWorker c
-      TM.insert qAddr wl $ smpDeliveryWorkers c
-      pure wl
-    runWorker (w@Worker {workerId = wId, doWork}, retryLock) =
-      runWorkerAsync w . void . runExceptT $
-        runSmpQueueMsgDelivery c cData sq doWork retryLock
-          `agentFinally` atomically (getWorker >>= deleteWorker wId)
+      pure (w, retryLock)
 
 submitPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
 submitPendingMsg c cData sq = do
   atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
-  void $ getDeliveryWorker (\wl -> hasWorkToDo (fst wl) $> wl) c cData sq
+  void $ getDeliveryWorker True c cData sq
 
-runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> TMVar () -> TMVar () -> m ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq doWork qLock = do
+runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> m ()
+runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq (Worker {doWork}, qLock) = do
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork

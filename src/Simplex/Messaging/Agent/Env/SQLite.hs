@@ -27,6 +27,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
     XFTPAgent (..),
+    Worker (..),
   )
 where
 
@@ -205,8 +206,8 @@ createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey k
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
-    ntfWorkers :: TMap NtfServer (TMVar (), Async ()),
-    ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
+    ntfWorkers :: TMap NtfServer Worker,
+    ntfSMPWorkers :: TMap SMPServer Worker
   }
 
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
@@ -223,9 +224,9 @@ newNtfSubSupervisor qSize = do
 data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory
     xftpWorkDir :: TVar (Maybe FilePath),
-    xftpRcvWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    xftpSndWorkers :: TMap (Maybe XFTPServer) (TMVar (), Async ()),
-    xftpDelWorkers :: TMap XFTPServer (TMVar (), Async ())
+    xftpRcvWorkers :: TMap (Maybe XFTPServer) Worker,
+    xftpSndWorkers :: TMap (Maybe XFTPServer) Worker,
+    xftpDelWorkers :: TMap XFTPServer Worker
   }
 
 newXFTPAgent :: STM XFTPAgent
@@ -251,3 +252,9 @@ agentFinally = allFinally mkInternal
 mkInternal :: SomeException -> AgentErrorType
 mkInternal = INTERNAL . show
 {-# INLINE mkInternal #-}
+
+data Worker = Worker
+  { workerId :: Int,
+    doWork :: TMVar (),
+    action :: TMVar (Maybe (Async ()))
+  }

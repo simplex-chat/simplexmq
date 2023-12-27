@@ -7,7 +7,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -31,6 +30,7 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Composition ((.:))
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
@@ -58,8 +58,6 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
@@ -76,28 +74,27 @@ startXFTPWorkers c workDir = do
   where
     startRcvFiles AgentConfig {rcvFilesTTL} = do
       pendingRcvServers <- withStore' c (`getPendingRcvFilesServers` rcvFilesTTL)
-      forM_ pendingRcvServers $ \s -> addXFTPRcvWorker c (Just s)
+      forM_ pendingRcvServers $ \s -> resumeXFTPRcvWork c (Just s)
       -- start local worker for files pending decryption,
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
-      addXFTPRcvWorker c Nothing
+      resumeXFTPRcvWork c Nothing
     startSndFiles AgentConfig {sndFilesTTL} = do
       -- start worker for files pending encryption/creation
-      addXFTPSndWorker c Nothing
+      resumeXFTPSndWork c Nothing
       pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
-      forM_ pendingSndServers $ \s -> addXFTPSndWorker c (Just s)
+      forM_ pendingSndServers $ \s -> resumeXFTPSndWork c (Just s)
     startDelFiles AgentConfig {rcvFilesTTL} = do
       pendingDelServers <- withStore' c (`getPendingDelFilesServers` rcvFilesTTL)
-      forM_ pendingDelServers $ addXFTPDelWorker c
+      forM_ pendingDelServers $ resumeXFTPDelWork c
 
 closeXFTPAgent :: MonadUnliftIO m => XFTPAgent -> m ()
-closeXFTPAgent XFTPAgent {xftpRcvWorkers, xftpSndWorkers} = do
-  stopWorkers xftpRcvWorkers
-  stopWorkers xftpSndWorkers
+closeXFTPAgent a = do
+  stopWorkers $ xftpRcvWorkers a
+  stopWorkers $ xftpSndWorkers a
+  stopWorkers $ xftpDelWorkers a
   where
-    stopWorkers wsSel = do
-      ws <- atomically $ stateTVar wsSel (,M.empty)
-      mapM_ (uninterruptibleCancel . snd) ws
+    stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
 xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfArgs = do
@@ -116,7 +113,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfA
   where
     downloadChunk :: AgentMonad m => FileChunk -> m ()
     downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
-      addXFTPRcvWorker c (Just server)
+      void $ getXFTPRcvWorker True c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
 getPrefixPath :: AgentMonad m => String -> m FilePath
@@ -132,31 +129,17 @@ toFSFilePath f = (</> f) <$> getXFTPWorkPath
 createEmptyFile :: AgentMonad m => FilePath -> m ()
 createEmptyFile fPath = liftIO $ B.writeFile fPath ""
 
-addXFTPRcvWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
-addXFTPRcvWorker c = addWorker c xftpRcvWorkers runXFTPRcvWorker runXFTPRcvLocalWorker
+resumeXFTPRcvWork :: AgentMonad' m => AgentClient -> Maybe XFTPServer -> m ()
+resumeXFTPRcvWork = void .: getXFTPRcvWorker False
 
-addWorker ::
-  AgentMonad m =>
-  AgentClient ->
-  (XFTPAgent -> TMap (Maybe XFTPServer) (TMVar (), Async ())) ->
-  (AgentClient -> XFTPServer -> TMVar () -> m ()) ->
-  (AgentClient -> TMVar () -> m ()) ->
-  Maybe XFTPServer ->
-  m ()
-addWorker c wsSel runWorker runWorkerNoSrv srv_ = do
-  ws <- asks $ wsSel . xftpAgent
-  atomically (TM.lookup srv_ ws) >>= \case
-    Nothing -> do
-      doWork <- newTMVarIO ()
-      let runWorker' = case srv_ of
-            Just srv -> runWorker c srv doWork
-            Nothing -> runWorkerNoSrv c doWork
-      worker <- async $ runWorker' `agentFinally` atomically (TM.delete srv_ ws)
-      atomically $ TM.insert srv_ (doWork, worker) ws
-    Just (doWork, _) -> atomically $ hasWorkToDo' doWork
+getXFTPRcvWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe XFTPServer -> m Worker
+getXFTPRcvWorker hasWork c server = do
+  ws <- asks $ xftpRcvWorkers . xftpAgent
+  getAgentWorker hasWork c server ws $
+    maybe (runXFTPRcvLocalWorker c) (runXFTPRcvWorker c) server
 
-runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
-runXFTPRcvWorker c srv doWork = do
+runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> Worker -> m ()
+runXFTPRcvWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     waitForWork doWork
@@ -197,7 +180,8 @@ runXFTPRcvWorker c srv doWork = do
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
         pure (complete, RFPROG rcvd total)
       notify c rcvFileEntityId progress
-      when complete $ addXFTPRcvWorker c Nothing
+      when complete . void $
+        getXFTPRcvWorker True c Nothing
       where
         receivedSize :: [RcvFileChunk] -> Int64
         receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
@@ -225,8 +209,8 @@ rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
   withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
   notify c rcvFileEntityId $ RFERR $ INTERNAL internalErrStr
 
-runXFTPRcvLocalWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
-runXFTPRcvLocalWorker c doWork = do
+runXFTPRcvLocalWorker :: forall m. AgentMonad m => AgentClient -> Worker -> m ()
+runXFTPRcvLocalWorker c Worker {doWork} = do
   cfg <- asks config
   forever $ do
     waitForWork doWork
@@ -285,14 +269,20 @@ xftpSendFile' c userId file numRecipients = do
   nonce <- atomically $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce
-  addXFTPSndWorker c Nothing
+  void $ getXFTPSndWorker True c Nothing
   pure fId
 
-addXFTPSndWorker :: AgentMonad m => AgentClient -> Maybe XFTPServer -> m ()
-addXFTPSndWorker c = addWorker c xftpSndWorkers runXFTPSndWorker runXFTPSndPrepareWorker
+resumeXFTPSndWork :: AgentMonad' m => AgentClient -> Maybe XFTPServer -> m ()
+resumeXFTPSndWork = void .: getXFTPSndWorker False
 
-runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> TMVar () -> m ()
-runXFTPSndPrepareWorker c doWork = do
+getXFTPSndWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe XFTPServer -> m Worker
+getXFTPSndWorker hasWork c server = do
+  ws <- asks $ xftpSndWorkers . xftpAgent
+  getAgentWorker hasWork c server ws $
+    maybe (runXFTPSndPrepareWorker c) (runXFTPSndWorker c) server
+
+runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> Worker -> m ()
+runXFTPSndPrepareWorker c Worker {doWork} = do
   cfg <- asks config
   forever $ do
     waitForWork doWork
@@ -351,7 +341,7 @@ runXFTPSndPrepareWorker c doWork = do
           atomically $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
-          addXFTPSndWorker c $ Just srv
+          void $ getXFTPSndWorker True c (Just srv)
           where
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
@@ -373,8 +363,8 @@ sndWorkerInternalError c sndFileId sndFileEntityId prefixPath internalErrStr = d
   withStore' c $ \db -> updateSndFileError db sndFileId internalErrStr
   notify c sndFileEntityId $ SFERR $ INTERNAL internalErrStr
 
-runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
-runXFTPSndWorker c srv doWork = do
+runXFTPSndWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> Worker -> m ()
+runXFTPSndWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     waitForWork doWork
@@ -513,21 +503,19 @@ deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescripti
     deleteFileChunk :: FileChunk -> m ()
     deleteFileChunk FileChunk {digest, replicas = replica@FileChunkReplica {server} : _} = do
       withStore' c $ \db -> createDeletedSndChunkReplica db userId replica digest
-      addXFTPDelWorker c server
+      void $ getXFTPDelWorker True c server
     deleteFileChunk _ = pure ()
 
-addXFTPDelWorker :: AgentMonad m => AgentClient -> XFTPServer -> m ()
-addXFTPDelWorker c srv = do
-  ws <- asks $ xftpDelWorkers . xftpAgent
-  atomically (TM.lookup srv ws) >>= \case
-    Nothing -> do
-      doWork <- newTMVarIO ()
-      worker <- async $ runXFTPDelWorker c srv doWork `agentFinally` atomically (TM.delete srv ws)
-      atomically $ TM.insert srv (doWork, worker) ws
-    Just (doWork, _) -> atomically $ hasWorkToDo' doWork
+resumeXFTPDelWork :: AgentMonad' m => AgentClient -> XFTPServer -> m ()
+resumeXFTPDelWork = void .: getXFTPDelWorker False
 
-runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> TMVar () -> m ()
-runXFTPDelWorker c srv doWork = do
+getXFTPDelWorker :: AgentMonad' m => Bool -> AgentClient -> XFTPServer -> m Worker
+getXFTPDelWorker hasWork c server = do
+  ws <- asks $ xftpDelWorkers . xftpAgent
+  getAgentWorker hasWork c server ws $ runXFTPDelWorker c server
+
+runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> Worker -> m ()
+runXFTPDelWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     waitForWork doWork

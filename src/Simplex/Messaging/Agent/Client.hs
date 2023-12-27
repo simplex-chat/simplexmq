@@ -85,8 +85,9 @@ module Simplex.Messaging.Agent.Client
     AgentState (..),
     AgentLocks (..),
     AgentStatsKey (..),
-    newWorker,
-    runWorkerAsync,
+    getAgentWorker,
+    getAgentWorker',
+    cancelWorker,
     waitForWork,
     hasWorkToDo,
     hasWorkToDo',
@@ -272,7 +273,26 @@ data AgentClient = AgentClient
     agentEnv :: Env
   }
 
-data Worker = Worker {workerId :: Int, doWork :: TMVar (), action :: TMVar (Maybe (Async ()))}
+getAgentWorker :: (AgentMonad' m, Ord k) => Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT AgentErrorType m ()) -> m Worker
+getAgentWorker = getAgentWorker' id pure
+
+getAgentWorker' :: (AgentMonad' m, Ord k) => (a -> Worker) -> (Worker -> STM a) -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT AgentErrorType m ()) -> m a
+getAgentWorker' toW fromW hasWork c key ws work = do
+  atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
+  where
+    getWorker = TM.lookup key ws
+    deleteWorker wId = mapM_ $ \w -> when (wId == workerId (toW w)) $ TM.delete key ws
+    createWorker = do
+      w <- fromW =<< newWorker c
+      TM.insert key w ws
+      pure w
+    whenExists w
+      | hasWork = hasWorkToDo (toW w) $> w
+      | otherwise = pure w
+    runWorker w = do
+      let w'@Worker {workerId} = toW w
+      runWorkerAsync w' . void . runExceptT $
+        work w `agentFinally` atomically (getWorker >>= deleteWorker workerId)
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
