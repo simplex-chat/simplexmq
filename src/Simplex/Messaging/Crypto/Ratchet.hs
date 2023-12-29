@@ -23,6 +23,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import Data.Bifunctor (bimap)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -36,6 +37,7 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
@@ -43,50 +45,110 @@ import Simplex.Messaging.Version
 import UnliftIO.STM
 
 currentE2EEncryptVersion :: Version
-currentE2EEncryptVersion = 2
+currentE2EEncryptVersion = 3
+
+pqRatchetVersion :: Version
+pqRatchetVersion = 3
 
 supportedE2EEncryptVRange :: VersionRange
 supportedE2EEncryptVRange = mkVersionRange 1 currentE2EEncryptVersion
 
-data E2ERatchetParams (a :: Algorithm)
-  = E2ERatchetParams Version (PublicKey a) (PublicKey a)
+data E2ERachetKEM = E2ERachetKEM KEMPublicKey (Maybe KEMCiphertext)
   deriving (Eq, Show)
 
-instance AlgorithmI a => Encoding (E2ERatchetParams a) where
-  smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
-  smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
+instance Encoding E2ERachetKEM where
+  smpEncode (E2ERachetKEM k ct) = smpEncode (k, ct)
+  smpP = E2ERachetKEM <$> smpP <*> smpP
 
-instance VersionI (E2ERatchetParams a) where
-  type VersionRangeT (E2ERatchetParams a) = E2ERatchetParamsUri a
-  version (E2ERatchetParams v _ _) = v
-  toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
+type RcvE2ERatchetParams a = E2ERatchetParams a KEMPublicKey
 
-instance VersionRangeI (E2ERatchetParamsUri a) where
-  type VersionT (E2ERatchetParamsUri a) = (E2ERatchetParams a)
-  versionRange (E2ERatchetParamsUri vr _ _) = vr
-  toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
+type SndE2ERatchetParams a = E2ERatchetParams a E2ERachetKEM
 
-data E2ERatchetParamsUri (a :: Algorithm)
-  = E2ERatchetParamsUri VersionRange (PublicKey a) (PublicKey a)
+toSndE2EParams :: RcvE2ERatchetParams a -> SndE2ERatchetParams a
+toSndE2EParams (E2ERatchetParams v k1 k2 kem_) = E2ERatchetParams v k1 k2 ((`E2ERachetKEM` Nothing) <$> kem_)
+
+data E2ERatchetParams (a :: Algorithm) kem
+  = E2ERatchetParams Version (PublicKey a) (PublicKey a) (Maybe kem)
   deriving (Eq, Show)
 
-instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
-  strEncode (E2ERatchetParamsUri vs key1 key2) =
-    strEncode $
-      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncodeList [key1, key2])]
+instance (AlgorithmI a, Encoding kem) => Encoding (E2ERatchetParams a kem) where
+  smpEncode (E2ERatchetParams v k1 k2 kem)
+    | v >= pqRatchetVersion = smpEncode (v, k1, k2, kem)
+    | otherwise = smpEncode (v, k1, k2)
+  smpP = smpP >>= \v -> E2ERatchetParams v <$> smpP <*> smpP <*> kemP v
+    where
+      kemP v
+        | v >= pqRatchetVersion = smpP
+        | otherwise = pure Nothing
+
+instance VersionI (E2ERatchetParams a kem) where
+  type VersionRangeT (E2ERatchetParams a kem) = E2ERatchetParamsUri a kem
+  version (E2ERatchetParams v _ _ _) = v
+  toVersionRangeT (E2ERatchetParams _ k1 k2 kem) vr = E2ERatchetParamsUri vr k1 k2 kem
+
+instance VersionRangeI (E2ERatchetParamsUri a kem) where
+  type VersionT (E2ERatchetParamsUri a kem) = (E2ERatchetParams a kem)
+  versionRange (E2ERatchetParamsUri vr _ _ _) = vr
+  toVersionT (E2ERatchetParamsUri _ k1 k2 kem) v = E2ERatchetParams v k1 k2 kem
+
+type RcvE2ERatchetParamsUri a = E2ERatchetParamsUri a KEMPublicKey
+
+data E2ERatchetParamsUri (a :: Algorithm) kem
+  = E2ERatchetParamsUri VersionRange (PublicKey a) (PublicKey a) (Maybe kem)
+  deriving (Eq, Show)
+
+instance (AlgorithmI a, StrEncoding kem) => StrEncoding (E2ERatchetParamsUri a kem) where
+  strEncode (E2ERatchetParamsUri vs key1 key2 kem_) =
+    strEncode . QSP QNoEscaping $
+      [("v", strEncode vs), ("x3dh", strEncodeList [key1, key2])]
+        <> maybe [] (\kem -> [("kem", strEncode kem) | maxVersion vs >= pqRatchetVersion]) kem_
   strP = do
     query <- strP
     vs <- queryParam "v" query
     keys <- L.toList <$> queryParam "x3dh" query
     case keys of
-      [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
+      [key1, key2] -> E2ERatchetParamsUri vs key1 key2 <$> kemP vs query
       _ -> fail "bad e2e params"
+    where
+      kemP vs query
+        | maxVersion vs >= pqRatchetVersion = queryParam_ "kem" query
+        | otherwise = pure Nothing
 
-generateE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> STM (PrivateKey a, PrivateKey a, E2ERatchetParams a)
-generateE2EParams g v = do
-  (k1, pk1) <- generateKeyPair g
-  (k2, pk2) <- generateKeyPair g
-  pure (pk1, pk2, E2ERatchetParams v k1 k2)
+data PrivateE2ERachetKEM = PrivateE2ERachetKEM KEMKeyPair (Maybe KEMSharedKey)
+
+-- if version supports KEM and withKEM is True, the result will include KEMSecretKey and KEMPublicKey in RcvE2ERatchetParams
+generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> Bool -> IO (PrivateKey a, PrivateKey a, Maybe KEMKeyPair, RcvE2ERatchetParams a)
+generateRcvE2EParams g v withKEM = do
+  (k1, pk1) <- atomically $ generateKeyPair g
+  (k2, pk2) <- atomically $ generateKeyPair g
+  pKem <- kemPair
+  pure (pk1, pk2, pKem, E2ERatchetParams v k1 k2 (fst <$> pKem))
+  where
+    kemPair
+      | v >= pqRatchetVersion && withKEM = Just <$> sntrup761Keypair g
+      | otherwise = pure Nothing
+
+data WithKEM = NoKEM | WithKEM (Maybe KEMPublicKey)
+
+-- if version supports KEM, the result will depend on WithKEM parameter:
+-- NoKEM: no PrivateE2ERachetKEM, no E2ERachetKEM in SndE2ERatchetParams
+-- WithKEM Nothing: PrivateE2ERachetKEM without KEMSharedKey, E2ERachetKEM in SndE2ERatchetParams without KEMCiphertext
+-- WithKEM (Just KEMPublicKey): PrivateE2ERachetKEM with KEMSharedKey, E2ERachetKEM in SndE2ERatchetParams with KEMCiphertext
+generateSndE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> WithKEM -> IO (PrivateKey a, PrivateKey a, Maybe PrivateE2ERachetKEM, SndE2ERatchetParams a)
+generateSndE2EParams g v withKEM = do
+  (k1, pk1) <- atomically $ generateKeyPair g
+  (k2, pk2) <- atomically $ generateKeyPair g
+  (kem, pKemParams) <- kemParams
+  pure (pk1, pk2, pKemParams, E2ERatchetParams v k1 k2 kem)
+  where
+    kemParams = case withKEM of
+      WithKEM kem_ | v >= pqRatchetVersion -> do
+        pKem@(kem, _) <- sntrup761Keypair g
+        (ct_, shared_) <- case kem_ of
+          Just k -> bimap Just Just <$> sntrup761Enc g k
+          Nothing -> pure (Nothing, Nothing)
+        pure (Just $ E2ERachetKEM kem ct_, Just $ PrivateE2ERachetKEM pKem shared_)
+      _ -> pure (Nothing, Nothing)
 
 data RatchetInitParams = RatchetInitParams
   { assocData :: Str,
@@ -96,16 +158,18 @@ data RatchetInitParams = RatchetInitParams
   }
   deriving (Eq, Show)
 
-x3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhSnd spk1 spk2 (E2ERatchetParams v rk1 rk2) =
-  x3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
+-- this is used by the peer joining the connection
+pqX3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe PrivateE2ERachetKEM -> RcvE2ERatchetParams a -> RatchetInitParams
+pqX3dhSnd spk1 spk2 _ (E2ERatchetParams v rk1 rk2 _) =
+  pqX3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
 
-x3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhRcv rpk1 rpk2 (E2ERatchetParams v sk1 sk2) =
-  x3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
+-- this is used by the peer that created new connection, after receiving the reply
+pqX3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe KEMSecretKey -> SndE2ERatchetParams a -> RatchetInitParams
+pqX3dhRcv rpk1 rpk2 _ (E2ERatchetParams v sk1 sk2 _) =
+  pqX3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
 
-x3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
-x3dh v (sk1, rk1) dh1 dh2 dh3 =
+pqX3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
+pqX3dh v (sk1, rk1) dh1 dh2 dh3 =
   RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
@@ -121,12 +185,20 @@ x3dh v (sk1, rk1) dh1 dh2 dh3 =
 
 type RatchetX448 = Ratchet 'X448
 
+data SndRatchetKEM = SndRatchetKEM
+  { rcPQRr :: KEMPublicKey,
+    rcPQRss :: KEMSharedKey,
+    rcPQRct :: KEMCiphertext
+  }
+  deriving (Eq, Show)
+
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
     rcVersion :: VersionRange,
     -- associated data - must be the same in both parties ratchets
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
+    rcPQRs :: Maybe KEMKeyPair,
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
     rcRcv :: Maybe RcvRatchet,
@@ -140,6 +212,7 @@ data Ratchet a = Ratchet
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
+    rcPQR :: Maybe SndRatchetKEM,
     rcCKs :: RatchetKey,
     rcHKs :: HeaderKey
   }
@@ -205,16 +278,17 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initSndRatchet rcVersion rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> Maybe KEMKeyPair -> RatchetInitParams -> Ratchet a
+initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs
    in Ratchet
         { rcVersion,
           rcAD = assocData,
           rcDHRs,
+          rcPQRs,
           rcRK,
-          rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK},
+          rcSnd = Just SndRatchet {rcDHRr, rcPQR = Nothing, rcCKs, rcHKs = sndHK}, -- rcPQR should be initialized here
           rcRcv = Nothing,
           rcPN = 0,
           rcNs = 0,
@@ -228,12 +302,13 @@ initSndRatchet rcVersion rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey,
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcVersion rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> Maybe KEMKeyPair -> RatchetInitParams -> Ratchet a
+initRcvRatchet rcVersion rcDHRs rcPQRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
   Ratchet
     { rcVersion,
       rcAD = assocData,
       rcDHRs,
+      rcPQRs,
       rcRK = ratchetKey,
       rcSnd = Nothing,
       rcRcv = Nothing,
@@ -399,8 +474,9 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
                   rc'' =
                     rc'
                       { rcDHRs = rcDHRs',
+                        rcPQRs = Nothing, -- update
                         rcRK = rcRK'',
-                        rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
+                        rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcPQR = Nothing, rcCKs = rcCKs', rcHKs = rcNHKs},
                         rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
                         rcPN = rcNs rc,
                         rcNs = 0,
@@ -484,6 +560,8 @@ hkdf3 salt ikm info = (s1, s2, s3)
     (s2, s3) = B.splitAt 32 rest
 
 $(JQ.deriveJSON defaultJSON ''RcvRatchet)
+
+$(JQ.deriveJSON defaultJSON ''SndRatchetKEM)
 
 instance AlgorithmI a => ToJSON (SndRatchet a) where
   toEncoding = $(JQ.mkToEncoding defaultJSON ''SndRatchet)

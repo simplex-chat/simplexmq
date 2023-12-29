@@ -180,7 +180,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
+import Simplex.Messaging.Crypto.Ratchet (RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -788,7 +788,7 @@ data SMPConfirmation = SMPConfirmation
 data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: Version,
-        e2eEncryption_ :: Maybe (E2ERatchetParams 'C.X448),
+        e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -802,7 +802,7 @@ data AgentMsgEnvelope
       }
   | AgentRatchetKey
       { agentVersion :: Version,
-        e2eEncryption :: E2ERatchetParams 'C.X448,
+        e2eEncryption :: RcvE2ERatchetParams 'C.X448,
         info :: ByteString
       }
   deriving (Show)
@@ -1102,7 +1102,7 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
     CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
     CRContactUri crData -> crEncode "contact" crData Nothing
     where
-      crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
+      crEncode :: ByteString -> ConnReqUriData -> Maybe (RcvE2ERatchetParamsUri 'C.X448) -> ByteString
       crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams =
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
@@ -1306,7 +1306,7 @@ instance Encoding SMPQueueUri where
     pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
-  CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
+  CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
   -- contact connection request does NOT contain E2E encryption parameters -
   -- they are passed in AgentInvitation message
   CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact

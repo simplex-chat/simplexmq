@@ -11,6 +11,7 @@ module AgentTests.DoubleRatchetTests where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
@@ -173,19 +174,19 @@ testEncodeDecode x = do
 testX3dh :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dh _ = do
   g <- C.newRandom
-  (pkBob1, pkBob2, e2eBob) <- atomically $ generateE2EParams @a g currentE2EEncryptVersion
-  (pkAlice1, pkAlice2, e2eAlice) <- atomically $ generateE2EParams @a g currentE2EEncryptVersion
-  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
-      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  (pkBob1, pkBob2, Nothing, e2eBob) <- liftIO $ generateSndE2EParams @a g currentE2EEncryptVersion NoKEM
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g currentE2EEncryptVersion False
+  let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
+      paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
 
 testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dhV1 _ = do
   g <- C.newRandom
-  (pkBob1, pkBob2, e2eBob) <- atomically $ generateE2EParams @a g 1
-  (pkAlice1, pkAlice2, e2eAlice) <- atomically $ generateE2EParams @a g 1
-  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
-      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  (pkBob1, pkBob2, Nothing, e2eBob) <- liftIO $ generateSndE2EParams @a g 1 NoKEM
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g 1 False
+  let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
+      paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
 
 (#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys), ByteString) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> Expectation
@@ -206,13 +207,13 @@ withRatchets test = do
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
 initRatchets = do
   g <- C.newRandom
-  (pkBob1, pkBob2, e2eBob) <- atomically $ generateE2EParams g currentE2EEncryptVersion
-  (pkAlice1, pkAlice2, e2eAlice) <- atomically $ generateE2EParams g currentE2EEncryptVersion
-  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
-      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  (pkBob1, pkBob2, _pKemParams, e2eBob) <- liftIO $ generateSndE2EParams g currentE2EEncryptVersion NoKEM
+  (pkAlice1, pkAlice2, _pKem, e2eAlice) <- liftIO $ generateRcvE2EParams g currentE2EEncryptVersion False
+  let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
+      paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 Nothing paramsBob
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 Nothing paramsAlice
   pure (alice, bob)
 
 encrypt_ :: AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
