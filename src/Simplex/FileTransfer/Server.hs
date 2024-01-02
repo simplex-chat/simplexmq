@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -138,8 +139,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           files <- atomically $ periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
           fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
-          filesCount' <- atomically $ swapTVar filesCount 0
-          filesSize' <- atomically $ swapTVar filesSize 0
+          filesCount' <- readTVarIO filesCount
+          filesSize' <- readTVarIO filesSize
           hPutStrLn h $
             intercalate
               ","
@@ -391,14 +392,20 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
-        Right d -> do
+        Right d@FileServerStatsData {_filesCount = statsFilesCount} -> do
           s <- asks serverStats
           fs <- readTVarIO . files =<< asks store
-          let _filesCount = length $ M.keys fs
-              _filesSize = M.foldl' (\n -> (n +) . fromIntegral . size . fileInfo) 0 fs
+          (_filesCount, _filesSize) <- foldM collect (0, 0) fs
           atomically $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
+          when (statsFilesCount /= _filesCount) $ logWarn $ "File balance differs. Stats: " <> tshow statsFilesCount <> ". Store: " <> tshow _filesCount
+          logInfo $ "Restored " <> tshow (_filesSize `div` 1048576) <> " MBs in " <> tshow _filesCount <> " files"
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
+
+    collect (!fc, !fs) FileRec {fileInfo = FileInfo {size}, filePath} =
+      readTVarIO filePath >>= \case
+        Nothing -> pure (fc, fs)
+        Just _ -> pure (fc + 1, fs + fromIntegral size)

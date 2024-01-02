@@ -4,6 +4,7 @@
 
 module Simplex.FileTransfer.Server.Stats where
 
+import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -82,13 +83,14 @@ setFileServerStats s d = do
   writeTVar (filesSize s) $! _filesSize d
 
 instance StrEncoding FileServerStatsData where
-  strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks} =
+  strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "filesCreated=" <> strEncode _filesCreated,
         "fileRecipients=" <> strEncode _fileRecipients,
         "filesUploaded=" <> strEncode _filesUploaded,
         "filesDeleted=" <> strEncode _filesDeleted,
+        "filesCount=" <> strEncode _filesCount,
         "filesDownloaded:",
         strEncode _filesDownloaded,
         "fileDownloads=" <> strEncode _fileDownloads,
@@ -100,7 +102,8 @@ instance StrEncoding FileServerStatsData where
     _fileRecipients <- "fileRecipients=" *> strP <* A.endOfLine
     _filesUploaded <- "filesUploaded=" *> strP <* A.endOfLine
     _filesDeleted <- "filesDeleted=" *> strP <* A.endOfLine
+    _filesCount <- "filesCount=" *> strP <* A.endOfLine <|> pure 0
     _filesDownloaded <- "filesDownloaded:" *> A.endOfLine *> strP <* A.endOfLine
     _fileDownloads <- "fileDownloads=" *> strP <* A.endOfLine
     _fileDownloadAcks <- "fileDownloadAcks=" *> strP <* A.endOfLine
-    pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount = 0, _filesSize = 0}
+    pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize = 0}
