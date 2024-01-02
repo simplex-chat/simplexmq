@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -118,8 +119,8 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
-  restoreServerMessages
-  restoreServerStats
+  expired <- restoreServerMessages
+  restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
@@ -898,24 +899,27 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
           atomically (getMessages ms rId)
             >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
-restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
-restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
+restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m Int
+restoreServerMessages = asks (storeMsgsFile . config) >>= \case
+  Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
+  Nothing -> pure 0
   where
-    restoreMessages f = whenM (doesFileExist f) $ do
+    restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
       st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota old_) . B.lines) >>= \case
+      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired st ms quota old_) 0 . B.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
-        _ -> do
+        Right expired -> do
           renameFile f $ f <> ".bak"
           logInfo "messages restored"
+          pure expired
       where
-        restoreMsg st ms quota old_ s = do
+        restoreMsg !expired st ms quota old_ s = do
           r <- liftEither . first (msgErr "parsing") $ strDecode s
           case r of
             MLRv3 rId msg -> addToMsgQueue rId msg
@@ -925,15 +929,15 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
               addToMsgQueue rId msg'
           where
             addToMsgQueue rId msg = do
-              stats <- asks serverStats
-              logFull <- atomically $ do
+              (isExpired, logFull) <- atomically $ do
                 q <- getMsgQueue ms rId quota
                 case msg of
                   Message {msgTs}
-                    | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
-                    | otherwise -> modifyTVar' (msgExpired stats) (+ 1) $> False
-                  MessageQuota {} -> writeMsg q msg $> False
+                    | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
+                    | otherwise -> pure (True, False)
+                  MessageQuota {} -> writeMsg q msg $> (False, False)
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
+              pure $ if isExpired then expired + 1 else expired
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
@@ -951,18 +955,17 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
-restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
-restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ()
+restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          _msgExpired <- readTVarIO (msgExpired s)
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
-          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired}
+          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           let qBalance = _qCreated d - _qDeleted d

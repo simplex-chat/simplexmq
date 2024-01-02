@@ -25,7 +25,6 @@ module Simplex.Messaging.Server.MsgStore.STM
 where
 
 import Control.Concurrent.STM.TQueue (flushTQueue)
-import Control.Monad (foldM, when)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
