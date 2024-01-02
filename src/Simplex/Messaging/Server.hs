@@ -186,9 +186,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         rIds <- M.keysSet <$> readTVarIO ms
         forM_ rIds $ \rId -> do
           q <- atomically (getMsgQueue ms rId quota)
-          atomically $ do
-            deleted <- deleteExpiredMsgs q old
-            modifyTVar' (msgExpired stats) (+ deleted)
+          deleted <- atomically $ deleteExpiredMsgs q old
+          atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -764,9 +763,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
               stats <- asks serverStats
-              atomically $ do
-                deleted <- sum <$> mapM (deleteExpiredMsgs q) old
-                modifyTVar' (msgExpired stats) (+ deleted)
+              deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
+              atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =

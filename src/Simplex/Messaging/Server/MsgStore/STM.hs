@@ -119,12 +119,12 @@ tryDelPeekMsg mq msgId' =
 deleteExpiredMsgs :: MsgQueue -> Int64 -> STM Int
 deleteExpiredMsgs mq old = loop 0
   where
-    loop dc = tryPeekMsg mq >>= foldM delOldMsg dc
-    delOldMsg dc = \case
-      Message {msgTs}
-        | systemSeconds msgTs < old ->
-            tryDeleteMsg mq >> loop dc
-      _ -> pure dc
+    loop dc =
+      tryPeekMsg mq >>= \case
+        Just Message {msgTs}
+          | systemSeconds msgTs < old ->
+              tryDeleteMsg mq >> loop (dc + 1)
+        _ -> pure dc
 
 tryDeleteMsg :: MsgQueue -> STM ()
 tryDeleteMsg MsgQueue {msgQueue = q, size} =
