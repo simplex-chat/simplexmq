@@ -102,12 +102,13 @@ setServerStats s d = do
   writeTVar (msgCount s) $! _msgCount d
 
 instance StrEncoding ServerStatsData where
-  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf} =
+  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _qCount, _msgCount} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "qCreated=" <> strEncode _qCreated,
         "qSecured=" <> strEncode _qSecured,
         "qDeleted=" <> strEncode _qDeleted,
+        "qCount=" <> strEncode _qCount,
         "msgSent=" <> strEncode _msgSent,
         "msgRecv=" <> strEncode _msgRecv,
         "msgExpired=" <> strEncode _msgExpired,
@@ -123,11 +124,10 @@ instance StrEncoding ServerStatsData where
     _qCreated <- "qCreated=" *> strP <* A.endOfLine
     _qSecured <- "qSecured=" *> strP <* A.endOfLine
     _qDeleted <- "qDeleted=" *> strP <* A.endOfLine
+    _qCount <- "qCount=" *> strP <* A.endOfLine <|> pure 0
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
-    _msgExpired <- optional "msgExpired=" >>= \case
-      Just _ -> strP <* optional A.endOfLine
-      Nothing -> pure 0
+    _msgExpired <- "msgExpired=" *> strP <* A.endOfLine <|> pure 0
     _msgSentNtf <- "msgSentNtf=" *> strP <* A.endOfLine <|> pure 0
     _msgRecvNtf <- "msgRecvNtf=" *> strP <* A.endOfLine <|> pure 0
     _activeQueues <-
@@ -142,7 +142,7 @@ instance StrEncoding ServerStatsData where
       optional ("activeQueuesNtf:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
         _ -> pure newPeriodStatsData
-    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _qCount = 0, _msgCount = 0}
+    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _qCount, _msgCount = 0}
 
 data PeriodStats a = PeriodStats
   { day :: TVar (Set a),
