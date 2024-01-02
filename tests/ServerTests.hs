@@ -662,7 +662,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 2
     logSize testStoreMsgsFile `shouldReturn` 5
-    logSize testServerStatsBackupFile `shouldReturn` 16
+    logSize testServerStatsBackupFile `shouldReturn` 18
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
 
@@ -680,7 +680,7 @@ testRestoreMessages at@(ATransport t) =
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
     logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 16
+    logSize testServerStatsBackupFile `shouldReturn` 18
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
@@ -699,7 +699,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0
-    logSize testServerStatsBackupFile `shouldReturn` 16
+    logSize testServerStatsBackupFile `shouldReturn` 18
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
 
@@ -830,7 +830,7 @@ testRestoreExpireMessages at@(ATransport t) =
     length (B.lines msgs) `shouldBe` 4
 
     let expCfg1 = Just ExpirationConfig {ttl = 86400, checkInterval = 43200}
-        cfg1 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg1}
+        cfg1 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -838,7 +838,7 @@ testRestoreExpireMessages at@(ATransport t) =
     msgs' `shouldBe` msgs
 
     let expCfg2 = Just ExpirationConfig {ttl = 2, checkInterval = 43200}
-        cfg2 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg2}
+        cfg2 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg2 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -846,6 +846,8 @@ testRestoreExpireMessages at@(ATransport t) =
     msgs'' <- B.readFile testStoreMsgsFile
     length (B.lines msgs'') `shouldBe` 2
     B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
+    Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
+    _msgExpired `shouldBe` 2
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
