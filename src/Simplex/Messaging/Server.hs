@@ -927,12 +927,13 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
               addToMsgQueue rId msg'
           where
             addToMsgQueue rId msg = do
+              stats <- asks serverStats
               logFull <- atomically $ do
                 q <- getMsgQueue ms rId quota
                 case msg of
                   Message {msgTs}
                     | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
-                    | otherwise -> pure False
+                    | otherwise -> modifyTVar' (msgExpired stats) (+ 1) $> False
                   MessageQuota {} -> writeMsg q msg $> False
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
@@ -960,9 +961,10 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
+          _msgExpired <- readTVarIO (msgExpired s)
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
-          atomically $ setServerStats s d {_qCount, _msgCount}
+          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           let qBalance = _qCreated d - _qDeleted d
