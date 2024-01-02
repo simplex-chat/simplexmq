@@ -952,11 +952,15 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          _qCount <- fmap (length . M.keys) . readTVarIO . queues =<< asks queueStore
+          _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
           atomically $ setServerStats s d {_qCount, _msgCount}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
+          let qBalance = _qCreated d - _qDeleted d
+          if qBalance /= _qCount
+            then logWarn $ "Queue balance differs. Stats: " <> tshow qBalance <> ". Store: " <> tshow _qCount
+            else logInfo $ "Restored " <> tshow _msgCount <> " messages in " <> tshow _qCount <> " queues"
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
