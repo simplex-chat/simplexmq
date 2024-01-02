@@ -178,14 +178,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
+      stats <- asks serverStats
       labelMyThread "expireMessages"
       forever $ do
         liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- M.keysSet <$> readTVarIO ms
-        forM_ rIds $ \rId ->
-          atomically (getMsgQueue ms rId quota)
-            >>= atomically . (`deleteExpiredMsgs` old)
+        forM_ rIds $ \rId -> do
+          q <- atomically (getMsgQueue ms rId quota)
+          atomically $ do
+            deleted <- deleteExpiredMsgs q old
+            modifyTVar' (msgExpired stats) (+ deleted)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -198,7 +201,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
         hSetBuffering h LineBuffering
@@ -210,6 +213,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           qDeleted' <- atomically $ swapTVar qDeleted 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
+          msgExpired' <- atomically $ swapTVar msgExpired 0
           ps <- atomically $ periodStatCounts activeQueues ts
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
@@ -234,7 +238,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 weekCount psNtf,
                 monthCount psNtf,
                 show qCount',
-                show msgCount'
+                show msgCount',
+                show msgExpired'
               ]
           threadDelay' interval
 
@@ -758,7 +763,10 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
-              atomically $ mapM_ (deleteExpiredMsgs q) old
+              stats <- asks serverStats
+              atomically $ do
+                deleted <- sum <$> mapM (deleteExpiredMsgs q) old
+                modifyTVar' (msgExpired stats) (+ deleted)
 
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =

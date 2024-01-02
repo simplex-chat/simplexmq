@@ -25,7 +25,7 @@ module Simplex.Messaging.Server.MsgStore.STM
 where
 
 import Control.Concurrent.STM.TQueue (flushTQueue)
-import Control.Monad (when)
+import Control.Monad (foldM, when)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -116,15 +116,15 @@ tryDelPeekMsg mq msgId' =
       | otherwise -> pure (Nothing, msg_)
     _ -> pure (Nothing, Nothing)
 
-deleteExpiredMsgs :: MsgQueue -> Int64 -> STM ()
-deleteExpiredMsgs mq old = loop
+deleteExpiredMsgs :: MsgQueue -> Int64 -> STM Int
+deleteExpiredMsgs mq old = loop 0
   where
-    loop = tryPeekMsg mq >>= mapM_ delOldMsg
-    delOldMsg = \case
-      Message {msgTs} ->
-        when (systemSeconds msgTs < old) $
-          tryDeleteMsg mq >> loop
-      _ -> pure ()
+    loop dc = tryPeekMsg mq >>= foldM delOldMsg dc
+    delOldMsg dc = \case
+      Message {msgTs}
+        | systemSeconds msgTs < old ->
+            tryDeleteMsg mq >> loop dc
+      _ -> pure dc
 
 tryDeleteMsg :: MsgQueue -> STM ()
 tryDeleteMsg MsgQueue {msgQueue = q, size} =
