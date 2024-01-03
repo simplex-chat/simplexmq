@@ -297,13 +297,14 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
         restartOrDelete e_ = do
           t <- liftIO getSystemTime
           maxRestarts <- asks $ maxWorkerRestartsPerMin . config
+          -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
           restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
           when restart runWork
         shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
-          | wId == workerId (toW w') = do
+          | wId == workerId (toW w') =
               checkRestarts . updateRestartCount t =<< readTVar restarts
           | otherwise =
-              pure False -- a new worker is in the map, no action
+              pure False -- there is a new worker in the map, no action
           where
             checkRestarts rc
               | restartCount rc < maxRestarts = do
