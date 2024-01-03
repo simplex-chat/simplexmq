@@ -32,6 +32,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Agent.Lock (withLock)
 import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
@@ -576,7 +577,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         >>= mapM_ (uninterruptibleCancel . action)
 
 withNtfLog :: (StoreLog 'WriteMode -> IO a) -> M ()
-withNtfLog action = liftIO . mapM_ action =<< asks storeLog
+withNtfLog action = do
+  NtfEnv {storeLog, storeLogLock} <- ask
+  liftIO $ mapM_ (withLock storeLogLock "" . action) storeLog
 
 incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
 incNtfStat statSel = do

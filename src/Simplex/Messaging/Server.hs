@@ -866,8 +866,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
 withLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withLog action = do
-  env <- ask
-  liftIO . mapM_ action $ storeLog (env :: Env)
+  Env {storeLog, storeLogLock} <- ask
+  liftIO $ mapM_ (withLock storeLogLock "" . action) storeLog
 
 timed :: MonadUnliftIO m => T.Text -> RecipientId -> m a -> m a
 timed name qId a = do

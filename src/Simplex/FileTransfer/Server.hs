@@ -40,6 +40,7 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
+import Simplex.Messaging.Agent.Lock (withLock)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
@@ -368,7 +369,9 @@ getFileId = do
   atomically . C.randomBytes size =<< asks random
 
 withFileLog :: (MonadIO m, MonadReader XFTPEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
-withFileLog action = liftIO . mapM_ action =<< asks storeLog
+withFileLog action = do
+  XFTPEnv {storeLog, storeLogLock} <- ask
+  liftIO $ mapM_ (withLock storeLogLock "" . action) storeLog
 
 incFileStat :: (FileServerStats -> TVar Int) -> M ()
 incFileStat statSel = do

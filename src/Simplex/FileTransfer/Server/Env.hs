@@ -23,6 +23,7 @@ import Simplex.FileTransfer.Protocol (FileCmd, FileInfo, XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
+import Simplex.Messaging.Agent.Lock (Lock, createLock)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicVerifyKey)
 import Simplex.Messaging.Server.Expiration
@@ -71,6 +72,7 @@ data XFTPEnv = XFTPEnv
   { config :: XFTPServerConfig,
     store :: FileStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
+    storeLogLock :: Lock,
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
@@ -92,6 +94,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   random <- liftIO C.newRandom
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
+  storeLogLock <- atomically createLock
   used <- readTVarIO (usedStorage store)
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
@@ -99,7 +102,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
-  pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, storeLog, storeLogLock, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey) (Maybe BasicAuth)

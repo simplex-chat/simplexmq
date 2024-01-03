@@ -103,6 +103,7 @@ data Env = Env
     msgStore :: STMMsgStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
+    storeLogLock :: Lock,
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
@@ -172,6 +173,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   msgStore <- atomically newMsgStore
   random <- liftIO C.newRandom
   storeLog <- restoreQueues queueStore `mapM` storeLogFile
+  storeLogLock <- atomically createLock
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
@@ -179,7 +181,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- atomically TM.empty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, storeLogLock, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

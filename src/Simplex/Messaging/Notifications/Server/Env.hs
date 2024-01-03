@@ -22,6 +22,7 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural
+import Simplex.Messaging.Agent.Lock (Lock, createLock)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -76,6 +77,7 @@ data NtfEnv = NtfEnv
     pushServer :: NtfPushServer,
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
+    storeLogLock :: Lock,
     random :: TVar ChaChaDRG,
     tlsServerParams :: T.ServerParams,
     serverIdentity :: C.KeyHash,
@@ -88,13 +90,14 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   store <- atomically newNtfStore
   logInfo "restoring subscriptions..."
   storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
+  storeLogLock <- atomically createLock
   logInfo "restored subscriptions"
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newNtfServerStats =<< liftIO getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, storeLogLock, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
