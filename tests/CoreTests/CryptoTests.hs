@@ -4,6 +4,7 @@
 module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
+import Control.Monad (replicateM_)
 import Control.Monad.Except
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -13,6 +14,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
@@ -88,8 +90,12 @@ cryptoTests = do
     describe "Ed448" $ testEncoding C.SEd448
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
-  describe "sntrup761" $
+  describe "sntrup761" $ do
     it "should enc/dec key" testSNTRUP761
+    xdescribe "benchmark" $ do
+      it "benchmark keygen" benchSNTRUP761KeyGen
+      it "benchmark encapsulation" benchSNTRUP761Enc
+      it "benchmark decapsulation" benchSNTRUP761Dec
 
 testPadUnpadFile :: IO ()
 testPadUnpadFile = do
@@ -217,3 +223,49 @@ testSNTRUP761 = do
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk
   k' `shouldBe` k
+
+benchSNTRUP761KeyGen :: IO ()
+benchSNTRUP761KeyGen = do
+  drg <- C.newRandom
+  start <- getCurrentTime
+  replicateM_ tries $ sntrup761Keypair drg
+  finish <- getCurrentTime
+  let time = diffUTCTime finish start
+  putStrLn $ "Time for " <> show tries <> " keys: " <> show time
+  let kps = fromIntegral tries / realToFrac time :: Double
+  putStrLn $ "Keys per second: " <> show kps
+  where
+    tries = 100
+
+benchSNTRUP761Enc :: IO ()
+benchSNTRUP761Enc = do
+  drg <- C.newRandom
+  (pk, _sk) <- sntrup761Keypair drg
+  start <- getCurrentTime
+  replicateM_ tries $ do
+    (c, KEMSharedKey k) <- sntrup761Enc drg pk
+    c `seq` k `seq` pure ()
+  finish <- getCurrentTime
+  let time = diffUTCTime finish start
+  putStrLn $ "Time for " <> show tries <> " encs: " <> show time
+  let kps = fromIntegral tries / realToFrac time :: Double
+  putStrLn $ "Encs per second: " <> show kps
+  where
+    tries = 100
+
+benchSNTRUP761Dec :: IO ()
+benchSNTRUP761Dec = do
+  drg <- C.newRandom
+  (pk, sk) <- sntrup761Keypair drg
+  (c, KEMSharedKey _k) <- sntrup761Enc drg pk
+  start <- getCurrentTime
+  replicateM_ tries $ do
+    KEMSharedKey k' <- sntrup761Dec c sk
+    k' `seq` pure ()
+  finish <- getCurrentTime
+  let time = diffUTCTime finish start
+  putStrLn $ "Time for " <> show tries <> " decs: " <> show time
+  let kps = fromIntegral tries / realToFrac time :: Double
+  putStrLn $ "Decs per second: " <> show kps
+  where
+    tries = 100
