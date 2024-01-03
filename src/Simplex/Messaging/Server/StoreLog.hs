@@ -114,7 +114,7 @@ closeStoreLog = \case
 
 writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h) r = do
-  B.hPut h $ strEncode r `B.snoc` '\n' -- XXX: hPutStrLn makes write non-atomic for length >1024
+  B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
