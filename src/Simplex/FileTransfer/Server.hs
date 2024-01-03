@@ -104,16 +104,19 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         forM_ sIds $ \sId -> do
           threadDelay 100000
           atomically (expiredFilePath st sId old)
-            >>= mapM_ (remove $ delete st sId)
+            >>= mapM_ (expired $ delete st sId)
       where
-        remove del filePath =
+        expired del = maybe del (remove del)
+        remove del filePath = do
           ifM
             (doesFileExist filePath)
-            (removeFile filePath >> del `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+            ((removeFile filePath >> del) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
             del
         delete st sId = do
           withFileLog (`logDeleteFile` sId)
           void $ atomically $ deleteFile st sId
+          FileServerStats {filesExpired} <- asks serverStats
+          atomically $ modifyTVar' filesExpired (+ 1)
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -125,7 +128,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
-      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
+      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -135,6 +138,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           filesCreated' <- atomically $ swapTVar filesCreated 0
           fileRecipients' <- atomically $ swapTVar fileRecipients 0
           filesUploaded' <- atomically $ swapTVar filesUploaded 0
+          filesExpired' <- atomically $ swapTVar filesExpired 0
           filesDeleted' <- atomically $ swapTVar filesDeleted 0
           files <- atomically $ periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
@@ -155,7 +159,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                 show fileDownloads',
                 show fileDownloadAcks',
                 show filesCount',
-                show filesSize'
+                show filesSize',
+                show filesExpired'
               ]
         liftIO $ threadDelay' interval
 
