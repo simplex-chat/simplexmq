@@ -397,7 +397,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
-        Right d@FileServerStatsData {_filesCount = statsFilesCount} -> do
+        Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
           FileStore {files, usedStorage} <- asks store
           _filesCount <- M.size <$> readTVarIO files
@@ -405,7 +405,8 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           atomically $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
-          when (statsFilesCount /= _filesCount) $ logWarn $ "File balance differs. Stats: " <> tshow statsFilesCount <> ". Store: " <> tshow _filesCount
+          when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
+          when (statsFilesSize /= _filesSize) $ logWarn $ "Files size differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
           logInfo $ "Restored " <> tshow (_filesSize `div` 1048576) <> " MBs in " <> tshow _filesCount <> " files"
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
