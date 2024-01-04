@@ -104,9 +104,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         forM_ sIds $ \sId -> do
           threadDelay 100000
           atomically (expiredFilePath st sId old)
-            >>= mapM_ (expired $ delete st sId)
+            >>= mapM_ (maybeRemove $ delete st sId)
       where
-        expired del = maybe del (remove del)
+        maybeRemove del = maybe del (remove del)
         remove del filePath = do
           ifM
             (doesFileExist filePath)
