@@ -399,8 +399,9 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@FileServerStatsData {_filesCount = statsFilesCount} -> do
           s <- asks serverStats
-          fs <- readTVarIO . files =<< asks store
-          (_filesCount, _filesSize) <- foldM collect (0, 0) fs
+          FileStore {files, usedStorage} <- asks store
+          _filesCount <- M.size <$> readTVarIO files
+          _filesSize <- readTVarIO usedStorage
           atomically $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
@@ -409,8 +410,3 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
-
-    collect (!fc, !fs) FileRec {fileInfo = FileInfo {size}, filePath} =
-      readTVarIO filePath >>= \case
-        Nothing -> pure (fc, fs)
-        Just _ -> pure (fc + 1, fs + fromIntegral size)
