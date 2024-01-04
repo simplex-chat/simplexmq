@@ -65,6 +65,7 @@ module Simplex.Messaging.Agent
     resubscribeConnections,
     sendMessage,
     sendMessages,
+    sendMessagesB,
     ackMessage,
     switchConnection,
     abortConnectionSwitch,
@@ -288,6 +289,9 @@ type MsgReq = (ConnId, MsgFlags, MsgBody)
 -- | Send multiple messages to different connections (SEND command)
 sendMessages :: MonadUnliftIO m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
 sendMessages c = withAgentEnv c . sendMessages' c
+
+sendMessagesB :: (MonadUnliftIO m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB c = withAgentEnv c . sendMessagesB' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
 ackMessage c = withAgentEnv c .:. ackMessage' c
@@ -879,14 +883,14 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = liftEither . runIdentity =<< sendMessagesB c (Identity (Right (connId, msgFlags, msg)))
+sendMessage' c connId msgFlags msg = liftEither . runIdentity =<< sendMessagesB' c (Identity (Right (connId, msgFlags, msg)))
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
 sendMessages' :: forall m. AgentMonad' m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
-sendMessages' c = sendMessagesB c . map Right
+sendMessages' c = sendMessagesB' c . map Right
 
-sendMessagesB :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
-sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
+sendMessagesB' :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
   reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   let reqs'' = fmap (>>= prepareConn) reqs'
   enqueueMessagesB c reqs''
