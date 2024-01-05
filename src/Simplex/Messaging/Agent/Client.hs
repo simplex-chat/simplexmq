@@ -210,8 +210,7 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
-import System.Timeout (timeout)
-import UnliftIO (mapConcurrently)
+import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
 import UnliftIO.Directory (getTemporaryDirectory)
 import UnliftIO.Exception (bracket)
@@ -498,10 +497,11 @@ getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSessi
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getClientVar tSess smpClients)
-    >>= either
-      (newProtocolClient c tSess smpClients connectClient $ reconnectSMPClient 0)
-      (waitForProtocolClient c tSess)
+    >>= either newClient (waitForProtocolClient c tSess)
   where
+    newClient v = do
+      tc <- newTVarIO 0
+      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient 0 tc) v
     connectClient :: m SMPClient
     connectClient = do
       cfg <- getClientConfig c smpCfg
@@ -539,39 +539,40 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
   where
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
+      timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \n _ loop ->
-        reconnectSMPClient n c tSess `catchAgentError` const loop
+        reconnectSMPClient n timeoutCounts c tSess `catchAgentError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
-reconnectSMPClient :: forall m. AgentMonad m => Int -> AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient n c tSess@(_, srv, _) = do
+reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient n tc c tSess@(_, srv, _) = do
   ts <- liftIO getCurrentTime
   let label = unwords ["reconnect", show n, show ts]
-  withLockMap (reconnectLocks c) tSess label $ \lock -> do
-    updateLock lock label (label <> " 0")
+  withLockMap_ (reconnectLocks c) tSess label $ do
     qs <- atomically (RQ.getSessQueues tSess $ pendingSubs c)
-    updateLock lock (label <> " 0") (label <> " 1")
-    mapM_ (resubscribe lock label) $ L.nonEmpty qs
+    NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
+    -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
+    let t = (length qs `div` 90 + 1) * tcpTimeout * 3
+    t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
+      Just _ -> atomically $ writeTVar tc 0
+      Nothing -> do
+        tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+        maxTC <- asks $ maxSubscriptionTimeouts . config
+        let err = if tc' >= maxTC then CRITICAL True else INTERNAL
+            msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
   where
-    resubscribe :: Lock -> String -> NonEmpty RcvQueue -> m ()
-    resubscribe lock label qs = do
-      updateLock lock (label <> " 1") (label <> " 2")
+    resubscribe :: NonEmpty RcvQueue -> m ()
+    resubscribe qs = do
       cs <- atomically . RQ.getConns $ activeSubs c
-      updateLock lock (label <> " 2") label
-      rs <- subscribeQueues' (Just lock) label c $ L.toList qs
-      updateLock lock label (label <> " 3")
+      rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      updateLock lock (label <> " 3") (label <> " 4")
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
-      updateLock lock (label <> " 4") (label <> " 5")
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
-      updateLock lock (label <> " 5") (label <> " 6")
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      updateLock lock (label <> " 6") (label <> " 7")
       mapM_ (throwError . snd) $ listToMaybe tempErrs
-      updateLock lock (label <> " 7") (label <> " 8")
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
@@ -752,9 +753,6 @@ withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . 
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ = withGetLock . getMapLock
-
-withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> (Lock -> m a) -> m a
-withLockMap = withGetLock' . getMapLock
 
 withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
 withLocksMap_ = withGetLocks . getMapLock
@@ -994,20 +992,14 @@ temporaryOrHostError = \case
 
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
-subscribeQueues = subscribeQueues' Nothing ""
-
-subscribeQueues' :: forall m. AgentMonad m => Maybe Lock -> String -> AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
-subscribeQueues' l_ label c qs = do
-  forM_ l_ $ \l -> updateLock l label (label <> " sub 1")
+subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
     RQ.addQueue rq $ pendingSubs c
-  forM_ l_ $ \l -> updateLock l (label <> " sub 1") (label <> " sub 2")
   u <- askUnliftIO
   -- only "checked" queues are subscribed
   rs <- (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
-  forM_ l_ $ \l -> updateLock l (label <> " sub 2") label
   pure rs
   where
     checkQueue rq = do

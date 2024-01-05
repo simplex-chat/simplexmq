@@ -3,15 +3,13 @@
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
-    updateLock,
     withLock,
     withGetLock,
-    withGetLock',
     withGetLocks,
   )
 where
 
-import Control.Monad (void, when)
+import Control.Monad (void)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
 import UnliftIO.Async (forConcurrently)
@@ -24,12 +22,6 @@ createLock :: STM Lock
 createLock = newEmptyTMVar
 {-# INLINE createLock #-}
 
--- only updates lock if it's taken and has the same name
-updateLock :: MonadUnliftIO m => Lock -> String -> String -> m ()
-updateLock lock oldName newName = atomically $ do
-  name <- tryReadTMVar lock
-  when (name == Just oldName) $ writeTMVar lock newName
-
 withLock :: MonadUnliftIO m => Lock -> String -> m a -> m a
 withLock lock name =
   E.bracket_
@@ -37,13 +29,11 @@ withLock lock name =
     (void . atomically $ takeTMVar lock)
 
 withGetLock :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> m a -> m a
-withGetLock getLock key name = withGetLock' getLock key name . const
-
-withGetLock' :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> (Lock -> m a) -> m a
-withGetLock' getLock key name =
+withGetLock getLock key name a =
   E.bracket
     (atomically $ getPutLock getLock key name)
     (atomically . takeTMVar)
+    (const a)
 
 withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> [k] -> String -> m a -> m a
 withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
