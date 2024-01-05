@@ -999,8 +999,7 @@ subscribeQueues c qs = do
     RQ.addQueue rq $ pendingSubs c
   u <- askUnliftIO
   -- only "checked" queues are subscribed
-  rs <- (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
-  pure rs
+  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
