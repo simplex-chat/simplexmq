@@ -107,7 +107,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
             >>= mapM_ (maybeRemove $ delete st sId)
       where
         maybeRemove del = maybe del (remove del)
-        remove del filePath = do
+        remove del filePath =
           ifM
             (doesFileExist filePath)
             ((removeFile filePath >> del) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
