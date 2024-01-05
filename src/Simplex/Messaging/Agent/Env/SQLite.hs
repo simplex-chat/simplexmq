@@ -94,6 +94,7 @@ data AgentConfig = AgentConfig
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
     maxWorkerRestartsPerMin :: Int,
+    maxSubscriptionTimeouts :: Int,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
@@ -161,6 +162,9 @@ defaultAgentConfig =
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
+      -- 3 consecutive subscription timeouts will result in alert to the user
+      -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
+      maxSubscriptionTimeouts = 3,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,

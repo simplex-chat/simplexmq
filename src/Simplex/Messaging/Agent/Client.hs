@@ -210,8 +210,7 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
-import System.Timeout (timeout)
-import UnliftIO (mapConcurrently)
+import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
 import UnliftIO.Directory (getTemporaryDirectory)
 import UnliftIO.Exception (bracket)
@@ -498,10 +497,11 @@ getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSessi
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getClientVar tSess smpClients)
-    >>= either
-      (newProtocolClient c tSess smpClients connectClient reconnectSMPClient)
-      (waitForProtocolClient c tSess)
+    >>= either newClient (waitForProtocolClient c tSess)
   where
+    newClient v = do
+      tc <- newTVarIO 0
+      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient 0 tc) v
     connectClient :: m SMPClient
     connectClient = do
       cfg <- getClientConfig c smpCfg
@@ -539,14 +539,28 @@ reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
   where
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop ->
-        reconnectSMPClient c tSess `catchAgentError` const loop
+      timeoutCounts <- newTVarIO 0
+      withRetryIntervalCount ri $ \n _ loop ->
+        reconnectSMPClient n timeoutCounts c tSess `catchAgentError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
-reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient c tSess@(_, srv, _) =
-  withLockMap_ (reconnectLocks c) tSess "reconnect" $
-    atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
+reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient n tc c tSess@(_, srv, _) = do
+  ts <- liftIO getCurrentTime
+  let label = unwords ["reconnect", show n, show ts]
+  withLockMap_ (reconnectLocks c) tSess label $ do
+    qs <- atomically (RQ.getSessQueues tSess $ pendingSubs c)
+    NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
+    -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
+    let t = (length qs `div` 90 + 1) * tcpTimeout * 3
+    t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
+      Just _ -> atomically $ writeTVar tc 0
+      Nothing -> do
+        tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+        maxTC <- asks $ maxSubscriptionTimeouts . config
+        let err = if tc' >= maxTC then CRITICAL True else INTERNAL
+            msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
   where
     resubscribe :: NonEmpty RcvQueue -> m ()
     resubscribe qs = do
