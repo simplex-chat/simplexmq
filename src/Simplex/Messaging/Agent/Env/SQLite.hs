@@ -28,6 +28,8 @@ module Simplex.Messaging.Agent.Env.SQLite
     NtfSupervisorCommand (..),
     XFTPAgent (..),
     Worker (..),
+    RestartCount (..),
+    updateRestartCount,
   )
 where
 
@@ -40,6 +42,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
+import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
@@ -90,6 +93,7 @@ data AgentConfig = AgentConfig
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
+    maxWorkerRestartsPerMin :: Int,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
@@ -156,6 +160,7 @@ defaultAgentConfig =
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
+      maxWorkerRestartsPerMin = 5,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
@@ -256,5 +261,16 @@ mkInternal = INTERNAL . show
 data Worker = Worker
   { workerId :: Int,
     doWork :: TMVar (),
-    action :: TMVar (Maybe (Async ()))
+    action :: TMVar (Maybe (Async ())),
+    restarts :: TVar RestartCount
   }
+
+data RestartCount = RestartCount
+  { restartMinute :: Int64,
+    restartCount :: Int
+  }
+
+updateRestartCount :: SystemTime -> RestartCount -> RestartCount
+updateRestartCount t (RestartCount minute count) = do
+  let min' = systemSeconds t `div` 60
+   in RestartCount min' $ if minute == min' then count + 1 else 1

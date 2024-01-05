@@ -135,7 +135,7 @@ resumeXFTPRcvWork = void .: getXFTPRcvWorker False
 getXFTPRcvWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe XFTPServer -> m Worker
 getXFTPRcvWorker hasWork c server = do
   ws <- asks $ xftpRcvWorkers . xftpAgent
-  getAgentWorker hasWork c server ws $
+  getAgentWorker "xftp_rcv" hasWork c server ws $
     maybe (runXFTPRcvLocalWorker c) (runXFTPRcvWorker c) server
 
 runXFTPRcvWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> Worker -> m ()
@@ -278,7 +278,7 @@ resumeXFTPSndWork = void .: getXFTPSndWorker False
 getXFTPSndWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe XFTPServer -> m Worker
 getXFTPSndWorker hasWork c server = do
   ws <- asks $ xftpSndWorkers . xftpAgent
-  getAgentWorker hasWork c server ws $
+  getAgentWorker "xftp_snd" hasWork c server ws $
     maybe (runXFTPSndPrepareWorker c) (runXFTPSndWorker c) server
 
 runXFTPSndPrepareWorker :: forall m. AgentMonad m => AgentClient -> Worker -> m ()
@@ -512,7 +512,7 @@ resumeXFTPDelWork = void .: getXFTPDelWorker False
 getXFTPDelWorker :: AgentMonad' m => Bool -> AgentClient -> XFTPServer -> m Worker
 getXFTPDelWorker hasWork c server = do
   ws <- asks $ xftpDelWorkers . xftpAgent
-  getAgentWorker hasWork c server ws $ runXFTPDelWorker c server
+  getAgentWorker "xftp_del" hasWork c server ws $ runXFTPDelWorker c server
 
 runXFTPDelWorker :: forall m. AgentMonad m => AgentClient -> XFTPServer -> Worker -> m ()
 runXFTPDelWorker c srv Worker {doWork} = do

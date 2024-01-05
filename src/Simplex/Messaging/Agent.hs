@@ -927,7 +927,7 @@ resumeConnCmds c connId =
 
 getAsyncCmdWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe SMPServer -> m Worker
 getAsyncCmdWorker hasWork c server =
-  getAgentWorker hasWork c server (asyncCmdWorkers c) (runCommandProcessing c server)
+  getAgentWorker "async_cmd" hasWork c server (asyncCmdWorkers c) (runCommandProcessing c server)
 
 runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> Worker -> m ()
 runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
@@ -1123,7 +1123,7 @@ resumeMsgDelivery = void .:. getDeliveryWorker False
 
 getDeliveryWorker :: AgentMonad' m => Bool -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
 getDeliveryWorker hasWork c cData sq =
-  getAgentWorker' fst mkLock hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
+  getAgentWorker' fst mkLock "msg_delivery" hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
   where
     mkLock w = do
       retryLock <- newEmptyTMVar
