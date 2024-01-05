@@ -148,6 +148,7 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
@@ -273,15 +274,14 @@ data AgentClient = AgentClient
     agentEnv :: Env
   }
 
-getAgentWorker :: (AgentMonad' m, Ord k) => Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT AgentErrorType m ()) -> m Worker
+getAgentWorker :: (AgentMonad' m, Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT AgentErrorType m ()) -> m Worker
 getAgentWorker = getAgentWorker' id pure
 
-getAgentWorker' :: (AgentMonad' m, Ord k) => (a -> Worker) -> (Worker -> STM a) -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT AgentErrorType m ()) -> m a
-getAgentWorker' toW fromW hasWork c key ws work = do
+getAgentWorker' :: forall a k m. (AgentMonad' m, Ord k, Show k) => (a -> Worker) -> (Worker -> STM a) -> String -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT AgentErrorType m ()) -> m a
+getAgentWorker' toW fromW name hasWork c key ws work = do
   atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
   where
     getWorker = TM.lookup key ws
-    deleteWorker wId = mapM_ $ \w -> when (wId == workerId (toW w)) $ TM.delete key ws
     createWorker = do
       w <- fromW =<< newWorker c
       TM.insert key w ws
@@ -289,26 +289,56 @@ getAgentWorker' toW fromW hasWork c key ws work = do
     whenExists w
       | hasWork = hasWorkToDo (toW w) $> w
       | otherwise = pure w
-    runWorker w = do
-      let w'@Worker {workerId} = toW w
-      runWorkerAsync w' . void . runExceptT $
-        work w `agentFinally` atomically (getWorker >>= deleteWorker workerId)
+    runWorker w = runWorkerAsync (toW w) . void $ runExceptT runWork
+      where
+        runWork :: ExceptT AgentErrorType m ()
+        runWork = tryAgentError (work w) >>= restartOrDelete
+        restartOrDelete :: Either AgentErrorType () -> ExceptT AgentErrorType m ()
+        restartOrDelete e_ = do
+          t <- liftIO getSystemTime
+          maxRestarts <- asks $ maxWorkerRestartsPerMin . config
+          -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
+          restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
+          when restart runWork
+        shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
+          | wId == workerId (toW w') =
+              checkRestarts . updateRestartCount t =<< readTVar restarts
+          | otherwise =
+              pure False -- there is a new worker in the map, no action
+          where
+            checkRestarts rc
+              | restartCount rc < maxRestarts = do
+                  writeTVar restarts rc
+                  hasWorkToDo' doWork
+                  void $ tryPutTMVar action Nothing
+                  notifyErr INTERNAL
+                  pure True
+              | otherwise = do
+                  TM.delete key ws
+                  notifyErr $ CRITICAL True
+                  pure False
+              where
+                notifyErr err = do
+                  let e = either ((", error: " <>) . show) (\_ -> ", no error") e_
+                      msg = "Worker " <> name <> " for " <> show key <> " terminated " <> show (restartCount rc) <> " times" <> e
+                  writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
   workerId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
   doWork <- newTMVar ()
   action <- newTMVar Nothing
-  pure Worker {workerId, doWork, action}
+  restarts <- newTVar $ RestartCount 0 0
+  pure Worker {workerId, doWork, action, restarts}
 
 runWorkerAsync :: AgentMonad' m => Worker -> m () -> m ()
-runWorkerAsync Worker {action} worker =
+runWorkerAsync Worker {action} work =
   bracket
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
     (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
     (\a -> when (isNothing a) start) -- start worker if it's not running
   where
-    start = atomically . putTMVar action . Just =<< async worker
+    start = atomically . putTMVar action . Just =<< async work
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
@@ -1288,11 +1318,11 @@ withWork c doWork getWork action =
   withStore' c getWork >>= \case
     Right (Just r) -> action r
     Right Nothing -> noWork
-    Left e@SEWorkItemError {} -> noWork >> notifyErr e
-    Left e -> notifyErr e
+    Left e@SEWorkItemError {} -> noWork >> notifyErr (CRITICAL False) e
+    Left e -> notifyErr INTERNAL e
   where
     noWork = liftIO $ noWorkToDo doWork
-    notifyErr e = atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ show e)
+    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err $ show e)
 
 noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
