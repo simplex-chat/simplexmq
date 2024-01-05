@@ -343,10 +343,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPDelete queueId -> unliftIO u $ do
+              CPDelete queueId' -> unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
                 stats <- asks serverStats
+                queueId <- atomically (getQueue st SSender queueId') >>= \case
+                  Left _ -> pure queueId' -- fallback to using as recipientId directly
+                  Right QueueRec {recipientId} -> pure recipientId
                 r <- atomically $
                   deleteQueue st queueId $>>= \() ->
                     Right <$> delMsgQueueSize ms queueId
