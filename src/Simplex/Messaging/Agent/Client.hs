@@ -310,7 +310,7 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
               | restartCount rc < maxRestarts = do
                   writeTVar restarts rc
                   hasWorkToDo' doWork
-                  writeTMVar action Nothing
+                  void $ tryPutTMVar action Nothing
                   notifyErr INTERNAL
                   pure True
               | otherwise = do
