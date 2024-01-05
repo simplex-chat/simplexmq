@@ -121,12 +121,12 @@ getFile st party fId = case party of
       Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
       _ -> pure $ Left AUTH
 
-expiredFilePath :: FileStore -> XFTPFileId -> Int64 -> STM (Maybe FilePath)
+expiredFilePath :: FileStore -> XFTPFileId -> Int64 -> STM (Maybe (Maybe FilePath))
 expiredFilePath FileStore {files} sId old =
   TM.lookup sId files
     $>>= \FileRec {filePath, createdAt} ->
       if systemSeconds createdAt < old
-        then readTVar filePath
+        then Just <$> readTVar filePath
         else pure Nothing
 
 ackFile :: FileStore -> RecipientId -> STM (Either XFTPErrorType ())

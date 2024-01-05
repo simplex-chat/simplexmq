@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -103,16 +104,19 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         forM_ sIds $ \sId -> do
           threadDelay 100000
           atomically (expiredFilePath st sId old)
-            >>= mapM_ (remove $ delete st sId)
+            >>= mapM_ (maybeRemove $ delete st sId)
       where
+        maybeRemove del = maybe del (remove del)
         remove del filePath =
           ifM
             (doesFileExist filePath)
-            (removeFile filePath >> del `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+            ((removeFile filePath >> del) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
             del
         delete st sId = do
           withFileLog (`logDeleteFile` sId)
           void $ atomically $ deleteFile st sId
+          FileServerStats {filesExpired} <- asks serverStats
+          atomically $ modifyTVar' filesExpired (+ 1)
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -124,7 +128,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
-      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
+      FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -134,12 +138,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           filesCreated' <- atomically $ swapTVar filesCreated 0
           fileRecipients' <- atomically $ swapTVar fileRecipients 0
           filesUploaded' <- atomically $ swapTVar filesUploaded 0
+          filesExpired' <- atomically $ swapTVar filesExpired 0
           filesDeleted' <- atomically $ swapTVar filesDeleted 0
           files <- atomically $ periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
           fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
-          filesCount' <- atomically $ swapTVar filesCount 0
-          filesSize' <- atomically $ swapTVar filesSize 0
+          filesCount' <- readTVarIO filesCount
+          filesSize' <- readTVarIO filesSize
           hPutStrLn h $
             intercalate
               ","
@@ -154,7 +159,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                 show fileDownloads',
                 show fileDownloadAcks',
                 show filesCount',
-                show filesSize'
+                show filesSize',
+                show filesExpired'
               ]
         liftIO $ threadDelay' interval
 
@@ -391,14 +397,17 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
-        Right d -> do
+        Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
-          fs <- readTVarIO . files =<< asks store
-          let _filesCount = length $ M.keys fs
-              _filesSize = M.foldl' (\n -> (n +) . fromIntegral . size . fileInfo) 0 fs
+          FileStore {files, usedStorage} <- asks store
+          _filesCount <- M.size <$> readTVarIO files
+          _filesSize <- readTVarIO usedStorage
           atomically $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
+          when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
+          when (statsFilesSize /= _filesSize) $ logWarn $ "Files size differs: stats: " <> tshow statsFilesSize <> ", store: " <> tshow _filesSize
+          logInfo $ "Restored " <> tshow (_filesSize `div` 1048576) <> " MBs in " <> tshow _filesCount <> " files"
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
