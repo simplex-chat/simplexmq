@@ -1308,7 +1308,7 @@ hasWorkToDo :: Worker -> STM ()
 hasWorkToDo = hasWorkToDo' . doWork
 
 hasWorkToDo' :: TMVar () -> STM ()
-hasWorkToDo' = (`writeTMVar` ())
+hasWorkToDo' = void . (`tryPutTMVar` ())
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c op = endOperation c op $ case op of
