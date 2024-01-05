@@ -97,6 +97,7 @@ testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =
   XFTPServerConfig
     { xftpPort = xftpTestPort,
+      controlPort = Nothing,
       fileIdSize = 16,
       storeLogFile = Nothing,
       filesPath = xftpServerFiles,

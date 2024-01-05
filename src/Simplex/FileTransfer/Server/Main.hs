@@ -100,6 +100,7 @@ xftpServerCLI cfgPath logPath = do
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
             <> "log_tls_errors: off\n\
+               \# control_port: 5226\n\
                \\n\
                \[FILES]\n"
             <> ("path: " <> filesPath <> "\n")
@@ -144,6 +145,7 @@ xftpServerCLI cfgPath logPath = do
         serverConfig =
           XFTPServerConfig
             { xftpPort = T.unpack $ strictIni "TRANSPORT" "port" ini,
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
               fileIdSize = 16,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,

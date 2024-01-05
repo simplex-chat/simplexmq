@@ -51,6 +51,7 @@ library
       Simplex.FileTransfer.Description
       Simplex.FileTransfer.Protocol
       Simplex.FileTransfer.Server
+      Simplex.FileTransfer.Server.Control
       Simplex.FileTransfer.Server.Env
       Simplex.FileTransfer.Server.Main
       Simplex.FileTransfer.Server.Stats
