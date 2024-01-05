@@ -286,7 +286,7 @@ testFileLog = do
     download g c rpKey1 rId1 digest bytes
     download g c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 3
-  logSize testXFTPStatsBackupFile `shouldReturn` 11
+  logSize testXFTPStatsBackupFile `shouldReturn` 14
 
   threadDelay 100000
 
@@ -313,7 +313,7 @@ testFileLog = do
     -- recipient 2 can download
     download g c rpKey2 rId2 digest bytes
   logSize testXFTPLogFile `shouldReturn` 4
-  logSize testXFTPStatsBackupFile `shouldReturn` 11
+  logSize testXFTPStatsBackupFile `shouldReturn` 14
 
   threadDelay 100000
 
@@ -334,13 +334,13 @@ testFileLog = do
     -- sender can delete - +1 to log
     deleteXFTPChunk c spKey sId
   logSize testXFTPLogFile `shouldReturn` 4
-  logSize testXFTPStatsBackupFile `shouldReturn` 11
+  logSize testXFTPStatsBackupFile `shouldReturn` 14
 
   threadDelay 100000
 
   withXFTPServerStoreLogOn $ \_ -> pure () -- compacts on start
   logSize testXFTPLogFile `shouldReturn` 0
-  logSize testXFTPStatsBackupFile `shouldReturn` 11
+  logSize testXFTPStatsBackupFile `shouldReturn` 14
 
   threadDelay 100000
 
