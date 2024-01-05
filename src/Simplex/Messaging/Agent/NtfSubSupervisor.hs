@@ -136,12 +136,12 @@ processNtfSub c (connId, cmd) = do
 getNtfNTFWorker :: AgentMonad' m => Bool -> AgentClient -> NtfServer -> m Worker
 getNtfNTFWorker hasWork c server = do
   ws <- asks $ ntfWorkers . ntfSupervisor
-  getAgentWorker hasWork c server ws $ runNtfWorker c server
+  getAgentWorker "ntf_ntf" hasWork c server ws $ runNtfWorker c server
 
 getNtfSMPWorker :: AgentMonad' m => Bool -> AgentClient -> SMPServer -> m Worker
 getNtfSMPWorker hasWork c server = do
   ws <- asks $ ntfSMPWorkers . ntfSupervisor
-  getAgentWorker hasWork c server ws $ runNtfSMPWorker c server
+  getAgentWorker "ntf_smp" hasWork c server ws $ runNtfSMPWorker c server
 
 withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
 withNtfServer c action = getNtfServer c >>= mapM_ action
