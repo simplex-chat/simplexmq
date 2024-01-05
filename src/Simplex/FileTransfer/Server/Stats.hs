@@ -88,7 +88,7 @@ setFileServerStats s d = do
   writeTVar (filesSize s) $! _filesSize d
 
 instance StrEncoding FileServerStatsData where
-  strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount} =
+  strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "filesCreated=" <> strEncode _filesCreated,
@@ -97,6 +97,7 @@ instance StrEncoding FileServerStatsData where
         "filesExpired=" <> strEncode _filesExpired,
         "filesDeleted=" <> strEncode _filesDeleted,
         "filesCount=" <> strEncode _filesCount,
+        "filesSize=" <> strEncode _filesSize,
         "filesDownloaded:",
         strEncode _filesDownloaded,
         "fileDownloads=" <> strEncode _fileDownloads,
@@ -110,7 +111,8 @@ instance StrEncoding FileServerStatsData where
     _filesExpired <- "filesExpired=" *> strP <* A.endOfLine <|> pure 0
     _filesDeleted <- "filesDeleted=" *> strP <* A.endOfLine
     _filesCount <- "filesCount=" *> strP <* A.endOfLine <|> pure 0
+    _filesSize <- "filesSize=" *> strP <* A.endOfLine <|> pure 0
     _filesDownloaded <- "filesDownloaded:" *> A.endOfLine *> strP <* A.endOfLine
     _fileDownloads <- "fileDownloads=" *> strP <* A.endOfLine
     _fileDownloadAcks <- "fileDownloadAcks=" *> strP <* A.endOfLine
-    pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize = 0}
+    pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize}

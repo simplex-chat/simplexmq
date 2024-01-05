@@ -406,7 +406,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
-          when (statsFilesSize /= _filesSize) $ logWarn $ "Files size differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
+          when (statsFilesSize /= _filesSize) $ logWarn $ "Files size differs: stats: " <> tshow statsFilesSize <> ", store: " <> tshow _filesSize
           logInfo $ "Restored " <> tshow (_filesSize `div` 1048576) <> " MBs in " <> tshow _filesCount <> " files"
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
