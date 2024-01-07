@@ -676,30 +676,29 @@ data ClientBatch err msg
   | CBLargeTransmission (Request err msg)
 
 batchClientTransmissions :: forall err msg. Bool -> Int -> NonEmpty (PCTransmission err msg) -> [ClientBatch err msg]
-batchClientTransmissions batch blkSize ts
-  | batch =
-      let (bs, b, _, n, rs) = foldr addToBatch ([], mempty, 0, 0, []) ts
-       in if n == 0 then bs else CBTransmissions b n rs : bs
-  | otherwise = map mkBatch1 $ L.toList ts
+batchClientTransmissions batch bSize
+  | batch = addBatch . foldr addTransmission ([], mempty, 0, 0, [])
+  | otherwise = map mkBatch1 . L.toList
   where
     mkBatch1 :: PCTransmission err msg -> ClientBatch err msg
     mkBatch1 (t, r)
       -- 2 bytes are reserved for pad size
-      | LB.length s <= fromIntegral (blkSize - 2) = CBTransmission (lazyByteString s) r
+      | LB.length s <= fromIntegral (bSize - 2) = CBTransmission (lazyByteString s) r
       | otherwise = CBLargeTransmission r
       where
         s = tEncode t
-    addToBatch :: PCTransmission err msg -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg]) -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg])
-    addToBatch (t, r) (bs, b, len, n, rs)
-      | len' <= blkSize - 3 && n < 255 = (bs, s <> b, len', 1 + n, r : rs)
-      | sLen <= blkSize - 3 = (bs', s, sLen, 1, [r])
-      | otherwise = (CBLargeTransmission r : (if n == 0 then bs else bs'), mempty, 0, 0, [])
+    addTransmission :: PCTransmission err msg -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg]) -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg])
+    addTransmission (t, r) acc@(bs, b, len, n, rs)
+      | len' <= bSize - 3 && n < 255 = (bs, s <> b, len', 1 + n, r : rs)
+      | sLen <= bSize - 3 = (addBatch acc, s, sLen, 1, [r])
+      | otherwise = (CBLargeTransmission r : addBatch acc, mempty, 0, 0, [])
       where
-        s = encodeLarge s'
-        sLen = 2 + (fromIntegral $ LB.length s')
-        s' = tEncode t
+        s = encodeLarge t'
+        sLen = 2 + fromIntegral (LB.length t') -- 2-bytes length is added by encodeLarge
+        t' = tEncode t
         len' = sLen + len
-        bs' = CBTransmissions b n rs : bs
+    addBatch :: ([ClientBatch err msg], Builder, Int, Int, [Request err msg]) -> [ClientBatch err msg]
+    addBatch (bs, b, _, n, rs) = if n == 0 then bs else CBTransmissions b n rs : bs
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
