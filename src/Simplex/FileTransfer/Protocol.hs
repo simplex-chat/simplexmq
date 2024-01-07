@@ -17,6 +17,7 @@ import Control.Applicative ((<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
@@ -394,7 +395,7 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError Builder
 xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
   let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
   xftpEncodeBatch1 $ signTransmission t
@@ -403,10 +404,10 @@ xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
     signTransmission t = ((`C.sign` t) <$> pKey, t)
 
 -- this function uses batch syntax but puts only one transmission in the batch
-xftpEncodeBatch1 :: (Maybe C.ASignature, ByteString) -> Either TransportError ByteString
+xftpEncodeBatch1 :: (Maybe C.ASignature, ByteString) -> Either TransportError Builder
 xftpEncodeBatch1 (sig, t) =
-  let t' = tEncodeBatch 1 . smpEncode . Large $ tEncode (sig, t)
-   in first (const TELargeMsg) $ C.pad t' xftpBlockSize
+  let t' = tEncodeBatch 1 . encodeLarge $ tEncode (sig, t)
+   in first (const TELargeMsg) $ C.pad' t' xftpBlockSize
 
 xftpDecodeTransmission :: ProtocolEncoding e c => SessionId -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission sessionId t = do

@@ -87,8 +87,10 @@ import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
+import Data.ByteString.Builder (Builder, lazyByteString, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
@@ -136,7 +138,7 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue ByteString,
+    sndQ :: TBQueue Builder,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
@@ -668,40 +670,36 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       (: []) <$> getResponse c r
 
 data ClientBatch err msg
-  = -- ByteString in CBTransmissions does not include count byte, it is added by tEncodeBatch
-    CBTransmissions ByteString Int [Request err msg]
-  | CBTransmission ByteString (Request err msg)
+  = -- Builder in CBTransmissions does not include count byte, it is added by tEncodeBatch
+    CBTransmissions Builder Int [Request err msg]
+  | CBTransmission Builder (Request err msg)
   | CBLargeTransmission (Request err msg)
 
--- | encodes and batches transmissions into blocks
 batchClientTransmissions :: forall err msg. Bool -> Int -> NonEmpty (PCTransmission err msg) -> [ClientBatch err msg]
-batchClientTransmissions batch blkSize
-  | batch = reverse . mkBatch []
-  | otherwise = map mkBatch1 . L.toList
+batchClientTransmissions batch blkSize ts
+  | batch =
+      let (bs, b, _, n, rs) = foldr addToBatch ([], mempty, 0, 0, []) ts
+       in if n == 0 then bs else CBTransmissions b n rs : bs
+  | otherwise = map mkBatch1 $ L.toList ts
   where
-    mkBatch :: [ClientBatch err msg] -> NonEmpty (PCTransmission err msg) -> [ClientBatch err msg]
-    mkBatch bs ts =
-      let (b, ts_) = encodeBatch "" 0 [] ts
-          bs' = b : bs
-       in maybe bs' (mkBatch bs') ts_
     mkBatch1 :: PCTransmission err msg -> ClientBatch err msg
     mkBatch1 (t, r)
-      | B.length s <= blkSize - 2 = CBTransmission s r
+      -- 2 bytes are reserved for pad size
+      | LB.length s <= fromIntegral (blkSize - 2) = CBTransmission (lazyByteString s) r
       | otherwise = CBLargeTransmission r
       where
         s = tEncode t
-    encodeBatch :: ByteString -> Int -> [Request err msg] -> NonEmpty (PCTransmission err msg) -> (ClientBatch err msg, Maybe (NonEmpty (PCTransmission err msg)))
-    encodeBatch s n rs ts@((t, r) :| ts_)
-      | B.length s' <= blkSize - 3 && n < 255 =
-          case L.nonEmpty ts_ of
-            Just ts' -> encodeBatch s' n' rs' ts'
-            Nothing -> (CBTransmissions s' n' (reverse rs'), Nothing)
-      | n == 0 = (CBLargeTransmission r, L.nonEmpty ts_)
-      | otherwise = (CBTransmissions s n (reverse rs), Just ts)
+    addToBatch :: PCTransmission err msg -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg]) -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg])
+    addToBatch (t, r) (bs, b, len, n, rs)
+      | len' <= blkSize - 3 && n < 255 = (bs, s <> b, len', 1 + n, r : rs)
+      | sLen <= blkSize - 3 = (bs', s, sLen, 1, [r])
+      | otherwise = (CBLargeTransmission r : (if n == 0 then bs else bs'), mempty, 0, 0, [])
       where
-        s' = s <> smpEncode (Large $ tEncode t)
-        n' = n + 1
-        rs' = r : rs
+        s = encodeLarge s'
+        sLen = 2 + (fromIntegral $ LB.length s')
+        s' = tEncode t
+        len' = sLen + len
+        bs' = CBTransmissions b n rs : bs
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
@@ -711,12 +709,12 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | LB.length (toLazyByteString s) > fromIntegral (blockSize - 2) = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s
-          | batch = tEncodeBatch 1 . smpEncode . Large $ tEncode t
-          | otherwise = tEncode t
+          | batch = tEncodeBatch 1 . encodeLarge $ tEncode t
+          | otherwise = lazyByteString $ tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
 getResponse :: ProtocolClient err msg -> Request err msg -> IO (Response err msg)

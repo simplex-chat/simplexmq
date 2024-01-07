@@ -13,7 +13,7 @@ import Control.Monad
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
-import Data.ByteString.Builder (Builder, byteString)
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -138,7 +138,7 @@ sendXFTPCommand c@XFTPClient {http2Client = HTTP2Client {sessionId}} pKey fId cm
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   sendXFTPTransmission c t chunkSpec_
 
-sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
+sendXFTPTransmission :: XFTPClient -> Builder -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}} t chunkSpec_ = do
   let req = H.requestStreaming N.methodPost "/" [] streamBody
       reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
@@ -154,7 +154,7 @@ sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessio
   where
     streamBody :: (Builder -> IO ()) -> IO () -> IO ()
     streamBody send done = do
-      send $ byteString t
+      send t
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
         withFile filePath ReadMode $ \h -> do
           hSeek h AbsoluteSeek $ fromIntegral chunkOffset

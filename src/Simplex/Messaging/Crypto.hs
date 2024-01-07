@@ -140,6 +140,7 @@ module Simplex.Messaging.Crypto
 
     -- * Message padding / un-padding
     pad,
+    pad',
     unPad,
 
     -- * X509 Certificates
@@ -190,8 +191,10 @@ import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
+import Data.ByteString.Builder (Builder, byteString, toLazyByteString, word16BE)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
@@ -917,6 +920,14 @@ pad msg paddedLen
   | otherwise = Left CryptoLargeMsgError
   where
     len = B.length msg
+    padLen = paddedLen - len - 2
+
+pad' :: Builder -> Int -> Either CryptoError Builder
+pad' msg paddedLen
+  | len <= maxMsgLen && padLen >= 0 = Right $ word16BE (fromIntegral len) <> msg <> byteString (B.replicate padLen '#')
+  | otherwise = Left CryptoLargeMsgError
+  where
+    len = fromIntegral $ LB.length $ toLazyByteString msg
     padLen = paddedLen - len - 2
 
 unPad :: ByteString -> Either CryptoError ByteString

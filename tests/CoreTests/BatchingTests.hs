@@ -4,8 +4,9 @@ module CoreTests.BatchingTests (batchingTests) where
 
 import Control.Concurrent.STM
 import Control.Monad
+import Data.ByteString.Builder (Builder, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -35,7 +36,7 @@ testBatchSubscriptions = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions n1 s1, TBTransmissions n2 s2, TBTransmissions n3 s3] <- pure batches
-  (n1, n2, n3) `shouldBe` (90, 90, 20)
+  (n1, n2, n3) `shouldBe` (20, 90, 90)
   all lenOk [s1, s2, s3] `shouldBe` True
 
 testBatchWithMessage :: IO ()
@@ -51,7 +52,7 @@ testBatchWithMessage = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 2
   [TBTransmissions n1 s1, TBTransmissions n2 s2] <- pure batches
-  (n1, n2) `shouldBe` (60, 41)
+  (n1, n2) `shouldBe` (55, 46)
   all lenOk [s1, s2] `shouldBe` True
 
 testBatchWithLargeMessage :: IO ()
@@ -70,7 +71,7 @@ testBatchWithLargeMessage = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions n1 s1, TBLargeTransmission, TBTransmissions n2 s2, TBTransmissions n3 s3] <- pure batches
-  (n1, n2, n3) `shouldBe` (60, 90, 10)
+  (n1, n2, n3) `shouldBe` (60, 10, 90)
   all lenOk [s1, s2, s3] `shouldBe` True
 
 testClientBatchSubscriptions :: IO ()
@@ -83,8 +84,8 @@ testClientBatchSubscriptions = do
   let batches = batchClientTransmissions True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
   [CBTransmissions s1 n1 rs1, CBTransmissions s2 n2 rs2, CBTransmissions s3 n3 rs3] <- pure batches
-  (n1, n2, n3) `shouldBe` (90, 90, 20)
-  (length rs1, length rs2, length rs3) `shouldBe` (90, 90, 20)
+  (n1, n2, n3) `shouldBe` (20, 90, 90)
+  (length rs1, length rs2, length rs3) `shouldBe` (20, 90, 90)
   all lenOk [s1, s2, s3] `shouldBe` True
 
 testClientBatchWithMessage :: IO ()
@@ -101,8 +102,8 @@ testClientBatchWithMessage = do
   let batches = batchClientTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 2
   [CBTransmissions s1 n1 rs1, CBTransmissions s2 n2 rs2] <- pure batches
-  (n1, n2) `shouldBe` (60, 41)
-  (length rs1, length rs2) `shouldBe` (60, 41)
+  (n1, n2) `shouldBe` (55, 46)
+  (length rs1, length rs2) `shouldBe` (55, 46)
   all lenOk [s1, s2] `shouldBe` True
 
 testClientBatchWithLargeMessage :: IO ()
@@ -123,16 +124,16 @@ testClientBatchWithLargeMessage = do
   let batches = batchClientTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
   [CBTransmissions s1 n1 rs1, CBLargeTransmission _, CBTransmissions s2 n2 rs2, CBTransmissions s3 n3 rs3] <- pure batches
-  (n1, n2, n3) `shouldBe` (60, 90, 10)
-  (length rs1, length rs2, length rs3) `shouldBe` (60, 90, 10)
+  (n1, n2, n3) `shouldBe` (60, 10, 90)
+  (length rs1, length rs2, length rs3) `shouldBe` (60, 10, 90)
   all lenOk [s1, s2, s3] `shouldBe` True
   --
   let cmds' = [send] <> subs1 <> subs2
   let batches' = batchClientTransmissions True smpBlockSize $ L.fromList cmds'
   length batches' `shouldBe` 3
   [CBLargeTransmission _, CBTransmissions s1' n1' rs1', CBTransmissions s2' n2' rs2'] <- pure batches'
-  (n1', n2') `shouldBe` (90, 70)
-  (length rs1', length rs2') `shouldBe` (90, 70)
+  (n1', n2') `shouldBe` (70, 90)
+  (length rs1', length rs2') `shouldBe` (70, 90)
   all lenOk [s1', s2'] `shouldBe` True
 
 randomSUB :: ByteString -> IO (Maybe C.ASignature, ByteString)
@@ -169,8 +170,10 @@ randomSENDCmd c len = do
   msg <- atomically $ C.randomBytes len g
   mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
 
-lenOk :: ByteString -> Bool
-lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2
+lenOk :: Builder -> Bool
+lenOk s = 0 < len && len <= smpBlockSize - 2
+  where
+    len = fromIntegral . LB.length $ toLazyByteString s
 
 lenOk1 :: TransportBatch -> Bool
 lenOk1 = \case

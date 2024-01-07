@@ -160,8 +160,11 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Builder (Builder, char8, lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy.Internal as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
@@ -1292,7 +1295,7 @@ tPut th delay_ = fmap concat . mapM tPutBatch . batchTransmissions (batch th) (b
       TBTransmissions n s -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
       TBTransmission s -> (: []) <$> tPutLog th s
 
-tPutLog :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutLog :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
 tPutLog th s = do
   r <- tPutBlock th s
   case r of
@@ -1301,42 +1304,38 @@ tPutLog th s = do
   pure r
 
 -- ByteString does not include length byte, it is added by tEncodeBatch
-data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString | TBLargeTransmission
+data TransportBatch = TBTransmissions Int Builder | TBTransmission Builder | TBLargeTransmission
 
 -- | encodes and batches transmissions into blocks,
 batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
-batchTransmissions batch bSize
-  | batch = reverse . mkBatch [] . L.map tEncode
-  | otherwise = map (mkBatch1 . tEncode) . L.toList
+batchTransmissions batch bSize ts
+  | batch =
+      let (bs, b, _, n) = foldr addToBatch ([], mempty, 0, 0) ts
+        in if n == 0 then bs else TBTransmissions n b : bs
+  | otherwise = map (mkBatch1 . tEncode) (L.toList ts)
   where
-    mkBatch :: [TransportBatch] -> NonEmpty ByteString -> [TransportBatch]
-    mkBatch rs ts =
-      let (n, s, ts_) = encodeBatch 0 "" ts
-          r = if n == 0 then TBLargeTransmission else TBTransmissions n s
-          rs' = r : rs
-       in case ts_ of
-            Just ts' -> mkBatch rs' ts'
-            _ -> rs'
-    mkBatch1 :: ByteString -> TransportBatch
-    mkBatch1 s = if B.length s > bSize - 2 then TBLargeTransmission else TBTransmission s
-    encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
-    encodeBatch n s ts@(t :| ts_)
-      | n == 255 = (n, s, Just ts)
-      | otherwise =
-          let s' = s <> smpEncode (Large t)
-              n' = n + 1
-           in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
-                then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
-                else case L.nonEmpty ts_ of
-                  Just ts' -> encodeBatch n' s' ts'
-                  _ -> (n', s', Nothing)
+    mkBatch1 :: LB.ByteString -> TransportBatch
+    mkBatch1 s
+      | LB.length s > fromIntegral (bSize - 2) = TBLargeTransmission
+      | otherwise = TBTransmission $ lazyByteString s
+    addToBatch :: SentRawTransmission -> ([TransportBatch], Builder, Int, Int) -> ([TransportBatch], Builder, Int, Int)
+    addToBatch t (bs, b, len, n)
+      | len' <= bSize - 3 && n < 255 = (bs, s <> b, len', 1 + n)
+      | sLen <= bSize - 3 = (bs', s, sLen, 1)
+      | otherwise = (TBLargeTransmission : (if n == 0 then bs else bs'), mempty, 0, 0)
+      where
+        s = encodeLarge s'
+        sLen = 2 + fromIntegral (LB.length s')
+        s' = tEncode t
+        len' = sLen + len
+        bs' = TBTransmissions n b : bs
 
-tEncode :: SentRawTransmission -> ByteString
-tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
+tEncode :: SentRawTransmission -> LB.ByteString
+tEncode (sig, t) = LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
 {-# INLINE tEncode #-}
 
-tEncodeBatch :: Int -> ByteString -> ByteString
-tEncodeBatch n s = lenEncode n `B.cons` s
+tEncodeBatch :: Int -> Builder -> Builder
+tEncodeBatch n s = char8 (lenEncode n) <> s
 {-# INLINE tEncodeBatch #-}
 
 encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> ByteString

@@ -67,9 +67,10 @@ import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
+import Data.ByteString.Builder (Builder, byteString, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
@@ -133,6 +134,9 @@ class Transport c where
 
   -- | Write bytes to connection
   cPut :: c -> ByteString -> IO ()
+
+  -- | Write bytes to connection
+  cPut' :: c -> LB.ByteString -> IO ()
 
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
   getLn :: c -> IO ByteString
@@ -217,8 +221,11 @@ instance Transport TLS where
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
-    withTimedErr t_ . T.sendData tlsContext $ BL.fromStrict s
+  cPut cxt = cPut' cxt . LB.fromStrict
+
+  cPut' :: TLS -> LB.ByteString -> IO ()
+  cPut' TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
+    withTimedErr t_ $ T.sendData tlsContext s
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
@@ -309,10 +316,10 @@ serializeTransportError = \case
   TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
-tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutBlock :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, blockSize} block =
-  bimapM (const $ pure TELargeMsg) (cPut c) $
-    C.pad block blockSize
+  bimapM (const $ pure TELargeMsg) (cPut' c . toLazyByteString) $
+    C.pad' block blockSize
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
@@ -356,7 +363,7 @@ smpThHandle :: forall c. THandle c -> Version -> THandle c
 smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
-sendHandshake th = ExceptT . tPutBlock th . smpEncode
+sendHandshake th = ExceptT . tPutBlock th . byteString . smpEncode
 
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
