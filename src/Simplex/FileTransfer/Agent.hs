@@ -58,7 +58,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
-import Simplex.Messaging.Util (liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (liftError, toBS, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -323,7 +323,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               fileName = takeFileName filePath
           fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
           when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
-          let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
+          let fileHdr = toBS $ smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize
               chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
               chunkSizes' = map fromIntegral chunkSizes

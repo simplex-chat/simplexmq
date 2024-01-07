@@ -364,7 +364,7 @@ data AgentCommand
 
 instance StrEncoding AgentCommand where
   strEncode = \case
-    AClientCommand (APC _ cmd) -> strEncode (ACClient, Str $ serializeCommand cmd)
+    AClientCommand (APC _ cmd) -> strEncode (ACClient, Str' $ serializeCommand cmd)
     AInternalCommand cmd -> strEncode (ACInternal, cmd)
   strP =
     strP_ >>= \case
@@ -588,7 +588,7 @@ data MsgBase = MsgBase
     -- | Hash of the message as computed by agent.
     internalHash :: MsgHash
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 

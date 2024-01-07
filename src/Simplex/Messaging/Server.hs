@@ -45,12 +45,15 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
+import Data.ByteString.Builder (char8, toLazyByteString)
+import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (intercalate)
+import Data.List (intercalate, intersperse)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
@@ -287,13 +290,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 active <- unliftIO u (asks clients) >>= readTVarIO
                 hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
                 forM_ (M.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
-                  connected' <- bshow <$> readTVarIO connected
+                  connected' <- bshow' <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
                   now <- liftIO getSystemTime
                   let age = systemSeconds now - systemSeconds createdAt
-                  subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
-                  hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
+                  subscriptions' <- bshow' . M.size <$> readTVarIO subscriptions
+                  LB.hPutStrLn h . toLazyByteString . mconcat $ intersperse (char8 ',') [bshow' cid, strEncode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow' age, subscriptions']
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -732,11 +735,11 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
+          | lenB msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = case status qr of
               QueueOff -> return $ err AUTH
               QueueActive ->
-                case C.maxLenBS msgBody of
+                case C.maxLenBS $ toBS msgBody of
                   Left _ -> pure $ err LARGE_MSG
                   Right body -> do
                     msg_ <- time "SEND" $ do
@@ -787,7 +790,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
             mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
               cbNonce <- C.randomCbNonce ntfNonceDrg
               let msgMeta = NMsgMeta {msgId, msgTs}
-                  encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
+                  encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (toBS $ smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
         deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
@@ -900,7 +903,7 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
         getMessages = if keepMsgs then snapshotMsgQueue else flushMsgQueue
         saveQueueMsgs ms h rId =
           atomically (getMessages ms rId)
-            >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
+            >>= mapM_ (LB.hPutStrLn h . strEncode' . MLRv3 rId)
 
 restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m Int
 restoreServerMessages = asks (storeMsgsFile . config) >>= \case
@@ -939,7 +942,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
                     | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
                     | otherwise -> pure (True, False)
                   MessageQuota {} -> writeMsg q msg $> (False, False)
-              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
+              when logFull . logError . decodeLatin1 . toBS $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
               pure $ if isExpired then expired + 1 else expired
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
@@ -955,7 +958,7 @@ saveServerStats =
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
-      B.writeFile f $ strEncode stats
+      BB.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
 restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ()

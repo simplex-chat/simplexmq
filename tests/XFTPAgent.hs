@@ -14,7 +14,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
@@ -28,7 +28,7 @@ import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), Bro
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
-import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Encoding.String (strEncode')
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
@@ -56,7 +56,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
     it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
     let srv1 = testXFTPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+      testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (LB.unpack $ strEncode' srv1) NETWORK)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testXFTPServer2

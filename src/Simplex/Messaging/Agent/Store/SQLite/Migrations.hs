@@ -32,7 +32,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isNothing, mapMaybe)
 import Data.Text (Text)
-import Data.Text.Encoding (decodeLatin1)
+import Data.Text.Lazy.Encoding (decodeLatin1)
 import Data.Time.Clock (getCurrentTime)
 import Database.SQLite.Simple (Connection, Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
@@ -132,8 +132,8 @@ run st = \case
       where
         insert db = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
         updateServers db = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
-          let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
-           in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
+          let hs = decodeLatin1 . strEncode' $ ([h, h'] :: NonEmpty TransportHost)
+           in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode' h)
     runDown DownMigration {downName, downQuery} = withTransaction' st $ \db -> do
       execSQL db downQuery
       DB.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)

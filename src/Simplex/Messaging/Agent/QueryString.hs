@@ -2,6 +2,7 @@ module Simplex.Messaging.Agent.QueryString where
 
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List (find)
@@ -16,7 +17,7 @@ data QSPEscaping = QEscape | QNoEscaping
   deriving (Show)
 
 instance StrEncoding QueryStringParams where
-  strEncode (QSP esc q) = case esc of
+  strEncode (QSP esc q) = byteString $ case esc of
     QEscape -> Q.renderSimpleQuery False q
     QNoEscaping ->
       Q.renderQueryPartialEscape False $

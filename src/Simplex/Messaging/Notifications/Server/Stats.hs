@@ -6,7 +6,6 @@ module Simplex.Messaging.Notifications.Server.Stats where
 
 import Control.Applicative (optional)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.ByteString.Char8 as B
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
@@ -83,7 +82,7 @@ setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} =
 
 instance StrEncoding NtfServerStatsData where
   strEncode NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs} =
-    B.unlines
+    unlines_
       [ "fromTime=" <> strEncode _fromTime,
         "tknCreated=" <> strEncode _tknCreated,
         "tknVerified=" <> strEncode _tknVerified,

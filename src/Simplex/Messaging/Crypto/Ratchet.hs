@@ -23,6 +23,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -39,6 +40,7 @@ import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
+import Simplex.Messaging.Util (toBS)
 import Simplex.Messaging.Version
 import UnliftIO.STM
 
@@ -73,7 +75,7 @@ data E2ERatchetParamsUri (a :: Algorithm)
 instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
   strEncode (E2ERatchetParamsUri vs key1 key2) =
     strEncode $
-      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncodeList [key1, key2])]
+      QSP QNoEscaping [("v", toBS $ strEncode vs), ("x3dh", toBS $ strEncodeList [key1, key2])]
   strP = do
     query <- strP
     vs <- queryParam "v" query
@@ -196,7 +198,7 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance ToField MessageKey where toField = toField . smpEncode
+instance ToField MessageKey where toField = toField . smpEncode'
 
 instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
@@ -305,15 +307,15 @@ instance Encoding EncRatchetMessage where
     (emHeader, emAuthTag, Tail emBody) <- smpP
     pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
-rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
+rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (Builder, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
 rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
-  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV paddedHeaderLen rcAD msgHeader
+  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV paddedHeaderLen rcAD $ toBS msgHeader
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  let emHeader = smpEncode EncMessageHeader {ehVersion = minVersion rcVersion, ehBody, ehAuthTag, ehIV}
+  let emHeader = toBS $ smpEncode EncMessageHeader {ehVersion = minVersion rcVersion, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
   let msg' = smpEncode EncRatchetMessage {emHeader, emBody, emAuthTag}
       -- state.Ns += 1

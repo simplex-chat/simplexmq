@@ -16,7 +16,8 @@ module Simplex.FileTransfer.Protocol where
 import Control.Applicative ((<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
@@ -53,7 +54,7 @@ import Simplex.Messaging.Protocol
     tParse,
   )
 import Simplex.Messaging.Transport (SessionId, TransportError (..))
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow', toBS, (<$?>))
 import Simplex.Messaging.Version
 
 currentXFTPVersion :: Version
@@ -183,7 +184,7 @@ instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
     FACK -> e FACK_
     PING -> e PING_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> Builder
       e = smpEncode
 
   protocolP v tag = (\(FileCmd _ c) -> checkParty c) <$?> protocolP v (FCT (sFileParty @p) tag)
@@ -283,7 +284,7 @@ instance ProtocolEncoding XFTPErrorType FileResponse where
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> Builder
       e = smpEncode
 
   protocolP _v = \case
@@ -347,8 +348,8 @@ data XFTPErrorType
 
 instance StrEncoding XFTPErrorType where
   strEncode = \case
-    CMD e -> "CMD " <> bshow e
-    e -> bshow e
+    CMD e -> "CMD " <> bshow' e
+    e -> bshow' e
   strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
 
 instance Encoding XFTPErrorType where
@@ -394,19 +395,20 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError Builder
 xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
-  let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
+  let t = toBS $ encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
   xftpEncodeBatch1 $ signTransmission t
   where
     signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
+    signTransmission t = ((`C.sign` t) <$> pKey, byteString t)
 
 -- this function uses batch syntax but puts only one transmission in the batch
-xftpEncodeBatch1 :: (Maybe C.ASignature, ByteString) -> Either TransportError ByteString
+-- TODO optimize with Builder?
+xftpEncodeBatch1 :: (Maybe C.ASignature, Builder) -> Either TransportError Builder
 xftpEncodeBatch1 (sig, t) =
-  let t' = tEncodeBatch 1 . smpEncode . Large $ tEncode (sig, t)
-   in first (const TELargeMsg) $ C.pad t' xftpBlockSize
+  let t' = toBS . tEncodeBatch 1 . smpEncode . Large' $ tEncode (sig, t)
+   in bimap (const TELargeMsg) byteString $ C.pad t' xftpBlockSize
 
 xftpDecodeTransmission :: ProtocolEncoding e c => SessionId -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission sessionId t = do

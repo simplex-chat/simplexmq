@@ -24,6 +24,7 @@ import Control.Applicative (optional)
 import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAsciiLower, isDigit, isHexDigit)
@@ -48,7 +49,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, bshow', toBS, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -62,15 +63,11 @@ data TransportHost
   deriving (Eq, Ord, Show)
 
 instance Encoding TransportHost where
-  smpEncode = smpEncode . strEncode
+  smpEncode = smpEncode . encodeTransportHost
   smpP = parseAll strP <$?> smpP
 
 instance StrEncoding TransportHost where
-  strEncode = \case
-    THIPv4 (a1, a2, a3, a4) -> B.intercalate "." $ map bshow [a1, a2, a3, a4]
-    THIPv6 addr -> bshow $ toIPv6w addr
-    THOnionHost host -> host
-    THDomainName host -> B.pack host
+  strEncode = byteString . encodeTransportHost
   strP =
     A.choice
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
@@ -83,6 +80,13 @@ instance StrEncoding TransportHost where
       validIP :: Int -> Either String Word8
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
+
+encodeTransportHost :: TransportHost -> ByteString
+encodeTransportHost = \case
+  THIPv4 (a1, a2, a3, a4) -> B.intercalate "." $ map bshow [a1, a2, a3, a4]
+  THIPv6 addr -> bshow $ toIPv6w addr
+  THOnionHost host -> host
+  THDomainName host -> B.pack host
 
 instance ToJSON TransportHost where
   toEncoding = strToJEncoding
@@ -128,7 +132,7 @@ runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials} proxyUsername host port keyHash client = do
-  let hostName = B.unpack $ strEncode host
+  let hostName = B.unpack . toBS $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
@@ -190,7 +194,7 @@ newtype SocksProxy = SocksProxy SockAddr
 instance Show SocksProxy where show (SocksProxy addr) = show addr
 
 instance StrEncoding SocksProxy where
-  strEncode = B.pack . show
+  strEncode = bshow'
   strP = do
     host <- maybe defaultSocksHost tupleToHostAddress <$> optional ipv4P
     port <- fromMaybe 9050 <$> optional (A.char ':' *> (fromInteger <$> A.decimal))

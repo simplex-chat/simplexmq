@@ -28,7 +28,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Util (safeDecodeUtf8, toBS)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -95,7 +95,7 @@ smpServerCLI cfgPath logPath =
           where
             createServerPassword = \case
               ServerPassword s -> pure s
-              SPRandom -> BasicAuth . strEncode <$> (atomically . C.randomBytes 32 =<< C.newRandom)
+              SPRandom -> BasicAuth . toBS . strEncode <$> (atomically . C.randomBytes 32 =<< C.newRandom)
             iniFileContent host basicAuth =
               "[STORE_LOG]\n\
               \# The server uses STM memory for persistence,\n\
@@ -120,7 +120,7 @@ smpServerCLI cfgPath logPath =
                    \# The password will not be shared with the connecting contacts, you must share it only\n\
                    \# with the users who you want to allow creating messaging queues on your server.\n"
                 <> ( case basicAuth of
-                      Just auth -> "create_password: " <> T.unpack (safeDecodeUtf8 $ strEncode auth)
+                      Just auth -> "create_password: " <> T.unpack (safeDecodeUtf8 . toBS $ strEncode auth)
                       _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
                    )
                 <> "\n\n\

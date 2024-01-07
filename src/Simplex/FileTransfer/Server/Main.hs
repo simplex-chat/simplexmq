@@ -7,7 +7,7 @@
 
 module Simplex.FileTransfer.Server.Main where
 
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -104,7 +104,7 @@ xftpServerCLI cfgPath logPath = do
                \\n\
                \[FILES]\n"
             <> ("path: " <> filesPath <> "\n")
-            <> ("storage_quota: " <> B.unpack (strEncode fileSizeQuota) <> "\n")
+            <> ("storage_quota: " <> LB.unpack (strEncode' fileSizeQuota) <> "\n")
             <> "\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\

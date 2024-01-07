@@ -14,12 +14,14 @@ module Simplex.Messaging.Notifications.Protocol where
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
+import Data.ByteString.Builder (Builder, byteString)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import qualified Data.Text.Lazy.Encoding as LT
 import Data.Type.Equality
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -31,7 +33,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
-import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
+import Simplex.Messaging.Util (eitherToMaybe, toBS, (<$?>))
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -198,7 +200,7 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
     SDEL -> e SDEL_
     PING -> e PING_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> Builder
       e = smpEncode
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
@@ -301,7 +303,7 @@ instance ProtocolEncoding ErrorType NtfResponse where
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> Builder
       e = smpEncode
 
   protocolP _v = \case
@@ -387,7 +389,7 @@ instance StrEncoding PushProvider where
 
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
+instance ToField PushProvider where toField = toField . LT.decodeLatin1 . strEncode'
 
 data DeviceToken = DeviceToken PushProvider ByteString
   deriving (Eq, Ord, Show)
@@ -397,7 +399,7 @@ instance Encoding DeviceToken where
   smpP = DeviceToken <$> smpP <*> smpP
 
 instance StrEncoding DeviceToken where
-  strEncode (DeviceToken p t) = strEncode p <> " " <> t
+  strEncode (DeviceToken p t) = strEncode p <> " " <> byteString t
   strP = DeviceToken <$> strP <* A.space <*> hexStringP
     where
       hexStringP =
@@ -405,8 +407,8 @@ instance StrEncoding DeviceToken where
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where
-  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
-  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
+  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= LT.decodeLatin1 (strEncode' pp) <> "token" .= decodeLatin1 t
+  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= LT.decodeLatin1 (strEncode' pp), "token" .= decodeLatin1 t]
 
 instance FromJSON DeviceToken where
   parseJSON = J.withObject "DeviceToken" $ \o -> do
@@ -455,7 +457,7 @@ instance Encoding NtfSubStatus where
     NSInactive -> "INACTIVE"
     NSEnd -> "END"
     NSAuth -> "AUTH"
-    NSErr err -> "ERR " <> err
+    NSErr err -> "ERR " <> byteString err
   smpP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NSNew
@@ -510,11 +512,11 @@ instance StrEncoding NtfTknStatus where
 
 instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 
-instance ToField NtfTknStatus where toField = toField . decodeLatin1 . smpEncode
+instance ToField NtfTknStatus where toField = toField . LT.decodeLatin1 . smpEncode'
 
 instance ToJSON NtfTknStatus where
-  toEncoding = JE.text . decodeLatin1 . smpEncode
-  toJSON = J.String . decodeLatin1 . smpEncode
+  toEncoding = JE.text . decodeLatin1 . toBS . smpEncode
+  toJSON = J.String . decodeLatin1 . toBS . smpEncode
 
 instance FromJSON NtfTknStatus where
   parseJSON = J.withText "NtfTknStatus" $ either fail pure . smpDecode . encodeUtf8

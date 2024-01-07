@@ -26,6 +26,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (SessionId, TLS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
+import Simplex.Messaging.Util (toBS)
 import UnliftIO.STM
 import UnliftIO.Timeout
 
@@ -163,4 +164,4 @@ runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) ->
 runHTTP2ClientWith bufferSize host setup client = setup $ withHTTP2 bufferSize run
   where
     run :: H.Config -> SessionId -> IO a
-    run cfg sessId = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client sessId
+    run cfg sessId = H.run (ClientConfig "https" (toBS $ strEncode host) 20) cfg $ client sessId

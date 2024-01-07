@@ -87,8 +87,10 @@ import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
@@ -109,7 +111,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, raceAny_, threadDelay')
+import Simplex.Messaging.Util (bshow, lenB, raceAny_, threadDelay', toBS)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 
@@ -136,7 +138,7 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue ByteString,
+    sndQ :: TBQueue Builder,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
@@ -289,7 +291,7 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     publicHost = find (not . isOnionHost) hosts
 
 protocolClientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient err msg -> String
-protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
+protocolClientServer = LB.unpack . strEncode' . snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
 
@@ -669,8 +671,8 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
 
 data ClientBatch err msg
   = -- ByteString in CBTransmissions does not include count byte, it is added by tEncodeBatch
-    CBTransmissions ByteString Int [Request err msg]
-  | CBTransmission ByteString (Request err msg)
+    CBTransmissions Builder Int [Request err msg]
+  | CBTransmission Builder (Request err msg)
   | CBLargeTransmission (Request err msg)
 
 -- | encodes and batches transmissions into blocks
@@ -686,20 +688,20 @@ batchClientTransmissions batch blkSize
        in maybe bs' (mkBatch bs') ts_
     mkBatch1 :: PCTransmission err msg -> ClientBatch err msg
     mkBatch1 (t, r)
-      | B.length s <= blkSize - 2 = CBTransmission s r
+      | lenB s <= blkSize - 2 = CBTransmission s r
       | otherwise = CBLargeTransmission r
       where
         s = tEncode t
-    encodeBatch :: ByteString -> Int -> [Request err msg] -> NonEmpty (PCTransmission err msg) -> (ClientBatch err msg, Maybe (NonEmpty (PCTransmission err msg)))
+    encodeBatch :: Builder -> Int -> [Request err msg] -> NonEmpty (PCTransmission err msg) -> (ClientBatch err msg, Maybe (NonEmpty (PCTransmission err msg)))
     encodeBatch s n rs ts@((t, r) :| ts_)
-      | B.length s' <= blkSize - 3 && n < 255 =
+      | lenB s' <= blkSize - 3 && n < 255 =
           case L.nonEmpty ts_ of
             Just ts' -> encodeBatch s' n' rs' ts'
             Nothing -> (CBTransmissions s' n' (reverse rs'), Nothing)
       | n == 0 = (CBLargeTransmission r, L.nonEmpty ts_)
       | otherwise = (CBTransmissions s n (reverse rs), Just ts)
       where
-        s' = s <> smpEncode (Large $ tEncode t)
+        s' = s <> smpEncode (Large' $ tEncode t)
         n' = n + 1
         rs' = r : rs
 
@@ -711,11 +713,11 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | lenB s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s
-          | batch = tEncodeBatch 1 . smpEncode . Large $ tEncode t
+          | batch = tEncodeBatch 1 . smpEncode . Large' $ tEncode t
           | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
@@ -730,7 +732,7 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Requ
 mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCorrId, sentCommands}} (pKey, entId, cmd) = do
   corrId <- atomically getNextCorrId
-  let t = signTransmission $ encodeTransmission thVersion sessionId (corrId, entId, cmd)
+  let t = signTransmission . toBS $ encodeTransmission thVersion sessionId (corrId, entId, cmd)
   r <- atomically $ mkRequest corrId
   pure (t, r)
   where
@@ -739,7 +741,7 @@ mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCo
       i <- stateTVar clientCorrId $ \i -> (i, i + 1)
       pure . CorrId $ bshow i
     signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
+    signTransmission t = ((`C.sign` t) <$> pKey, byteString t)
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
       r <- Request entId <$> newEmptyTMVar

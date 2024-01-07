@@ -317,7 +317,7 @@ a `putRCError` r = a `catchRCError` \e -> atomically (tryPutTMVar r $ Left e) >>
 
 sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
-  b <- liftEitherWith (const RCEBlockSize) $ C.pad (smpEncode pkt) xrcpBlockSize
+  b <- liftEitherWith (const RCEBlockSize) $ C.pad (toBS $ smpEncode pkt) xrcpBlockSize
   liftIO $ cPut tls b
 
 receiveRCPacket :: Encoding a => TLS -> ExceptT RCErrorType IO a
@@ -371,10 +371,10 @@ announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv =
     logDebug "Announcing..."
     nonce <- atomically $ C.randomCbNonce drg
     encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce sigInvitation encInvitationSize
-    liftIO . UDP.send sender $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
+    liftIO . UDP.send sender . toBS $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
     threadDelay 1000000
   where
-    sigInvitation = strEncode $ signInvitation sPrivKey idPrivKey inv
+    sigInvitation = toBS . strEncode $ signInvitation sPrivKey idPrivKey inv
     (_sPub, sPrivKey) = sessKeys
     sharedKey = C.dh' knownDhPub dhPrivKey
     (dhPubKey, dhPrivKey) = dhKeys

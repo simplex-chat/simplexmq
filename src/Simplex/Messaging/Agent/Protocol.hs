@@ -154,12 +154,13 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteString.Base64
+import Data.ByteString.Builder (Builder, byteString, char8)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List (intersperse)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
@@ -167,7 +168,8 @@ import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Lazy.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
@@ -304,11 +306,6 @@ deriving instance Show ACmd
 
 data APartyCmd p = forall e. AEntityI e => APC (SAEntity e) (ACommand p e)
 
-instance Eq (APartyCmd p) where
-  APC e cmd == APC e' cmd' = case testEquality e e' of
-    Just Refl -> cmd == cmd'
-    Nothing -> False
-
 deriving instance Show (APartyCmd p)
 
 type ConnInfo = ByteString
@@ -359,8 +356,6 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SFPROG :: Int64 -> Int64 -> ACommand Agent AESndFile
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
   SFERR :: AgentErrorType -> ACommand Agent AESndFile
-
-deriving instance Eq (ACommand p e)
 
 deriving instance Show (ACommand p e)
 
@@ -539,7 +534,7 @@ instance StrEncoding RcvSwitchStatus where
       "received_message" -> pure RSReceivedMessage
       _ -> fail "bad RcvSwitchStatus"
 
-instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode
+instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode'
 
 instance FromField RcvSwitchStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
@@ -565,7 +560,7 @@ instance StrEncoding SndSwitchStatus where
       "sending_qtest" -> pure SSSendingQTEST
       _ -> fail "bad SndSwitchStatus"
 
-instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode
+instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode'
 
 instance FromField SndSwitchStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
@@ -602,7 +597,7 @@ instance StrEncoding RatchetSyncState where
 
 instance FromField RatchetSyncState where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField RatchetSyncState where toField = toField . decodeLatin1 . strEncode
+instance ToField RatchetSyncState where toField = toField . decodeLatin1 . strEncode'
 
 instance ToJSON RatchetSyncState where
   toEncoding = strToJEncoding
@@ -687,7 +682,7 @@ instance ToJSON NotificationsMode where
 instance FromJSON NotificationsMode where
   parseJSON = strParseJSON "NotificationsMode"
 
-instance ToField NotificationsMode where toField = toField . strEncode
+instance ToField NotificationsMode where toField = toField . strEncode'
 
 instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
 
@@ -754,14 +749,14 @@ data MsgMeta = MsgMeta
 
 instance StrEncoding MsgMeta where
   strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
-    B.unwords
+    unwords_
       [ strEncode integrity,
-        "R=" <> bshow rmId <> "," <> showTs rTs,
-        "B=" <> encode bmId <> "," <> showTs bTs,
-        "S=" <> bshow sndMsgId
+        "R=" <> bshow' rmId <> "," <> showTs rTs,
+        "B=" <> strEncode bmId <> "," <> showTs bTs,
+        "S=" <> bshow' sndMsgId
       ]
     where
-      showTs = B.pack . formatISO8601Millis
+      showTs = byteString . B.pack . formatISO8601Millis
   strP = do
     integrity <- strP
     recipient <- " R=" *> partyMeta A.decimal
@@ -814,7 +809,7 @@ instance Encoding AgentMsgEnvelope where
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
-      smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
+      smpEncode (agentVersion, 'I', Large' $ strEncode connReq, Tail connInfo)
     AgentRatchetKey {agentVersion, e2eEncryption, info} ->
       smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
@@ -1060,7 +1055,7 @@ instance Encoding AMessage where
   smpEncode = \case
     HELLO -> smpEncode HELLO_
     REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
-    A_MSG body -> smpEncode (A_MSG_, Tail body)
+    A_MSG body -> smpEncode (A_MSG_, Tail' body)
     A_RCVD mrs -> smpEncode (A_RCVD_, mrs)
     QCONT addr -> smpEncode (QCONT_, addr)
     QADD qs -> smpEncode (QADD_, qs)
@@ -1073,7 +1068,7 @@ instance Encoding AMessage where
       >>= \case
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
-        A_MSG_ -> A_MSG . unTail <$> smpP
+        A_MSG_ -> A_MSG . unTail' <$> smpP
         A_RCVD_ -> A_RCVD <$> smpP
         QCONT_ -> QCONT <$> smpP
         QADD_ -> QADD <$> smpP
@@ -1102,14 +1097,14 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
     CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
     CRContactUri crData -> crEncode "contact" crData Nothing
     where
-      crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
+      crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> Builder
       crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams =
-        strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
+        strEncode crScheme <> "/" <> byteString crMode <> "#/?" <> queryStr
         where
           queryStr =
             strEncode . QSP QEscape $
-              [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
-                <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
+              [("v", toBS $ strEncode crAgentVRange), ("smp", toBS $ strEncode crSmpQueues)]
+                <> maybe [] (\e2e -> [("e2e", toBS $ strEncode e2e)]) e2eParams
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = do
     ACR m cr <- strP
@@ -1278,8 +1273,8 @@ instance StrEncoding SMPQueueUri where
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
-      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
-      srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
+      queryParams = [("v", toBS $ strEncode vr), ("dh", toBS $ strEncode dhPublicKey)]
+      srvParam = [("srv", toBS $ strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
@@ -1407,8 +1402,8 @@ instance StrEncoding MsgErrorType where
       <|> "DUPLICATE" $> MsgDuplicate
   strEncode = \case
     MsgSkipped fromMsgId toMsgId ->
-      B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
-    MsgBadId aMsgId -> "ID " <> bshow aMsgId
+      unwords_ ["NO_ID", bshow' fromMsgId, bshow' toMsgId]
+    MsgBadId aMsgId -> "ID " <> bshow' aMsgId
     MsgBadHash -> "HASH"
     MsgDuplicate -> "DUPLICATE"
 
@@ -1550,23 +1545,23 @@ instance StrEncoding AgentErrorType where
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
-    CMD e -> "CMD " <> bshow e
-    CONN e -> "CONN " <> bshow e
+    CMD e -> "CMD " <> bshow' e
+    CONN e -> "CONN " <> bshow' e
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
     XFTP e -> "XFTP " <> strEncode e
     RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
-    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
-    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
-    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
-    AGENT e -> "AGENT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> bshow e
-    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> bshow e
+    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow' e
+    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow' e
+    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow' e
+    AGENT e -> "AGENT " <> bshow' e
+    INTERNAL e -> "INTERNAL " <> bshow' e
+    CRITICAL restart e -> "CRITICAL " <> bshow' restart <> " " <> bshow' e
     INACTIVE -> "INACTIVE"
     where
-      text = encodeUtf8 . T.pack
+      text = byteString . encodeUtf8 . T.pack
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
@@ -1713,7 +1708,7 @@ commandP binaryP =
           ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
-          SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
+          SEND_ -> s (SEND <$> smpP <* A.space <*> (byteString <$> binaryP))
           ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
           SWCH_ -> pure SWCH
           OFF_ -> pure OFF
@@ -1736,7 +1731,7 @@ commandP binaryP =
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
-          MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
+          MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> (byteString <$> binaryP))
           MSGNTF_ -> s (MSGNTF <$> strP)
           RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
           DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
@@ -1768,32 +1763,32 @@ parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 
 -- | Serialize SMP agent command.
-serializeCommand :: ACommand p e -> ByteString
+serializeCommand :: ACommand p e -> Builder
 serializeCommand = \case
   NEW ntfs cMode subMode -> s (NEW_, ntfs, cMode, subMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs cReq subMode cInfo -> s (JOIN_, ntfs, cReq, subMode, Str $ serializeBinary cInfo)
-  CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
-  LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
-  REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
-  ACPT invId cInfo -> B.unwords [s ACPT_, invId, serializeBinary cInfo]
-  RJCT invId -> B.unwords [s RJCT_, invId]
-  INFO cInfo -> B.unwords [s INFO_, serializeBinary cInfo]
+  JOIN ntfs cReq subMode cInfo -> s (JOIN_, ntfs, cReq, subMode, Str' $ serializeBinary cInfo)
+  CONF confId srvs cInfo -> unwords_ [s CONF_, byteString confId, strEncodeList srvs, serializeBinary cInfo]
+  LET confId cInfo -> unwords_ [s LET_, byteString confId, serializeBinary cInfo]
+  REQ invId srvs cInfo -> unwords_ [s REQ_, byteString invId, s srvs, serializeBinary cInfo]
+  ACPT invId cInfo -> unwords_ [s ACPT_, byteString invId, serializeBinary cInfo]
+  RJCT invId -> unwords_ [s RJCT_, byteString invId]
+  INFO cInfo -> unwords_ [s INFO_, serializeBinary cInfo]
   SUB -> s SUB_
   END -> s END_
   CONNECT p h -> s (CONNECT_, p, h)
   DISCONNECT p h -> s (DISCONNECT_, p, h)
-  DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
-  UP srv conns -> B.unwords [s UP_, s srv, connections conns]
+  DOWN srv conns -> unwords_ [s DOWN_, s srv, connections conns]
+  UP srv conns -> unwords_ [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
-  SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
+  SEND msgFlags msgBody -> unwords_ [s SEND_, smpEncode msgFlags, serializeBinary' msgBody]
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
-  MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
+  MSG msgMeta msgFlags msgBody -> unwords_ [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary' msgBody]
   MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
-  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
+  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" ((char8 ' ' <>) . serializeBinary) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
   SWCH -> s SWCH_
   OFF -> s OFF_
@@ -1811,17 +1806,21 @@ serializeCommand = \case
   RFDONE fPath -> s (RFDONE_, fPath)
   RFERR e -> s (RFERR_, e)
   SFPROG sent total -> s (SFPROG_, sent, total)
-  SFDONE sd rds -> B.unwords [s SFDONE_, serializeBinary (sfDone sd rds)]
+  SFDONE sd rds -> unwords_ [s SFDONE_, serializeBinary' (sfDone sd rds)]
   SFERR e -> s (SFERR_, e)
   where
-    s :: StrEncoding a => a -> ByteString
+    s :: StrEncoding a => a -> Builder
     s = strEncode
-    connections :: [ConnId] -> ByteString
-    connections = B.intercalate "," . map strEncode
-    sfDone sd rds = B.intercalate fdSeparator $ strEncode sd : map strEncode rds
+    connections :: [ConnId] -> Builder
+    connections = mconcat . intersperse (char8 ',') . map strEncode
+    sfDone sd rds = mconcat $ intersperse fdSeparator $ strEncode sd : map strEncode rds
 
-serializeBinary :: ByteString -> ByteString
-serializeBinary body = bshow (B.length body) <> "\n" <> body
+-- TODO possibly it can be optimized away if we use Builder or LazyByteString instead of ByteString in command fields
+serializeBinary :: ByteString -> Builder
+serializeBinary = serializeBinary' . byteString
+
+serializeBinary' :: Builder -> Builder
+serializeBinary' body = bshow' (lenB body) <> char8 '\n' <> body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
 tPutRaw :: Transport c => c -> ARawTransmission -> IO ()
@@ -1837,7 +1836,7 @@ tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 -- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
 tPut h (corrId, connId, APC _ cmd) =
-  liftIO $ tPutRaw h (corrId, connId, serializeCommand cmd)
+  liftIO $ tPutRaw h (corrId, connId, toBS $ serializeCommand cmd)
 
 -- | Receive client and agent transmissions from TCP connection.
 tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
@@ -1876,8 +1875,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
     cmdWithMsgBody (APC e cmd) =
       APC e <$$> case cmd of
-        SEND msgFlags body -> SEND msgFlags <$$> getBody body
-        MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
+        SEND msgFlags body -> SEND msgFlags . byteString <$$> getBody (toBS body)
+        MSG msgMeta msgFlags body -> MSG msgMeta msgFlags . byteString <$$> getBody (toBS body)
         JOIN ntfs qUri subMode cInfo -> JOIN ntfs qUri subMode <$$> getBody cInfo
         CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
         LET confId cInfo -> LET confId <$$> getBody cInfo

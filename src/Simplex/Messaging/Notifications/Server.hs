@@ -16,6 +16,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -255,7 +256,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     logSubErrors srv errs = forM_ (L.group $ sort errs) $ \errs' -> do
       logError $ "SMP subscription errors on server " <> showServer' srv <> ": " <> tshow (L.head errs') <> " (" <> tshow (length errs') <> " errors)"
 
-    showServer' = decodeLatin1 . strEncode . host
+    showServer' = decodeLatin1 . toBS . strEncode . host
 
     handleSubError :: SMPQueueNtf -> SMPClientError -> M (Maybe NtfSubStatus)
     handleSubError smpQueue = \case
@@ -590,7 +591,7 @@ saveServerStats =
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
-      B.writeFile f $ strEncode stats
+      BB.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
 restoreServerStats :: M ()

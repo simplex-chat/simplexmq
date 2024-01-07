@@ -189,6 +189,7 @@ import Data.Bifunctor (bimap, first)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
+import Data.ByteString.Builder (byteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -208,7 +209,7 @@ import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (toBS, (<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -577,9 +578,12 @@ instance AlgorithmI a => IsString (PrivateKey a) where
 instance AlgorithmI a => IsString (PublicKey a) where
   fromString = parseString $ decode >=> decodePubKey
 
+-- TODO it seems that strEncode for this type is used twice when JSON-encoding, so it does base64 encoding twice.
+-- It probably cannot be just removed if it's already in database or in protocol.
+-- It needs to be investigated.
 instance AlgorithmI a => ToJSON (PrivateKey a) where
-  toJSON = strToJSON . strEncode . encodePrivKey
-  toEncoding = strToJEncoding . strEncode . encodePrivKey
+  toJSON = strToJSON . toBS . strEncode . encodePrivKey
+  toEncoding = strToJEncoding . toBS . strEncode . encodePrivKey
 
 instance AlgorithmI a => FromJSON (PrivateKey a) where
   parseJSON v = (decodePrivKey <=< U.decode) <$?> strParseJSON "PrivateKey" v
@@ -686,8 +690,10 @@ class CryptoSignature s where
   decodeSignature :: ByteString -> Either String s
 
 instance CryptoSignature (Signature s) => StrEncoding (Signature s) where
-  strEncode = serializeSignature
+  strEncode = byteString . serializeSignature
+  {-# INLINE strEncode #-}
   strDecode = decodeSignature
+  {-# INLINE strDecode #-}
 
 instance CryptoSignature ASignature where
   signatureBytes (ASignature _ sig) = signatureBytes sig
@@ -807,8 +813,10 @@ newtype IV = IV {unIV :: ByteString}
   deriving (Eq, Show)
 
 instance Encoding IV where
-  smpEncode = unIV
+  smpEncode = byteString . unIV
+  {-# INLINE smpEncode #-}
   smpP = IV <$> A.take (ivSize @AES256)
+  {-# INLINE smpP #-}
 
 instance ToJSON IV where
   toJSON = strToJSON . unIV
@@ -828,7 +836,7 @@ gcmIV s
 newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
 
 instance Encoding AuthTag where
-  smpEncode = BA.convert . unAuthTag
+  smpEncode = byteString . BA.convert . unAuthTag
   smpP = AuthTag . AES.AuthTag . BA.convert <$> A.take authTagSize
 
 -- | Certificate fingerpint newtype.
@@ -838,11 +846,15 @@ newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
 instance Encoding KeyHash where
   smpEncode = smpEncode . unKeyHash
+  {-# INLINE smpEncode #-}
   smpP = KeyHash <$> smpP
+  {-# INLINE smpP #-}
 
 instance StrEncoding KeyHash where
   strEncode = strEncode . unKeyHash
+  {-# INLINE strEncode #-}
   strP = KeyHash <$> strP
+  {-# INLINE strP #-}
 
 instance ToJSON KeyHash where
   toEncoding = strToJEncoding
@@ -854,7 +866,7 @@ instance FromJSON KeyHash where
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 
-instance ToField KeyHash where toField = toField . strEncode
+instance ToField KeyHash where toField = toField . strEncode'
 
 instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 
@@ -1151,8 +1163,10 @@ randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
 instance Encoding CbNonce where
-  smpEncode = unCbNonce
+  smpEncode = byteString . unCbNonce
+  {-# INLINE smpEncode #-}
   smpP = CryptoBoxNonce <$> A.take 24
+  {-# INLINE smpP #-}
 
 newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
   deriving (Eq, Show)

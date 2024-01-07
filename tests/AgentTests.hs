@@ -31,7 +31,7 @@ import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, toBS)
 import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
@@ -170,7 +170,7 @@ pattern Msg' aMsgId msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsg
 testDuplexConnection :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
@@ -203,7 +203,7 @@ testDuplexConnection _ alice bob = do
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
@@ -236,7 +236,7 @@ testDuplexConnRandomIds _ alice bob = do
 testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testContactConnection _ alice bob tom = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
 
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
@@ -267,7 +267,7 @@ testContactConnection _ alice bob tom = do
 testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testContactConnRandomIds _ alice bob = do
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo")
   ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
@@ -290,7 +290,7 @@ testContactConnRandomIds _ alice bob = do
 testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
 testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW T CON subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 10\nbob's info") #> ("11", "alice", OK)
   ("", "a_contact", Right (REQ aInvId _ "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
@@ -431,7 +431,7 @@ testConcurrentMsgDelivery _ alice bob = do
   connect (alice, "alice") (bob, "bob")
 
   ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
   bob #: ("11", "alice2", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice2", OK)
   ("", "bob2", Right (CONF _confId _ "bob's connInfo")) <- (alice <#:)
   -- below commands would be needed to accept bob's connection, but alice does not
@@ -496,7 +496,7 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = toBS $ strEncode cReq
   h2 #: ("c2", name1, "JOIN T " <> cReq' <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
@@ -511,7 +511,7 @@ sendMessage (h1, name1) (h2, name2) msg = do
   h1 <#= \case ("", n, SENT m) -> n == name2 && m == mId; _ -> False
   ("", name1', Right (MSG MsgMeta {recipient = (msgId', _)} _ msg')) <- (h2 <#:)
   name1' `shouldBe` name1
-  msg' `shouldBe` msg
+  toBS msg' `shouldBe` msg
   h2 #: ("m2", name1, "ACK " <> bshow msgId') =#> \case ("m2", n, OK) -> n == name1; _ -> False
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)

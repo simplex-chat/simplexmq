@@ -42,6 +42,7 @@ import Data.Bifunctor (first)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as S
+import Data.ByteString.Builder (toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -68,7 +69,7 @@ sha512Hash = BA.convert . (hashlazy :: LazyByteString -> Digest SHA512)
 -- but if the passed string is longer it will truncate it to specified length
 pad :: LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
 pad msg len paddedLen
-  | padLen >= 0 = Right $ LB.fromStrict encodedLen <> LB.take len msg <> fastReplicate padLen '#'
+  | padLen >= 0 = Right $ toLazyByteString encodedLen <> LB.take len msg <> fastReplicate padLen '#'
   | otherwise = Left CryptoLargeMsgError
   where
     encodedLen = smpEncode len -- 8 bytes Int64 encoded length

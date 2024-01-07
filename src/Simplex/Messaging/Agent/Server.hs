@@ -15,8 +15,10 @@ import Control.Monad
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
+import Data.ByteString.Builder (toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Text.Encoding (decodeUtf8)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
@@ -78,4 +80,4 @@ send h c@AgentClient {subQ} = forever $ do
 
 logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
 logClient AgentClient {clientId} dir (corrId, connId, APC _ cmd) = do
-  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, B.takeWhile (/= ' ') $ serializeCommand cmd]
+  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, LB.toStrict . LB.takeWhile (/= ' ') . toLazyByteString $ serializeCommand cmd]

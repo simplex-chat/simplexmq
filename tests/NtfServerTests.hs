@@ -40,6 +40,7 @@ import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (toBS)
 import Test.Hspec
 import UnliftIO.STM
 
@@ -76,7 +77,7 @@ sendRecvNtf h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 signSendRecvNtf h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut1 h (Just $ C.sign pk t, t)
+  Right () <- tPut1 h (Just $ C.sign pk $ toBS t, t)
   tGet1 h
 
 (.->) :: J.Value -> J.Key -> Either String ByteString

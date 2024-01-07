@@ -160,6 +160,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
@@ -180,7 +181,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
+import Simplex.Messaging.Util (bshow', eitherToMaybe, lenB, toBS, (<$?>))
 import Simplex.Messaging.Version
 
 currentSMPClientVersion :: Version
@@ -258,7 +259,7 @@ data RawTransmission = RawTransmission
 type SignedRawTransmission = (Maybe C.ASignature, SessionId, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
-type SentRawTransmission = (Maybe C.ASignature, ByteString)
+type SentRawTransmission = (Maybe C.ASignature, Builder)
 
 -- | SMP queue ID for the recipient.
 type RecipientId = QueueId
@@ -298,8 +299,6 @@ data Command (p :: Party) where
 
 deriving instance Show (Command p)
 
-deriving instance Eq (Command p)
-
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
 
@@ -335,7 +334,7 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  deriving (Eq, Show)
+  deriving (Show)
 
 data RcvMessage = RcvMessage
   { msgId :: MsgId,
@@ -343,7 +342,7 @@ data RcvMessage = RcvMessage
     msgFlags :: MsgFlags,
     msgBody :: EncRcvMsgBody -- e2e encrypted, with extra encryption for recipient
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 -- | received message without server/recipient encryption
 data Message
@@ -370,7 +369,7 @@ messageTs = \case
 
 instance StrEncoding RcvMessage where
   strEncode RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} =
-    B.unwords
+    unwords_
       [ strEncode msgId,
         strEncode msgTs,
         "flags=" <> strEncode msgFlags,
@@ -384,7 +383,7 @@ instance StrEncoding RcvMessage where
     pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
 
 newtype EncRcvMsgBody = EncRcvMsgBody ByteString
-  deriving (Eq, Show)
+  deriving (Show)
 
 data RcvMsgBody
   = RcvMsgBody
@@ -399,13 +398,14 @@ data RcvMsgBody
 msgQuotaTag :: ByteString
 msgQuotaTag = "QUOTA"
 
+-- TODO probably can be optimized using Builder, maybe MaxLenBuilder
 encodeRcvMsgBody :: RcvMsgBody -> C.MaxLenBS MaxRcvMessageLen
 encodeRcvMsgBody = \case
   RcvMsgBody {msgTs, msgFlags, msgBody} ->
-    let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
+    let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS . toBS $ smpEncode (msgTs, msgFlags, ' ')
      in C.appendMaxLenBS rcvMeta msgBody
   RcvMsgQuota {msgTs} ->
-    C.unsafeMaxLenBS $ msgQuotaTag <> " " <> smpEncode msgTs
+    C.unsafeMaxLenBS $ msgQuotaTag <> " " <> toBS (smpEncode msgTs)
 
 data ClientRcvMsgBody
   = ClientRcvMsgBody
@@ -430,14 +430,14 @@ clientRcvMsgBodyP = msgQuotaP <|> msgBodyP
 instance StrEncoding Message where
   strEncode = \case
     Message {msgId, msgTs, msgFlags, msgBody} ->
-      B.unwords
+      unwords_
         [ strEncode msgId,
           strEncode msgTs,
           "flags=" <> strEncode msgFlags,
           strEncode msgBody
         ]
     MessageQuota {msgId, msgTs} ->
-      B.unwords
+      unwords_
         [ strEncode msgId,
           strEncode msgTs,
           "quota"
@@ -655,7 +655,7 @@ instance Encoding PrivHeader where
       _ -> fail "invalid PrivHeader"
 
 instance Encoding ClientMessage where
-  smpEncode (ClientMessage h msg) = smpEncode h <> msg
+  smpEncode (ClientMessage h msg) = smpEncode h <> byteString msg
   smpP = ClientMessage <$> smpP <*> A.takeByteString
 
 type SMPServer = ProtocolServer 'PSMP
@@ -836,7 +836,7 @@ instance Encoding BasicAuth where
   smpP = basicAuth <$?> smpP
 
 instance StrEncoding BasicAuth where
-  strEncode (BasicAuth s) = s
+  strEncode (BasicAuth s) = byteString s
   strP = basicAuth <$?> A.takeWhile1 (/= '@')
 
 basicAuth :: ByteString -> Either String BasicAuth
@@ -884,7 +884,7 @@ instance FromJSON AProtoServerWithAuth where
 noAuthSrv :: ProtocolServer p -> ProtoServerWithAuth p
 noAuthSrv srv = ProtoServerWithAuth srv Nothing
 
-legacyEncodeServer :: ProtocolServer p -> ByteString
+legacyEncodeServer :: ProtocolServer p -> Builder
 legacyEncodeServer ProtocolServer {host, port, keyHash} =
   smpEncode (L.head host, port, keyHash)
 
@@ -893,15 +893,15 @@ legacyServerP = do
   (h, port, keyHash) <- smpP
   pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash}
 
-legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
+legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> Builder
 legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
   strEncodeServer scheme (strEncode $ L.head host) port keyHash Nothing
 
-strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
+strEncodeServer :: ProtocolTypeI p => SProtocolType p -> Builder -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> Builder
 strEncodeServer scheme host port keyHash auth_ =
   strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr
   where
-    portStr = B.pack $ if null port then "" else ':' : port
+    portStr = byteString $ B.pack $ if null port then "" else ':' : port
 
 serverStrP :: Parser (AProtocolServer, Maybe BasicAuth)
 serverStrP = do
@@ -919,7 +919,7 @@ data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
 
 instance StrEncoding SrvLoc where
-  strEncode (SrvLoc host port) = B.pack $ host <> if null port then "" else ':' : port
+  strEncode (SrvLoc host port) = byteString $ B.pack $ host <> if null port then "" else ':' : port
   strP = SrvLoc <$> host <*> (port <|> pure "")
     where
       host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
@@ -989,7 +989,7 @@ type RcvNtfDhSecret = C.DhSecretX25519
 type MsgId = ByteString
 
 -- | SMP message body.
-type MsgBody = ByteString
+type MsgBody = Builder
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 
@@ -1017,8 +1017,8 @@ data ErrorType
 
 instance StrEncoding ErrorType where
   strEncode = \case
-    CMD e -> "CMD " <> bshow e
-    e -> bshow e
+    CMD e -> "CMD " <> bshow' e
+    e -> bshow' e
   strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
 
 -- | SMP command error type.
@@ -1071,7 +1071,7 @@ instance Protocol ErrorType BrokerMsg where
 
 class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
   type Tag msg
-  encodeProtocol :: Version -> msg -> ByteString
+  encodeProtocol :: Version -> msg -> Builder
   protocolP :: Version -> Tag msg -> Parser msg
   fromProtocolError :: ProtocolErrorType -> err
   checkCredentials :: SignedRawTransmission -> msg -> Either err msg
@@ -1097,12 +1097,12 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
     OFF -> e OFF_
     DEL -> e DEL_
     SEND flags msg
-      | v == 1 -> e (SEND_, ' ', Tail msg)
-      | otherwise -> e (SEND_, ' ', flags, ' ', Tail msg)
+      | v == 1 -> e (SEND_, ' ', Tail' msg)
+      | otherwise -> e (SEND_, ' ', flags, ' ', Tail' msg)
     PING -> e PING_
     NSUB -> e NSUB_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> Builder
       e = smpEncode
 
   protocolP v tag = (\(Cmd _ c) -> checkParty c) <$?> protocolP v (CT (sParty @p) tag)
@@ -1156,8 +1156,8 @@ instance ProtocolEncoding ErrorType Cmd where
     CT SSender tag ->
       Cmd SSender <$> case tag of
         SEND_
-          | v == 1 -> SEND noMsgFlags <$> (unTail <$> _smpP)
-          | otherwise -> SEND <$> _smpP <*> (unTail <$> _smpP)
+          | v == 1 -> SEND noMsgFlags <$> (unTail' <$> _smpP)
+          | otherwise -> SEND <$> _smpP <*> (unTail' <$> _smpP)
         PING_ -> pure PING
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
@@ -1181,7 +1181,7 @@ instance ProtocolEncoding ErrorType BrokerMsg where
     ERR err -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> Builder
       e = smpEncode
 
   protocolP v = \case
@@ -1292,7 +1292,7 @@ tPut th delay_ = fmap concat . mapM tPutBatch . batchTransmissions (batch th) (b
       TBTransmissions n s -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
       TBTransmission s -> (: []) <$> tPutLog th s
 
-tPutLog :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutLog :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
 tPutLog th s = do
   r <- tPutBlock th s
   case r of
@@ -1301,15 +1301,16 @@ tPutLog th s = do
   pure r
 
 -- ByteString does not include length byte, it is added by tEncodeBatch
-data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString | TBLargeTransmission
+data TransportBatch = TBTransmissions Int Builder | TBTransmission Builder | TBLargeTransmission
 
 -- | encodes and batches transmissions into blocks,
+-- TODO rewrite it similarly to simplex-chat to batch from the end using foldr
 batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
 batchTransmissions batch bSize
   | batch = reverse . mkBatch [] . L.map tEncode
   | otherwise = map (mkBatch1 . tEncode) . L.toList
   where
-    mkBatch :: [TransportBatch] -> NonEmpty ByteString -> [TransportBatch]
+    mkBatch :: [TransportBatch] -> NonEmpty Builder -> [TransportBatch]
     mkBatch rs ts =
       let (n, s, ts_) = encodeBatch 0 "" ts
           r = if n == 0 then TBLargeTransmission else TBTransmissions n s
@@ -1317,29 +1318,29 @@ batchTransmissions batch bSize
        in case ts_ of
             Just ts' -> mkBatch rs' ts'
             _ -> rs'
-    mkBatch1 :: ByteString -> TransportBatch
-    mkBatch1 s = if B.length s > bSize - 2 then TBLargeTransmission else TBTransmission s
-    encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
+    mkBatch1 :: Builder -> TransportBatch
+    mkBatch1 s = if lenB s > bSize - 2 then TBLargeTransmission else TBTransmission s
+    encodeBatch :: Int -> Builder -> NonEmpty Builder -> (Int, Builder, Maybe (NonEmpty Builder))
     encodeBatch n s ts@(t :| ts_)
       | n == 255 = (n, s, Just ts)
       | otherwise =
-          let s' = s <> smpEncode (Large t)
+          let s' = s <> smpEncode (Large' t)
               n' = n + 1
-           in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
+           in if lenB s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
                 then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
                 else case L.nonEmpty ts_ of
                   Just ts' -> encodeBatch n' s' ts'
                   _ -> (n', s', Nothing)
 
-tEncode :: SentRawTransmission -> ByteString
+tEncode :: SentRawTransmission -> Builder
 tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
 {-# INLINE tEncode #-}
 
-tEncodeBatch :: Int -> ByteString -> ByteString
-tEncodeBatch n s = lenEncode n `B.cons` s
+tEncodeBatch :: Int -> Builder -> Builder
+tEncodeBatch n s = lenEncode n <> s
 {-# INLINE tEncodeBatch #-}
 
-encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> ByteString
+encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> Builder
 encodeTransmission v sessionId (CorrId corrId, queueId, command) =
   smpEncode (sessionId, corrId, queueId) <> encodeProtocol v command
 {-# INLINE encodeTransmission #-}

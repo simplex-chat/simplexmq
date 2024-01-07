@@ -40,6 +40,7 @@ import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -50,6 +51,8 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.String
+import Data.Text (Text)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -60,7 +63,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow', toBS, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
   { party :: SFileParty p,
@@ -142,18 +145,18 @@ instance ToField ChunkReplicaId where toField (ChunkReplicaId s) = toField s
 
 data YAMLFileDescription = YAMLFileDescription
   { party :: FileParty,
-    size :: String,
+    size :: Text,
     digest :: FileDigest,
     key :: C.SbKey,
     nonce :: C.CbNonce,
-    chunkSize :: String,
+    chunkSize :: Text,
     replicas :: [YAMLServerReplicas]
   }
   deriving (Eq, Show)
 
 data YAMLServerReplicas = YAMLServerReplicas
   { server :: XFTPServer,
-    chunks :: [String]
+    chunks :: [Text]
   }
   deriving (Eq, Show)
 
@@ -185,7 +188,7 @@ instance StrEncoding AValidFileDescription where
   strP = strDecode <$?> A.takeByteString
 
 instance FilePartyI p => StrEncoding (FileDescription p) where
-  strEncode = Y.encode . encodeFileDescription
+  strEncode = byteString . Y.encode . encodeFileDescription
   strDecode s = strDecode s >>= (\(AFD fd) -> checkParty fd)
   strP = strDecode <$?> A.takeByteString
 
@@ -207,20 +210,20 @@ encodeFileDescription :: FileDescription p -> YAMLFileDescription
 encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks} =
   YAMLFileDescription
     { party = toFileParty party,
-      size = B.unpack $ strEncode size,
+      size = decodeLatin1 . toBS $ strEncode size,
       digest,
       key,
       nonce,
-      chunkSize = B.unpack $ strEncode chunkSize,
+      chunkSize = decodeLatin1 . toBS $ strEncode chunkSize,
       replicas = encodeFileReplicas chunkSize chunks
     }
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
-    | b' /= 0 = bshow b
-    | ks' /= 0 = bshow ks <> "kb"
-    | ms' /= 0 = bshow ms <> "mb"
-    | otherwise = bshow gs <> "gb"
+    | b' /= 0 = bshow' b
+    | ks' /= 0 = bshow' ks <> "kb"
+    | ms' /= 0 = bshow' ms <> "mb"
+    | otherwise = bshow' gs <> "gb"
     where
       (ks, b') = b `divMod` 1024
       (ms, ks') = ks `divMod` 1024
@@ -252,12 +255,12 @@ encodeFileReplicas defChunkSize =
     encodeServerReplicas fs@(FileServerReplica {server} :| _) =
       YAMLServerReplicas
         { server,
-          chunks = map (B.unpack . encodeServerReplica) $ L.toList fs
+          chunks = map (decodeLatin1 . toBS . encodeServerReplica) $ L.toList fs
         }
 
-encodeServerReplica :: FileServerReplica -> ByteString
+encodeServerReplica :: FileServerReplica -> Builder
 encodeServerReplica FileServerReplica {chunkNo, replicaId, replicaKey, digest, chunkSize} =
-  bshow chunkNo
+  bshow' chunkNo
     <> ":"
     <> strEncode replicaId
     <> ":"
@@ -286,8 +289,8 @@ unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
 
 decodeFileDescription :: YAMLFileDescription -> Either String AFileDescription
 decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chunkSize, replicas} = do
-  size' <- strDecode $ B.pack size
-  chunkSize' <- strDecode $ B.pack chunkSize
+  size' <- strDecode $ encodeUtf8 size
+  chunkSize' <- strDecode $ encodeUtf8 chunkSize
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
   pure $ case aFileParty party of
@@ -297,7 +300,7 @@ decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chun
 
 decodeYAMLServerReplicas :: YAMLServerReplicas -> Either String [FileServerReplica]
 decodeYAMLServerReplicas YAMLServerReplicas {server, chunks} =
-  mapM (parseAll (serverReplicaP server) . B.pack) chunks
+  mapM (parseAll (serverReplicaP server) . encodeUtf8) chunks
 
 -- this function should fail if:
 -- 1. no replica has digest or two replicas have different digests

@@ -25,6 +25,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (foldM, unless, when)
+import Data.ByteString.Builder (char8)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -34,9 +35,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..), ServerQueueStatus (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, toBS)
 import System.Directory (doesFileExist)
-import System.IO
+import System.IO hiding (char8)
 
 -- | opaque container for file handle with a type-safe IOMode
 -- constructors are not exported, openWriteStoreLog and openReadStoreLog should be used instead
@@ -54,7 +55,7 @@ data StoreLogRecord
 
 instance StrEncoding QueueRec where
   strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
-    B.unwords
+    unwords_
       [ "rid=" <> strEncode recipientId,
         "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
@@ -112,9 +113,10 @@ closeStoreLog = \case
   WriteStoreLog _ h -> hClose h
   ReadStoreLog _ h -> hClose h
 
+-- TODO it cannot be used with LB.hPut, as writes are not atomic too
 writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h) r = do
-  B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
+  B.hPut h . toBS $ strEncode r <> char8 '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()

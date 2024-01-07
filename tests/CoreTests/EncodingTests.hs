@@ -16,6 +16,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Util (toBS)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -31,10 +32,10 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
   describe "Encoding Int64" $ do
     it "should encode and decode Int64 example" $ do
       s64 `shouldBe` "\17\34\16\244\125\233\129\21"
-      smpEncode int64 `shouldBe` s64
+      toBS (smpEncode int64) `shouldBe` s64
       parseAll smpP s64 `shouldBe` Right int64
     it "parse(encode(Int64) should equal the same Int64" . property $
-      \i -> parseAll smpP (smpEncode i) == Right (i :: Int64)
+      \i -> parseAll smpP (toBS $ smpEncode i) == Right (i :: Int64)
   describe "Encoding SystemTime" $ do
     it "should encode and decode SystemTime" $ do
       t <- getSystemTime
@@ -43,7 +44,7 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
       systemSeconds t' `shouldBe` 1641032645
       testSystemTime t'
     it "parse(encode(SystemTime) should equal the same Int64" . property $
-      \i -> parseAll smpP (smpEncode i) == Right (i :: Int64)
+      \i -> parseAll smpP (toBS $ smpEncode i) == Right (i :: Int64)
   describe "Encoding transport hosts" $ do
     describe "domain name hosts" $ do
       it "should encode / decode domain name" $ THDomainName "smp.simplex.im" #==# "smp.simplex.im"
@@ -69,11 +70,11 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
   where
     testSystemTime :: SystemTime -> Expectation
     testSystemTime t = do
-      smpEncode t `shouldBe` smpEncode (systemSeconds t)
-      smpDecode (smpEncode t) `shouldBe` Right t {systemNanoseconds = 0}
+      smpEncode' t `shouldBe` smpEncode' (systemSeconds t)
+      smpDecode (toBS $ smpEncode t) `shouldBe` Right t {systemNanoseconds = 0}
     (#==#) :: (StrEncoding s, Eq s, Show s) => s -> ByteString -> Expectation
     (#==#) x s = do
-      strEncode x `shouldBe` s
+      toBS (strEncode x) `shouldBe` s
       strDecode s `shouldBe` Right x
     shouldNotParse :: forall s. (StrEncoding s, Eq s, Show s) => ByteString -> String -> Expectation
     shouldNotParse s err = strDecode s `shouldBe` (Left err :: Either String s)

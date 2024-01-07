@@ -8,8 +8,10 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Bifunctor (first)
+import Data.ByteString.Builder (Builder, byteString, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
@@ -42,9 +44,22 @@ bshow :: Show a => a -> ByteString
 bshow = B.pack . show
 {-# INLINE bshow #-}
 
+bshow' :: Show a => a -> Builder
+bshow' = byteString . bshow
+{-# INLINE bshow' #-}
+
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 {-# INLINE tshow #-}
+
+toBS :: Builder -> ByteString
+toBS = LB.toStrict . toLazyByteString
+{-# INLINE toBS #-}
+
+-- TODO this probably should be removed
+lenB :: Builder -> Int
+lenB = fromIntegral . LB.length . toLazyByteString
+{-# INLINE lenB #-}
 
 maybeWord :: (a -> ByteString) -> Maybe a -> ByteString
 maybeWord f = maybe "" $ B.cons ' ' . f

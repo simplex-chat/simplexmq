@@ -14,6 +14,7 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
+import Data.ByteString.Builder (byteString, char8)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -67,7 +68,7 @@ instance StrEncoding RCErrorType where
     RCEBlockSize -> "BLOCK_SIZE"
     RCESyntax err -> "SYNTAX" <> text err
     where
-      text = (" " <>) . encodeUtf8 . T.pack
+      text = (char8 ' ' <>) . byteString . encodeUtf8 . T.pack
   strP =
     A.takeTill (== ' ') >>= \case
       "INTERNAL" -> RCEInternal <$> textP

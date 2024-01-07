@@ -230,6 +230,8 @@ import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
+import Data.ByteString.Builder (lazyByteString, toLazyByteString)
+import qualified Data.ByteString.Lazy as LB
 import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.IORef
@@ -242,7 +244,8 @@ import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Lazy.Encoding (decodeLatin1)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
 import Database.SQLite.Simple (FromRow (..), NamedParam (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
@@ -274,7 +277,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, toBS, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -1012,11 +1015,11 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
             |]
             (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
-        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, LB.ByteString, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
         pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
-           in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
+           in PendingMsgData {msgId, msgType, msgFlags, msgBody = lazyByteString msgBody, msgRetryState, internalTs}
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
@@ -1083,11 +1086,11 @@ getLastMsg db connId msgId =
       |]
       (connId, msgId)
 
-toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
+toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, LB.ByteString, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
 toRcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, internalHash, msgType, msgBody, rcptInternalId_, rcptStatus_, userAck) =
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
-   in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
+   in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody = lazyByteString msgBody, internalHash, msgReceipt, userAck}
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash = do
@@ -1687,27 +1690,27 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 instance FromField InternalId where fromField x = InternalId <$> fromField x
 
-instance ToField AgentMessageType where toField = toField . smpEncode
+instance ToField AgentMessageType where toField = toField . smpEncode'
 
 instance FromField AgentMessageType where fromField = blobFieldParser smpP
 
-instance ToField MsgIntegrity where toField = toField . strEncode
+instance ToField MsgIntegrity where toField = toField . strEncode'
 
 instance FromField MsgIntegrity where fromField = blobFieldParser strP
 
-instance ToField SMPQueueUri where toField = toField . strEncode
+instance ToField SMPQueueUri where toField = toField . strEncode'
 
 instance FromField SMPQueueUri where fromField = blobFieldParser strP
 
-instance ToField AConnectionRequestUri where toField = toField . strEncode
+instance ToField AConnectionRequestUri where toField = toField . strEncode'
 
 instance FromField AConnectionRequestUri where fromField = blobFieldParser strP
 
-instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . strEncode
+instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . strEncode'
 
 instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldParser strP
 
-instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
+instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode'
 
 instance FromField ConnectionMode where fromField = fromTextField_ connModeT
 
@@ -1715,27 +1718,27 @@ instance ToField (SConnectionMode c) where toField = toField . connMode
 
 instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
-instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
+instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode'
 
 instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
-instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
+instance ToField [SMPQueueInfo] where toField = toField . toLazyByteString . smpEncodeList
 
 instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
 
-instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode
+instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode'
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField AgentCommand where toField = toField . strEncode
+instance ToField AgentCommand where toField = toField . strEncode'
 
 instance FromField AgentCommand where fromField = blobFieldParser strP
 
-instance ToField AgentCommandTag where toField = toField . strEncode
+instance ToField AgentCommandTag where toField = toField . strEncode'
 
 instance FromField AgentCommandTag where fromField = blobFieldParser strP
 
-instance ToField MsgReceiptStatus where toField = toField . decodeLatin1 . strEncode
+instance ToField MsgReceiptStatus where toField = toField . decodeLatin1 . strEncode'
 
 instance FromField MsgReceiptStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
@@ -2062,7 +2065,7 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody,
       ":internal_rcv_id" := internalRcvId,
       ":msg_type" := msgType,
       ":msg_flags" := msgFlags,
-      ":msg_body" := msgBody
+      ":msg_body" := toBS msgBody
     ]
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
@@ -2159,7 +2162,7 @@ insertSndMsgBase_ dbConn connId SndMsgData {..} = do
       ":internal_snd_id" := internalSndId,
       ":msg_type" := msgType,
       ":msg_flags" := msgFlags,
-      ":msg_body" := msgBody
+      ":msg_body" := toBS msgBody
     ]
 
 insertSndMsgDetails_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()

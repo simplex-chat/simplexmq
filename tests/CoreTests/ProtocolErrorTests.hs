@@ -18,6 +18,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..))
 import Simplex.Messaging.Transport (HandshakeError (..), TransportError (..))
+import Simplex.Messaging.Util (toBS)
 import Simplex.RemoteControl.Types (RCErrorType (..))
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
@@ -27,10 +28,10 @@ protocolErrorTests :: Spec
 protocolErrorTests = modifyMaxSuccess (const 1000) $ do
   describe "errors parsing / serializing" $ do
     it "should parse SMP protocol errors" . property $ \(err :: ErrorType) ->
-      smpDecode (smpEncode err) == Right err
+      smpDecode (toBS $ smpEncode err) == Right err
     it "should parse SMP agent errors" . property $ \(err :: AgentErrorType) ->
       errHasSpaces err
-        || strDecode (strEncode err) == Right err
+        || strDecode (toBS $ strEncode err) == Right err
   where
     errHasSpaces = \case
       BROKER srv (RESPONSE e) -> hasSpaces srv || hasSpaces e

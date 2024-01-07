@@ -22,7 +22,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Util (liftEitherWith)
+import Simplex.Messaging.Util (liftEitherWith, toBS)
 import UnliftIO
 import UnliftIO.Directory (removeFile)
 
@@ -30,7 +30,7 @@ encryptFile :: CryptoFile -> ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int6
 encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
   sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
   CF.withFile srcFile ReadMode $ \r -> withFile encFile WriteMode $ \w -> do
-    let lenStr = smpEncode fileSize'
+    let lenStr = toBS $ smpEncode fileSize'
         (hdr, !sb') = LC.sbEncryptChunk sb $ lenStr <> fileHdr
         padLen = encSize - authTagSize - fileSize' - 8
     liftIO $ B.hPut w hdr

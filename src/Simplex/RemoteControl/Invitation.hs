@@ -17,6 +17,7 @@ import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.ByteString.Builder (byteString)
 import qualified Data.ByteString.Lazy as LB
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
@@ -27,6 +28,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Util (toBS)
 import Simplex.Messaging.Version (VersionRange)
 
 data RCInvitation = RCInvitation
@@ -65,16 +67,16 @@ instance StrEncoding RCInvitation where
         ":",
         strEncode port,
         "#/?",
-        renderSimpleQuery False query
+        byteString $ renderSimpleQuery False query
       ]
     where
       query =
-        [ ("v", strEncode v),
+        [ ("v", toBS $ strEncode v),
           ("app", LB.toStrict $ J.encode app),
-          ("ts", strEncode ts),
-          ("skey", strEncode skey),
-          ("idkey", strEncode idkey),
-          ("dh", strEncode dh)
+          ("ts", toBS $ strEncode ts),
+          ("skey", toBS $ strEncode skey),
+          ("idkey", toBS $ strEncode idkey),
+          ("dh", toBS $ strEncode dh)
         ]
 
   strP = do
@@ -126,12 +128,12 @@ instance StrEncoding RCSignedInvitation where
 signInvitation :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> RCSignedInvitation
 signInvitation sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsig}
   where
-    uri = strEncode invitation
+    uri = toBS $ strEncode invitation
     ssig =
       case C.sign (C.APrivateSignKey C.SEd25519 sKey) uri of
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
-    inviteUrlSigned = mconcat [uri, "&ssig=", strEncode ssig]
+    inviteUrlSigned = mconcat [uri, "&ssig=", toBS $ strEncode ssig]
     idsig =
       case C.sign (C.APrivateSignKey C.SEd25519 idKey) inviteUrlSigned of
         C.ASignature C.SEd25519 s -> s
@@ -147,8 +149,8 @@ verifySignedInvitation RCSignedInvitation {invitation, ssig, idsig} =
     else Nothing
   where
     RCInvitation {skey, idkey} = invitation
-    inviteURL = strEncode invitation
-    inviteURLS = mconcat [inviteURL, "&ssig=", strEncode ssig]
+    inviteURL = toBS $ strEncode invitation
+    inviteURLS = mconcat [inviteURL, "&ssig=", toBS $ strEncode ssig]
 
 data RCEncInvitation = RCEncInvitation
   { dhPubKey :: C.PublicKeyX25519,

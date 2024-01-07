@@ -7,6 +7,7 @@
 module FileDescriptionTests where
 
 import Control.Exception (bracket_)
+import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Description
@@ -152,7 +153,7 @@ testParseFileDescription = do
 
 testSerializeFileDescription :: IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
-  B.writeFile tmpFileDescPath $ strEncode fileDesc
+  BB.writeFile tmpFileDescPath $ strEncode fileDesc
   fdSer <- B.readFile tmpFileDescPath
   fdExp <- B.readFile fileDescPath
   fdSer `shouldBe` fdExp

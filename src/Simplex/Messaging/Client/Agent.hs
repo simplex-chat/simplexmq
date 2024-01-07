@@ -40,7 +40,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, NotifierId, NtfPrivateSignKey, Pro
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, toChunks, ($>>=))
+import Simplex.Messaging.Util (catchAll_, toBS, toChunks, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.Exception (Exception)
@@ -316,7 +316,7 @@ smpSubscribeQueues party ca smp srv subs = do
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =
-  strEncode host <> B.pack (if null port then "" else ':' : port)
+  toBS (strEncode host) <> B.pack (if null port then "" else ':' : port)
 
 smpSubscribe :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
 smpSubscribe smp ((party, queueId), privKey) = subscribe_ smp privKey queueId

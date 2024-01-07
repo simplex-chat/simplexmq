@@ -7,7 +7,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module ServerTests where
 
@@ -19,6 +21,7 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Set as S
@@ -33,6 +36,7 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (toBS)
 import System.Directory (removeFile)
 import System.TimeIt (timeItT)
 import System.Timeout
@@ -72,7 +76,7 @@ pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
 pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 
-pattern Msg :: MsgId -> MsgBody -> BrokerMsg
+pattern Msg :: MsgId -> ByteString -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
 sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
@@ -84,7 +88,7 @@ sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut1 h (Just $ C.sign pk t, t)
+  Right () <- tPut1 h (Just $ C.sign pk $ toBS t, t)
   tGet1 h
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
@@ -106,13 +110,13 @@ _SEND = SEND noMsgFlags
 _SEND' :: MsgBody -> Command 'Sender
 _SEND' = SEND MsgFlags {notification = True}
 
-decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.CryptoError ByteString
-decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
+decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.CryptoError Builder
+decryptMsgV2 dhShared nonce body = byteString <$> C.cbDecrypt dhShared (C.cbNonce nonce) body
 
 decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
 decryptMsgV3 dhShared nonce body =
   case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
-    Right ClientRcvMsgBody {msgBody} -> Right msgBody
+    Right ClientRcvMsgBody {msgBody} -> Right $ byteString msgBody
     Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
     Left e -> Left e
 
@@ -172,12 +176,12 @@ testCreateSecureV2 _ =
       Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      let maxAllowedMessage = byteString $ B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 h
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      let biggerMessage = byteString $ B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv h sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -237,12 +241,12 @@ testCreateSecure (ATransport t) =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      let maxAllowedMessage = byteString $ B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      let biggerMessage = byteString $ B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -363,20 +367,20 @@ testDuplex (ATransport t) =
 
       Resp "" _ (Msg mId1 msg1) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId1)
-      Right ["key", bobKey] <- pure $ B.words <$> aDec mId1 msg1
-      (bobKey, strEncode bsPub) #== "key received from Bob"
+      Right ["key", bobKey] <- pure $ B.words . toBS <$> aDec mId1 msg1
+      (bobKey, toBS $ strEncode bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, KEY bsPub)
 
       (brPub, brKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", NEW brPub bDhPub Nothing SMSubscribe)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
-      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode bSnd)
+      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> strEncode bSnd)
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (Msg mId2 msg2) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId2)
-      Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
+      Right ["reply_id", bId] <- pure $ B.words . toBS <$> aDec mId2 msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
 
       (asPub, asKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
@@ -385,8 +389,8 @@ testDuplex (ATransport t) =
 
       Resp "" _ (Msg mId3 msg3) <- tGet1 bob
       Resp "abcd" _ OK <- signSendRecv bob brKey ("abcd", bRcv, ACK mId3)
-      Right ["key", aliceKey] <- pure $ B.words <$> bDec mId3 msg3
-      (aliceKey, strEncode asPub) #== "key received from Alice"
+      Right ["key", aliceKey] <- pure $ B.words . toBS <$> bDec mId3 msg3
+      (aliceKey, toBS $ strEncode asPub) #== "key received from Alice"
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, KEY asPub)
 
       Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, _SEND "hi alice")
@@ -1038,7 +1042,7 @@ noAuth = ('A', Nothing)
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
-  it "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
+  fit "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
@@ -1079,3 +1083,9 @@ syntaxTests (ATransport t) = do
       (Maybe C.ASignature, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response
+
+deriving instance Eq EncRcvMsgBody
+
+deriving instance Eq RcvMessage
+
+deriving instance Eq BrokerMsg

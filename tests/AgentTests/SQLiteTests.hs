@@ -16,6 +16,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
 import Data.ByteArray (ScrubbedBytes)
+import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
@@ -461,7 +462,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           },
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
-      msgBody = hw,
+      msgBody = byteString hw,
       internalHash,
       externalPrevSndHash = "hash_from_sender",
       encryptedMsgHash = "encrypted_msg_hash"
@@ -494,7 +495,7 @@ mkSndMsgData internalId internalSndId internalHash =
       internalTs = ts,
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
-      msgBody = hw,
+      msgBody = byteString hw,
       internalHash,
       prevMsgHash = internalHash
     }

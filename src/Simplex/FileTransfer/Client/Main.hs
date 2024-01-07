@@ -60,11 +60,11 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
 import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Encoding.String (StrEncoding (..), strEncode')
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
-import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
+import Simplex.Messaging.Util (groupAllOn, ifM, toBS, tshow, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
@@ -79,7 +79,7 @@ maxFileSize :: Int64
 maxFileSize = gb 1
 
 maxFileSizeStr :: String
-maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+maxFileSizeStr = LB.unpack . strEncode' $ FileSize maxFileSize
 
 fileSizeLen :: Int64
 fileSizeLen = 8
@@ -287,7 +287,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       encPath <- getEncPath tempPath "xftp"
       key <- atomically $ C.randomSbKey g
       nonce <- atomically $ C.randomCbNonce g
-      let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
+      let fileHdr = toBS $ smpEncode FileHeader {fileName, fileExtra = Nothing}
           fileSize' = fromIntegral (B.length fileHdr) + fileSize
           chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
           defChunkSize = head chunkSizes
@@ -396,10 +396,10 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       createDirectoryIfMissing True outDir
       fdRcvPaths <- forM (zip [1 ..] fdRcvs) $ \(i :: Int, fd) -> do
         let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
-        B.writeFile fdPath $ strEncode fd
+        LB.writeFile fdPath $ strEncode' fd
         pure fdPath
       let fdSndPath = outDir </> "snd.xftp.private"
-      B.writeFile fdSndPath $ strEncode fdSnd
+      LB.writeFile fdSndPath $ strEncode' fdSnd
       pure (fdRcvPaths, fdSndPath)
 
 getChunkDigest :: XFTPChunkSpec -> IO ByteString
@@ -510,7 +510,7 @@ cliFileDescrInfo InfoOptions {fileDescription} = do
           SFSender -> putStrLn "Sender file description"
 
 strEnc :: StrEncoding a => a -> String
-strEnc = B.unpack . strEncode
+strEnc = LB.unpack . strEncode'
 
 getFileDescription :: FilePath -> ExceptT CLIError IO AValidFileDescription
 getFileDescription path =

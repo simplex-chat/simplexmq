@@ -9,8 +9,10 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
@@ -36,8 +38,10 @@ import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchet
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
+import Data.ByteString.Builder (Builder, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import Data.Int (Int64)
 import qualified Data.Map as M
@@ -113,6 +117,11 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 pattern Rcvd :: AgentMsgId -> ACommand 'Agent e
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
+
+deriving instance Eq (ACommand p e)
+
+instance Eq Builder where
+  b == b' = toLazyByteString b == toLazyByteString b'
 
 smpCfgVPrev :: ProtocolClientConfig
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
@@ -311,7 +320,7 @@ functionalAPITests t = do
     it "should pass without basic auth" $ testSMPServerConnectionTest t Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
     let srv1 = testSMPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testSMPServerConnectionTest t Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+      testSMPServerConnectionTest t Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (LB.unpack $ strEncode' srv1) NETWORK)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2

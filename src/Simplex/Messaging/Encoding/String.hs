@@ -5,6 +5,8 @@ module Simplex.Messaging.Encoding.String
   ( TextEncoding (..),
     StrEncoding (..),
     Str (..),
+    Str' (..),
+    strEncode',
     strP_,
     _strP,
     strToJSON,
@@ -13,6 +15,8 @@ module Simplex.Messaging.Encoding.String
     base64urlP,
     strEncodeList,
     strListP,
+    unwords_,
+    unlines_,
   )
 where
 
@@ -24,22 +28,27 @@ import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as U
+import Data.ByteString.Builder (Builder, byteString, char8, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (isAlphaNum)
 import Data.Int (Int64)
+import Data.List (intersperse)
 import qualified Data.List.NonEmpty as L
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
+import qualified Data.Text.Lazy as LT
+import Data.Text.Lazy.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (bshow', (<$?>))
 
 class TextEncoding a where
   textEncode :: a -> Text
@@ -48,7 +57,7 @@ class TextEncoding a where
 -- | Serializing human-readable and (where possible) URI-friendly strings for SMP and SMP agent protocols
 class StrEncoding a where
   {-# MINIMAL strEncode, (strDecode | strP) #-}
-  strEncode :: a -> ByteString
+  strEncode :: a -> Builder
 
   -- Please note - if you only specify strDecode, it will use base64urlP as default parser before decoding the string
   strDecode :: ByteString -> Either String a
@@ -56,9 +65,13 @@ class StrEncoding a where
   strP :: Parser a
   strP = strDecode <$?> base64urlP
 
+strEncode' :: StrEncoding a => a -> LB.ByteString
+strEncode' = toLazyByteString . strEncode
+{-# INLINE strEncode' #-}
+
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
-  strEncode = U.encode
+  strEncode = byteString . U.encode
   strDecode = U.decode
   strP = base64urlP
 
@@ -71,9 +84,16 @@ base64urlP = do
 newtype Str = Str {unStr :: ByteString}
   deriving (Eq, Show)
 
+newtype Str' = Str' Builder
+  deriving (Show)
+
 instance StrEncoding Str where
-  strEncode = unStr
+  strEncode = byteString . unStr
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
+
+instance StrEncoding Str' where
+  strEncode (Str' s) = s
+  strP = Str' . byteString <$> A.takeTill (== ' ') <* optional A.space
 
 instance StrEncoding String where
   strEncode = strEncode . B.pack
@@ -93,13 +113,13 @@ instance StrEncoding a => StrEncoding (Maybe a) where
   {-# INLINE strP #-}
 
 instance StrEncoding Word16 where
-  strEncode = B.pack . show
+  strEncode = bshow'
   {-# INLINE strEncode #-}
   strP = A.decimal
   {-# INLINE strP #-}
 
 instance StrEncoding Word32 where
-  strEncode = B.pack . show
+  strEncode = bshow'
   {-# INLINE strEncode #-}
   strP = A.decimal
   {-# INLINE strP #-}
@@ -117,13 +137,13 @@ instance StrEncoding Bool where
   {-# INLINE strP #-}
 
 instance StrEncoding Int where
-  strEncode = B.pack . show
+  strEncode = bshow'
   {-# INLINE strEncode #-}
   strP = A.decimal
   {-# INLINE strP #-}
 
 instance StrEncoding Int64 where
-  strEncode = B.pack . show
+  strEncode = bshow'
   {-# INLINE strEncode #-}
   strP = A.decimal
   {-# INLINE strP #-}
@@ -133,12 +153,12 @@ instance StrEncoding SystemTime where
   strP = MkSystemTime <$> strP <*> pure 0
 
 instance StrEncoding UTCTime where
-  strEncode = B.pack . iso8601Show
+  strEncode = byteString . B.pack . iso8601Show
   strP = maybe (Left "bad UTCTime") Right . iso8601ParseM . B.unpack <$?> A.takeTill (\c -> c == ' ' || c == '\n')
 
 -- lists encode/parse as comma-separated strings
-strEncodeList :: StrEncoding a => [a] -> ByteString
-strEncodeList = B.intercalate "," . map strEncode
+strEncodeList :: StrEncoding a => [a] -> Builder
+strEncodeList = mconcat . intersperse (char8 ',') . map strEncode
 
 strListP :: StrEncoding a => Parser [a]
 strListP = listItem `A.sepBy'` A.char ','
@@ -156,28 +176,34 @@ listItem :: StrEncoding a => Parser a
 listItem = parseAll strP <$?> A.takeTill (\c -> c == ',' || c == ' ' || c == '\n')
 
 instance (StrEncoding a, StrEncoding b) => StrEncoding (a, b) where
-  strEncode (a, b) = B.unwords [strEncode a, strEncode b]
+  strEncode (a, b) = unwords_ [strEncode a, strEncode b]
   {-# INLINE strEncode #-}
   strP = (,) <$> strP_ <*> strP
   {-# INLINE strP #-}
 
 instance (StrEncoding a, StrEncoding b, StrEncoding c) => StrEncoding (a, b, c) where
-  strEncode (a, b, c) = B.unwords [strEncode a, strEncode b, strEncode c]
+  strEncode (a, b, c) = unwords_ [strEncode a, strEncode b, strEncode c]
   {-# INLINE strEncode #-}
   strP = (,,) <$> strP_ <*> strP_ <*> strP
   {-# INLINE strP #-}
 
 instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d) => StrEncoding (a, b, c, d) where
-  strEncode (a, b, c, d) = B.unwords [strEncode a, strEncode b, strEncode c, strEncode d]
+  strEncode (a, b, c, d) = unwords_ [strEncode a, strEncode b, strEncode c, strEncode d]
   {-# INLINE strEncode #-}
   strP = (,,,) <$> strP_ <*> strP_ <*> strP_ <*> strP
   {-# INLINE strP #-}
 
 instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncoding e) => StrEncoding (a, b, c, d, e) where
-  strEncode (a, b, c, d, e) = B.unwords [strEncode a, strEncode b, strEncode c, strEncode d, strEncode e]
+  strEncode (a, b, c, d, e) = unwords_ [strEncode a, strEncode b, strEncode c, strEncode d, strEncode e]
   {-# INLINE strEncode #-}
   strP = (,,,,) <$> strP_ <*> strP_ <*> strP_ <*> strP_ <*> strP
   {-# INLINE strP #-}
+
+unwords_ :: [Builder] -> Builder
+unwords_ = mconcat . intersperse (char8 ' ')
+
+unlines_ :: [Builder] -> Builder
+unlines_ = mconcat . intersperse (char8 '\n')
 
 strP_ :: StrEncoding a => Parser a
 strP_ = strP <* A.space
@@ -186,10 +212,10 @@ _strP :: StrEncoding a => Parser a
 _strP = A.space *> strP
 
 strToJSON :: StrEncoding a => a -> J.Value
-strToJSON = J.String . decodeLatin1 . strEncode
+strToJSON = J.String . LT.toStrict . decodeLatin1 . strEncode'
 
 strToJEncoding :: StrEncoding a => a -> J.Encoding
-strToJEncoding = JE.text . decodeLatin1 . strEncode
+strToJEncoding = JE.text . LT.toStrict . decodeLatin1 . strEncode'
 
 strParseJSON :: StrEncoding a => String -> J.Value -> JT.Parser a
 strParseJSON name = J.withText name $ either fail pure . parseAll strP . encodeUtf8

@@ -12,6 +12,7 @@ module Simplex.Messaging.Server.CLI where
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
 import Data.Text (Text)
@@ -25,7 +26,7 @@ import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (eitherToMaybe, whenM)
+import Simplex.Messaging.Util (eitherToMaybe, toBS, whenM)
 import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -128,7 +129,7 @@ createServerX509 cfgPath x509cfg = do
 
     saveFingerprint = do
       Fingerprint fp <- loadFingerprint $ c caCrtFile
-      withFile (c fingerprintFile) WriteMode (`B.hPutStrLn` strEncode fp)
+      withFile (c fingerprintFile) WriteMode (`B.hPutStrLn` toBS (strEncode fp))
       pure fp
 
 warnCAPrivateKeyFile :: FilePath -> X509Config -> IO ()
@@ -204,7 +205,7 @@ checkSavedFingerprint :: FilePath -> X509Config -> IO ByteString
 checkSavedFingerprint cfgPath x509cfg = do
   savedFingerprint <- withFile (c fingerprintFile) ReadMode hGetLine
   Fingerprint fp <- loadFingerprint (c caCrtFile)
-  when (B.pack savedFingerprint /= strEncode fp) $
+  when (LB.pack savedFingerprint /= strEncode' fp) $
     exitError "Stored fingerprint is invalid."
   pure fp
   where
@@ -230,8 +231,8 @@ deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecurs
 printServiceInfo :: ProtocolTypeI p => String -> ProtoServerWithAuth p -> IO ()
 printServiceInfo serverVersion srv@(ProtoServerWithAuth ProtocolServer {keyHash} _) = do
   putStrLn serverVersion
-  B.putStrLn $ "Fingerprint: " <> strEncode keyHash
-  B.putStrLn $ "Server address: " <> strEncode srv
+  B.putStrLn . toBS $ "Fingerprint: " <> strEncode keyHash
+  B.putStrLn . toBS $ "Server address: " <> strEncode srv
 
 clearDirIfExists :: FilePath -> IO ()
 clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>= mapM_ (removePathForcibly . combine path)

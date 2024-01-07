@@ -7,7 +7,7 @@ module Simplex.Messaging.Transport.WebSockets (WS (..)) where
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy as LB
 import qualified Network.TLS as T
 import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
@@ -101,5 +101,5 @@ makeTLSContextStream cxt =
       (Just <$> T.recvData cxt) `E.catch` \case
         T.Error_EOF -> pure Nothing
         e -> E.throwIO e
-    writeStream :: Maybe BL.ByteString -> IO ()
+    writeStream :: Maybe LB.ByteString -> IO ()
     writeStream = maybe (closeTLS cxt) (T.sendData cxt)

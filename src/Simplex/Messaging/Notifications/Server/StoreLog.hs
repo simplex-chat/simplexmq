@@ -113,7 +113,7 @@ instance StrEncoding NtfStoreLogRecord where
 
 instance StrEncoding NtfTknRec where
   strEncode NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval} =
-    B.unwords
+    unwords_
       [ "tknId=" <> strEncode ntfTknId,
         "token=" <> strEncode token,
         "tokenStatus=" <> strEncode tknStatus,
@@ -136,7 +136,7 @@ instance StrEncoding NtfTknRec where
 
 instance StrEncoding NtfSubRec where
   strEncode NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus} =
-    B.unwords
+    unwords_
       [ "subId=" <> strEncode ntfSubId,
         "smpQueue=" <> strEncode smpQueue,
         "notifierKey=" <> strEncode notifierKey,

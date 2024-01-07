@@ -6,7 +6,6 @@ module Simplex.FileTransfer.Server.Stats where
 
 import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
@@ -89,7 +88,7 @@ setFileServerStats s d = do
 
 instance StrEncoding FileServerStatsData where
   strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize} =
-    B.unlines
+    unlines_
       [ "fromTime=" <> strEncode _fromTime,
         "filesCreated=" <> strEncode _filesCreated,
         "fileRecipients=" <> strEncode _fileRecipients,

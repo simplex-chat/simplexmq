@@ -22,7 +22,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (catchAll_)
+import Simplex.Messaging.Util (catchAll_, toBS)
 import UnliftIO
 
 type XFTPClientVar = TMVar (Either XFTPClientAgentError XFTPClient)
@@ -115,7 +115,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
 
 showServer :: XFTPServer -> Text
 showServer ProtocolServer {host, port} =
-  decodeUtf8 $ strEncode host <> B.pack (if null port then "" else ':' : port)
+  decodeUtf8 $ toBS (strEncode host) <> B.pack (if null port then "" else ':' : port)
 
 closeXFTPServerClient :: XFTPClientAgent -> XFTPServer -> IO ()
 closeXFTPServerClient XFTPClientAgent {xftpClients, config} srv =

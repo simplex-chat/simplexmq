@@ -8,7 +8,6 @@ module Simplex.Messaging.Server.Stats where
 
 import Control.Applicative (optional, (<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.ByteString.Char8 as B
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Time.Calendar.Month (pattern MonthDay)
@@ -103,7 +102,7 @@ setServerStats s d = do
 
 instance StrEncoding ServerStatsData where
   strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _qCount, _msgCount} =
-    B.unlines
+    unlines_
       [ "fromTime=" <> strEncode _fromTime,
         "qCreated=" <> strEncode _qCreated,
         "qSecured=" <> strEncode _qSecured,

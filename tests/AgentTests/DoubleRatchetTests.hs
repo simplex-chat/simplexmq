@@ -15,14 +15,13 @@ import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util ((<$$>))
+import Simplex.Messaging.Util (lenB, toBS, (<$$>))
 import Test.Hspec
 
 doubleRatchetTests :: Spec
@@ -61,7 +60,7 @@ testMessageHeader :: Expectation
 testMessageHeader = do
   (k, _) <- atomically . C.generateKeyPair @X25519 =<< C.newRandom
   let hdr = MsgHeader {msgMaxVersion = currentE2EEncryptVersion, msgDHRs = k, msgPN = 0, msgNs = 0}
-  parseAll (smpP @(MsgHeader 'X25519)) (smpEncode hdr) `shouldBe` Right hdr
+  parseAll (smpP @(MsgHeader 'X25519)) (toBS $ smpEncode hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
@@ -221,8 +220,8 @@ encrypt_ (_, rc, _) msg =
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
-      B.length msg' `shouldBe` fullMsgLen
-      pure $ Right (msg', rc', SMDNoChange)
+      lenB msg' `shouldBe` fullMsgLen
+      pure $ Right (toBS msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
 decrypt_ (g, rc, smks) msg = runExceptT $ rcDecrypt g rc smks msg

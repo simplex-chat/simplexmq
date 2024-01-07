@@ -62,7 +62,6 @@ module Simplex.Messaging.Agent.Client
     agentXFTPUploadChunk,
     agentXFTPAddRecipients,
     agentXFTPDeleteChunk,
-    agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
     sendAck,
@@ -133,8 +132,10 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -506,7 +507,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     connectClient = do
       cfg <- getClientConfig c smpCfg
       u <- askUnliftIO
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg (Just msgQ) $ clientDisconnected u)
+      liftEitherError (protocolClientError SMP $ LB.unpack $ strEncode' srv) (getProtocolClient tSess cfg (Just msgQ) $ clientDisconnected u)
 
     clientDisconnected :: UnliftIO m -> SMPClient -> IO ()
     clientDisconnected u client = do
@@ -587,7 +588,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
     connectClient :: m NtfClient
     connectClient = do
       cfg <- getClientConfig c ntfCfg
-      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg Nothing clientDisconnected)
+      liftEitherError (protocolClientError NTF $ LB.unpack $ strEncode' srv) (getProtocolClient tSess cfg Nothing clientDisconnected)
 
     clientDisconnected :: NtfClient -> IO ()
     clientDisconnected client = do
@@ -608,7 +609,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
     connectClient = do
       cfg <- asks $ xftpCfg . config
       xftpNetworkConfig <- readTVarIO useNetworkConfig
-      liftEitherError (protocolClientError XFTP $ B.unpack $ strEncode srv) (X.getXFTPClient tSess cfg {xftpNetworkConfig} clientDisconnected)
+      liftEitherError (protocolClientError XFTP $ LB.unpack $ strEncode' srv) (X.getXFTPClient tSess cfg {xftpNetworkConfig} clientDisconnected)
 
     clientDisconnected :: XFTPClient -> IO ()
     clientDisconnected client = do
@@ -633,7 +634,7 @@ waitForProtocolClient c (_, srv, _) clientVar = do
   liftEither $ case client_ of
     Just (Right smpClient) -> Right smpClient
     Just (Left e) -> Left e
-    Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
+    Nothing -> Left $ BROKER (LB.unpack $ strEncode' srv) TIMEOUT
 
 newProtocolClient ::
   forall err msg m.
@@ -657,7 +658,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
           atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
           successAction client
         Left e -> do
-          liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
+          liftIO . incServerStat c userId srv "CLIENT" . toBS $ strEncode e
           if temporaryAgentError e
             then retryAction
             else atomically $ do
@@ -770,8 +771,8 @@ withClient_ c tSess@(userId, srv, _) statCmd action = do
     stat cl = liftIO . incClientStat c userId cl statCmd
     logServerError :: Client msg -> AgentErrorType -> m a
     logServerError cl e = do
-      logServer "<--" c srv "" $ strEncode e
-      stat cl $ strEncode e
+      logServer "<--" c srv "" . toBS $ strEncode e
+      stat cl . toBS $ strEncode e
       throwError e
 
 withLogClient_ :: (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> m a) -> m a
@@ -817,7 +818,7 @@ liftClient protocolError_ = liftError . protocolClientError protocolError_
 protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ e
-  PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
+  PCEResponseError e -> BROKER host $ RESPONSE $ LB.unpack $ smpEncode' e
   PCEUnexpectedResponse _ -> BROKER host UNEXPECTED
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
@@ -866,7 +867,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
       Left e -> pure (Just $ testErr TSConnect e)
   where
-    addr = B.unpack $ strEncode srv
+    addr = LB.unpack $ strEncode' srv
     testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
     testErr step = ProtocolTestFailure step . protocolClientError SMP addr
 
@@ -900,7 +901,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
         pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
       Left e -> pure (Just $ testErr TSConnect e)
   where
-    addr = B.unpack $ strEncode srv
+    addr = LB.unpack $ strEncode' srv
     testErr :: ProtocolTestStep -> XFTPClientError -> ProtocolTestFailure
     testErr step = ProtocolTestFailure step . protocolClientError XFTP addr
     chSize :: Integral a => a
@@ -1071,7 +1072,7 @@ logServer dir AgentClient {clientId} srv qId cmdStr =
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
-  strEncode host <> B.pack (if null port then "" else ':' : port)
+  toBS (strEncode host) <> B.pack (if null port then "" else ':' : port)
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
@@ -1080,7 +1081,7 @@ sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteStr
 sendConfirmation c sq@SndQueue {sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation =
   withSMPClient_ c sq "SEND <CONF>" $ \smp -> do
     let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
-    msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
+    msg <- agentCbEncrypt sq e2ePubKey . toBS $ smpEncode clientMsg
     liftClient SMP (clientServer smp) $ sendSMPMessage smp Nothing sndId (SMP.MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
@@ -1091,12 +1092,12 @@ sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, 
     msg <- mkInvitation
     liftClient SMP (clientServer smp) $ sendSMPMessage smp Nothing senderId MsgFlags {notification = True} msg
   where
-    mkInvitation :: m ByteString
+    mkInvitation :: m Builder
     -- this is only encrypted with per-queue E2E, not with double ratchet
     mkInvitation = do
       let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
-      agentCbEncryptOnce v dhPublicKey . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
+      agentCbEncryptOnce v dhPublicKey . toBS . smpEncode $
+        SMP.ClientMessage SMP.PHEmpty (toBS $ smpEncode agentEnvelope)
 
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
@@ -1178,7 +1179,7 @@ sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> MsgFlags -> ByteS
 sendAgentMessage c sq@SndQueue {sndId, sndPrivateKey} msgFlags agentMsg =
   withSMPClient_ c sq "SEND <MSG>" $ \smp -> do
     let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
-    msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
+    msg <- agentCbEncrypt sq Nothing . toBS $ smpEncode clientMsg
     liftClient SMP (clientServer smp) $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
 
 agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
@@ -1257,7 +1258,7 @@ xftpRcvKeys n = do
 xftpRcvIdsKeys :: NonEmpty ByteString -> NonEmpty C.ASignatureKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateSignKey)
 xftpRcvIdsKeys rIds rKeys = L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
 
-agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
+agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m Builder
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
   cmNonce <- atomically . C.randomCbNonce =<< asks random
   let paddedLen = maybe SMP.e2eEncMessageLength (const SMP.e2eEncConfirmationLength) e2ePubKey
@@ -1268,7 +1269,7 @@ agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
   pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 -- add encoding as AgentInvitation'?
-agentCbEncryptOnce :: AgentMonad m => Version -> C.PublicKeyX25519 -> ByteString -> m ByteString
+agentCbEncryptOnce :: AgentMonad m => Version -> C.PublicKeyX25519 -> ByteString -> m Builder
 agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
   g <- asks random
   (dhSndPubKey, dhSndPrivKey) <- atomically $ C.generateKeyPair g
@@ -1460,13 +1461,13 @@ incServerStat c userId ProtocolServer {host} cmd res = do
   threadDelay 100000
   atomically $ incStat c 1 statsKey
   where
-    statsKey = AgentStatsKey {userId, host = strEncode $ L.head host, clientTs = "", cmd, res}
+    statsKey = AgentStatsKey {userId, host = toBS . strEncode $ L.head host, clientTs = "", cmd, res}
 
 incClientStatN :: ProtocolServerClient err msg => AgentClient -> UserId -> Client msg -> Int -> ByteString -> ByteString -> IO ()
 incClientStatN c userId pc n cmd res = do
   atomically $ incStat c n statsKey
   where
-    statsKey = AgentStatsKey {userId, host = strEncode $ clientTransportHost pc, clientTs = strEncode $ clientSessionTs pc, cmd, res}
+    statsKey = AgentStatsKey {userId, host = toBS . strEncode $ clientTransportHost pc, clientTs = toBS . strEncode $ clientSessionTs pc, cmd, res}
 
 userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMap UserId (NonEmpty (ProtoServerWithAuth p))
 userServers c = case protocolTypeI @p of
@@ -1525,7 +1526,7 @@ getAgentSubscriptions c = do
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
     subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text
-    enc = decodeLatin1 . strEncode
+    enc = decodeLatin1 . toBS . strEncode
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 

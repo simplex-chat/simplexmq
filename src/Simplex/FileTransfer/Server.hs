@@ -18,7 +18,7 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
-import Data.ByteString.Builder (byteString)
+import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -242,7 +242,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
               send "padding error" -- TODO respond with BLOCK error?
               done
             Right t -> do
-              send $ byteString t
+              send t
               -- timeout sending file in the same way as receiving
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
                 withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
@@ -434,7 +434,7 @@ saveServerStats =
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
-      B.writeFile f $ strEncode stats
+      BB.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
 restoreServerStats :: M ()

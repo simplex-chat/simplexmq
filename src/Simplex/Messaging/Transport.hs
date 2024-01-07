@@ -67,9 +67,10 @@ import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
+import Data.ByteString.Builder (Builder, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
@@ -79,10 +80,11 @@ import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
+import Simplex.Messaging.Util (bshow', catchAll, catchAll_)
 import Simplex.Messaging.Version
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
@@ -133,6 +135,9 @@ class Transport c where
 
   -- | Write bytes to connection
   cPut :: c -> ByteString -> IO ()
+
+  -- | Write bytes to connection
+  cPut' :: c -> LB.ByteString -> IO ()
 
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
   getLn :: c -> IO ByteString
@@ -217,8 +222,11 @@ instance Transport TLS where
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
-    withTimedErr t_ . T.sendData tlsContext $ BL.fromStrict s
+  cPut cxt = cPut' cxt . LB.fromStrict
+
+  cPut' :: TLS -> LB.ByteString -> IO ()
+  cPut' TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
+    withTimedErr t_ $ T.sendData tlsContext s
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
@@ -301,18 +309,20 @@ transportErrorP =
     <|> "HANDSHAKE " *> (TEHandshake <$> parseRead1)
 
 -- | Serialize SMP encrypted transport error.
-serializeTransportError :: TransportError -> ByteString
+serializeTransportError :: TransportError -> Builder
 serializeTransportError = \case
   TEBadBlock -> "BLOCK"
   TELargeMsg -> "LARGE_MSG"
   TEBadSession -> "SESSION"
-  TEHandshake e -> "HANDSHAKE " <> bshow e
+  TEHandshake e -> "HANDSHAKE " <> bshow' e
 
 -- | Pad and send block to SMP transport.
-tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutBlock :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, blockSize} block =
-  bimapM (const $ pure TELargeMsg) (cPut c) $
-    C.pad block blockSize
+  bimapM (const $ pure TELargeMsg) (cPut' c) $
+    LC.pad s (LB.length s) (fromIntegral blockSize)
+  where
+    s = toLazyByteString block
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
