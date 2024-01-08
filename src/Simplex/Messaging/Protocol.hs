@@ -146,6 +146,7 @@ module Simplex.Messaging.Protocol
     tEncode,
     tEncodeBatch,
     batchTransmissions,
+    batchTransmissions',
 
     -- * exports for tests
     CommandTag (..),
@@ -1289,11 +1290,11 @@ instance Encoding CommandError where
 tPut :: Transport c => THandle c -> Maybe Int -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
 tPut th delay_ = fmap concat . mapM tPutBatch . batchTransmissions (batch th) (blockSize th)
   where
-    tPutBatch :: TransportBatch -> IO [Either TransportError ()]
+    tPutBatch :: TransportBatch () -> IO [Either TransportError ()]
     tPutBatch = \case
-      TBLargeTransmission -> [Left TELargeMsg] <$ putStrLn "tPut error: large message"
-      TBTransmissions n s -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
-      TBTransmission s -> (: []) <$> tPutLog th s
+      TBLargeTransmission _ -> [Left TELargeMsg] <$ putStrLn "tPut error: large message"
+      TBTransmissions s n _ -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
+      TBTransmission s _ -> (: []) <$> tPutLog th s
 
 tPutLog :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
 tPutLog th s = do
@@ -1303,34 +1304,37 @@ tPutLog th s = do
     _ -> pure ()
   pure r
 
--- ByteString does not include length byte, it is added by tEncodeBatch
-data TransportBatch = TBTransmissions Int Builder | TBTransmission Builder | TBLargeTransmission
+-- Builder in TBTransmissions does not include byte with transmissions count, it is added by tEncodeBatch
+data TransportBatch r = TBTransmissions Builder Int [r] | TBTransmission Builder r | TBLargeTransmission r
+
+batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch ()]
+batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
 
 -- | encodes and batches transmissions into blocks,
-batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
-batchTransmissions batch bSize
-  | batch = addBatch . foldr addTransmission ([], mempty, 0, 0)
+batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (SentRawTransmission, r) -> [TransportBatch r]
+batchTransmissions' batch bSize
+  | batch = addBatch . foldr addTransmission ([], mempty, 0, 0, [])
   | otherwise = map mkBatch1 . L.toList
   where
-    mkBatch1 :: SentRawTransmission -> TransportBatch
-    mkBatch1 t
+    mkBatch1 :: (SentRawTransmission, r) -> TransportBatch r
+    mkBatch1 (t, r)
       -- 2 bytes are reserved for pad size
-      | LB.length s <= fromIntegral (bSize - 2) = TBTransmission (lazyByteString s)
-      | otherwise = TBLargeTransmission
+      | LB.length s <= fromIntegral (bSize - 2) = TBTransmission (lazyByteString s) r
+      | otherwise = TBLargeTransmission r
       where
         s = tEncode t
-    addTransmission :: SentRawTransmission -> ([TransportBatch], Builder, Int, Int) -> ([TransportBatch], Builder, Int, Int)
-    addTransmission t acc@(bs, b, len, n)
-      | len' <= bSize - 3 && n < 255 = (bs, s <> b, len', 1 + n)
-      | sLen <= bSize - 3 = (addBatch acc, s, sLen, 1)
-      | otherwise = (TBLargeTransmission : addBatch acc, mempty, 0, 0)
+    addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], Builder, Int, Int, [r]) -> ([TransportBatch r], Builder, Int, Int, [r])
+    addTransmission (t, r) acc@(bs, b, len, n, rs)
+      | len' <= bSize - 3 && n < 255 = (bs, s <> b, len', 1 + n, r : rs)
+      | sLen <= bSize - 3 = (addBatch acc, s, sLen, 1, [r])
+      | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, 0, [])
       where
         s = encodeLarge t'
         sLen = 2 + fromIntegral (LB.length t') -- 2-bytes length is added by encodeLarge
         t' = tEncode t
         len' = sLen + len
-    addBatch :: ([TransportBatch], Builder, Int, Int) -> [TransportBatch]
-    addBatch (bs, b, _, n) = if n == 0 then bs else TBTransmissions n b : bs
+    addBatch :: ([TransportBatch r], Builder, Int, Int, [r]) -> [TransportBatch r]
+    addBatch (bs, b, _, n, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
 
 tEncode :: SentRawTransmission -> LB.ByteString
 tEncode (sig, t) = LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)

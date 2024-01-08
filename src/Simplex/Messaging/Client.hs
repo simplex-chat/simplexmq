@@ -72,9 +72,7 @@ module Simplex.Messaging.Client
     ClientCommand,
 
     -- * For testing
-    ClientBatch (..),
     PCTransmission,
-    batchClientTransmissions,
     mkTransmission,
     clientStub,
   )
@@ -104,7 +102,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
-import Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -175,7 +173,7 @@ clientStub sessionId = do
             }
       }
 
-type SMPClient = ProtocolClient ErrorType SMP.BrokerMsg
+type SMPClient = ProtocolClient ErrorType BrokerMsg
 
 -- | Type for client command data
 type ClientCommand msg = (Maybe C.APrivateSignKey, EntityId, ProtoCommand msg)
@@ -636,7 +634,7 @@ type PCTransmission err msg = (SentRawTransmission, Request err msg)
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
 sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
-  bs <- batchClientTransmissions batch blockSize <$> mapM (mkTransmission c) cs
+  bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
   validate . concat =<< mapM (sendBatch c) bs
   where
     validate :: [Response err msg] -> IO (NonEmpty (Response err msg))
@@ -653,52 +651,21 @@ sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
 
 streamProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
 streamProtocolCommands c@ProtocolClient {batch, blockSize} cs cb = do
-  bs <- batchClientTransmissions batch blockSize <$> mapM (mkTransmission c) cs
+  bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
   mapM_ (cb <=< sendBatch c) bs
 
-sendBatch :: ProtocolClient err msg -> ClientBatch err msg -> IO [Response err msg]
+sendBatch :: ProtocolClient err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
 sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
-    CBLargeTransmission Request {entityId} -> do
+    TBLargeTransmission Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError TELargeMsg]
-    CBTransmissions s n rs -> do
+    TBTransmissions s n rs -> do
       when (n > 0) $ atomically $ writeTBQueue sndQ $ tEncodeBatch n s
       mapConcurrently (getResponse c) rs
-    CBTransmission s r -> do
+    TBTransmission s r -> do
       atomically $ writeTBQueue sndQ s
       (: []) <$> getResponse c r
-
-data ClientBatch err msg
-  = -- Builder in CBTransmissions does not include count byte, it is added by tEncodeBatch
-    CBTransmissions Builder Int [Request err msg]
-  | CBTransmission Builder (Request err msg)
-  | CBLargeTransmission (Request err msg)
-
-batchClientTransmissions :: forall err msg. Bool -> Int -> NonEmpty (PCTransmission err msg) -> [ClientBatch err msg]
-batchClientTransmissions batch bSize
-  | batch = addBatch . foldr addTransmission ([], mempty, 0, 0, [])
-  | otherwise = map mkBatch1 . L.toList
-  where
-    mkBatch1 :: PCTransmission err msg -> ClientBatch err msg
-    mkBatch1 (t, r)
-      -- 2 bytes are reserved for pad size
-      | LB.length s <= fromIntegral (bSize - 2) = CBTransmission (lazyByteString s) r
-      | otherwise = CBLargeTransmission r
-      where
-        s = tEncode t
-    addTransmission :: PCTransmission err msg -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg]) -> ([ClientBatch err msg], Builder, Int, Int, [Request err msg])
-    addTransmission (t, r) acc@(bs, b, len, n, rs)
-      | len' <= bSize - 3 && n < 255 = (bs, s <> b, len', 1 + n, r : rs)
-      | sLen <= bSize - 3 = (addBatch acc, s, sLen, 1, [r])
-      | otherwise = (CBLargeTransmission r : addBatch acc, mempty, 0, 0, [])
-      where
-        s = encodeLarge t'
-        sLen = 2 + fromIntegral (LB.length t') -- 2-bytes length is added by encodeLarge
-        t' = tEncode t
-        len' = sLen + len
-    addBatch :: ([ClientBatch err msg], Builder, Int, Int, [Request err msg]) -> [ClientBatch err msg]
-    addBatch (bs, b, _, n, rs) = if n == 0 then bs else CBTransmissions b n rs : bs
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
