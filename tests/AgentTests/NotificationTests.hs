@@ -503,7 +503,7 @@ testNotificationsSMPRestartBatch :: Int -> ATransport -> APNSMockServer -> IO ()
 testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
-  threadDelay 5000000
+  threadDelay 1000000
   conns <- runServers $ do
     liftIO $ print 1
     conns <- replicateM (n :: Int) $ makeConnection a b
