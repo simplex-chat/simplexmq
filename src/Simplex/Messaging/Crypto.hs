@@ -191,8 +191,6 @@ import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
-import Simplex.Messaging.Builder (Builder, byteString, word16BE)
-import qualified Simplex.Messaging.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
@@ -208,6 +206,8 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
+import Simplex.Messaging.Builder (Builder, byteString, word16BE)
+import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)

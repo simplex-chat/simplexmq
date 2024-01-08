@@ -67,7 +67,6 @@ import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
-import Simplex.Messaging.Builder (Builder, byteString, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -79,6 +78,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
+import Simplex.Messaging.Builder (Builder, byteString, toLazyByteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)

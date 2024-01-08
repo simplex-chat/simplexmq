@@ -17,7 +17,6 @@ import Control.Applicative ((<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
-import Simplex.Messaging.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
@@ -25,6 +24,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
+import Simplex.Messaging.Builder (Builder)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
