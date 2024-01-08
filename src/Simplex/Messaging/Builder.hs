@@ -19,10 +19,6 @@ import Data.Word (Word16)
 -- length-aware builder
 data Builder = Builder {length :: Int, builder :: BB.Builder}
 
-unsafeBuilder :: Int -> BB.Builder -> Builder
-unsafeBuilder = Builder
-{-# INLINE unsafeBuilder #-}
-
 instance Semigroup Builder where
   Builder l1 b1 <> Builder l2 b2 = Builder (l1 + l2) (b1 <> b2)
   {-# INLINE (<>) #-}
@@ -30,9 +26,9 @@ instance Semigroup Builder where
 instance Monoid Builder where
   mempty = Builder 0 mempty
   {-# INLINE mempty #-}
-  mconcat bldrs = Builder (sum ls) (mconcat bs)
+  mconcat bs = Builder (sum ls) (mconcat bbs)
     where
-      (ls, bs) = foldr (\(Builder l b) ~(ls, bs) -> (l : ls, b : bs)) ([], []) bldrs
+      (ls, bbs) = foldr (\(Builder l b) ~(ls', bbs') -> (l : ls', b : bbs')) ([], []) bs
   {-# INLINE mconcat #-}
 
 byteString :: B.ByteString -> Builder
