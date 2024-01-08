@@ -22,7 +22,7 @@ where
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftL, shiftR, (.|.))
-import Data.ByteString.Builder (Builder, lazyByteString, word16BE)
+import Data.ByteString.Builder (Builder, byteString, lazyByteString, word16BE)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -142,7 +142,7 @@ instance Encoding Large where
   {-# INLINE smpP #-}
 
 encodeLarge :: LB.ByteString -> Builder
-encodeLarge s = word16BE (fromIntegral $ LB.length s) <> lazyByteString s
+encodeLarge s = byteString (encodeWord16 $ fromIntegral $ LB.length s) <> lazyByteString s
 {-# INLINE encodeLarge #-}
 
 instance Encoding SystemTime where

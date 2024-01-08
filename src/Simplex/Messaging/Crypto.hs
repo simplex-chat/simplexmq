@@ -924,7 +924,7 @@ pad msg paddedLen
 
 pad' :: Builder -> Int -> Either CryptoError Builder
 pad' msg paddedLen
-  | len <= maxMsgLen && padLen >= 0 = Right $ word16BE (fromIntegral len) <> msg <> byteString (B.replicate padLen '#')
+  | len <= maxMsgLen && padLen >= 0 = Right $ byteString (encodeWord16 $ fromIntegral len) <> msg <> byteString (B.replicate padLen '#')
   | otherwise = Left CryptoLargeMsgError
   where
     len = fromIntegral $ LB.length $ toLazyByteString msg
