@@ -140,6 +140,7 @@ module Simplex.Messaging.Crypto
 
     -- * Message padding / un-padding
     pad,
+    pad',
     unPad,
 
     -- * X509 Certificates
@@ -205,6 +206,8 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
+import Simplex.Messaging.Builder (Builder, byteString, word16BE)
+import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
@@ -917,6 +920,14 @@ pad msg paddedLen
   | otherwise = Left CryptoLargeMsgError
   where
     len = B.length msg
+    padLen = paddedLen - len - 2
+
+pad' :: Builder -> Int -> Either CryptoError Builder
+pad' msg paddedLen
+  | len <= maxMsgLen && padLen >= 0 = Right $ word16BE (fromIntegral len) <> msg <> byteString (B.replicate padLen '#')
+  | otherwise = Left CryptoLargeMsgError
+  where
+    len = BB.length msg
     padLen = paddedLen - len - 2
 
 unPad :: ByteString -> Either CryptoError ByteString

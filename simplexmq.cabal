@@ -103,6 +103,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
       Simplex.Messaging.Agent.TAsyncs
       Simplex.Messaging.Agent.TRcvQueues
+      Simplex.Messaging.Builder
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto

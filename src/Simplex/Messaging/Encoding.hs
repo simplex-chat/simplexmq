@@ -11,6 +11,7 @@ module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),
     Large (..),
+    encodeLarge,
     _smpP,
     smpEncodeList,
     smpListP,
@@ -29,6 +30,8 @@ import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
+import Simplex.Messaging.Builder (Builder, word16BE)
+import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -138,6 +141,10 @@ instance Encoding Large where
     Large <$> A.take len
   {-# INLINE smpP #-}
 
+encodeLarge :: Builder -> Builder
+encodeLarge s = word16BE (fromIntegral $ BB.length s) <> s
+{-# INLINE encodeLarge #-}
+
 instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds
   {-# INLINE smpEncode #-}
@@ -174,37 +181,37 @@ instance (Encoding a, Encoding b) => Encoding (a, b) where
   {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c) => Encoding (a, b, c) where
-  smpEncode (a, b, c) = smpEncode a <> smpEncode b <> smpEncode c
+  smpEncode (a, b, c) = B.concat [smpEncode a, smpEncode b, smpEncode c]
   {-# INLINE smpEncode #-}
   smpP = (,,) <$> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d) => Encoding (a, b, c, d) where
-  smpEncode (a, b, c, d) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d
+  smpEncode (a, b, c, d) = B.concat [smpEncode a, smpEncode b, smpEncode c, smpEncode d]
   {-# INLINE smpEncode #-}
   smpP = (,,,) <$> smpP <*> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e) => Encoding (a, b, c, d, e) where
-  smpEncode (a, b, c, d, e) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e
+  smpEncode (a, b, c, d, e) = B.concat [smpEncode a, smpEncode b, smpEncode c, smpEncode d, smpEncode e]
   {-# INLINE smpEncode #-}
   smpP = (,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e, Encoding f) => Encoding (a, b, c, d, e, f) where
-  smpEncode (a, b, c, d, e, f) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e <> smpEncode f
+  smpEncode (a, b, c, d, e, f) = B.concat [smpEncode a, smpEncode b, smpEncode c, smpEncode d, smpEncode e, smpEncode f]
   {-# INLINE smpEncode #-}
   smpP = (,,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e, Encoding f, Encoding g) => Encoding (a, b, c, d, e, f, g) where
-  smpEncode (a, b, c, d, e, f, g) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e <> smpEncode f <> smpEncode g
+  smpEncode (a, b, c, d, e, f, g) = B.concat [smpEncode a, smpEncode b, smpEncode c, smpEncode d, smpEncode e, smpEncode f, smpEncode g]
   {-# INLINE smpEncode #-}
   smpP = (,,,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e, Encoding f, Encoding g, Encoding h) => Encoding (a, b, c, d, e, f, g, h) where
-  smpEncode (a, b, c, d, e, f, g, h) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e <> smpEncode f <> smpEncode g <> smpEncode h
+  smpEncode (a, b, c, d, e, f, g, h) = B.concat [smpEncode a, smpEncode b, smpEncode c, smpEncode d, smpEncode e, smpEncode f, smpEncode g, smpEncode h]
   {-# INLINE smpEncode #-}
   smpP = (,,,,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
