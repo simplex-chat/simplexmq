@@ -510,7 +510,7 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     liftIO $ print 2
     _ <- registerTestToken a "abcd" NMInstant apnsQ
     liftIO $ print 3
-    liftIO $ threadDelay 10000000
+    liftIO $ threadDelay 5000000
     liftIO $ print 4
     forM_ (zip [0..] conns) $ \(i, (aliceId, bobId)) -> do
       liftIO $ putStrLn $ "*** msg " <> show i
