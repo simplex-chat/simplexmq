@@ -88,7 +88,7 @@ notificationTests t =
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNotificationsSMPRestart t apns
     describe "Notifications after SMP server restart" $
-      fit "should resume batched subscriptions after SMP server is restarted" $ \_ ->
+      it "should resume batched subscriptions after SMP server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
     describe "should switch notifications to the new queue" $
@@ -505,26 +505,15 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
   threadDelay 1000000
   conns <- runServers $ do
-    liftIO $ print 1
     conns <- replicateM (n :: Int) $ makeConnection a b
-    liftIO $ print 2
     _ <- registerTestToken a "abcd" NMInstant apnsQ
-    liftIO $ print 3
     liftIO $ threadDelay 5000000
-    liftIO $ print 4
     forM_ (zip [0..] conns) $ \(i, (aliceId, bobId)) -> do
-      liftIO $ putStrLn $ "*** msg " <> show i
       msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello"
-      liftIO $ putStrLn $ "*** msg " <> show i <> " called"
       get b ##> ("", aliceId, SENT msgId)
-      liftIO $ putStrLn $ "*** msg " <> show i <> " sent"
       void $ messageNotification apnsQ
-      liftIO $ putStrLn $ "*** msg " <> show i <> " ntf"
       get a =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
-      liftIO $ putStrLn $ "*** msg " <> show i <> " received"
       ackMessage a bobId msgId Nothing
-      liftIO $ putStrLn $ "*** msg " <> show i <> " ack"
-    liftIO $ print 5
     pure conns
 
   runRight_ @AgentErrorType $ do
@@ -535,8 +524,6 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     ("", "", DOWN _ acs2) <- nGet b
     liftIO $ length (acs1 <> acs2) `shouldBe` length conns
 
-  print 6
-
   runServers $ do
     ("", "", UP _ bcs1) <- nGet a
     ("", "", UP _ bcs2) <- nGet a
@@ -545,13 +532,11 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     ("", "", UP _ acs2) <- nGet b
     liftIO $ length (acs1 <> acs2) `shouldBe` length conns
     liftIO $ threadDelay 1500000
-    liftIO $ print 6
     forM_ conns $ \(aliceId, bobId) -> do
       msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello again"
       get b ##> ("", aliceId, SENT msgId)
       _ <- messageNotificationData a apnsQ
       get a =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
-    liftIO $ print 7
   disconnectAgentClient a
   disconnectAgentClient b
   where
