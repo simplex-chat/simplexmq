@@ -85,10 +85,10 @@ import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
-import Data.ByteString.Builder (Builder, lazyByteString)
+import Simplex.Messaging.Builder (Builder)
+import qualified Simplex.Messaging.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
@@ -675,14 +675,12 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | sLen > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | BB.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
-        (sLen, s)
-          | batch = (tLen + 3, tEncodeBatch 1 . encodeLarge $ tEncode t)
-          | otherwise = (tLen, lazyByteString $ tEncode t)
-        t' = tEncode t
-        tLen = fromIntegral $ LB.length t'
+        s
+          | batch = tEncodeBatch 1 . encodeLarge $ tEncode t
+          | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
 getResponse :: ProtocolClient err msg -> Request err msg -> IO (Response err msg)

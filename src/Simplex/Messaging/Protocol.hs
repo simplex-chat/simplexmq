@@ -161,7 +161,8 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteString.Builder (Builder, char8, lazyByteString)
+import Simplex.Messaging.Builder (Builder, char8, lazyByteString)
+import qualified Simplex.Messaging.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -1313,31 +1314,29 @@ batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
 -- | encodes and batches transmissions into blocks,
 batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (SentRawTransmission, r) -> [TransportBatch r]
 batchTransmissions' batch bSize
-  | batch = addBatch . foldr addTransmission ([], mempty, 0, 0, [])
+  | batch = addBatch . foldr addTransmission ([], mempty, 0, [])
   | otherwise = map mkBatch1 . L.toList
   where
     mkBatch1 :: (SentRawTransmission, r) -> TransportBatch r
     mkBatch1 (t, r)
       -- 2 bytes are reserved for pad size
-      | LB.length s <= fromIntegral (bSize - 2) = TBTransmission (lazyByteString s) r
+      | BB.length s <= fromIntegral (bSize - 2) = TBTransmission s r
       | otherwise = TBLargeTransmission r
       where
         s = tEncode t
-    addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], Builder, Int, Int, [r]) -> ([TransportBatch r], Builder, Int, Int, [r])
-    addTransmission (t, r) acc@(bs, b, len, n, rs)
-      | len' <= bSize - 3 && n < 255 = (bs, s <> b, len', 1 + n, r : rs)
-      | sLen <= bSize - 3 = (addBatch acc, s, sLen, 1, [r])
-      | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, 0, [])
+    addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], Builder, Int, [r]) -> ([TransportBatch r], Builder, Int, [r])
+    addTransmission (t, r) acc@(bs, b, n, rs)
+      | len + BB.length b <= bSize - 3 && n < 255 = (bs, s <> b, 1 + n, r : rs)
+      | len <= bSize - 3 = (addBatch acc, s, 1, [r])
+      | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, [])
       where
-        s = encodeLarge t'
-        sLen = 2 + fromIntegral (LB.length t') -- 2-bytes length is added by encodeLarge
-        t' = tEncode t
-        len' = sLen + len
-    addBatch :: ([TransportBatch r], Builder, Int, Int, [r]) -> [TransportBatch r]
-    addBatch (bs, b, _, n, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
+        s = encodeLarge $ tEncode t
+        len = BB.length s
+    addBatch :: ([TransportBatch r], Builder, Int, [r]) -> [TransportBatch r]
+    addBatch (bs, b, n, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
 
-tEncode :: SentRawTransmission -> LB.ByteString
-tEncode (sig, t) = LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
+tEncode :: SentRawTransmission -> Builder
+tEncode (sig, t) = lazyByteString $ LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
 {-# INLINE tEncode #-}
 
 tEncodeBatch :: Int -> Builder -> Builder

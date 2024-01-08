@@ -67,7 +67,7 @@ import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
-import Data.ByteString.Builder (Builder, byteString, toLazyByteString)
+import Simplex.Messaging.Builder (Builder, byteString, toLazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
