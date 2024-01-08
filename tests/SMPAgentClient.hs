@@ -198,8 +198,8 @@ agentCfg =
       ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       xftpNotifyErrsOnRetry = False,
-      ntfWorkerDelay = 1000,
-      ntfSMPWorkerDelay = 1000,
+      ntfWorkerDelay = 100,
+      ntfSMPWorkerDelay = 100,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
