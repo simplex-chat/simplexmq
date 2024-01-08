@@ -511,12 +511,18 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     liftIO $ print 3
     liftIO $ threadDelay 1500000
     liftIO $ print 4
-    forM_ conns $ \(aliceId, bobId) -> do
+    forM_ (zip [0..] conns) $ \(i, (aliceId, bobId)) -> do
+      liftIO $ putStrLn $ "*** msg " <> show i
       msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello"
+      liftIO $ putStrLn $ "*** msg " <> show i <> " called"
       get b ##> ("", aliceId, SENT msgId)
+      liftIO $ putStrLn $ "*** msg " <> show i <> " sent"
       void $ messageNotification apnsQ
+      liftIO $ putStrLn $ "*** msg " <> show i <> " ntf"
       get a =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+      liftIO $ putStrLn $ "*** msg " <> show i <> " received"
       ackMessage a bobId msgId Nothing
+      liftIO $ putStrLn $ "*** msg " <> show i <> " ack"
     liftIO $ print 5
     pure conns
 
