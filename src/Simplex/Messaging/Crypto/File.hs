@@ -36,7 +36,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Parsers (defaultJSON)
-import Simplex.Messaging.Util (liftEitherWith)
 import System.Directory (getFileSize)
 import UnliftIO (Handle, IOMode (..), liftIO)
 import qualified UnliftIO as IO
@@ -59,23 +58,23 @@ readFile (CryptoFile path cfArgs) = do
       let len = LB.length s - fromIntegral C.authTagSize
       when (len < 0) $ throwError FTCEInvalidFileSize
       let (s', tag') = LB.splitAt len s
-      (tag :| cs) <- liftEitherWith FTCECryptoError $ LC.secretBox LC.sbDecryptChunk key nonce s'
+          (tag :| cs) = LC.secretBox LC.sbDecryptChunk key nonce s'
       unless (BA.constEq (LB.toStrict tag') tag) $ throwError FTCEInvalidAuthTag
       pure $ LB.fromChunks cs
     Nothing -> pure s
 
-writeFile :: CryptoFile -> LazyByteString -> ExceptT FTCryptoError IO ()
+writeFile :: CryptoFile -> LazyByteString -> IO ()
 writeFile (CryptoFile path cfArgs) s = do
-  s' <- case cfArgs of
-    Just (CFArgs (C.SbKey key) (C.CbNonce nonce)) ->
-      liftEitherWith FTCECryptoError $ LB.fromChunks <$> LC.secretBoxTailTag LC.sbEncryptChunk key nonce s
-    Nothing -> pure s
-  liftIO $ LB.writeFile path s'
+  let s' =
+        case cfArgs of
+          Just (CFArgs (C.SbKey key) (C.CbNonce nonce)) ->
+            LB.fromChunks $ LC.secretBoxTailTag LC.sbEncryptChunk key nonce s
+          Nothing -> s
+  LB.writeFile path s'
 
 withFile :: CryptoFile -> IOMode -> (CryptoFileHandle -> ExceptT FTCryptoError IO a) -> ExceptT FTCryptoError IO a
 withFile (CryptoFile path cfArgs) mode action = do
-  sb <- forM cfArgs $ \(CFArgs key nonce) ->
-    liftEitherWith FTCECryptoError (LC.sbInit key nonce) >>= newTVarIO
+  sb <- forM cfArgs $ \(CFArgs key nonce) -> newTVarIO (LC.sbInit key nonce)
   IO.withFile path mode $ \h -> action $ CFHandle h sb
 
 hPut :: CryptoFileHandle -> LazyByteString -> IO ()

@@ -1,7 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -168,7 +167,6 @@ module Simplex.Messaging.Crypto
 where
 
 import Control.Concurrent.STM
-import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -196,13 +194,13 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy.Internal as LB
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
-import Data.Word (Word32)
 import Data.X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -211,6 +209,8 @@ import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Builder (Builder, byteString, word16BE)
 import qualified Simplex.Messaging.Builder as BB
+import Simplex.Messaging.Crypto.Internal (CryptoError (..), LazyByteString)
+import qualified Simplex.Messaging.Crypto.Internal as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
@@ -746,37 +746,6 @@ instance SignatureAlgorithm a => SignatureSize (PublicKey a) where
     PublicKeyEd25519 _ -> Ed25519.signatureSize
     PublicKeyEd448 _ -> Ed448.signatureSize
 
--- | Various cryptographic or related errors.
-data CryptoError
-  = -- | AES initialization error
-    AESCipherError CE.CryptoError
-  | -- | IV generation error
-    CryptoIVError
-  | -- | AES decryption error
-    AESDecryptError
-  | -- CryptoBox decryption error
-    CBDecryptError
-  | -- Poly1305 initialization error
-    CryptoPoly1305Error CE.CryptoError
-  | -- | message is larger that allowed padded length minus 2 (to prepend message length)
-    -- (or required un-padded length is larger than the message length)
-    CryptoLargeMsgError
-  | -- | padded message is shorter than 2 bytes
-    CryptoInvalidMsgError
-  | -- | failure parsing message header
-    CryptoHeaderError String
-  | -- | no sending chain key in ratchet state
-    CERatchetState
-  | -- | header decryption error (could indicate that another key should be tried)
-    CERatchetHeader
-  | -- | too many skipped messages
-    CERatchetTooManySkipped Word32
-  | -- | earlier message number (or, possibly, skipped message that failed to decrypt?)
-    CERatchetEarlierMessage Word32
-  | -- | duplicate message number
-    CERatchetDuplicateMessage
-  deriving (Eq, Show, Exception)
-
 aesKeySize :: Int
 aesKeySize = 256 `div` 8
 
@@ -933,6 +902,14 @@ pad' msg paddedLen
     len = BB.length msg
     padLen = paddedLen - len - 2
 
+pad_ :: LazyByteString -> Int -> Either CryptoError LazyByteString
+pad_ msg paddedLen
+  | len <= maxMsgLen && padLen >= 0 = Right $ LB.chunk (encodeWord16 $ fromIntegral len) msg <> LB.replicate padLen '#'
+  | otherwise = Left CryptoLargeMsgError
+  where
+    len = fromIntegral $ LB.length msg
+    padLen = fromIntegral $ paddedLen - len - 2
+
 unPad :: ByteString -> Either CryptoError ByteString
 unPad padded
   | B.length lenWrd == 2 && B.length rest >= len = Right $ B.take len rest
@@ -941,9 +918,17 @@ unPad padded
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
 
-newtype MaxLenBS (i :: Nat) = MLBS {unMaxLenBS :: LB.ByteString}
+unPad' :: LazyByteString -> Either CryptoError LazyByteString
+unPad' padded
+  | LB.length lenWrd == 2 && LB.length rest >= len = Right $ LB.take len rest
+  | otherwise = Left CryptoInvalidMsgError
+  where
+    (lenWrd, rest) = LB.splitAt 2 padded
+    len = fromIntegral $ decodeWord16 $ LB.toStrict lenWrd
 
-pattern MaxLenBS :: LB.ByteString -> MaxLenBS i
+newtype MaxLenBS (i :: Nat) = MLBS {unMaxLenBS :: LazyByteString}
+
+pattern MaxLenBS :: LazyByteString -> MaxLenBS i
 pattern MaxLenBS s <- MLBS s
 
 {-# COMPLETE MaxLenBS #-}
@@ -952,23 +937,20 @@ instance KnownNat i => StrEncoding' (MaxLenBS i) where
   strEncode' (MLBS s) = strEncode' s
   strP' = first show . maxLenBS <$?> strP'
 
--- maxLenBS :: forall i. KnownNat i => ByteString -> Either CryptoError (MaxLenBS i)
--- maxLenBS s
---   | B.length s > maxLength @i = Left CryptoLargeMsgError
---   | otherwise = Right $ MLBS s
+maxLenBS :: forall i. KnownNat i => LazyByteString -> Either CryptoError (MaxLenBS i)
+maxLenBS s
+  | LB.length s > fromIntegral (maxLength @i) = Left CryptoLargeMsgError
+  | otherwise = Right $ MLBS s
 
-maxLenBS :: forall i. KnownNat i => LB.ByteString -> Either CryptoError (MaxLenBS i)
-maxLenBS s = undefined
-
-unsafeMaxLenBS :: forall i. KnownNat i => LB.ByteString -> MaxLenBS i
+unsafeMaxLenBS :: forall i. KnownNat i => LazyByteString -> MaxLenBS i
 unsafeMaxLenBS = MLBS
 {-# INLINE unsafeMaxLenBS #-}
 
--- padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
--- padMaxLenBS (MLBS msg) = MLBS $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
---   where
---     len = B.length msg
---     padLen = maxLength @i - len
+padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
+padMaxLenBS (MLBS msg) = MLBS $ LB.chunk (encodeWord16 $ fromIntegral len) msg <> LB.replicate padLen '#'
+  where
+    len = LB.length msg
+    padLen = fromIntegral (maxLength @i) - len
 
 appendMaxLenBS :: (KnownNat i, KnownNat j) => MaxLenBS i -> MaxLenBS j -> MaxLenBS (i + j)
 appendMaxLenBS (MLBS s1) (MLBS s2) = MLBS $ s1 <> s2
@@ -1092,8 +1074,12 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
 
-cbEncrypt' :: DhSecret X25519 -> CbNonce -> LB.ByteString -> Int -> Either CryptoError LB.ByteString
-cbEncrypt' = undefined
+-- | NaCl @crypto_box@ lazy encrypt with a shared DH secret and 192-bit nonce.
+-- The resulting string will be bigger than paddedLen by the size of the auth tag (16 bytes).
+-- Unlike sbEncrypt in Simplex.Messaging.Crypto.Lazy, this function prepends 2 bytes (the length of the message).
+cbEncrypt' :: DhSecret X25519 -> CbNonce -> LazyByteString -> Int -> Either CryptoError LazyByteString
+cbEncrypt' (DhSecretX25519 secret) (CbNonce nonce) msg paddedLen =
+  C.cryptoBox' secret nonce <$> pad_ msg paddedLen
 
 -- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
 sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
@@ -1103,12 +1089,9 @@ sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Eith
 sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
--- cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
--- cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
-
--- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
-cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> LB.ByteString
-cbEncryptMaxLenBS (DhSecretX25519 _secret) (CbNonce _nonce) = undefined
+cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> LazyByteString
+cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) =
+  C.cryptoBox' secret nonce . unMaxLenBS . padMaxLenBS
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
@@ -1120,8 +1103,11 @@ cryptoBox secret nonce s = BA.convert tag <> c
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
 cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
 
-cbDecrypt' :: DhSecret X25519 -> CbNonce -> LB.ByteString -> Either CryptoError LB.ByteString
-cbDecrypt' (DhSecretX25519 _secret) = undefined
+-- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
+-- The resulting string will be smaller than packet size by the size of the auth tag (16 bytes).
+-- Unlike sbDecrypt in Simplex.Messaging.Crypto.Lazy, this function expects 2 bytes prefix as the length of the message.
+cbDecrypt' :: DhSecret X25519 -> CbNonce -> LazyByteString -> Either CryptoError LazyByteString
+cbDecrypt' (DhSecretX25519 secret) (CbNonce nonce) = C.sbDecrypt_' unPad' secret nonce
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
 sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString

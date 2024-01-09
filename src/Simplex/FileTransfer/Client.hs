@@ -192,8 +192,8 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
         let dhSecret = C.dh' sDhKey rpDhKey
-        cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
-        let t = chunkTimeout config chunkSize
+            cbState = LC.cbInit dhSecret cbNonce
+            t = chunkTimeout config chunkSize
         t `timeout` download cbState >>= maybe (throwError PCEResponseTimeout) pure
         where
           download cbState =

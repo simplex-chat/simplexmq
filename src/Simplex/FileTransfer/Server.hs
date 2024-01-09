@@ -372,13 +372,11 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
           (sDhKey, spDhKey) <- atomically $ C.generateKeyPair g
           let dhSecret = C.dh' rDhKey spDhKey
           cbNonce <- atomically $ C.randomCbNonce g
-          case LC.cbInit dhSecret cbNonce of
-            Right sbState -> do
-              stats <- asks serverStats
-              atomically $ modifyTVar' (fileDownloads stats) (+ 1)
-              atomically $ updatePeriodStats (filesDownloaded stats) senderId
-              pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
-            _ -> pure (FRErr INTERNAL, Nothing)
+          let sbState = LC.cbInit dhSecret cbNonce
+          stats <- asks serverStats
+          atomically $ modifyTVar' (fileDownloads stats) (+ 1)
+          atomically $ updatePeriodStats (filesDownloaded stats) senderId
+          pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
         _ -> pure (FRErr NO_FILE, Nothing)
 
     deleteServerFile :: FileRec -> M FileResponse

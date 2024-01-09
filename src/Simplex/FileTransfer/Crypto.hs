@@ -28,7 +28,7 @@ import UnliftIO.Directory (removeFile)
 
 encryptFile :: CryptoFile -> ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT FTCryptoError IO ()
 encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
-  sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
+  let sb = LC.sbInit key nonce
   CF.withFile srcFile ReadMode $ \r -> withFile encFile WriteMode $ \w -> do
     let lenStr = smpEncode fileSize'
         (hdr, !sb') = LC.sbEncryptChunk sb $ lenStr <> fileHdr
@@ -61,7 +61,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
     unless authOk $ throwError FTCEInvalidAuthTag
     (FileHeader {fileName}, !f') <- parseFileHeader f
     destFile <- withExceptT FTCEFileIOError $ getDestFile fileName
-    CF.writeFile destFile f'
+    liftIO $ CF.writeFile destFile f'
     pure destFile
   lastPath : chPaths' -> do
     (state, expectedLen, ch) <- decryptFirstChunk
@@ -77,7 +77,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
     pure destFile
     where
       decryptFirstChunk = do
-        sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
+        let sb = LC.sbInit key nonce
         ch <- liftIO $ LB.readFile chPath
         let (ch1, !sb') = LC.sbDecryptChunkLazy sb ch
         (!expectedLen, ch2) <- liftEitherWith FTCECryptoError $ LC.splitLen ch1
