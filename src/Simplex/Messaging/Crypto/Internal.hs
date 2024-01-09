@@ -51,9 +51,6 @@ secretBoxLazy_ sbProcess state = LB.foldlChunks update ([], state)
   where
     update (cs, st) chunk = let (!c, !st') = sbProcess st chunk in (c : cs, st')
 
--- TODO possibly, make this function non-failable as the only reason it can fail if
--- Poly1305.initialize receives key not equal to 32 bytes, which won't happen as we
--- generate it with XSalsa.generate in this function
 sbInit_ :: ByteArrayAccess key => key -> ByteString -> SbState
 sbInit_ secret nonce = (state2, cantFail $ Poly1305.initialize rs)
   where
@@ -62,7 +59,7 @@ sbInit_ secret nonce = (state2, cantFail $ Poly1305.initialize rs)
     state0 = XSalsa.initialize 20 secret (zero `B.append` iv0)
     state1 = XSalsa.derive state0 iv1
     (rs :: ByteString, state2) = XSalsa.generate state1 32
-    -- initialize can only fail if key size is different from 32
+    -- Poly1305.initialize can only fail if key size is different from 32
     -- https://hackage.haskell.org/package/crypton-0.34/docs/src/Crypto.MAC.Poly1305.html#initialize
     -- https://github.com/kazu-yamamoto/crypton/issues/28
     cantFail :: CE.CryptoFailable b -> b
