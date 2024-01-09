@@ -75,7 +75,8 @@ data ServerConfig = ServerConfig
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
-    controlPort :: Maybe ServiceName
+    controlPort :: Maybe ServiceName,
+    proxyEnabled :: Bool
   }
 
 defMsgExpirationDays :: Int64
@@ -106,8 +107,9 @@ data Env = Env
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
-    clientSeq :: TVar Int,
-    clients :: TMap Int Client
+    clientSeq :: TVar ClientId,
+    clients :: TMap ClientId Client,
+    proxyServer :: SMPProxyServer -- senders served on this proxy
   }
 
 data Server = Server
@@ -118,8 +120,22 @@ data Server = Server
     savingLock :: Lock
   }
 
+data SMPProxyServer = SMPProxyServer
+  { relaySessions :: TMap SessionId SMPProxiedRelay,
+    relayServers :: TMap Text SessionId -- speed up client lookups by server URI
+  }
+
+data SMPProxiedRelay = SMPProxiedRelay
+  { worker :: Worker,
+    proxyKey :: C.DhSecretX25519,
+    fwdQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
+    -- can be used for QUOTA retries until the session is gone
+  }
+
+type ClientId = Int
+
 data Client = Client
-  { clientId :: Int,
+  { clientId :: ClientId,
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
@@ -129,7 +145,8 @@ data Client = Client
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
-    sndActiveAt :: TVar SystemTime
+    sndActiveAt :: TVar SystemTime,
+    proxyClient_ :: TVar (Maybe C.DhSecretX25519) -- this client is actually an SMP proxy
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub

@@ -300,6 +300,9 @@ data Command (p :: Party) where
   PING :: Command Sender
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
+  PROXY :: Text -> Maybe BasicAuth -> Command Sender -- request a relay server connection by URI
+  PHS :: Command Sender -- identify connection as a proxy, set up shared key
+  PFWD :: C.PublicKeyX25519 -> ByteString -> Command Sender -- use CorrId as CbNonce
 
 deriving instance Show (Command p)
 
@@ -336,6 +339,8 @@ data BrokerMsg where
   MSG :: RcvMessage -> BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
+  RKEY :: C.SignedObject C.PublicKeyX25519 -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  RRES :: ByteString -> BrokerMsg -- Encrypted response. E.g. relay to client, hidden from proxy
   END :: BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
@@ -1014,6 +1019,8 @@ data ErrorType
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
     LARGE_MSG
+  | -- | relay public key is expired
+    EXPIRED
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)

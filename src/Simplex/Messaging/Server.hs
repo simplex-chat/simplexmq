@@ -524,6 +524,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
           case command of
             SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
             PING -> pure (corrId, "", PONG)
+            -- TODO: proxy commands
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
