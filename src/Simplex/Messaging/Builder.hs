@@ -13,6 +13,7 @@ where
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as LB
+import Data.List (foldl')
 import Data.Word (Word16)
 
 
@@ -26,9 +27,7 @@ instance Semigroup Builder where
 instance Monoid Builder where
   mempty = Builder 0 mempty
   {-# INLINE mempty #-}
-  mconcat bs = Builder (sum ls) (mconcat bbs)
-    where
-      (ls, bbs) = foldr (\(Builder l b) ~(ls', bbs') -> (l : ls', b : bbs')) ([], []) bs
+  mconcat = foldl' (<>) mempty
   {-# INLINE mconcat #-}
 
 byteString :: B.ByteString -> Builder

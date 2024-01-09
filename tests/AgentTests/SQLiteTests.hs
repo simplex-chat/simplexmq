@@ -20,7 +20,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
 import Data.Time
 import Data.Word (Word32)
 import Database.SQLite.Simple (Only (..))
