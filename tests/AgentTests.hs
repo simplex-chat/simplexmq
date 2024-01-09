@@ -19,7 +19,7 @@ import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
 import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Maybe (fromJust)
 import Data.Type.Equality
 import GHC.Stack (withFrozenCallStack)
@@ -31,7 +31,7 @@ import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, bshow')
 import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
@@ -120,7 +120,7 @@ pGetAgent h = do
 (<#:.) = tGetAgent'
 
 -- | send transmission `t` to handle `h` and get response
-(#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
+(#:) :: Transport c => c -> (ByteString, ByteString, LB.ByteString) -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
 h #: t = tPutRaw h t >> (<#:) h
 
 -- | action and expected response
@@ -170,10 +170,10 @@ pattern Msg' aMsgId msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsg
 testDuplexConnection :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  alice #: ("2", "bob", "LET " <> LB.fromStrict confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
@@ -203,11 +203,11 @@ testDuplexConnection _ alice bob = do
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
-  alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
+  alice #: ("2", bobConn, "LET " <> LB.fromStrict confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
@@ -236,13 +236,13 @@ testDuplexConnRandomIds _ alice bob = do
 testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testContactConnection _ alice bob tom = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
 
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT " <> aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  alice #: ("2", "bob", "ACPT " <> LB.fromStrict aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   ("", "alice", Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
-  bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
+  bob #: ("12", "alice", "LET " <> LB.fromStrict bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", INFO "bob's connInfo 2")
   alice <# ("", "bob", CON)
   bob <# ("", "alice", CON)
@@ -253,9 +253,9 @@ testContactConnection _ alice bob tom = do
 
   tom #: ("21", "alice", "JOIN T " <> cReq' <> " subscribe 14\ntom's connInfo") #> ("21", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId' _ "tom's connInfo")) <- (alice <#:)
-  alice #: ("4", "tom", "ACPT " <> aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
+  alice #: ("4", "tom", "ACPT " <> LB.fromStrict aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
   ("", "alice", Right (CONF tConfId _ "alice's connInfo")) <- (tom <#:)
-  tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
+  tom #: ("22", "alice", "LET " <> LB.fromStrict tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", INFO "tom's connInfo 2")
   alice <# ("", "tom", CON)
   tom <# ("", "alice", CON)
@@ -267,17 +267,17 @@ testContactConnection _ alice bob tom = do
 testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testContactConnRandomIds _ alice bob = do
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo")
   ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
-  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> " 16\nalice's connInfo")
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> LB.fromStrict aInvId <> " 16\nalice's connInfo")
   ("", aliceConn', Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   aliceConn' `shouldBe` aliceConn
 
-  bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
+  bob #: ("12", aliceConn, "LET " <> LB.fromStrict bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
   alice <# ("", bobConn, INFO "bob's connInfo 2")
   alice <# ("", bobConn, CON)
   bob <# ("", aliceConn, CON)
@@ -290,13 +290,14 @@ testContactConnRandomIds _ alice bob = do
 testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
 testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW T CON subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 10\nbob's info") #> ("11", "alice", OK)
   ("", "a_contact", Right (REQ aInvId _ "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
-  alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
-  alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
-  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
+  let aInvId' = LB.fromStrict aInvId
+  alice #: ("2a", "bob", "RJCT " <> aInvId') #> ("2a", "bob", ERR $ CONN NOT_FOUND)
+  alice #: ("2b", "a_contact", "RJCT " <> aInvId') #> ("2b", "a_contact", OK)
+  alice #: ("3", "bob", "ACPT " <> aInvId' <> " 12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
   bob #:# "nothing should be delivered to bob"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
@@ -431,7 +432,7 @@ testConcurrentMsgDelivery _ alice bob = do
   connect (alice, "alice") (bob, "bob")
 
   ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
   bob #: ("11", "alice2", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice2", OK)
   ("", "bob2", Right (CONF _confId _ "bob's connInfo")) <- (alice <#:)
   -- below commands would be needed to accept bob's connection, but alice does not
@@ -458,7 +459,7 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
   connect (alice, "alice2") (bob, "bob2")
   forM_ [1 .. 4 :: Int] $ \i -> do
     let corrId = bshow i
-        msg = "message " <> bshow i
+        msg = "message " <> bshow' i
     (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND F :over quota")
@@ -472,7 +473,7 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   connect (alice, "alice") (bob, "bob")
   forM_ [1 .. 4 :: Int] $ \i -> do
     let corrId = bshow i
-        msg = "message " <> bshow i
+        msg = "message " <> bshow' i
     (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   ("5", "bob", Right (MID 8)) <- alice #: ("5", "bob", "SEND F :over quota")
@@ -496,15 +497,15 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV subscribe")
-  let cReq' = strEncode cReq
+  let cReq' = LB.fromStrict $ strEncode cReq
   h2 #: ("c2", name1, "JOIN T " <> cReq' <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
-  h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
+  h1 #: ("c3", name2, "LET " <> LB.fromStrict connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
 
-sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
+sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> LB.ByteString -> IO ()
 sendMessage (h1, name1) (h2, name2) msg = do
   ("m1", name2', Right (MID mId)) <- h1 #: ("m1", name2, "SEND F :" <> msg)
   name2' `shouldBe` name2
@@ -512,7 +513,7 @@ sendMessage (h1, name1) (h2, name2) msg = do
   ("", name1', Right (MSG MsgMeta {recipient = (msgId', _)} _ msg')) <- (h2 <#:)
   name1' `shouldBe` name1
   msg' `shouldBe` msg
-  h2 #: ("m2", name1, "ACK " <> bshow msgId') =#> \case ("m2", n, OK) -> n == name1; _ -> False
+  h2 #: ("m2", name1, "ACK " <> bshow' msgId') =#> \case ("m2", n, OK) -> n == name1; _ -> False
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
@@ -544,9 +545,9 @@ syntaxTests t = do
         ( "311",
           "a",
           "JOIN T https://simpex.chat/invitation#/?smp=smp%3A%2F%2F"
-            <> urlEncode True "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
+            <> urlEncode' True "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
             <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
-            <> urlEncode True sampleDhKey
+            <> urlEncode' True sampleDhKey
             <> "&v=1"
             <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> " subscribe "
@@ -559,7 +560,7 @@ syntaxTests t = do
     -- simple test for one command with the expected response
     (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
     command >#> response = withFrozenCallStack $ smpAgentTest t command `shouldReturn` response
-
     -- simple test for one command with a predicate for the expected response
-    (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
-    command >#>= p = withFrozenCallStack $ smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, connId, cmd) -> (cId, connId, B.words cmd))
+    (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [LB.ByteString]) -> Bool) -> Expectation
+    command >#>= p = withFrozenCallStack $ smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, connId, cmd) -> (cId, connId, LB.words cmd))
+    urlEncode' qs = LB.fromStrict . urlEncode qs

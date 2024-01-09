@@ -23,7 +23,6 @@ import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
-import Simplex.Messaging.Builder (toLazyByteString)
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), simplexMQVersion)
 import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, loadTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (bshow)
@@ -80,4 +79,4 @@ send h c@AgentClient {subQ} = forever $ do
 
 logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
 logClient AgentClient {clientId} dir (corrId, connId, APC _ cmd) = do
-  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, LB.toStrict . LB.takeWhile (/= ' ') . toLazyByteString $ serializeCommand cmd]
+  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, LB.toStrict . LB.takeWhile (/= ' ') $ serializeCommand cmd]

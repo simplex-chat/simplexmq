@@ -19,6 +19,8 @@ module Simplex.Messaging.Agent.Store where
 import Control.Exception (Exception)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Lazy.Internal as LB
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List (find)
@@ -29,7 +31,6 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
-import Simplex.Messaging.Builder (Builder, byteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
 import Simplex.Messaging.Encoding.String
@@ -365,11 +366,8 @@ data AgentCommand
 
 instance StrEncoding' AgentCommand where
   strEncode' = \case
-    AClientCommand (APC _ cmd) -> s (ACClient, Str "") <> serializeCommand cmd
-    AInternalCommand cmd -> s (ACInternal, cmd)
-    where
-      s :: StrEncoding a => a -> Builder
-      s = byteString . strEncode
+    AClientCommand (APC _ cmd) -> LB.chunk (strEncode (ACClient, Str "")) (serializeCommand cmd)
+    AInternalCommand cmd -> LB.fromStrict $ strEncode (ACInternal, cmd)
   strP' =
     strP_ >>= \case
       ACClient -> AClientCommand <$> ((\(ACmd _ e cmd) -> checkParty $ APC e cmd) <$?> dbCommandP)

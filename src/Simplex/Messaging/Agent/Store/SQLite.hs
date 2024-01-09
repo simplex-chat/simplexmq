@@ -1727,7 +1727,7 @@ instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField AgentCommand where toField = toField . strEncodeLB
+instance ToField AgentCommand where toField = toField . strEncode'
 
 instance FromField AgentCommand where fromField = blobFieldParser strP'
 

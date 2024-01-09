@@ -31,13 +31,14 @@ import ServerTests
     pattern Resp,
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
+import Simplex.Messaging.Client (signTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
-import Simplex.Messaging.Parsers (parse, parseAll)
+import Simplex.Messaging.Parsers (parse, parseAll')
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
 import Test.Hspec
@@ -76,7 +77,7 @@ sendRecvNtf h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 signSendRecvNtf h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut1 h (Just $ C.sign pk t, t)
+  Right () <- tPut1 h $ signTransmission (Just pk) t
   tGet1 h
 
 (.->) :: J.Value -> J.Key -> Either String ByteString
@@ -135,7 +136,7 @@ testNotificationSubscription (ATransport t) =
           send' APNSRespOk
           -- receive message
           Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
+          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll' clientRcvMsgBodyP =<< first show (C.cbDecrypt' rcvDhSecret (C.cbNonce mId1) body)
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"

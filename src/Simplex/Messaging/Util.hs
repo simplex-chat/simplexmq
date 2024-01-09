@@ -10,6 +10,7 @@ import Control.Monad.IO.Unlift
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
@@ -41,6 +42,10 @@ f <$?> m = either fail pure . f =<< m
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
 {-# INLINE bshow #-}
+
+bshow' :: Show a => a -> LB.ByteString
+bshow' = LB.pack . show
+{-# INLINE bshow' #-}
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

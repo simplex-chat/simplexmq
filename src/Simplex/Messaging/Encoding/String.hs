@@ -6,7 +6,6 @@ module Simplex.Messaging.Encoding.String
     StrEncoding (..),
     StrEncoding' (..),
     Str (..),
-    strEncodeLB,
     strP_,
     _strP,
     strToJSON,
@@ -42,7 +41,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
-import Simplex.Messaging.Builder (Builder, byteString, lazyByteString, toLazyByteString)
+import Simplex.Messaging.Builder (Builder, byteString)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll, parseAll')
 import Simplex.Messaging.Util ((<$?>))
@@ -63,7 +62,7 @@ class StrEncoding a where
   strP = strDecode <$?> base64urlP
 
 class StrEncoding' a where
-  strEncode' :: a -> Builder
+  strEncode' :: a -> LB.ByteString
   strDecode' :: LB.ByteString -> Either String a
   strDecode' = parseAll' strP'
   strP' :: Parser a
@@ -78,7 +77,7 @@ instance StrEncoding ByteString where
   {-# INLINE strP #-}
 
 instance StrEncoding' LB.ByteString where
-  strEncode' = lazyByteString . LU.encode
+  strEncode' = LU.encode
   {-# INLINE strEncode' #-}
   strDecode' = LU.decode
   {-# INLINE strDecode' #-}
@@ -87,9 +86,6 @@ instance StrEncoding' LB.ByteString where
 
 unwords_ :: [ByteString] -> Builder
 unwords_ = byteString . B.unwords
-
-strEncodeLB :: StrEncoding' a => a -> LB.ByteString
-strEncodeLB = toLazyByteString . strEncode'
 
 base64urlP :: Parser ByteString
 base64urlP = do

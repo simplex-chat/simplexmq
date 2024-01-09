@@ -733,7 +733,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | LB.length msgBody > fromIntegral maxMessageLength = pure $ err LARGE_MSG
+          | LB.length msgBody > maxMessageLength' = pure $ err LARGE_MSG
           | otherwise = case status qr of
               QueueOff -> return $ err AUTH
               QueueActive ->
@@ -901,7 +901,7 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
         getMessages = if keepMsgs then snapshotMsgQueue else flushMsgQueue
         saveQueueMsgs ms h rId =
           atomically (getMessages ms rId)
-            >>= mapM_ (LB.hPutStrLn h . strEncodeLB . MLRv3 rId)
+            >>= mapM_ (LB.hPutStrLn h . strEncode' . MLRv3 rId)
 
 restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m Int
 restoreServerMessages = asks (storeMsgsFile . config) >>= \case

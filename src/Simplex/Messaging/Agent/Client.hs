@@ -1080,7 +1080,7 @@ sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> LB.Byte
 sendConfirmation c sq@SndQueue {sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation =
   withSMPClient_ c sq "SEND <CONF>" $ \smp -> do
     let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
-    msg <- agentCbEncrypt sq e2ePubKey (smpEncodeLB clientMsg)
+    msg <- agentCbEncrypt sq e2ePubKey (smpEncode' clientMsg)
     liftClient SMP (clientServer smp) $ sendSMPMessage smp Nothing sndId (SMP.MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
@@ -1095,8 +1095,8 @@ sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, 
     -- this is only encrypted with per-queue E2E, not with double ratchet
     mkInvitation = do
       let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
-      agentCbEncryptOnce v dhPublicKey . smpEncodeLB $
-        SMP.ClientMessage SMP.PHEmpty (smpEncodeLB agentEnvelope)
+      agentCbEncryptOnce v dhPublicKey . smpEncode' $
+        SMP.ClientMessage SMP.PHEmpty (smpEncode' agentEnvelope)
 
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
@@ -1178,7 +1178,7 @@ sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> MsgFlags -> LB.By
 sendAgentMessage c sq@SndQueue {sndId, sndPrivateKey} msgFlags agentMsg =
   withSMPClient_ c sq "SEND <MSG>" $ \smp -> do
     let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
-    msg <- agentCbEncrypt sq Nothing $ smpEncodeLB clientMsg
+    msg <- agentCbEncrypt sq Nothing $ smpEncode' clientMsg
     liftClient SMP (clientServer smp) $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
 
 agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
@@ -1265,7 +1265,7 @@ agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt' e2eDhSecret cmNonce msg paddedLen
   let cmHeader = SMP.PubHeader smpClientVersion e2ePubKey
-  pure $ smpEncodeLB SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
+  pure $ smpEncode' SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 -- add encoding as AgentInvitation'?
 agentCbEncryptOnce :: AgentMonad m => Version -> C.PublicKeyX25519 -> LB.ByteString -> m LB.ByteString
@@ -1278,7 +1278,7 @@ agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt' e2eDhSecret cmNonce msg SMP.e2eEncConfirmationLength
   let cmHeader = SMP.PubHeader clientVersion (Just dhSndPubKey)
-  pure $ smpEncodeLB SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
+  pure $ smpEncode' SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 -- | NaCl crypto-box decrypt - both for messages received from the server
 -- and per-queue E2E encrypted messages from the sender that were inside.

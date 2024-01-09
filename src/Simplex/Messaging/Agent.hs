@@ -1095,10 +1095,10 @@ enqueueMessageB c reqs = do
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
           agentMsg = AgentMessage privHeader aMessage
-          agentMsgStr = smpEncodeLB agentMsg
+          agentMsgStr = smpEncode' agentMsg
           internalHash = LC.sha256Hash agentMsgStr
       encAgentMessage <- agentRatchetEncrypt db connId agentMsgStr e2eEncUserMsgLength
-      let msgBody = smpEncodeLB $ AgentMsgEnvelope {agentVersion, encAgentMessage}
+      let msgBody = smpEncode' $ AgentMsgEnvelope {agentVersion, encAgentMessage}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
@@ -2411,8 +2411,8 @@ confirmQueue v@(Compatible agentVersion) c cData@ConnData {connId} sq srv connIn
     mkConfirmation :: AgentMessage -> m MsgBody
     mkConfirmation aMessage = withStore c $ \db -> runExceptT $ do
       void . liftIO $ updateSndIds db connId
-      encConnInfo <- agentRatchetEncrypt db connId (smpEncodeLB aMessage) e2eEncConnInfoLength
-      pure . smpEncodeLB $ AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
+      encConnInfo <- agentRatchetEncrypt db connId (smpEncode' aMessage) e2eEncConnInfoLength
+      pure . smpEncode' $ AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
 
 mkAgentConfirmation :: AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> m AgentMessage
 mkAgentConfirmation (Compatible agentVersion) c cData sq srv connInfo subMode
@@ -2430,10 +2430,10 @@ storeConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Mayb
 storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentMsg = withStore c $ \db -> runExceptT $ do
   internalTs <- liftIO getCurrentTime
   (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
-  let agentMsgStr = smpEncodeLB agentMsg
+  let agentMsgStr = smpEncode' agentMsg
       internalHash = LC.sha256Hash agentMsgStr
   encConnInfo <- agentRatchetEncrypt db connId agentMsgStr e2eEncConnInfoLength
-  let msgBody = smpEncodeLB $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
+  let msgBody = smpEncode' $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
       msgType = agentMessageType agentMsg
       msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
   liftIO $ createSndMsg db connId msgData
@@ -2456,9 +2456,9 @@ enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let agentMsg = AgentRatchetInfo ""
-          agentMsgStr = smpEncodeLB agentMsg
+          agentMsgStr = smpEncode' agentMsg
           internalHash = LC.sha256Hash agentMsgStr
-      let msgBody = smpEncodeLB $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
+      let msgBody = smpEncode' $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData

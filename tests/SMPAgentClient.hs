@@ -32,7 +32,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (parseAll')
 import Simplex.Messaging.Protocol (ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
@@ -67,7 +67,7 @@ smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
   where
     get h = do
       t@(_, _, cmdStr) <- tGetRaw h
-      case parseAll networkCommandP cmdStr of
+      case parseAll' networkCommandP cmdStr of
         Right (ACmd SAgent _ CONNECT {}) -> get h
         Right (ACmd SAgent _ DISCONNECT {}) -> get h
         _ -> pure t

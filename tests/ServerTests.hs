@@ -21,13 +21,15 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.Set as S
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
+import Simplex.Messaging.Client (signTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (parseAll')
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -84,7 +86,7 @@ sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut1 h (Just $ C.sign pk t, t)
+  Right () <- tPut1 h $ signTransmission (Just pk) t
   tGet1 h
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
@@ -106,12 +108,12 @@ _SEND = SEND noMsgFlags
 _SEND' :: MsgBody -> Command 'Sender
 _SEND' = SEND MsgFlags {notification = True}
 
-decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.CryptoError ByteString
-decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
+decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> LB.ByteString -> Either C.CryptoError LB.ByteString
+decryptMsgV2 dhShared = C.cbDecrypt' dhShared . C.cbNonce
 
-decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
+decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> LB.ByteString -> Either String MsgBody
 decryptMsgV3 dhShared nonce body =
-  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
+  case parseAll' clientRcvMsgBodyP =<< first show (C.cbDecrypt' dhShared (C.cbNonce nonce) body) of
     Right ClientRcvMsgBody {msgBody} -> Right msgBody
     Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
     Left e -> Left e
@@ -172,12 +174,12 @@ testCreateSecureV2 _ =
       Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      let maxAllowedMessage = LB.replicate maxMessageLength' '-'
       Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 h
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      let biggerMessage = LB.replicate (maxMessageLength' + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv h sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -237,12 +239,12 @@ testCreateSecure (ATransport t) =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      let maxAllowedMessage = LB.replicate maxMessageLength' '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      let biggerMessage = LB.replicate (maxMessageLength' + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -358,35 +360,35 @@ testDuplex (ATransport t) =
       -- aSnd ID is passed to Bob out-of-band
 
       (bsPub, bsKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
-      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, _SEND $ "key " <> strEncode bsPub)
+      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, _SEND $ "key " <> LB.fromStrict (strEncode bsPub))
       -- "key ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (Msg mId1 msg1) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId1)
-      Right ["key", bobKey] <- pure $ B.words <$> aDec mId1 msg1
-      (bobKey, strEncode bsPub) #== "key received from Bob"
+      Right ["key", bobKey] <- pure $ LB.words <$> aDec mId1 msg1
+      (bobKey, LB.fromStrict $ strEncode bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, KEY bsPub)
 
       (brPub, brKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", NEW brPub bDhPub Nothing SMSubscribe)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
-      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode bSnd)
+      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> LB.fromStrict (encode bSnd))
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (Msg mId2 msg2) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId2)
-      Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
-      (bId, encode bSnd) #== "reply queue ID received from Bob"
+      Right ["reply_id", bId] <- pure $ LB.words <$> aDec mId2 msg2
+      (bId, LB.fromStrict $ encode bSnd) #== "reply queue ID received from Bob"
 
       (asPub, asKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
-      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> strEncode asPub)
+      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> LB.fromStrict (strEncode asPub))
       -- "key ..." is ad-hoc, not a part of  SMP protocol
 
       Resp "" _ (Msg mId3 msg3) <- tGet1 bob
       Resp "abcd" _ OK <- signSendRecv bob brKey ("abcd", bRcv, ACK mId3)
-      Right ["key", aliceKey] <- pure $ B.words <$> bDec mId3 msg3
-      (aliceKey, strEncode asPub) #== "key received from Alice"
+      Right ["key", aliceKey] <- pure $ LB.words <$> bDec mId3 msg3
+      (aliceKey, LB.fromStrict $ strEncode asPub) #== "key received from Alice"
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, KEY asPub)
 
       Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, _SEND "hi alice")

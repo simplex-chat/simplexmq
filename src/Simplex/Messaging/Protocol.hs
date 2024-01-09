@@ -42,6 +42,7 @@ module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
     supportedSMPClientVRange,
     maxMessageLength,
+    maxMessageLength',
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -164,9 +165,11 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy.Internal as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -195,6 +198,9 @@ supportedSMPClientVRange = mkVersionRange 1 currentSMPClientVersion
 
 maxMessageLength :: Int
 maxMessageLength = 16088
+
+maxMessageLength' :: Int64
+maxMessageLength' = fromIntegral maxMessageLength
 
 type MaxMessageLen = 16088
 
@@ -374,13 +380,15 @@ messageTs = \case
 
 instance StrEncoding' RcvMessage where
   strEncode' RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} =
-    unwords_
-      [ strEncode msgId,
-        strEncode msgTs,
-        "flags=" <> strEncode msgFlags,
-        ""
-      ]
-      <> strEncode' body
+    LB.chunk pfx $ strEncode' body
+    where
+      pfx =
+        B.unwords
+          [ strEncode msgId,
+            strEncode msgTs,
+            "flags=" <> strEncode msgFlags,
+            ""
+          ]
   strP' = do
     msgId <- strP_
     msgTs <- strP_
@@ -435,19 +443,22 @@ clientRcvMsgBodyP = msgQuotaP <|> msgBodyP
 instance StrEncoding' Message where
   strEncode' = \case
     Message {msgId, msgTs, msgFlags, msgBody} ->
-      unwords_
-        [ strEncode msgId,
-          strEncode msgTs,
-          "flags=" <> strEncode msgFlags,
-          ""
-        ]
-          <> strEncode' msgBody
+      LB.chunk pfx $ strEncode' msgBody
+      where
+        pfx =
+          B.unwords
+            [ strEncode msgId,
+              strEncode msgTs,
+              "flags=" <> strEncode msgFlags,
+              ""
+            ]
     MessageQuota {msgId, msgTs} ->
-      unwords_
-        [ strEncode msgId,
-          strEncode msgTs,
-          "quota"
-        ]
+      LB.fromStrict $
+        B.unwords
+          [ strEncode msgId,
+            strEncode msgTs,
+            "quota"
+          ]
   strP' = do
     msgId <- strP_
     msgTs <- strP_
@@ -639,7 +650,7 @@ instance Encoding PubHeader where
 
 instance Encoding' ClientMsgEnvelope where
   smpEncode' ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody} =
-    byteString (smpEncode (cmHeader, cmNonce)) <> lazyByteString cmEncBody
+    LB.chunk (smpEncode (cmHeader, cmNonce)) cmEncBody
   smpP' = do
     (cmHeader, cmNonce) <- smpP
     cmEncBody <- A.takeLazyByteString
@@ -663,7 +674,7 @@ instance Encoding PrivHeader where
       _ -> fail "invalid PrivHeader"
 
 instance Encoding' ClientMessage where
-  smpEncode' (ClientMessage h msg) = byteString (smpEncode h) <> lazyByteString msg
+  smpEncode' (ClientMessage h msg) = LB.chunk (smpEncode h) msg
   smpP' = ClientMessage <$> smpP <*> A.takeLazyByteString
 
 type SMPServer = ProtocolServer 'PSMP

@@ -17,6 +17,7 @@ import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -442,8 +443,8 @@ testSetQueueStatusDuplex =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq'] [sq']))
 
-hw :: ByteString
-hw = encodeUtf8 "Hello world!"
+hw :: LB.ByteString
+hw = "Hello world!"
 
 ts :: UTCTime
 ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)

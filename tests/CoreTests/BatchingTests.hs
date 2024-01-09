@@ -5,6 +5,7 @@ module CoreTests.BatchingTests (batchingTests) where
 import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Lazy as LB
 import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Builder (Builder)
 import qualified Simplex.Messaging.Builder as BB
@@ -136,14 +137,14 @@ testClientBatchWithLargeMessage = do
   (length rs1', length rs2') `shouldBe` (70, 90)
   all lenOk [s1', s2'] `shouldBe` True
 
-randomSUB :: ByteString -> IO (Maybe C.ASignature, ByteString)
+randomSUB :: ByteString -> IO (Maybe C.ASignature, Builder)
 randomSUB sessId = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, rId, Cmd SRecipient SUB)
-  pure (Just $ C.sign rpKey s, s)
+  pure $ signTransmission (Just rpKey) s
 
 randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd c = do
@@ -152,22 +153,22 @@ randomSUBCmd c = do
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
 
-randomSEND :: ByteString -> Int -> IO (Maybe C.ASignature, ByteString)
+randomSEND :: ByteString -> Int -> IO (Maybe C.ASignature, Builder)
 randomSEND sessId len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
-  msg <- atomically $ C.randomBytes len g
+  msg <- atomically $ LB.fromStrict <$> C.randomBytes len g
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
-  pure (Just $ C.sign rpKey s, s)
+  pure $ signTransmission (Just rpKey) s
 
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd c len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
-  msg <- atomically $ C.randomBytes len g
+  msg <- atomically $ LB.fromStrict <$> C.randomBytes len g
   mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: Builder -> Bool

@@ -17,6 +17,7 @@ import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
+import Simplex.Messaging.Builder (byteString)
 import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -163,7 +164,7 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId, corrId, queueId, smp)
+      let t' = byteString $ smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do

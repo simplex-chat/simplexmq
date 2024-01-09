@@ -12,7 +12,6 @@ module Simplex.Messaging.Encoding
     Encoding' (..),
     Tail (..),
     Large (..),
-    smpEncodeLB,
     encodeLarge,
     _smpP,
     smpEncodeList,
@@ -33,7 +32,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
-import Simplex.Messaging.Builder (Builder, toLazyByteString, word16BE)
+import Simplex.Messaging.Builder (Builder, word16BE)
 import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Parsers (parseAll, parseAll')
 import Simplex.Messaging.Util ((<$?>))
@@ -54,14 +53,10 @@ class Encoding a where
   smpP = smpDecode <$?> smpP
 
 class Encoding' a where
-  smpEncode' :: a -> Builder
+  smpEncode' :: a -> LB.ByteString
   smpDecode' :: LB.ByteString -> Either String a
   smpDecode' = parseAll' smpP'
   smpP' :: Parser a
-
-smpEncodeLB :: Encoding' a => a -> LB.ByteString
-smpEncodeLB = toLazyByteString . smpEncode'
-{-# INLINE smpEncodeLB #-}
 
 instance Encoding Char where
   smpEncode = B.singleton

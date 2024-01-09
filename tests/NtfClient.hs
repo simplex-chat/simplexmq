@@ -20,7 +20,7 @@ import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
-import Data.ByteString.Builder (lazyByteString)
+import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
@@ -30,6 +30,7 @@ import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import SMPClient (serverBracket)
+import Simplex.Messaging.Builder (byteString)
 import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -135,7 +136,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId, corrId, queueId, smp)
+      let t' = byteString $ smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h Nothing [(sig, t')]
       pure ()
     tGet' h = do
@@ -210,7 +211,7 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
       let sendApnsResponse = \case
             APNSRespOk -> sendResponse $ H.responseNoBody N.ok200 []
             APNSRespError status reason ->
-              sendResponse . H.responseBuilder status [] . lazyByteString $ J.encode APNSErrorResponse {reason}
+              sendResponse . H.responseBuilder status [] . BB.lazyByteString $ J.encode APNSErrorResponse {reason}
       case J.decodeStrict' bodyHead of
         Just notification ->
           atomically $ writeTBQueue apnsQ APNSMockRequest {notification, sendApnsResponse}
