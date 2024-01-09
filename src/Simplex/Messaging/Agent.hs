@@ -120,6 +120,7 @@ import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (rights)
 import Data.Foldable (foldl', toList)
@@ -153,13 +154,14 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (parse, parse')
 import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, SubscriptionMode (..), UserProtocol, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
@@ -860,10 +862,10 @@ getNotificationMessage' :: forall m. AgentMonad m => AgentClient -> C.CbNonce ->
 getNotificationMessage' c nonce encNtfInfo = do
   withStore' c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
-      ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
+      ntfData <- LB.toStrict <$> agentCbDecrypt dhSecret nonce (LB.fromStrict encNtfInfo)
       PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
-      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
+      ntfMsgMeta <- (eitherToMaybe . smpDecode . LB.toStrict <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce (LB.fromStrict encNMsgMeta)) `catchAgentError` \_ -> pure Nothing
       maxMsgs <- asks $ ntfMaxMessages . config
       (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId ntfMsgMeta maxMsgs
     _ -> throwError $ CMD PROHIBITED
@@ -1093,10 +1095,10 @@ enqueueMessageB c reqs = do
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
           agentMsg = AgentMessage privHeader aMessage
-          agentMsgStr = smpEncode agentMsg
-          internalHash = C.sha256Hash agentMsgStr
+          agentMsgStr = smpEncodeLB agentMsg
+          internalHash = LC.sha256Hash agentMsgStr
       encAgentMessage <- agentRatchetEncrypt db connId agentMsgStr e2eEncUserMsgLength
-      let msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
+      let msgBody = smpEncodeLB $ AgentMsgEnvelope {agentVersion, encAgentMessage}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
@@ -1939,7 +1941,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                                 enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
                               _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
                           _ -> pure ()
-                        let encryptedMsgHash = C.sha256Hash encAgentMessage
+                        let encryptedMsgHash = LC.sha256Hash encAgentMessage
                         g <- asks random
                         tryError (agentClientMsg g encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
@@ -1978,7 +1980,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
                                 | otherwise -> do
-                                    liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
+                                    liftEither (parse' smpP' (AGENT A_MESSAGE) agentMsgBody) >>= \case
                                       AgentMessage _ (A_MSG body) -> do
                                         logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
                                         notify $ MSG msgMeta msgFlags body
@@ -2007,10 +2009,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                             rc <- ExceptT $ getRatchet db connId -- ratchet state pre-decryption - required for processing EREADY
                             agentMsgBody <- agentRatchetDecrypt' g db connId rc encAgentMessage
-                            liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
+                            liftEither (parse' smpP' (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
                               agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
                                 let msgType = agentMessageType agentMsg
-                                    internalHash = C.sha256Hash agentMsgBody
+                                    internalHash = LC.sha256Hash agentMsgBody
                                 internalTs <- liftIO getCurrentTime
                                 (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- liftIO $ updateRcvIds db connId
                                 let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash prevMsgHash
@@ -2083,10 +2085,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             --   else throwError $ AGENT A_VERSION
             pure (privHeader, agentEnvelope)
 
-          parseMessage :: Encoding a => ByteString -> m a
-          parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
+          parseMessage :: Encoding' a => LB.ByteString -> m a
+          parseMessage = liftEither . parse' smpP' (AGENT A_MESSAGE)
 
-          smpConfirmation :: SMP.MsgId -> Connection c -> C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> Version -> Version -> m ()
+          smpConfirmation :: SMP.MsgId -> Connection c -> C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> LB.ByteString -> Version -> Version -> m ()
           smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
             logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret srvMsgId
             AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
@@ -2101,7 +2103,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
                   (pk1, rcDHRs) <- withStore c (`getRatchetX3dhKeys` connId)
                   let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
                   g <- asks random
-                  (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
+                  (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt' g rc M.empty encConnInfo
                   case (agentMsgBody_, skipped) of
                     (Right agentMsgBody, CR.SMDNoChange) ->
                       parseMessage agentMsgBody >>= \case
@@ -2409,8 +2411,8 @@ confirmQueue v@(Compatible agentVersion) c cData@ConnData {connId} sq srv connIn
     mkConfirmation :: AgentMessage -> m MsgBody
     mkConfirmation aMessage = withStore c $ \db -> runExceptT $ do
       void . liftIO $ updateSndIds db connId
-      encConnInfo <- agentRatchetEncrypt db connId (smpEncode aMessage) e2eEncConnInfoLength
-      pure . smpEncode $ AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
+      encConnInfo <- agentRatchetEncrypt db connId (smpEncodeLB aMessage) e2eEncConnInfoLength
+      pure . smpEncodeLB $ AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
 
 mkAgentConfirmation :: AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> m AgentMessage
 mkAgentConfirmation (Compatible agentVersion) c cData sq srv connInfo subMode
@@ -2428,10 +2430,10 @@ storeConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Mayb
 storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentMsg = withStore c $ \db -> runExceptT $ do
   internalTs <- liftIO getCurrentTime
   (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
-  let agentMsgStr = smpEncode agentMsg
-      internalHash = C.sha256Hash agentMsgStr
+  let agentMsgStr = smpEncodeLB agentMsg
+      internalHash = LC.sha256Hash agentMsgStr
   encConnInfo <- agentRatchetEncrypt db connId agentMsgStr e2eEncConnInfoLength
-  let msgBody = smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
+  let msgBody = smpEncodeLB $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
       msgType = agentMessageType agentMsg
       msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
   liftIO $ createSndMsg db connId msgData
@@ -2454,9 +2456,9 @@ enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let agentMsg = AgentRatchetInfo ""
-          agentMsgStr = smpEncode agentMsg
-          internalHash = C.sha256Hash agentMsgStr
-      let msgBody = smpEncode $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
+          agentMsgStr = smpEncodeLB agentMsg
+          internalHash = LC.sha256Hash agentMsgStr
+      let msgBody = smpEncodeLB $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
@@ -2464,23 +2466,23 @@ enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
       pure internalId
 
 -- encoded AgentMessage -> encoded EncAgentMessage
-agentRatchetEncrypt :: DB.Connection -> ConnId -> ByteString -> Int -> ExceptT StoreError IO ByteString
+agentRatchetEncrypt :: DB.Connection -> ConnId -> LB.ByteString -> Int -> ExceptT StoreError IO LB.ByteString
 agentRatchetEncrypt db connId msg paddedLen = do
   rc <- ExceptT $ getRatchet db connId
-  (encMsg, rc') <- liftE (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg
+  (encMsg, rc') <- liftE (SEAgentError . cryptoError) $ CR.rcEncrypt' rc paddedLen msg
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
   pure encMsg
 
 -- encoded EncAgentMessage -> encoded AgentMessage
-agentRatchetDecrypt :: TVar ChaChaDRG -> DB.Connection -> ConnId -> ByteString -> ExceptT StoreError IO ByteString
+agentRatchetDecrypt :: TVar ChaChaDRG -> DB.Connection -> ConnId -> LB.ByteString -> ExceptT StoreError IO LB.ByteString
 agentRatchetDecrypt g db connId encAgentMsg = do
   rc <- ExceptT $ getRatchet db connId
   agentRatchetDecrypt' g db connId rc encAgentMsg
 
-agentRatchetDecrypt' :: TVar ChaChaDRG -> DB.Connection -> ConnId -> CR.RatchetX448 -> ByteString -> ExceptT StoreError IO ByteString
+agentRatchetDecrypt' :: TVar ChaChaDRG -> DB.Connection -> ConnId -> CR.RatchetX448 -> LB.ByteString -> ExceptT StoreError IO LB.ByteString
 agentRatchetDecrypt' g db connId rc encAgentMsg = do
   skipped <- liftIO $ getSkippedMsgKeys db connId
-  (agentMsgBody_, rc', skippedDiff) <- liftE (SEAgentError . cryptoError) $ CR.rcDecrypt g rc skipped encAgentMsg
+  (agentMsgBody_, rc', skippedDiff) <- liftE (SEAgentError . cryptoError) $ CR.rcDecrypt' g rc skipped encAgentMsg
   liftIO $ updateRatchet db connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
 

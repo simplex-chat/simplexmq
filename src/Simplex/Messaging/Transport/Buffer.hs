@@ -37,6 +37,7 @@ peekBuffered tb@TBuffer {buffer} t getChunk = withBufferLock tb $ do
   forM_ next_ $ \next -> atomically $ writeTVar buffer $! old <> next
   pure (old, next_)
 
+-- TODO lazy bytestring
 getBuffered :: TBuffer -> Int -> Maybe Int -> IO ByteString -> IO ByteString
 getBuffered tb@TBuffer {buffer} n t_ getChunk = withBufferLock tb $ do
   b <- readChunks True =<< readTVarIO buffer

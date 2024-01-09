@@ -4,7 +4,9 @@
 module Simplex.Messaging.Encoding.String
   ( TextEncoding (..),
     StrEncoding (..),
+    StrEncoding' (..),
     Str (..),
+    strEncodeLB,
     strP_,
     _strP,
     strToJSON,
@@ -13,6 +15,7 @@ module Simplex.Messaging.Encoding.String
     base64urlP,
     strEncodeList,
     strListP,
+    unwords_,
   )
 where
 
@@ -24,8 +27,10 @@ import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as U
+import qualified Data.ByteString.Base64.URL.Lazy as LU
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (isAlphaNum)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
@@ -37,8 +42,9 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
+import Simplex.Messaging.Builder (Builder, byteString, lazyByteString, toLazyByteString)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (parseAll, parseAll')
 import Simplex.Messaging.Util ((<$?>))
 
 class TextEncoding a where
@@ -56,11 +62,34 @@ class StrEncoding a where
   strP :: Parser a
   strP = strDecode <$?> base64urlP
 
+class StrEncoding' a where
+  strEncode' :: a -> Builder
+  strDecode' :: LB.ByteString -> Either String a
+  strDecode' = parseAll' strP'
+  strP' :: Parser a
+
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
   strEncode = U.encode
+  {-# INLINE strEncode #-}
   strDecode = U.decode
+  {-# INLINE strDecode #-}
   strP = base64urlP
+  {-# INLINE strP #-}
+
+instance StrEncoding' LB.ByteString where
+  strEncode' = lazyByteString . LU.encode
+  {-# INLINE strEncode' #-}
+  strDecode' = LU.decode
+  {-# INLINE strDecode' #-}
+  strP' = LB.fromStrict <$> base64urlP
+  {-# INLINE strP' #-}
+
+unwords_ :: [ByteString] -> Builder
+unwords_ = byteString . B.unwords
+
+strEncodeLB :: StrEncoding' a => a -> LB.ByteString
+strEncodeLB = toLazyByteString . strEncode'
 
 base64urlP :: Parser ByteString
 base64urlP = do
@@ -73,11 +102,15 @@ newtype Str = Str {unStr :: ByteString}
 
 instance StrEncoding Str where
   strEncode = unStr
+  {-# INLINE strEncode #-}
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
+  {-# INLINE strP #-}
 
 instance StrEncoding String where
   strEncode = strEncode . B.pack
+  {-# INLINE strEncode #-}
   strP = B.unpack <$> strP
+  {-# INLINE strP #-}
 
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s

@@ -157,6 +157,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -179,6 +180,7 @@ import Database.SQLite.Simple.ToField
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Builder (Builder, byteString, char8, lazyByteString, toLazyByteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
 import Simplex.Messaging.Encoding
@@ -232,7 +234,7 @@ e2eEncUserMsgLength :: Int
 e2eEncUserMsgLength = 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
-type ARawTransmission = (ByteString, ByteString, ByteString)
+type ARawTransmission = (ByteString, ByteString, LB.ByteString)
 
 -- | Parsed SMP agent protocol transmission.
 type ATransmission p = (ACorrId, EntityId, APartyCmd p)
@@ -311,7 +313,7 @@ instance Eq (APartyCmd p) where
 
 deriving instance Show (APartyCmd p)
 
-type ConnInfo = ByteString
+type ConnInfo = LB.ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (e :: AEntity) where
@@ -789,50 +791,54 @@ data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: Version,
         e2eEncryption_ :: Maybe (E2ERatchetParams 'C.X448),
-        encConnInfo :: ByteString
+        encConnInfo :: LB.ByteString
       }
   | AgentMsgEnvelope
       { agentVersion :: Version,
-        encAgentMessage :: ByteString
+        encAgentMessage :: LB.ByteString
       }
   | AgentInvitation -- the connInfo in contactInvite is only encrypted with per-queue E2E, not with double ratchet,
       { agentVersion :: Version,
         connReq :: ConnectionRequestUri 'CMInvitation,
-        connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
+        connInfo :: LB.ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
   | AgentRatchetKey
       { agentVersion :: Version,
         e2eEncryption :: E2ERatchetParams 'C.X448,
-        info :: ByteString
+        info :: LB.ByteString
       }
   deriving (Show)
 
-instance Encoding AgentMsgEnvelope where
-  smpEncode = \case
+instance Encoding' AgentMsgEnvelope where
+  smpEncode' = \case
     AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo} ->
-      smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
+      s (agentVersion, 'C', e2eEncryption_) <> lazyByteString encConnInfo
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
-      smpEncode (agentVersion, 'M', Tail encAgentMessage)
+      s (agentVersion, 'M') <> lazyByteString encAgentMessage
     AgentInvitation {agentVersion, connReq, connInfo} ->
-      smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
+      s (agentVersion, 'I', Large $ strEncode connReq) <> lazyByteString connInfo
     AgentRatchetKey {agentVersion, e2eEncryption, info} ->
-      smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
-  smpP = do
+      s (agentVersion, 'R', e2eEncryption) <> lazyByteString info
+    where
+      s :: Encoding a => a -> Builder
+      s = byteString . smpEncode
+  smpP' = do
     agentVersion <- smpP
     smpP >>= \case
       'C' -> do
-        (e2eEncryption_, Tail encConnInfo) <- smpP
+        e2eEncryption_ <- smpP
+        encConnInfo <- A.takeLazyByteString
         pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
       'M' -> do
-        Tail encAgentMessage <- smpP
+        encAgentMessage <- A.takeLazyByteString
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
       'I' -> do
         connReq <- strDecode . unLarge <$?> smpP
-        Tail connInfo <- smpP
+        connInfo <- A.takeLazyByteString
         pure AgentInvitation {agentVersion, connReq, connInfo}
       'R' -> do
         e2eEncryption <- smpP
-        Tail info <- smpP
+        info <- A.takeLazyByteString
         pure AgentRatchetKey {agentVersion, e2eEncryption, info}
       _ -> fail "bad AgentMsgEnvelope"
 
@@ -848,18 +854,21 @@ data AgentMessage
   | AgentMessage APrivHeader AMessage
   deriving (Show)
 
-instance Encoding AgentMessage where
-  smpEncode = \case
-    AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
-    AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
-    AgentRatchetInfo info -> smpEncode ('R', Tail info)
-    AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
-  smpP =
+instance Encoding' AgentMessage where
+  smpEncode' = \case
+    AgentConnInfo cInfo -> char8 'I' <> lazyByteString cInfo
+    AgentConnInfoReply smpQueues cInfo -> s ('D', smpQueues) <> lazyByteString cInfo -- 'D' stands for "duplex"
+    AgentRatchetInfo info -> s ('R', Tail info)
+    AgentMessage hdr aMsg -> s ('M', hdr) <> smpEncode' aMsg
+    where
+      s :: Encoding a => a -> Builder
+      s = byteString . smpEncode
+  smpP' =
     smpP >>= \case
-      'I' -> AgentConnInfo . unTail <$> smpP
-      'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
+      'I' -> AgentConnInfo <$> A.takeLazyByteString
+      'D' -> AgentConnInfoReply <$> smpP <*> A.takeLazyByteString
       'R' -> AgentRatchetInfo . unTail <$> smpP
-      'M' -> AgentMessage <$> smpP <*> smpP
+      'M' -> AgentMessage <$> smpP <*> smpP'
       _ -> fail "bad AgentMessage"
 
 data AgentMessageType
@@ -1056,24 +1065,27 @@ type MsgReceiptInfo = ByteString
 
 type SndQAddr = (SMPServer, SMP.SenderId)
 
-instance Encoding AMessage where
-  smpEncode = \case
-    HELLO -> smpEncode HELLO_
-    REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
-    A_MSG body -> smpEncode (A_MSG_, Tail body)
-    A_RCVD mrs -> smpEncode (A_RCVD_, mrs)
-    QCONT addr -> smpEncode (QCONT_, addr)
-    QADD qs -> smpEncode (QADD_, qs)
-    QKEY qs -> smpEncode (QKEY_, qs)
-    QUSE qs -> smpEncode (QUSE_, qs)
-    QTEST qs -> smpEncode (QTEST_, qs)
-    EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
-  smpP =
+instance Encoding' AMessage where
+  smpEncode' = \case
+    HELLO -> s HELLO_
+    REPLY smpQueues -> s (REPLY_, smpQueues)
+    A_MSG body -> s A_MSG_ <> lazyByteString body
+    A_RCVD mrs -> s (A_RCVD_, mrs)
+    QCONT addr -> s (QCONT_, addr)
+    QADD qs -> s (QADD_, qs)
+    QKEY qs -> s (QKEY_, qs)
+    QUSE qs -> s (QUSE_, qs)
+    QTEST qs -> s (QTEST_, qs)
+    EREADY lastDecryptedMsgId -> s (EREADY_, lastDecryptedMsgId)
+    where
+      s :: Encoding a => a -> Builder
+      s = byteString . smpEncode
+  smpP' =
     smpP
       >>= \case
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
-        A_MSG_ -> A_MSG . unTail <$> smpP
+        A_MSG_ -> A_MSG <$> A.takeLazyByteString
         A_RCVD_ -> A_RCVD <$> smpP
         QCONT_ -> QCONT <$> smpP
         QADD_ -> QADD <$> smpP
@@ -1579,11 +1591,11 @@ cryptoErrToSyncState = \case
 
 -- | SMP agent command and response parser for commands passed via network (only parses binary length)
 networkCommandP :: Parser ACmd
-networkCommandP = commandP A.takeByteString
+networkCommandP = commandP A.takeLazyByteString
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACmd
-dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
+dbCommandP = commandP $ LB.fromStrict <$> (A.take =<< (A.decimal <* "\n"))
 
 instance StrEncoding ACmdTag where
   strEncode (ACmdTag _ _ cmd) = strEncode cmd
@@ -1701,7 +1713,7 @@ checkEntity x = case testEquality (sAEntity @e) (sAEntity @e') of
   Nothing -> Left "bad entity"
 
 -- | SMP agent command and response parser
-commandP :: Parser ByteString -> Parser ACmd
+commandP :: Parser LB.ByteString -> Parser ACmd
 commandP binaryP =
   strP
     >>= \case
@@ -1714,7 +1726,7 @@ commandP binaryP =
           RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> smpP <* A.space <*> binaryP)
-          ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
+          ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> (LB.toStrict <$> binaryP)))
           SWCH_ -> pure SWCH
           OFF_ -> pure OFF
           DEL_ -> pure DEL
@@ -1750,7 +1762,7 @@ commandP binaryP =
           RFDONE_ -> s (RFDONE <$> strP)
           RFERR_ -> s (RFERR <$> strP)
           SFPROG_ -> s (SFPROG <$> A.decimal <* A.space <*> A.decimal)
-          SFDONE_ -> s (sfDone . safeDecodeUtf8 <$?> binaryP)
+          SFDONE_ -> s (sfDone . safeDecodeUtf8 . LB.toStrict <$?> binaryP)
           SFERR_ -> s (SFERR <$> strP)
   where
     s :: Parser a -> Parser a
@@ -1764,36 +1776,36 @@ commandP binaryP =
             [] -> Left "no sender file description"
             sd : rds -> SFDONE <$> strDecode (encodeUtf8 sd) <*> mapM (strDecode . encodeUtf8) rds
 
-parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
+parseCommand :: LB.ByteString -> Either AgentErrorType ACmd
+parseCommand = parse' (commandP A.takeLazyByteString) $ CMD SYNTAX
 
 -- | Serialize SMP agent command.
-serializeCommand :: ACommand p e -> ByteString
+serializeCommand :: ACommand p e -> Builder
 serializeCommand = \case
   NEW ntfs cMode subMode -> s (NEW_, ntfs, cMode, subMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs cReq subMode cInfo -> s (JOIN_, ntfs, cReq, subMode, Str $ serializeBinary cInfo)
-  CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
-  LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
-  REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
-  ACPT invId cInfo -> B.unwords [s ACPT_, invId, serializeBinary cInfo]
-  RJCT invId -> B.unwords [s RJCT_, invId]
-  INFO cInfo -> B.unwords [s INFO_, serializeBinary cInfo]
+  JOIN ntfs cReq subMode cInfo -> s (JOIN_, ntfs, cReq, subMode) <> _serializeBinary cInfo
+  CONF confId srvs cInfo -> unwords_ [s' CONF_, confId, strEncodeList srvs] <> _serializeBinary cInfo
+  LET confId cInfo -> unwords_ [s' LET_, confId] <> _serializeBinary cInfo
+  REQ invId srvs cInfo -> unwords_ [s' REQ_, invId, s' srvs] <> _serializeBinary cInfo
+  ACPT invId cInfo -> unwords_ [s' ACPT_, invId] <> _serializeBinary cInfo
+  RJCT invId -> unwords_ [s' RJCT_, invId]
+  INFO cInfo -> s INFO_ <> _serializeBinary cInfo
   SUB -> s SUB_
   END -> s END_
   CONNECT p h -> s (CONNECT_, p, h)
   DISCONNECT p h -> s (DISCONNECT_, p, h)
-  DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
-  UP srv conns -> B.unwords [s UP_, s srv, connections conns]
+  DOWN srv conns -> unwords_ [s' DOWN_, s' srv, ""] <> connections conns
+  UP srv conns -> unwords_ [s' UP_, s' srv, ""] <> connections conns
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
-  SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
+  SEND msgFlags msgBody -> unwords_ [s' SEND_, smpEncode msgFlags] <> _serializeBinary msgBody
   MID mId -> s (MID_, Str $ bshow mId)
   SENT mId -> s (SENT_, Str $ bshow mId)
   MERR mId e -> s (MERR_, Str $ bshow mId, e)
-  MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
+  MSG msgMeta msgFlags msgBody -> unwords_ [s' MSG_, s' msgMeta, smpEncode msgFlags] <> _serializeBinary msgBody
   MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
-  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
+  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe mempty (_serializeBinary . LB.fromStrict) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
   SWCH -> s SWCH_
   OFF -> s OFF_
@@ -1811,33 +1823,36 @@ serializeCommand = \case
   RFDONE fPath -> s (RFDONE_, fPath)
   RFERR e -> s (RFERR_, e)
   SFPROG sent total -> s (SFPROG_, sent, total)
-  SFDONE sd rds -> B.unwords [s SFDONE_, serializeBinary (sfDone sd rds)]
+  SFDONE sd rds -> s SFDONE_ <> _serializeBinary (LB.fromStrict $ sfDone sd rds)
   SFERR e -> s (SFERR_, e)
   where
-    s :: StrEncoding a => a -> ByteString
-    s = strEncode
-    connections :: [ConnId] -> ByteString
-    connections = B.intercalate "," . map strEncode
+    s' :: StrEncoding a => a -> ByteString
+    s' = strEncode
+    s :: StrEncoding a => a -> Builder
+    s = byteString . strEncode
+    connections :: [ConnId] -> Builder
+    connections = byteString . B.intercalate "," . map strEncode
     sfDone sd rds = B.intercalate fdSeparator $ strEncode sd : map strEncode rds
 
-serializeBinary :: ByteString -> ByteString
-serializeBinary body = bshow (B.length body) <> "\n" <> body
+-- space-prefixed
+_serializeBinary :: LB.ByteString -> Builder
+_serializeBinary body = byteString (" " <> bshow (LB.length body) <> "\n") <> lazyByteString body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
 tPutRaw :: Transport c => c -> ARawTransmission -> IO ()
 tPutRaw h (corrId, entity, command) = do
   putLn h corrId
   putLn h entity
-  putLn h command
+  putLn h $ LB.toStrict command
 
 -- | Receive raw (unparsed) SMP agent protocol transmission from TCP connection.
 tGetRaw :: Transport c => c -> IO ARawTransmission
-tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
+tGetRaw h = (,,) <$> getLn h <*> getLn h <*> (LB.fromStrict <$> getLn h)
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
 tPut h (corrId, connId, APC _ cmd) =
-  liftIO $ tPutRaw h (corrId, connId, serializeCommand cmd)
+  liftIO $ tPutRaw h (corrId, connId, toLazyByteString $ serializeCommand cmd)
 
 -- | Receive client and agent transmissions from TCP connection.
 tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
@@ -1886,14 +1901,16 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         INFO cInfo -> INFO <$$> getBody cInfo
         _ -> pure $ Right cmd
 
-    getBody :: ByteString -> m (Either AgentErrorType ByteString)
+    -- TODO can be optimized, but it is not used in the app
+    -- possibly we can remove TCP agent completely to reduce size
+    getBody :: LB.ByteString -> m (Either AgentErrorType LB.ByteString)
     getBody binary =
-      case B.unpack binary of
-        ':' : body -> return . Right $ B.pack body
+      case LB.unpack binary of
+        ':' : body -> return . Right $ LB.pack body
         str -> case readMaybe str :: Maybe Int of
           Just size -> runExceptT $ do
-            body <- liftIO $ cGet h size
-            unless (B.length body == size) $ throwError $ CMD SIZE
+            body <- liftIO $ cGet' h size
+            unless (LB.length body == fromIntegral size) $ throwError $ CMD SIZE
             s <- liftIO $ getLn h
             unless (B.null s) $ throwError $ CMD SIZE
             pure body

@@ -330,6 +330,9 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, r
             msgNs = rcNs
           }
 
+rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> LB.ByteString -> ExceptT CryptoError IO (LB.ByteString, Ratchet a)
+rcEncrypt' = undefined
+
 data SkippedMessage a
   = SMMessage (DecryptResult a)
   | SMHeader (Maybe RatchetStep) (MsgHeader a)
@@ -339,6 +342,8 @@ data RatchetStep = AdvanceRatchet | SameRatchet
   deriving (Eq)
 
 type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff)
+
+type DecryptResult' a = (Either CryptoError LB.ByteString, Ratchet a, SkippedMsgDiff)
 
 maxSkip :: Word32
 maxSkip = 512
@@ -462,6 +467,16 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
+
+rcDecrypt' ::
+  forall a.
+  (AlgorithmI a, DhAlgorithm a) =>
+  TVar ChaChaDRG ->
+  Ratchet a ->
+  SkippedMsgKeys ->
+  LB.ByteString ->
+  ExceptT CryptoError IO (DecryptResult' a)
+rcDecrypt' = undefined
 
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)
 rootKdf (RatchetKey rk) k pk =

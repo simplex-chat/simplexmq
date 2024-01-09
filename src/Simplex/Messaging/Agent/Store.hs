@@ -29,6 +29,7 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
+import Simplex.Messaging.Builder (Builder, byteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
 import Simplex.Messaging.Encoding.String
@@ -362,11 +363,14 @@ data AgentCommand
   = AClientCommand (APartyCmd 'Client)
   | AInternalCommand InternalCommand
 
-instance StrEncoding AgentCommand where
-  strEncode = \case
-    AClientCommand (APC _ cmd) -> strEncode (ACClient, Str $ serializeCommand cmd)
-    AInternalCommand cmd -> strEncode (ACInternal, cmd)
-  strP =
+instance StrEncoding' AgentCommand where
+  strEncode' = \case
+    AClientCommand (APC _ cmd) -> s (ACClient, Str "") <> serializeCommand cmd
+    AInternalCommand cmd -> s (ACInternal, cmd)
+    where
+      s :: StrEncoding a => a -> Builder
+      s = byteString . strEncode
+  strP' =
     strP_ >>= \case
       ACClient -> AClientCommand <$> ((\(ACmd _ e cmd) -> checkParty $ APC e cmd) <$?> dbCommandP)
       ACInternal -> AInternalCommand <$> strP

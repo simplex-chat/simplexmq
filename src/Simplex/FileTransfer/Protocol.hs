@@ -24,7 +24,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.Messaging.Builder (Builder)
+import Simplex.Messaging.Builder (Builder, byteString)
+import Simplex.Messaging.Client (signTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -184,8 +185,8 @@ instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
     FACK -> e FACK_
     PING -> e PING_
     where
-      e :: Encoding a => a -> ByteString
-      e = smpEncode
+      e :: Encoding a => a -> Builder
+      e = byteString . smpEncode
 
   protocolP v tag = (\(FileCmd _ c) -> checkParty c) <$?> protocolP v (FCT (sFileParty @p) tag)
 
@@ -284,8 +285,8 @@ instance ProtocolEncoding XFTPErrorType FileResponse where
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
     where
-      e :: Encoding a => a -> ByteString
-      e = smpEncode
+      e :: Encoding a => a -> Builder
+      e = byteString . smpEncode
 
   protocolP _v = \case
     FRSndIds_ -> FRSndIds <$> _smpP <*> smpP
@@ -398,13 +399,10 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
 xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError Builder
 xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
   let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
-  xftpEncodeBatch1 $ signTransmission t
-  where
-    signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
+  xftpEncodeBatch1 $ signTransmission pKey t
 
 -- this function uses batch syntax but puts only one transmission in the batch
-xftpEncodeBatch1 :: (Maybe C.ASignature, ByteString) -> Either TransportError Builder
+xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError Builder
 xftpEncodeBatch1 (sig, t) =
   let t' = tEncodeBatch 1 . encodeLarge $ tEncode (sig, t)
    in first (const TELargeMsg) $ C.pad' t' xftpBlockSize

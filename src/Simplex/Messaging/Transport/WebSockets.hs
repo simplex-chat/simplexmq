@@ -69,6 +69,13 @@ instance Transport WS where
       then pure s
       else E.throwIO TEBadBlock
 
+  cGet' :: WS -> Int -> IO LB.ByteString
+  cGet' c n = do
+    s <- receiveData (wsConnection c)
+    if LB.length s == fromIntegral n
+      then pure s
+      else E.throwIO TEBadBlock
+
   cPut :: WS -> ByteString -> IO ()
   cPut = sendBinaryData . wsConnection
 

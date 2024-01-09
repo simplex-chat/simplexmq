@@ -47,6 +47,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -732,7 +733,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
+          | LB.length msgBody > fromIntegral maxMessageLength = pure $ err LARGE_MSG
           | otherwise = case status qr of
               QueueOff -> return $ err AUTH
               QueueActive ->
@@ -900,7 +901,7 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
         getMessages = if keepMsgs then snapshotMsgQueue else flushMsgQueue
         saveQueueMsgs ms h rId =
           atomically (getMessages ms rId)
-            >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
+            >>= mapM_ (LB.hPutStrLn h . strEncodeLB . MLRv3 rId)
 
 restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m Int
 restoreServerMessages = asks (storeMsgsFile . config) >>= \case
@@ -913,7 +914,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired st ms quota old_) 0 . B.lines) >>= \case
+      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired st ms quota old_) 0 . LB.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -923,7 +924,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
           pure expired
       where
         restoreMsg !expired st ms quota old_ s = do
-          r <- liftEither . first (msgErr "parsing") $ strDecode s
+          r <- liftEither . first (msgErr "parsing") $ strDecode' s
           case r of
             MLRv3 rId msg -> addToMsgQueue rId msg
             MLRv1 rId encMsg -> do
@@ -943,10 +944,10 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
               pure $ if isExpired then expired + 1 else expired
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
-              msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
+              msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt' rcvDhSecret nonce body
               pure Message {msgId, msgTs, msgFlags, msgBody}
             msgErr :: Show e => String -> e -> String
-            msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
+            msgErr op e = op <> " error (" <> show e <> "): " <> LB.unpack (LB.take 100 s)
 
 saveServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
 saveServerStats =

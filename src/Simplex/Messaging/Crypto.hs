@@ -115,8 +115,10 @@ module Simplex.Messaging.Crypto
     CbNonce (unCbNonce),
     pattern CbNonce,
     cbEncrypt,
+    cbEncrypt',
     cbEncryptMaxLenBS,
     cbDecrypt,
+    cbDecrypt',
     sbDecrypt_,
     sbEncrypt_,
     cbNonce,
@@ -193,6 +195,7 @@ import Data.ByteString.Base64 (decode, encode)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
@@ -938,37 +941,38 @@ unPad padded
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
 
-newtype MaxLenBS (i :: Nat) = MLBS {unMaxLenBS :: ByteString}
+newtype MaxLenBS (i :: Nat) = MLBS {unMaxLenBS :: LB.ByteString}
 
-pattern MaxLenBS :: ByteString -> MaxLenBS i
+pattern MaxLenBS :: LB.ByteString -> MaxLenBS i
 pattern MaxLenBS s <- MLBS s
 
 {-# COMPLETE MaxLenBS #-}
 
-instance KnownNat i => Encoding (MaxLenBS i) where
-  smpEncode (MLBS s) = smpEncode s
-  smpP = first show . maxLenBS <$?> smpP
+instance KnownNat i => StrEncoding' (MaxLenBS i) where
+  strEncode' (MLBS s) = strEncode' s
+  strP' = first show . maxLenBS <$?> strP'
 
-instance KnownNat i => StrEncoding (MaxLenBS i) where
-  strEncode (MLBS s) = strEncode s
-  strP = first show . maxLenBS <$?> strP
+-- maxLenBS :: forall i. KnownNat i => ByteString -> Either CryptoError (MaxLenBS i)
+-- maxLenBS s
+--   | B.length s > maxLength @i = Left CryptoLargeMsgError
+--   | otherwise = Right $ MLBS s
 
-maxLenBS :: forall i. KnownNat i => ByteString -> Either CryptoError (MaxLenBS i)
-maxLenBS s
-  | B.length s > maxLength @i = Left CryptoLargeMsgError
-  | otherwise = Right $ MLBS s
+maxLenBS :: forall i. KnownNat i => LB.ByteString -> Either CryptoError (MaxLenBS i)
+maxLenBS s = undefined
 
-unsafeMaxLenBS :: forall i. KnownNat i => ByteString -> MaxLenBS i
+unsafeMaxLenBS :: forall i. KnownNat i => LB.ByteString -> MaxLenBS i
 unsafeMaxLenBS = MLBS
+{-# INLINE unsafeMaxLenBS #-}
 
-padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
-padMaxLenBS (MLBS msg) = MLBS $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
-  where
-    len = B.length msg
-    padLen = maxLength @i - len
+-- padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
+-- padMaxLenBS (MLBS msg) = MLBS $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+--   where
+--     len = B.length msg
+--     padLen = maxLength @i - len
 
 appendMaxLenBS :: (KnownNat i, KnownNat j) => MaxLenBS i -> MaxLenBS j -> MaxLenBS (i + j)
 appendMaxLenBS (MLBS s1) (MLBS s2) = MLBS $ s1 <> s2
+{-# INLINE appendMaxLenBS #-}
 
 maxLength :: forall i. KnownNat i => Int
 maxLength = fromIntegral (natVal $ Proxy @i)
@@ -1088,6 +1092,9 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
 
+cbEncrypt' :: DhSecret X25519 -> CbNonce -> LB.ByteString -> Int -> Either CryptoError LB.ByteString
+cbEncrypt' = undefined
+
 -- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
 sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 sbEncrypt (SbKey key) = sbEncrypt_ key
@@ -1096,8 +1103,12 @@ sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Eith
 sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
-cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
-cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+-- cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
+-- cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> LB.ByteString
+cbEncryptMaxLenBS (DhSecretX25519 _secret) (CbNonce _nonce) = undefined
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
@@ -1108,6 +1119,9 @@ cryptoBox secret nonce s = BA.convert tag <> c
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
 cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
+
+cbDecrypt' :: DhSecret X25519 -> CbNonce -> LB.ByteString -> Either CryptoError LB.ByteString
+cbDecrypt' (DhSecretX25519 _secret) = undefined
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
 sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString

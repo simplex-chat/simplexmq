@@ -74,6 +74,7 @@ module Simplex.Messaging.Client
     -- * For testing
     PCTransmission,
     mkTransmission,
+    signTransmission,
     clientStub,
   )
 where
@@ -96,9 +97,10 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Builder (Builder)
+import Simplex.Messaging.Builder (Builder, lazyByteString, toLazyByteString)
 import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
@@ -694,7 +696,7 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Requ
 mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCorrId, sentCommands}} (pKey, entId, cmd) = do
   corrId <- atomically getNextCorrId
-  let t = signTransmission $ encodeTransmission thVersion sessionId (corrId, entId, cmd)
+  let t = signTransmission pKey $ encodeTransmission thVersion sessionId (corrId, entId, cmd)
   r <- atomically $ mkRequest corrId
   pure (t, r)
   where
@@ -702,13 +704,18 @@ mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCo
     getNextCorrId = do
       i <- stateTVar clientCorrId $ \i -> (i, i + 1)
       pure . CorrId $ bshow i
-    signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
       r <- Request entId <$> newEmptyTMVar
       TM.insert corrId r sentCommands
       pure r
+
+-- TODO not sure if it is needed to create a new builder in this case or once materialized it will stay materialized
+signTransmission :: Maybe C.APrivateSignKey -> Builder -> SentRawTransmission
+signTransmission Nothing t = (Nothing, t)
+signTransmission (Just pKey) t = (Just $ LC.sign pKey t', lazyByteString t')
+  where
+    t' = toLazyByteString t
 
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 

@@ -9,10 +9,12 @@ import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.Attoparsec.ByteString.Lazy as LA
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (isAlphaNum, toLower)
 import Data.String
 import Data.Text (Text)
@@ -47,8 +49,14 @@ tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeT
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . parseAll parser
 
+parse' :: Parser a -> e -> (LB.ByteString -> Either e a)
+parse' parser err = first (const err) . parseAll' parser
+
 parseAll :: Parser a -> (ByteString -> Either String a)
 parseAll parser = A.parseOnly (parser <* A.endOfInput)
+
+parseAll' :: Parser a -> (LB.ByteString -> Either String a)
+parseAll' parser = LA.parseOnly (parser <* A.endOfInput)
 
 parseE :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
 parseE err parser = except . first err . parseAll parser

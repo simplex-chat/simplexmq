@@ -8,6 +8,7 @@
 module Simplex.Messaging.Crypto.Lazy
   ( sha256Hash,
     sha512Hash,
+    sign,
     pad,
     unPad,
     splitLen,
@@ -49,7 +50,7 @@ import Data.Composition ((.:.))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Foreign (sizeOf)
-import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), DhSecret (..), DhSecretX25519, SbKey, pattern CbNonce, pattern SbKey)
+import Simplex.Messaging.Crypto (APrivateSignKey (..), ASignature, CbNonce, CryptoError (..), DhSecret (..), DhSecretX25519, SbKey, pattern CbNonce, pattern SbKey)
 import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret (..))
 import Simplex.Messaging.Encoding
 
@@ -62,6 +63,9 @@ sha256Hash = BA.convert . (hashlazy :: LazyByteString -> Digest SHA256)
 -- | SHA512 digest of a lazy bytestring.
 sha512Hash :: LazyByteString -> ByteString
 sha512Hash = BA.convert . (hashlazy :: LazyByteString -> Digest SHA512)
+
+sign :: APrivateSignKey -> LazyByteString -> ASignature
+sign (APrivateSignKey _a _k) _ = undefined
 
 -- this function does not validate the length of the message to avoid consuming all chunks,
 -- but if the passed string is longer it will truncate it to specified length

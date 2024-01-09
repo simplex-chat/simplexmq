@@ -25,6 +25,7 @@ import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
+import Simplex.Messaging.Builder (Builder, byteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -198,8 +199,8 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
     SDEL -> e SDEL_
     PING -> e PING_
     where
-      e :: Encoding a => a -> ByteString
-      e = smpEncode
+      e :: Encoding a => a -> Builder
+      e = byteString . smpEncode
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
@@ -301,8 +302,8 @@ instance ProtocolEncoding ErrorType NtfResponse where
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
-      e :: Encoding a => a -> ByteString
-      e = smpEncode
+      e :: Encoding a => a -> Builder
+      e = byteString . smpEncode
 
   protocolP _v = \case
     NRTknId_ -> NRTknId <$> _smpP <*> smpP

@@ -131,11 +131,10 @@ class Transport c where
 
   -- | Read fixed number of bytes from connection
   cGet :: c -> Int -> IO ByteString
+  cGet' :: c -> Int -> IO LB.ByteString
 
   -- | Write bytes to connection
   cPut :: c -> ByteString -> IO ()
-
-  -- | Write bytes to connection
   cPut' :: c -> LB.ByteString -> IO ()
 
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
@@ -217,8 +216,12 @@ instance Transport TLS where
   -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
   -- this function may return less than requested number of bytes
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
-    getBuffered tlsBuffer n t_ (T.recvData tlsContext)
+  cGet cxt n = LB.toStrict <$> cGet' cxt n
+
+  -- TODO make getBuffered return lazy bytestring
+  cGet' :: TLS -> Int -> IO LB.ByteString
+  cGet' TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
+    LB.fromStrict <$> getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
   cPut cxt = cPut' cxt . LB.fromStrict
