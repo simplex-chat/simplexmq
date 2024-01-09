@@ -19,12 +19,13 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.Messaging.Builder (Builder, byteString)
+import Simplex.Messaging.Builder (Builder)
 import Simplex.Messaging.Client (signTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -47,7 +48,7 @@ import Simplex.Messaging.Protocol
     SignedTransmission,
     SndPublicVerifyKey,
     Transmission,
-    encodeTransmission,
+    encodeTransmission',
     messageTagP,
     tDecodeParseValidate,
     tEncode,
@@ -185,8 +186,8 @@ instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
     FACK -> e FACK_
     PING -> e PING_
     where
-      e :: Encoding a => a -> Builder
-      e = byteString . smpEncode
+      e :: Encoding a => a -> LB.ByteString
+      e = LB.fromStrict . smpEncode
 
   protocolP v tag = (\(FileCmd _ c) -> checkParty c) <$?> protocolP v (FCT (sFileParty @p) tag)
 
@@ -285,8 +286,8 @@ instance ProtocolEncoding XFTPErrorType FileResponse where
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
     where
-      e :: Encoding a => a -> Builder
-      e = byteString . smpEncode
+      e :: Encoding a => a -> LB.ByteString
+      e = LB.fromStrict . smpEncode
 
   protocolP _v = \case
     FRSndIds_ -> FRSndIds <$> _smpP <*> smpP
@@ -398,7 +399,7 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
 
 xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError Builder
 xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
-  let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
+  let t = encodeTransmission' currentXFTPVersion sessionId (corrId, fId, msg)
   xftpEncodeBatch1 $ signTransmission pKey t
 
 -- this function uses batch syntax but puts only one transmission in the batch

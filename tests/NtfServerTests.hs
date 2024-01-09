@@ -76,7 +76,7 @@ sendRecvNtf h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 
 signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 signSendRecvNtf h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
-  let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
+  let t = encodeTransmission' thVersion sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut1 h $ signTransmission (Just pk) t
   tGet1 h
 

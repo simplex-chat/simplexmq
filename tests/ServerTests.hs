@@ -85,7 +85,7 @@ sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
 
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
-  let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
+  let t = encodeTransmission' thVersion sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut1 h $ signTransmission (Just pk) t
   tGet1 h
 

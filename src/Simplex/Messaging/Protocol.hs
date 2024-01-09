@@ -126,6 +126,7 @@ module Simplex.Messaging.Protocol
     ProtocolMsgTag (..),
     messageTagP,
     encodeTransmission,
+    encodeTransmission',
     transmissionP,
     _smpP,
     encodeRcvMsgBody,
@@ -1090,7 +1091,7 @@ instance Protocol ErrorType BrokerMsg where
 
 class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
   type Tag msg
-  encodeProtocol :: Version -> msg -> Builder
+  encodeProtocol :: Version -> msg -> LB.ByteString
   protocolP :: Version -> Tag msg -> Parser msg
   fromProtocolError :: ProtocolErrorType -> err
   checkCredentials :: SignedRawTransmission -> msg -> Either err msg
@@ -1098,7 +1099,7 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
 instance PartyI p => ProtocolEncoding ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey auth_ subMode -> byteString enc
+    NEW rKey dhKey auth_ subMode -> LB.fromStrict enc
       where
         enc
           | v >= 6 = new <> auth <> smpEncode subMode
@@ -1117,13 +1118,13 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
     OFF -> e OFF_
     DEL -> e DEL_
     SEND flags msg
-      | v == 1 -> e (SEND_, ' ') <> lazyByteString msg
-      | otherwise -> e (SEND_, ' ', flags, ' ') <> lazyByteString msg
+      | v == 1 -> LB.chunk (smpEncode (SEND_, ' ')) msg
+      | otherwise -> LB.chunk (smpEncode (SEND_, ' ', flags, ' ')) msg
     PING -> e PING_
     NSUB -> e NSUB_
     where
-      e :: Encoding a => a -> Builder
-      e = byteString . smpEncode
+      e :: Encoding a => a -> LB.ByteString
+      e = LB.fromStrict . smpEncode
 
   protocolP v tag = (\(Cmd _ c) -> checkParty c) <$?> protocolP v (CT (sParty @p) tag)
 
@@ -1192,12 +1193,12 @@ instance ProtocolEncoding ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
-    MSG msg@RcvMessage {msgBody = EncRcvMsgBody body} -> enc msg <> lazyByteString body
+    MSG msg@RcvMessage {msgBody = EncRcvMsgBody body} -> LB.chunk (enc msg) body
       where
         enc RcvMessage {msgId, msgTs, msgFlags}
-          | v == 1 = e (MSG_, ' ', msgId, msgTs)
-          | v == 2 = e (MSG_, ' ', msgId, msgTs, msgFlags, ' ')
-          | otherwise = e (MSG_, ' ', msgId)    
+          | v == 1 = smpEncode (MSG_, ' ', msgId, msgTs)
+          | v == 2 = smpEncode (MSG_, ' ', msgId, msgTs, msgFlags, ' ')
+          | otherwise = smpEncode (MSG_, ' ', msgId)    
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
@@ -1205,8 +1206,8 @@ instance ProtocolEncoding ErrorType BrokerMsg where
     ERR err -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where
-      e :: Encoding a => a -> Builder
-      e = byteString . smpEncode
+      e :: Encoding a => a -> LB.ByteString
+      e = LB.fromStrict . smpEncode
 
   protocolP v = \case
     MSG_ -> do
@@ -1366,8 +1367,13 @@ tEncodeBatch n s = char8 (lenEncode n) <> s
 
 encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> Builder
 encodeTransmission v sessionId (CorrId corrId, queueId, command) =
-  byteString (smpEncode (sessionId, corrId, queueId)) <> encodeProtocol v command
+  byteString (smpEncode (sessionId, corrId, queueId)) <> lazyByteString (encodeProtocol v command)
 {-# INLINE encodeTransmission #-}
+
+encodeTransmission' :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> LB.ByteString
+encodeTransmission' v sessionId (CorrId corrId, queueId, command) =
+  LB.chunk (smpEncode (sessionId, corrId, queueId)) (encodeProtocol v command)
+{-# INLINE encodeTransmission' #-}
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (NonEmpty (Either TransportError RawTransmission))
