@@ -2,7 +2,7 @@
 
 module CoreTests.CryptoFileTests (cryptoFileTests) where
 
-import AgentTests.FunctionalAPITests (runRight_)
+import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent.STM
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -31,12 +31,11 @@ testWriteReadFile = do
   g <- C.newRandom
   s <- atomically $ LB.fromStrict <$> C.randomBytes 100000 g
   file <- atomically $ mkCryptoFile g
-  runRight_ $ do
-    CF.writeFile file s
-    liftIO $ CF.getFileContentsSize file `shouldReturn` 100000
-    liftIO $ getFileSize testFilePath `shouldReturn` 100000 + fromIntegral C.authTagSize
-    s' <- CF.readFile file
-    liftIO $ s `shouldBe` s'
+  CF.writeFile file s
+  CF.getFileContentsSize file `shouldReturn` 100000
+  getFileSize testFilePath `shouldReturn` 100000 + fromIntegral C.authTagSize
+  s' <- runRight $ CF.readFile file
+  s `shouldBe` s'
 
 testPutGetFile :: IO ()
 testPutGetFile = do
@@ -64,7 +63,7 @@ testWriteGetFile = do
   s <- atomically $ LB.fromStrict <$> C.randomBytes 100000 g
   file <- atomically $ mkCryptoFile g
   runRight_ $ do
-    CF.writeFile file s
+    liftIO $ CF.writeFile file s
     CF.withFile file ReadMode $ \h -> do
       s' <- liftIO $ CF.hGet h 50000
       s'' <- liftIO $ CF.hGet h 50000

@@ -117,7 +117,7 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
   filePath <- createRandomFile
   s <- LB.readFile filePath
   file <- atomically $ CryptoFile (senderFiles </> "encrypted_testfile") . Just <$> CF.randomArgs g
-  runRight_ $ CF.writeFile file s
+  CF.writeFile file s
   sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
   (rfd1, rfd2) <- runRight $ do
     (sfId, _, rfd1, rfd2) <- testSendCF sndr file
