@@ -501,7 +501,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   where
     newClient v = do
       tc <- newTVarIO 0
-      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient 0 tc) v
+      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient False 0 tc) v
     connectClient :: m SMPClient
     connectClient = do
       cfg <- getClientConfig c smpCfg
@@ -529,23 +529,23 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            unliftIO u $ reconnectServer c tSess
+            unliftIO u $ reconnectServer False c tSess
 
         notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
-reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
+reconnectServer :: AgentMonad m => Bool -> AgentClient -> SMPTransportSession -> m ()
+reconnectServer allowClose c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
   where
     tryReconnectSMPClient aId = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \n _ loop ->
-        reconnectSMPClient n timeoutCounts c tSess `catchAgentError` const loop
+        reconnectSMPClient allowClose n timeoutCounts c tSess `catchAgentError` const loop
       atomically . removeAsyncAction aId $ reconnections c
 
-reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient n tc c tSess@(_, srv, _) = do
+reconnectSMPClient :: forall m. AgentMonad m => Bool -> Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient allowClose n tc c tSess@(_, srv, _) = do
   ts <- liftIO getCurrentTime
   let label = unwords ["reconnect", show n, show ts]
   withLockMap_ (reconnectLocks c) tSess label $ do
@@ -567,15 +567,17 @@ reconnectSMPClient n tc c tSess@(_, srv, _) = do
       cs <- atomically . RQ.getConns $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      when (null okConns && S.null cs) $ do
-        liftIO (closeClient c smpClients tSess)
-        throwError $ BROKER (B.unpack $ strEncode srv) (RESPONSE "TODO: new error for no progress")
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      mapM_ (throwError . snd) $ listToMaybe tempErrs
+      forM_ (listToMaybe tempErrs) $ \(_, err) ->
+        if allowClose && null okConns && S.null cs && null finalErrs
+          then do
+            liftIO $ closeClient c smpClients tSess
+            throwError $ BROKER (B.unpack $ strEncode srv) (RESPONSE "TODO: new error for no progress")
+          else throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
@@ -1012,7 +1014,7 @@ subscribeQueues c qs = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
       when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
-        reconnectServer c (transportSession' smp)
+        reconnectServer True c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
