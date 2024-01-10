@@ -13,12 +13,14 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
+import Simplex.Messaging.Agent.Env.SQLite (Worker)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -31,7 +33,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, SessionId)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
 import Simplex.Messaging.Version
 import System.IO (IOMode (..))
@@ -175,7 +177,8 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  proxyClient_ <- newTVar Nothing
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, proxyClient_}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -196,7 +199,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- atomically TM.empty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  proxyServer <- newSMPProxyServer
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyServer}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -212,3 +216,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier q = case notifier q of
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
+
+newSMPProxyServer :: MonadIO m => m SMPProxyServer
+newSMPProxyServer = do
+  relayServers <- atomically TM.empty
+  relaySessions <- atomically TM.empty
+  pure SMPProxyServer {relayServers, relaySessions}

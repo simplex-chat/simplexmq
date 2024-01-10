@@ -173,9 +173,11 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
-import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
+import GHC.TypeLits (ErrorMessage (ShowType, (:<>:)), TypeError, type (+))
+import qualified GHC.TypeLits as TE
 import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Builder (Builder, char8, lazyByteString)
 import qualified Simplex.Messaging.Builder as BB
@@ -339,7 +341,7 @@ data BrokerMsg where
   MSG :: RcvMessage -> BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
-  RKEY :: C.SignedObject C.PublicKeyX25519 -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  RKEY :: C.PublicKeyX25519 -> C.Signature C.Ed25519 -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
   RRES :: ByteString -> BrokerMsg -- Encrypted response. E.g. relay to client, hidden from proxy
   END :: BrokerMsg
   OK :: BrokerMsg
@@ -792,7 +794,7 @@ type family UserProtocol (p :: ProtocolType) :: Constraint where
   UserProtocol PSMP = ()
   UserProtocol PXFTP = ()
   UserProtocol a =
-    (Int ~ Bool, TypeError (Text "Servers for protocol " :<>: ShowType a :<>: Text " cannot be configured by the users"))
+    (Int ~ Bool, TypeError (TE.Text "Servers for protocol " :<>: ShowType a :<>: TE.Text " cannot be configured by the users"))
 
 userProtocol :: SProtocolType p -> Maybe (Dict (UserProtocol p))
 userProtocol = \case
@@ -1113,6 +1115,9 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
       | otherwise -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
+    PROXY {} -> error "TODO: e (PROXY_,,)"
+    PHS -> error "TODO: e PHS_"
+    PFWD {} -> error "TODO: e (PFWD_,,)"
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1188,6 +1193,8 @@ instance ProtocolEncoding ErrorType BrokerMsg where
       | otherwise -> e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
+    RKEY {} -> error "TODO: e (RKEY_,,)"
+    RRES {} -> error "TODO: e (RRES_,,)"
     END -> e END_
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -1257,6 +1264,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
     QUOTA -> "QUOTA"
+    EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
     INTERNAL -> "INTERNAL"
@@ -1269,6 +1277,7 @@ instance Encoding ErrorType where
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
       "QUOTA" -> pure QUOTA
+      "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
       "INTERNAL" -> pure INTERNAL
