@@ -567,6 +567,9 @@ reconnectSMPClient n tc c tSess@(_, srv, _) = do
       cs <- atomically . RQ.getConns $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+      when (null okConns && S.null cs) $ do
+        liftIO (closeClient c smpClients tSess)
+        throwError $ BROKER (B.unpack $ strEncode srv) (RESPONSE "TODO: new error for no progress")
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
