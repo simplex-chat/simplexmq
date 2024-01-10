@@ -527,7 +527,15 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
           case command of
             SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
             PING -> pure (corrId, "", PONG)
-            PROXY _uri _auth -> error "TODO: processCommand.PROXY"
+            PROXY relay auth ->
+              ifM
+                allowProxy
+                (setupProxy relay)
+                (pure (corrId, queueId, ERR AUTH))
+              where
+                allowProxy = do
+                  ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+                  pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
             PHS -> error "TODO: processCommand.PHS"
             PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
         Cmd SNotifier NSUB -> subscribeNotifications
@@ -863,6 +871,14 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
             deleteQueue st queueId >>= \case
               Left e -> pure $ err e
               Right _ -> delMsgQueue ms queueId $> ok
+
+        setupProxy :: SMPServer -> m (Transmission BrokerMsg)
+        setupProxy todo'relay = do
+          let relaySessionId = "TODO: relaySessionId"
+          (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
+          (_, dummySignKey) <- atomically . C.generateKeyPair =<< asks random
+          let dummyRelayKeySignature = C.sign' dummySignKey $ smpEncode dummyRelayDhPublic
+          pure (corrId, relaySessionId, RKEY dummyRelayDhPublic dummyRelayKeySignature)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)

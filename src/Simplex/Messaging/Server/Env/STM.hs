@@ -78,7 +78,7 @@ data ServerConfig = ServerConfig
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
     controlPort :: Maybe ServiceName,
-    proxyEnabled :: Bool
+    allowSMPProxy :: Bool -- auth is the same with `newQueueBasicAuth`
   }
 
 defMsgExpirationDays :: Int64

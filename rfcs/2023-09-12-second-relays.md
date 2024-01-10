@@ -186,12 +186,12 @@ signed = sessionIdentifier corrId entityId (smpCommand / brokerMsg)
 ```abnf
 s2p_command = proxy / forward
 p2r_command = p_handshake ; forward is
-proxy = %s"PROXY" length relayUri [basicAuth]
+proxy = %s"PROXY" SP relayUri SP basicAuth
 relayUri = length %s"smp://" serverIdentity "@" srvHost [":" port]
 p_handshake = %"PHS"
-forward = %s"FWD" dhPublic encryptedBlock
-r_key = %s"RKEY" dhPublic
-r_response = %s"RRES" encryptedBlock
+forward = %s"FWD" SP dhPublic SP encryptedBlock
+r_key = %s"RKEY" SP dhPublic
+r_response = %s"RRES" SP encryptedBlock
 dhPublic = length x509encoded
 ```
 
