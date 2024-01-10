@@ -626,6 +626,7 @@ test-suite simplexmq-test
       ServerTests
       SMPAgentClient
       SMPClient
+      SMPProxyTests
       XFTPAgent
       XFTPCLI
       XFTPClient

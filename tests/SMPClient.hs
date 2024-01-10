@@ -103,8 +103,12 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange,
       transportConfig = defaultTransportServerConfig,
-      controlPort = Nothing
+      controlPort = Nothing,
+      proxyEnabled = False
     }
+
+proxyCfg :: ServerConfig
+proxyCfg = cfg { proxyEnabled = True }
 
 withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
