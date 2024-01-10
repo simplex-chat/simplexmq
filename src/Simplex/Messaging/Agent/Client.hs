@@ -572,12 +572,10 @@ reconnectSMPClient allowClose n tc c tSess@(_, srv, _) = do
         unless (null conns) $ notifySub "" $ UP srv conns
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      forM_ (listToMaybe tempErrs) $ \(_, err) ->
-        if allowClose && null okConns && S.null cs && null finalErrs
-          then do
-            liftIO $ closeClient c smpClients tSess
-            throwError $ BROKER (B.unpack $ strEncode srv) (RESPONSE "TODO: new error for no progress")
-          else throwError err
+      forM_ (listToMaybe tempErrs) $ \(_, err) -> do
+        when (allowClose && null okConns && S.null cs && null finalErrs) $
+          liftIO $ closeClient c smpClients tSess
+        throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
