@@ -266,7 +266,7 @@ data AgentClient = AgentClient
     deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
     reconnectLocks :: TMap SMPTransportSession Lock,
-    reconnections :: TAsyncs,
+    reconnections :: TMap SMPTransportSession (TMVar (Maybe (Async ()))),
     asyncClients :: TAsyncs,
     agentStats :: TMap AgentStatsKey (TVar Int),
     clientId :: Int,
@@ -408,7 +408,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   invLocks <- TM.empty
   deleteLock <- createLock
   reconnectLocks <- TM.empty
-  reconnections <- newTAsyncs
+  reconnections <- TM.empty
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
@@ -535,26 +535,30 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 reconnectServer :: AgentMonad m => Bool -> AgentClient -> SMPTransportSession -> m ()
-reconnectServer allowClose c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
+reconnectServer allowClose c tSess = do
+  atomically (getClientVar tSess $ reconnections c) >>= \case
+    Left free -> async tryReconnectSMPClient >>= \a -> atomically (takeTMVar free >> putTMVar free (Just a))
+    Right _running -> pure ()
   where
-    tryReconnectSMPClient aId = do
+    tryReconnectSMPClient = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \n _ loop ->
         reconnectSMPClient allowClose n timeoutCounts c tSess `catchAgentError` const loop
-      atomically . removeAsyncAction aId $ reconnections c
 
 reconnectSMPClient :: forall m. AgentMonad m => Bool -> Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient allowClose n tc c tSess@(_, srv, _) = do
+reconnectSMPClient allowClose _n tc c tSess@(_, srv, _) = do
   ts <- liftIO getCurrentTime
-  let label = unwords ["reconnect", show n, show ts]
+  let label = unwords ["reconnect", show _n, show ts]
   withLockMap_ (reconnectLocks c) tSess label $ do
-    qs <- atomically (RQ.getSessQueues tSess $ pendingSubs c)
+    qs <- getPending
     NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
     -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
     let t = (length qs `div` 90 + 1) * tcpTimeout * 3
     t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
-      Just _ -> atomically $ writeTVar tc 0
+      Just _ -> do
+        atomically $ writeTVar tc 0
+        unlessM (null <$> getPending) $ throwError (INTERNAL "more work appeared")
       Nothing -> do
         tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
         maxTC <- asks $ maxSubscriptionTimeouts . config
@@ -562,6 +566,8 @@ reconnectSMPClient allowClose n tc c tSess@(_, srv, _) = do
             msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
         atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
   where
+    getPending :: m [RcvQueue]
+    getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
     resubscribe :: NonEmpty RcvQueue -> m ()
     resubscribe qs = do
       cs <- atomically . RQ.getConns $ activeSubs c
@@ -690,7 +696,7 @@ closeAgentClient c = liftIO $ do
   closeProtocolServerClients c smpClients
   closeProtocolServerClients c ntfClients
   closeProtocolServerClients c xftpClients
-  cancelActions . actions $ reconnections c
+  readTVarIO (reconnections c) >>= mapM_ cancelAsyncVar
   cancelActions . actions $ asyncClients c
   clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
   clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
@@ -704,6 +710,10 @@ closeAgentClient c = liftIO $ do
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
+    cancelAsyncVar :: TMVar (Maybe (Async ())) -> IO ()
+    cancelAsyncVar tmv = void . forkIO $ do
+      a <- atomically (readTMVar tmv >>= maybe retry pure) -- wait for the starting async
+      uninterruptibleCancel a
 
 cancelWorker :: Worker -> IO ()
 cancelWorker Worker {doWork, action} = do
