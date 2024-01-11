@@ -132,6 +132,7 @@ import Control.Monad.Reader
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
+import Data.Bitraversable (bimapM)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -530,12 +531,13 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
 
 reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
 reconnectServer c tSess =
-  atomically (getTSessVar tSess $ reconnections c) >>= \case
-    Left free -> do
+  atomically setup >>= \case
+    Left reserved -> do
       a <- async $ tryReconnectSMPClient `E.catchAny` const (atomically cleanup)
-      atomically (takeTMVar free >> putTMVar free (Just a))
+      atomically (takeTMVar reserved >> putTMVar reserved (Just a))
     Right running -> atomically $ tryReadTMVar running >>= mapM_ (maybe retry waitSTM)
   where
+    setup = getTSessVar tSess (reconnections c) >>= bimapM (\v -> v <$ putTMVar v Nothing) pure
     tryReconnectSMPClient = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
