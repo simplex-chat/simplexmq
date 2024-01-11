@@ -492,7 +492,7 @@ instance ProtocolServerClient XFTPErrorType FileResponse where
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getClientVar tSess smpClients)
+  atomically (getTSessVar tSess smpClients)
     >>= either newClient (waitForProtocolClient c tSess)
   where
     newClient = newProtocolClient c tSess smpClients connectClient reconnectServer
@@ -530,7 +530,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
 
 reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
 reconnectServer c tSess =
-  atomically (getClientVar tSess $ reconnections c) >>= \case
+  atomically (getTSessVar tSess $ reconnections c) >>= \case
     Left free -> do
       a <- async $ tryReconnectSMPClient `E.finally` atomically (TM.delete tSess $ reconnections c)
       atomically (takeTMVar free >> putTMVar free (Just a))
@@ -586,7 +586,7 @@ reconnectSMPClient tc c tSess@(_, srv, _) =
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfTransportSession -> m NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getClientVar tSess ntfClients)
+  atomically (getTSessVar tSess ntfClients)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient $ \_ _ -> pure ())
       (waitForProtocolClient c tSess)
@@ -606,7 +606,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 getXFTPServerClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getClientVar tSess xftpClients)
+  atomically (getTSessVar tSess xftpClients)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient $ \_ _ -> pure ())
       (waitForProtocolClient c tSess)
@@ -624,8 +624,8 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-getClientVar :: forall a s. TransportSession s -> TMap (TransportSession s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
-getClientVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup tSess clients
+getTSessVar :: forall a s. TransportSession s -> TMap (TransportSession s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
+getTSessVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup tSess clients
   where
     newClientVar :: STM (TMVar a)
     newClientVar = do
