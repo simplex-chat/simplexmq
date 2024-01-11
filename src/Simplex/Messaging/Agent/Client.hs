@@ -265,7 +265,6 @@ data AgentClient = AgentClient
     -- lock to prevent concurrency between periodic and async connection deletions
     deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
-    reconnectLocks :: TMap SMPTransportSession Lock,
     reconnections :: TMap SMPTransportSession (TMVar (Maybe (Async ()))),
     asyncClients :: TAsyncs,
     agentStats :: TMap AgentStatsKey (TVar Int),
@@ -361,7 +360,6 @@ data AgentState = ASForeground | ASSuspending | ASSuspended
 data AgentLocks = AgentLocks
   { connLocks :: Map String String,
     invLocks :: Map String String,
-    srvLocks :: Map String String,
     delLock :: Maybe String
   }
   deriving (Show)
@@ -407,7 +405,6 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   connLocks <- TM.empty
   invLocks <- TM.empty
   deleteLock <- createLock
-  reconnectLocks <- TM.empty
   reconnections <- TM.empty
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
@@ -443,7 +440,6 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         connLocks,
         invLocks,
         deleteLock,
-        reconnectLocks,
         reconnections,
         asyncClients,
         agentStats,
@@ -543,15 +539,12 @@ reconnectServer c tSess =
     tryReconnectSMPClient = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
-      withRetryIntervalCount ri $ \n _ loop ->
-        unlessM (reconnectSMPClient n timeoutCounts c tSess) loop `catchAgentError` const loop
+      withRetryIntervalCount ri $ \_ _ loop ->
+        unlessM (reconnectSMPClient timeoutCounts c tSess) loop `catchAgentError` const loop
 
-reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m Bool
-reconnectSMPClient n tc c tSess@(_, srv, _) = do
-  ts <- liftIO getCurrentTime
-  let label = unwords ["reconnect", show n, show ts]
-  withLockMap_ (reconnectLocks c) tSess label $ do
-    qs <- getPending
+reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> m Bool
+reconnectSMPClient tc c tSess@(_, srv, _) =
+  withPending $ \qs -> do
     NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
     -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
     let t = (length qs `div` 90 + 1) * tcpTimeout * 3
@@ -564,10 +557,14 @@ reconnectSMPClient n tc c tSess@(_, srv, _) = do
         let err = if tc' >= maxTC then CRITICAL True else INTERNAL
             msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
         atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
-    null <$> getPending
   where
-    getPending :: m [RcvQueue]
-    getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
+    withPending :: ([RcvQueue] -> m ()) -> m Bool
+    withPending action = do
+      getPending >>= action
+      null <$> getPending
+      where
+        getPending :: m [RcvQueue]
+        getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
     resubscribe :: NonEmpty RcvQueue -> m ()
     resubscribe qs = do
       cs <- atomically . RQ.getConns $ activeSubs c
@@ -580,7 +577,8 @@ reconnectSMPClient n tc c tSess@(_, srv, _) = do
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
         when (null okConns && S.null cs && null finalErrs) $
-          liftIO $ closeClient' c smpClients tSess
+          liftIO $
+            closeClient' c smpClients tSess
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
