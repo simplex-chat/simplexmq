@@ -544,7 +544,7 @@ reconnectServer c tSess = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \n _ loop ->
-        whenM (reconnectSMPClient n timeoutCounts c tSess) loop `catchAgentError` const loop
+        unlessM (reconnectSMPClient n timeoutCounts c tSess) loop `catchAgentError` const loop
 
 reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m Bool
 reconnectSMPClient n tc c tSess@(_, srv, _) = do
