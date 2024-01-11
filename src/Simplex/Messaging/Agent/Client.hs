@@ -544,9 +544,9 @@ reconnectServer c tSess = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \n _ loop ->
-        reconnectSMPClient n timeoutCounts c tSess `catchAgentError` const loop
+        whenM (reconnectSMPClient n timeoutCounts c tSess) loop `catchAgentError` const loop
 
-reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m Bool
 reconnectSMPClient n tc c tSess@(_, srv, _) = do
   ts <- liftIO getCurrentTime
   let label = unwords ["reconnect", show n, show ts]
@@ -558,13 +558,13 @@ reconnectSMPClient n tc c tSess@(_, srv, _) = do
     t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
       Just _ -> do
         atomically $ writeTVar tc 0
-        unlessM (null <$> getPending) $ throwError (INTERNAL "more work appeared")
       Nothing -> do
         tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
         maxTC <- asks $ maxSubscriptionTimeouts . config
         let err = if tc' >= maxTC then CRITICAL True else INTERNAL
             msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
         atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+    null <$> getPending
   where
     getPending :: m [RcvQueue]
     getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
