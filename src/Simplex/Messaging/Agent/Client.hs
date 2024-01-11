@@ -499,9 +499,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   atomically (getClientVar tSess smpClients)
     >>= either newClient (waitForProtocolClient c tSess)
   where
-    newClient v = do
-      tc <- newTVarIO 0
-      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient 0 tc) v
+    newClient = newProtocolClient c tSess smpClients connectClient reconnectServer
     connectClient :: m SMPClient
     connectClient = do
       cfg <- getClientConfig c smpCfg
@@ -537,8 +535,10 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
 reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
 reconnectServer c tSess = do
   atomically (getClientVar tSess $ reconnections c) >>= \case
-    Left free -> async tryReconnectSMPClient >>= \a -> atomically (takeTMVar free >> putTMVar free (Just a))
-    Right _running -> pure ()
+    Left free -> do
+      a <- async $ tryReconnectSMPClient `E.finally` atomically (TM.delete tSess $ reconnections c)
+      atomically (takeTMVar free >> putTMVar free (Just a))
+    Right _running -> pure () -- XXX: block until it finishes?
   where
     tryReconnectSMPClient = do
       ri <- asks $ reconnectInterval . config
