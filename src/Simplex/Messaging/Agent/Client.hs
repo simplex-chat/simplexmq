@@ -543,28 +543,23 @@ reconnectServer c tSess =
         unlessM (reconnectSMPClient timeoutCounts c tSess) loop `catchAgentError` const loop
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> m Bool
-reconnectSMPClient tc c tSess@(_, srv, _) =
-  withPending $ \qs -> do
-    NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
-    -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
-    let t = (length qs `div` 90 + 1) * tcpTimeout * 3
-    t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
-      Just _ -> do
-        atomically $ writeTVar tc 0
-      Nothing -> do
-        tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
-        maxTC <- asks $ maxSubscriptionTimeouts . config
-        let err = if tc' >= maxTC then CRITICAL True else INTERNAL
-            msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+reconnectSMPClient tc c tSess@(_, srv, _) = do
+  qs <- getPending
+  NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
+  -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
+  let t = (length qs `div` 90 + 1) * tcpTimeout * 3
+  t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
+    Just _ -> atomically $ writeTVar tc 0
+    Nothing -> do
+      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+      maxTC <- asks $ maxSubscriptionTimeouts . config
+      let err = if tc' >= maxTC then CRITICAL True else INTERNAL
+          msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+  null <$> getPending
   where
-    withPending :: ([RcvQueue] -> m ()) -> m Bool
-    withPending action = do
-      getPending >>= action
-      null <$> getPending
-      where
-        getPending :: m [RcvQueue]
-        getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
+    getPending :: m [RcvQueue]
+    getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
     resubscribe :: NonEmpty RcvQueue -> m ()
     resubscribe qs = do
       cs <- atomically . RQ.getConns $ activeSubs c
