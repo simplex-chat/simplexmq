@@ -532,7 +532,7 @@ reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
 reconnectServer c tSess =
   atomically (getTSessVar tSess $ reconnections c) >>= \case
     Left free -> do
-      a <- async $ tryReconnectSMPClient `E.finally` atomically (TM.delete tSess $ reconnections c)
+      a <- async $ tryReconnectSMPClient `E.catchAny` const (atomically cleanup)
       atomically (takeTMVar free >> putTMVar free (Just a))
     Right running -> atomically $ tryReadTMVar running >>= mapM_ (maybe retry waitSTM)
   where
@@ -540,10 +540,14 @@ reconnectServer c tSess =
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \_ _ loop -> do
-        pending <- L.nonEmpty <$> atomically (RQ.getSessQueues tSess $ pendingSubs c)
+        pending <- atomically $
+          RQ.getSessQueues tSess (pendingSubs c) >>= \case
+            [] -> Nothing <$ cleanup
+            q : qs -> pure $ Just (q :| qs)
         forM_ pending $ \qs -> do
           reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
           loop
+    cleanup = TM.delete tSess (reconnections c)
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
