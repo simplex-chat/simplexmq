@@ -501,7 +501,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   where
     newClient v = do
       tc <- newTVarIO 0
-      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient False 0 tc) v
+      newProtocolClient c tSess smpClients connectClient (reconnectSMPClient 0 tc) v
     connectClient :: m SMPClient
     connectClient = do
       cfg <- getClientConfig c smpCfg
@@ -529,13 +529,13 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            unliftIO u $ reconnectServer False c tSess
+            unliftIO u $ reconnectServer c tSess
 
         notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
-reconnectServer :: AgentMonad m => Bool -> AgentClient -> SMPTransportSession -> m ()
-reconnectServer allowClose c tSess = do
+reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
+reconnectServer c tSess = do
   atomically (getClientVar tSess $ reconnections c) >>= \case
     Left free -> async tryReconnectSMPClient >>= \a -> atomically (takeTMVar free >> putTMVar free (Just a))
     Right _running -> pure ()
@@ -544,12 +544,12 @@ reconnectServer allowClose c tSess = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \n _ loop ->
-        reconnectSMPClient allowClose n timeoutCounts c tSess `catchAgentError` const loop
+        reconnectSMPClient n timeoutCounts c tSess `catchAgentError` const loop
 
-reconnectSMPClient :: forall m. AgentMonad m => Bool -> Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient allowClose _n tc c tSess@(_, srv, _) = do
+reconnectSMPClient :: forall m. AgentMonad m => Int -> TVar Int -> AgentClient -> SMPTransportSession -> m ()
+reconnectSMPClient n tc c tSess@(_, srv, _) = do
   ts <- liftIO getCurrentTime
-  let label = unwords ["reconnect", show _n, show ts]
+  let label = unwords ["reconnect", show n, show ts]
   withLockMap_ (reconnectLocks c) tSess label $ do
     qs <- getPending
     NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
@@ -579,8 +579,8 @@ reconnectSMPClient allowClose _n tc c tSess@(_, srv, _) = do
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
-        when (allowClose && null okConns && S.null cs && null finalErrs) $
-          liftIO $ closeClient c smpClients tSess
+        when (null okConns && S.null cs && null finalErrs) $
+          liftIO $ closeClient' c smpClients tSess
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
@@ -739,6 +739,10 @@ closeProtocolServerClients c clientsSel =
 closeClient :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
   atomically (TM.lookupDelete tSess $ clientSel c) >>= mapM_ (closeClient_ c)
+
+closeClient' :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
+closeClient' c clientSel tSess =
+  atomically (TM.lookup tSess $ clientSel c) >>= mapM_ (closeClient_ c)
 
 closeClient_ :: ProtocolServerClient err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c cVar = do
@@ -1022,7 +1026,7 @@ subscribeQueues c qs = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
       when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
-        reconnectServer True c (transportSession' smp)
+        reconnectServer c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
