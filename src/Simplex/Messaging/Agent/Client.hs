@@ -211,7 +211,7 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
-import UnliftIO.Async (async)
+import UnliftIO.Async (async, waitSTM)
 import UnliftIO.Directory (getTemporaryDirectory)
 import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
@@ -533,12 +533,12 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectServer c tSess = do
+reconnectServer c tSess =
   atomically (getClientVar tSess $ reconnections c) >>= \case
     Left free -> do
       a <- async $ tryReconnectSMPClient `E.finally` atomically (TM.delete tSess $ reconnections c)
       atomically (takeTMVar free >> putTMVar free (Just a))
-    Right _running -> pure () -- XXX: block until it finishes?
+    Right running -> atomically $ tryReadTMVar running >>= mapM_ (maybe retry waitSTM)
   where
     tryReconnectSMPClient = do
       ri <- asks $ reconnectInterval . config
