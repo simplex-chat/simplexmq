@@ -576,9 +576,8 @@ reconnectSMPClient tc c tSess@(_, srv, _) =
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
-        when (null okConns && S.null cs && null finalErrs) $
-          liftIO $
-            closeClient' c smpClients tSess
+        when (null okConns && S.null cs && null finalErrs) . liftIO $
+          closeClient' c smpClients tSess
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
