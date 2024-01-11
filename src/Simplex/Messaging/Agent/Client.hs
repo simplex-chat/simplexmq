@@ -539,16 +539,18 @@ reconnectServer c tSess =
     tryReconnectSMPClient = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
-      withRetryIntervalCount ri $ \_ _ loop ->
-        unlessM (reconnectSMPClient timeoutCounts c tSess) loop `catchAgentError` const loop
+      withRetryIntervalCount ri $ \_ _ loop -> do
+        pending <- L.nonEmpty <$> atomically (RQ.getSessQueues tSess $ pendingSubs c)
+        forM_ pending $ \qs -> do
+          reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
+          loop
 
-reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> m Bool
-reconnectSMPClient tc c tSess@(_, srv, _) = do
-  qs <- getPending
+reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
+reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
-  t `timeout` mapM_ resubscribe (L.nonEmpty qs) >>= \case
+  t `timeout` resubscribe >>= \case
     Just _ -> atomically $ writeTVar tc 0
     Nothing -> do
       tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
@@ -556,12 +558,9 @@ reconnectSMPClient tc c tSess@(_, srv, _) = do
       let err = if tc' >= maxTC then CRITICAL True else INTERNAL
           msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
       atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
-  null <$> getPending
   where
-    getPending :: m [RcvQueue]
-    getPending = atomically (RQ.getSessQueues tSess $ pendingSubs c)
-    resubscribe :: NonEmpty RcvQueue -> m ()
-    resubscribe qs = do
+    resubscribe :: m ()
+    resubscribe = do
       cs <- atomically . RQ.getConns $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
