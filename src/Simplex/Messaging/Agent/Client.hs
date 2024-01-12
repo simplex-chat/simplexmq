@@ -1567,19 +1567,29 @@ data AgentWorkersDetails = AgentWorkersDetails
     smpDeliveryWorkers_ :: Map Text Int,
     asyncCmdWorkers_ :: [Text],
     smpSubWorkers_ :: [Text],
-    asyncCients_ :: [Int]
+    asyncCients_ :: [Int],
+    ntfWorkers_ :: Map Text Int,
+    ntfSMPWorkers_ :: Map Text Int,
+    xftpRcvWorkers_ :: Map Text Int,
+    xftpSndWorkers_ :: Map Text Int,
+    xftpDelWorkers_ :: Map Text Int
   }
   deriving (Show)
 
 getAgentWorkersDetails :: MonadIO m => AgentClient -> m AgentWorkersDetails
-getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}} = do
+getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}, agentEnv} = do
   smpClients_ <- textKeys <$> readTVarIO smpClients
   ntfClients_ <- textKeys <$> readTVarIO ntfClients
   xftpClients_ <- textKeys <$> readTVarIO xftpClients
-  smpDeliveryWorkers_ <- workerStats =<< readTVarIO smpDeliveryWorkers
+  smpDeliveryWorkers_ <- workerStats . fmap fst =<< readTVarIO smpDeliveryWorkers
   asyncCmdWorkers_ <- textKeys <$> readTVarIO asyncCmdWorkers
   smpSubWorkers_ <- textKeys <$> readTVarIO smpSubWorkers
   asyncCients_ <- M.keys <$> readTVarIO actions
+  ntfWorkers_ <- workerStats =<< readTVarIO ntfWorkers
+  ntfSMPWorkers_ <- workerStats =<< readTVarIO ntfSMPWorkers
+  xftpRcvWorkers_ <- workerStats =<< readTVarIO xftpRcvWorkers
+  xftpSndWorkers_ <- workerStats =<< readTVarIO xftpSndWorkers
+  xftpDelWorkers_ <- workerStats =<< readTVarIO xftpDelWorkers
   pure
     AgentWorkersDetails
       { smpClients_,
@@ -1588,17 +1598,25 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
         smpDeliveryWorkers_,
         asyncCmdWorkers_,
         smpSubWorkers_,
-        asyncCients_
+        asyncCients_,
+        ntfWorkers_,
+        ntfSMPWorkers_,
+        xftpRcvWorkers_,
+        xftpSndWorkers_,
+        xftpDelWorkers_
       }
   where
     textKeys :: StrEncoding k => Map k v -> [Text]
     textKeys = map textKey . M.keys
     textKey :: StrEncoding k => k -> Text
     textKey = decodeASCII . strEncode
-    workerStats :: MonadIO m => Map SndQAddr (Worker, a) -> m (Map Text Int)
-    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, (Worker {restarts}, _)) -> do
+    workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text Int)
+    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts}) -> do
       RestartCount {restartCount} <- readTVarIO restarts
       pure (textKey qa, restartCount)
+    Env {ntfSupervisor, xftpAgent} = agentEnv
+    NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
+    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
 
 data AgentWorkersSummary = AgentWorkersSummary
   { smpClientsCount :: Int,
@@ -1607,12 +1625,17 @@ data AgentWorkersSummary = AgentWorkersSummary
     smpDeliveryWorkersCount :: Int,
     asyncCmdWorkersCount :: Int,
     smpSubWorkersCount :: Int,
-    asyncCientsCount :: Int
+    asyncCientsCount :: Int,
+    ntfWorkersCount :: Int,
+    ntfSMPWorkersCount :: Int,
+    xftpRcvWorkersCount :: Int,
+    xftpSndWorkersCount :: Int,
+    xftpDelWorkersCount :: Int
   }
   deriving (Show)
 
 getAgentWorkersSummary :: MonadIO m => AgentClient -> m AgentWorkersSummary
-getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}} = do
+getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}, agentEnv} = do
   smpClientsCount <- M.size <$> readTVarIO smpClients
   ntfClientsCount <- M.size <$> readTVarIO ntfClients
   xftpClientsCount <- M.size <$> readTVarIO xftpClients
@@ -1620,6 +1643,11 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
   asyncCmdWorkersCount <- M.size <$> readTVarIO asyncCmdWorkers
   smpSubWorkersCount <- M.size <$> readTVarIO smpSubWorkers
   asyncCientsCount <- M.size <$> readTVarIO actions
+  ntfWorkersCount <- M.size <$> readTVarIO ntfWorkers
+  ntfSMPWorkersCount <- M.size <$> readTVarIO ntfSMPWorkers
+  xftpRcvWorkersCount <- M.size <$> readTVarIO xftpRcvWorkers
+  xftpSndWorkersCount <- M.size <$> readTVarIO xftpSndWorkers
+  xftpDelWorkersCount <- M.size <$> readTVarIO xftpDelWorkers
   pure
     AgentWorkersSummary
       { smpClientsCount,
@@ -1628,8 +1656,17 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
         smpDeliveryWorkersCount,
         asyncCmdWorkersCount,
         smpSubWorkersCount,
-        asyncCientsCount
+        asyncCientsCount,
+        ntfWorkersCount,
+        ntfSMPWorkersCount,
+        xftpRcvWorkersCount,
+        xftpSndWorkersCount,
+        xftpDelWorkersCount
       }
+  where
+    Env {ntfSupervisor, xftpAgent} = agentEnv
+    NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
+    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
