@@ -1792,12 +1792,11 @@ getAgentMigrations' :: AgentMonad m => AgentClient -> m [UpMigration]
 getAgentMigrations' c = map upMigration <$> withStore' c (Migrations.getCurrent . DB.conn)
 
 debugAgentLocks' :: AgentMonad' m => AgentClient -> m AgentLocks
-debugAgentLocks' AgentClient {connLocks = cs, invLocks = is, reconnectLocks = rs, deleteLock = d} = do
+debugAgentLocks' AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do
   connLocks <- getLocks cs
   invLocks <- getLocks is
-  srvLocks <- getLocks rs
   delLock <- atomically $ tryReadTMVar d
-  pure AgentLocks {connLocks, invLocks, srvLocks, delLock}
+  pure AgentLocks {connLocks, invLocks, delLock}
   where
     getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 

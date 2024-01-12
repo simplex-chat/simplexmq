@@ -788,7 +788,7 @@ testDuplicateMessage t = do
   -- commenting two lines below and uncommenting further two lines would also runRight_,
   -- it is the scenario tested above, when the message was not acknowledged by the user
   threadDelay 200000
-  Left (BROKER _ TIMEOUT) <- runExceptT $ ackMessage bob1 aliceId 5 Nothing
+  Left (BROKER _ NETWORK) <- runExceptT $ ackMessage bob1 aliceId 5 Nothing
 
   disconnectAgentClient alice
   disconnectAgentClient bob1
