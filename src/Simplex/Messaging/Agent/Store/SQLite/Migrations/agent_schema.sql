@@ -24,7 +24,7 @@ CREATE TABLE connections(
   duplex_handshake INTEGER NULL DEFAULT 0,
   enable_ntfs INTEGER,
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
-  user_id INTEGER NOT NULL
+  user_id INTEGER CHECK(user_id NOT NULL)
   REFERENCES users ON DELETE CASCADE,
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok'
 ) WITHOUT ROWID;

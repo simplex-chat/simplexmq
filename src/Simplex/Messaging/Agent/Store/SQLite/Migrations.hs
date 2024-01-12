@@ -131,7 +131,6 @@ run st = \case
       insert db >> execSQL db up'
       where
         insert db = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
-        -- we could add an optional field for new database migration to the list
         up'
           | dbNew st && name == "m20230110_users" = fromQuery new_m20230110_users
           | otherwise = up
