@@ -132,7 +132,6 @@ import Control.Monad.Reader
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
-import Data.Bitraversable (bimapM)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -212,7 +211,7 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
-import UnliftIO.Async (async, waitSTM)
+import UnliftIO.Async (async)
 import UnliftIO.Directory (getTemporaryDirectory)
 import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
@@ -266,11 +265,16 @@ data AgentClient = AgentClient
     -- lock to prevent concurrency between periodic and async connection deletions
     deleteLock :: Lock,
     -- locks to prevent concurrent reconnections to SMP servers
-    reconnections :: TMap SMPTransportSession (TMVar (Maybe (Async ()))),
+    reconnections :: TMap SMPTransportSession (TMVar ReconnectWorker),
     asyncClients :: TAsyncs,
     agentStats :: TMap AgentStatsKey (TVar Int),
     clientId :: Int,
     agentEnv :: Env
+  }
+
+data ReconnectWorker = ReconnectWorker
+  { reconnectId :: Int,
+    reconnectAsync :: Async ()
   }
 
 getAgentWorker :: (AgentMonad' m, Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT AgentErrorType m ()) -> m Worker
@@ -530,26 +534,29 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectServer c tSess =
-  atomically setup >>= \case
-    Left reserved -> do
-      a <- async $ tryReconnectSMPClient `E.catchAny` const (atomically cleanup)
-      atomically (takeTMVar reserved >> putTMVar reserved (Just a))
-    Right running -> atomically $ tryReadTMVar running >>= mapM_ (maybe retry waitSTM)
+reconnectServer c@AgentClient {reconnections} tSess =
+  atomically (getTSessVar tSess reconnections) >>= either newReconnect (\_ -> pure ())
   where
-    setup = getTSessVar tSess (reconnections c) >>= bimapM (\v -> v <$ putTMVar v Nothing) pure
-    tryReconnectSMPClient = do
+    newReconnect v = do
+      reconnectId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
+      reconnectAsync <- async $ tryReconnectSMPClient reconnectId `E.catchAny` const (atomically $ cleanup reconnectId)
+      atomically $ putTMVar v ReconnectWorker {reconnectId, reconnectAsync}
+    tryReconnectSMPClient rwId = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
-      withRetryIntervalCount ri $ \_ _ loop -> do
+      withRetryInterval ri $ \_ loop -> do
         pending <- atomically $ do
           qs <- RQ.getSessQueues tSess (pendingSubs c)
-          when (null qs) cleanup
+          when (null qs) $ cleanup rwId
           pure qs
         forM_ (L.nonEmpty pending) $ \qs -> do
           reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
           loop
-    cleanup = TM.delete tSess (reconnections c)
+    cleanup :: Int -> STM ()
+    cleanup rwId =
+      TM.lookup tSess reconnections
+        $>>= tryReadTMVar
+        >>= mapM_ (\ReconnectWorker {reconnectId} -> when (rwId == reconnectId) $ TM.delete tSess reconnections)
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
@@ -693,7 +700,7 @@ closeAgentClient c = liftIO $ do
   closeProtocolServerClients c smpClients
   closeProtocolServerClients c ntfClients
   closeProtocolServerClients c xftpClients
-  readTVarIO (reconnections c) >>= mapM_ cancelAsyncVar
+  atomically (swapTVar (reconnections c) M.empty) >>= mapM_ cancelReconnect
   cancelActions . actions $ asyncClients c
   clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
   clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
@@ -707,10 +714,8 @@ closeAgentClient c = liftIO $ do
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
-    cancelAsyncVar :: TMVar (Maybe (Async ())) -> IO ()
-    cancelAsyncVar tmv = void . forkIO $ do
-      a <- atomically (readTMVar tmv >>= maybe retry pure) -- wait for the starting async
-      uninterruptibleCancel a
+    cancelReconnect :: TMVar ReconnectWorker  -> IO ()
+    cancelReconnect v = void . forkIO $ atomically (readTMVar v) >>= \(ReconnectWorker _ a) -> uninterruptibleCancel a
 
 cancelWorker :: Worker -> IO ()
 cancelWorker Worker {doWork, action} = do
