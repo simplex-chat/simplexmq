@@ -27,3 +27,18 @@ UPDATE connections SET user_id = 1;
 
 PRAGMA ignore_check_constraints=OFF;
 |]
+
+new_m20230110_users :: Query
+new_m20230110_users =
+  [sql|
+CREATE TABLE users (
+  user_id INTEGER PRIMARY KEY AUTOINCREMENT
+);
+
+ALTER TABLE connections ADD COLUMN user_id INTEGER NOT NULL
+REFERENCES users ON DELETE CASCADE;
+
+CREATE INDEX idx_connections_user ON connections(user_id);
+
+CREATE INDEX idx_commands_conn_id ON commands(conn_id);
+|]
