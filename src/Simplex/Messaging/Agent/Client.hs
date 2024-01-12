@@ -116,6 +116,10 @@ module Simplex.Messaging.Agent.Client
     getNextServer,
     withUserServers,
     withNextSrv,
+    AgentWorkersDetails (..),
+    getAgentWorkersDetails,
+    AgentWorkersSummary (..),
+    getAgentWorkersSummary,
   )
 where
 
@@ -1556,6 +1560,114 @@ getAgentSubscriptions c = do
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
 
+data AgentWorkersDetails = AgentWorkersDetails
+  { smpClients_ :: [Text],
+    ntfClients_ :: [Text],
+    xftpClients_ :: [Text],
+    smpDeliveryWorkers_ :: Map Text Int,
+    asyncCmdWorkers_ :: Map Text Int,
+    smpSubWorkers_ :: [Text],
+    asyncCients_ :: [Int],
+    ntfWorkers_ :: Map Text Int,
+    ntfSMPWorkers_ :: Map Text Int,
+    xftpRcvWorkers_ :: Map Text Int,
+    xftpSndWorkers_ :: Map Text Int,
+    xftpDelWorkers_ :: Map Text Int
+  }
+  deriving (Show)
+
+getAgentWorkersDetails :: MonadIO m => AgentClient -> m AgentWorkersDetails
+getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}, agentEnv} = do
+  smpClients_ <- textKeys <$> readTVarIO smpClients
+  ntfClients_ <- textKeys <$> readTVarIO ntfClients
+  xftpClients_ <- textKeys <$> readTVarIO xftpClients
+  smpDeliveryWorkers_ <- workerStats . fmap fst =<< readTVarIO smpDeliveryWorkers
+  asyncCmdWorkers_ <- workerStats =<< readTVarIO asyncCmdWorkers
+  smpSubWorkers_ <- textKeys <$> readTVarIO smpSubWorkers
+  asyncCients_ <- M.keys <$> readTVarIO actions
+  ntfWorkers_ <- workerStats =<< readTVarIO ntfWorkers
+  ntfSMPWorkers_ <- workerStats =<< readTVarIO ntfSMPWorkers
+  xftpRcvWorkers_ <- workerStats =<< readTVarIO xftpRcvWorkers
+  xftpSndWorkers_ <- workerStats =<< readTVarIO xftpSndWorkers
+  xftpDelWorkers_ <- workerStats =<< readTVarIO xftpDelWorkers
+  pure
+    AgentWorkersDetails
+      { smpClients_,
+        ntfClients_,
+        xftpClients_,
+        smpDeliveryWorkers_,
+        asyncCmdWorkers_,
+        smpSubWorkers_,
+        asyncCients_,
+        ntfWorkers_,
+        ntfSMPWorkers_,
+        xftpRcvWorkers_,
+        xftpSndWorkers_,
+        xftpDelWorkers_
+      }
+  where
+    textKeys :: StrEncoding k => Map k v -> [Text]
+    textKeys = map textKey . M.keys
+    textKey :: StrEncoding k => k -> Text
+    textKey = decodeASCII . strEncode
+    workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text Int)
+    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts}) -> do
+      RestartCount {restartCount} <- readTVarIO restarts
+      pure (textKey qa, restartCount)
+    Env {ntfSupervisor, xftpAgent} = agentEnv
+    NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
+    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
+
+data AgentWorkersSummary = AgentWorkersSummary
+  { smpClientsCount :: Int,
+    ntfClientsCount :: Int,
+    xftpClientsCount :: Int,
+    smpDeliveryWorkersCount :: Int,
+    asyncCmdWorkersCount :: Int,
+    smpSubWorkersCount :: Int,
+    asyncCientsCount :: Int,
+    ntfWorkersCount :: Int,
+    ntfSMPWorkersCount :: Int,
+    xftpRcvWorkersCount :: Int,
+    xftpSndWorkersCount :: Int,
+    xftpDelWorkersCount :: Int
+  }
+  deriving (Show)
+
+getAgentWorkersSummary :: MonadIO m => AgentClient -> m AgentWorkersSummary
+getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}, agentEnv} = do
+  smpClientsCount <- M.size <$> readTVarIO smpClients
+  ntfClientsCount <- M.size <$> readTVarIO ntfClients
+  xftpClientsCount <- M.size <$> readTVarIO xftpClients
+  smpDeliveryWorkersCount <- M.size <$> readTVarIO smpDeliveryWorkers
+  asyncCmdWorkersCount <- M.size <$> readTVarIO asyncCmdWorkers
+  smpSubWorkersCount <- M.size <$> readTVarIO smpSubWorkers
+  asyncCientsCount <- M.size <$> readTVarIO actions
+  ntfWorkersCount <- M.size <$> readTVarIO ntfWorkers
+  ntfSMPWorkersCount <- M.size <$> readTVarIO ntfSMPWorkers
+  xftpRcvWorkersCount <- M.size <$> readTVarIO xftpRcvWorkers
+  xftpSndWorkersCount <- M.size <$> readTVarIO xftpSndWorkers
+  xftpDelWorkersCount <- M.size <$> readTVarIO xftpDelWorkers
+  pure
+    AgentWorkersSummary
+      { smpClientsCount,
+        ntfClientsCount,
+        xftpClientsCount,
+        smpDeliveryWorkersCount,
+        asyncCmdWorkersCount,
+        smpSubWorkersCount,
+        asyncCientsCount,
+        ntfWorkersCount,
+        ntfSMPWorkersCount,
+        xftpRcvWorkersCount,
+        xftpSndWorkersCount,
+        xftpDelWorkersCount
+      }
+  where
+    Env {ntfSupervisor, xftpAgent} = agentEnv
+    NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
+    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
+
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
@@ -1565,3 +1677,7 @@ $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
+
+$(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
+
+$(J.deriveJSON defaultJSON ''AgentWorkersSummary)
