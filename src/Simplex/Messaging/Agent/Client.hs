@@ -1565,7 +1565,7 @@ data AgentWorkersDetails = AgentWorkersDetails
     ntfClients_ :: [Text],
     xftpClients_ :: [Text],
     smpDeliveryWorkers_ :: Map Text Int,
-    asyncCmdWorkers_ :: [Text],
+    asyncCmdWorkers_ :: Map Text Int,
     smpSubWorkers_ :: [Text],
     asyncCients_ :: [Int],
     ntfWorkers_ :: Map Text Int,
@@ -1582,7 +1582,7 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
   ntfClients_ <- textKeys <$> readTVarIO ntfClients
   xftpClients_ <- textKeys <$> readTVarIO xftpClients
   smpDeliveryWorkers_ <- workerStats . fmap fst =<< readTVarIO smpDeliveryWorkers
-  asyncCmdWorkers_ <- textKeys <$> readTVarIO asyncCmdWorkers
+  asyncCmdWorkers_ <- workerStats =<< readTVarIO asyncCmdWorkers
   smpSubWorkers_ <- textKeys <$> readTVarIO smpSubWorkers
   asyncCients_ <- M.keys <$> readTVarIO actions
   ntfWorkers_ <- workerStats =<< readTVarIO ntfWorkers
