@@ -116,6 +116,10 @@ module Simplex.Messaging.Agent.Client
     getNextServer,
     withUserServers,
     withNextSrv,
+    AgentWorkersDetails (..),
+    getAgentWorkersDetails,
+    AgentWorkersSummary (..),
+    getAgentWorkersSummary,
   )
 where
 
@@ -1556,6 +1560,77 @@ getAgentSubscriptions c = do
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
 
+data AgentWorkersDetails = AgentWorkersDetails
+  { smpClients_ :: [Text],
+    ntfClients_ :: [Text],
+    xftpClients_ :: [Text],
+    smpDeliveryWorkers_ :: Map Text Int,
+    asyncCmdWorkers_ :: [Text],
+    smpSubWorkers_ :: [Text],
+    asyncCients_ :: [Int]
+  }
+  deriving (Show)
+
+getAgentWorkersDetails :: MonadIO m => AgentClient -> m AgentWorkersDetails
+getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}} = do
+  smpClients_ <- textKeys <$> readTVarIO smpClients
+  ntfClients_ <- textKeys <$> readTVarIO ntfClients
+  xftpClients_ <- textKeys <$> readTVarIO xftpClients
+  smpDeliveryWorkers_ <- workerStats =<< readTVarIO smpDeliveryWorkers
+  asyncCmdWorkers_ <- textKeys <$> readTVarIO asyncCmdWorkers
+  smpSubWorkers_ <- textKeys <$> readTVarIO smpSubWorkers
+  asyncCients_ <- M.keys <$> readTVarIO actions
+  pure
+    AgentWorkersDetails
+      { smpClients_,
+        ntfClients_,
+        xftpClients_,
+        smpDeliveryWorkers_,
+        asyncCmdWorkers_,
+        smpSubWorkers_,
+        asyncCients_
+      }
+  where
+    textKeys :: StrEncoding k => Map k v -> [Text]
+    textKeys = map textKey . M.keys
+    textKey :: StrEncoding k => k -> Text
+    textKey = decodeASCII . strEncode
+    workerStats :: MonadIO m => Map SndQAddr (Worker, a) -> m (Map Text Int)
+    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, (Worker {restarts}, _)) -> do
+      RestartCount {restartCount} <- readTVarIO restarts
+      pure (textKey qa, restartCount)
+
+data AgentWorkersSummary = AgentWorkersSummary
+  { smpClientsCount :: Int,
+    ntfClientsCount :: Int,
+    xftpClientsCount :: Int,
+    smpDeliveryWorkersCount :: Int,
+    asyncCmdWorkersCount :: Int,
+    smpSubWorkersCount :: Int,
+    asyncCientsCount :: Int
+  }
+  deriving (Show)
+
+getAgentWorkersSummary :: MonadIO m => AgentClient -> m AgentWorkersSummary
+getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}} = do
+  smpClientsCount <- M.size <$> readTVarIO smpClients
+  ntfClientsCount <- M.size <$> readTVarIO ntfClients
+  xftpClientsCount <- M.size <$> readTVarIO xftpClients
+  smpDeliveryWorkersCount <- M.size <$> readTVarIO smpDeliveryWorkers
+  asyncCmdWorkersCount <- M.size <$> readTVarIO asyncCmdWorkers
+  smpSubWorkersCount <- M.size <$> readTVarIO smpSubWorkers
+  asyncCientsCount <- M.size <$> readTVarIO actions
+  pure
+    AgentWorkersSummary
+      { smpClientsCount,
+        ntfClientsCount,
+        xftpClientsCount,
+        smpDeliveryWorkersCount,
+        asyncCmdWorkersCount,
+        smpSubWorkersCount,
+        asyncCientsCount
+      }
+
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
@@ -1565,3 +1640,7 @@ $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
+
+$(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
+
+$(J.deriveJSON defaultJSON ''AgentWorkersSummary)
