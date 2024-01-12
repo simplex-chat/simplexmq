@@ -1,0 +1,15 @@
+Scheme name: xrcp
+
+Status: Provisional
+
+Applications/protocols that use this scheme name:
+This scheme is used for URIs of controller sessions via SimpleX Remote Control protocol (XRCP),
+a protocol for remote access and management of hosts via insecure network.
+
+Contact: Evgeny Poberezkin <ep@simplex.chat>
+
+Change controller: Evgeny Poberezkin <ep@simplex.chat>
+
+References:
+The syntax for server URIs in the provisional specification for SimpleX File Transfer Protocol:
+https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2023-10-25-remote-control.md#session-invitation
