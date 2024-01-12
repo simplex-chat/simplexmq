@@ -518,9 +518,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       where
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
-          TM.lookup tSess smpClients
-            $>>= tryReadTMVar
-            >>= mapM_ (\c' -> when (either (const False) (sameClient client) c') $ TM.delete tSess smpClients)
+          removeClientVar client tSess smpClients
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
           let cs = S.fromList $ map qConnId qs
@@ -610,10 +608,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 
     clientDisconnected :: NtfClient -> IO ()
     clientDisconnected client = do
-      atomically $
-        TM.lookup tSess ntfClients
-          $>>= tryReadTMVar
-          >>= mapM_ (\c' -> when (either (const False) (sameClient client) c') $ TM.delete tSess ntfClients)
+      atomically $ removeClientVar client tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -649,7 +644,7 @@ getTSessVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.
       pure var
 
 removeClientVar :: ProtocolServerClient err msg => Client msg -> TransportSession msg -> TMap (TransportSession msg) (ClientVar msg) -> STM ()
-removeClientVar c = removeTSessVar_ (\r -> either (const False) (sameClient c) r)
+removeClientVar = removeTSessVar_ . either (const False) . sameClient
 
 sameClient :: ProtocolServerClient err msg => Client msg -> Client msg -> Bool
 sameClient c c' = clientSessionId c == clientSessionId c'
