@@ -542,11 +542,11 @@ reconnectServer c tSess =
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryIntervalCount ri $ \_ _ loop -> do
-        pending <- atomically $
-          RQ.getSessQueues tSess (pendingSubs c) >>= \case
-            [] -> Nothing <$ cleanup
-            q : qs -> pure $ Just (q :| qs)
-        forM_ pending $ \qs -> do
+        pending <- atomically $ do
+          qs <- RQ.getSessQueues tSess (pendingSubs c)
+          when (null qs) cleanup
+          pure qs
+        forM_ (L.nonEmpty pending) $ \qs -> do
           reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
           loop
     cleanup = TM.delete tSess (reconnections c)
