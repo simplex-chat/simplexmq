@@ -117,6 +117,9 @@ xftpTransportHost XFTPClient {http2Client = HTTP2Client {client_ = HClient {host
 xftpSessionTs :: XFTPClient -> UTCTime
 xftpSessionTs = sessionTs . http2Client
 
+xftpSessionId :: XFTPClient -> ByteString
+xftpSessionId = sessionId . http2Client
+
 xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
 xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} =
   defaultHTTP2ClientConfig

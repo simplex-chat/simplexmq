@@ -466,6 +466,7 @@ class (Encoding err, Show err) => ProtocolServerClient err msg | msg -> err wher
   clientServer :: Client msg -> String
   clientTransportHost :: Client msg -> TransportHost
   clientSessionTs :: Client msg -> UTCTime
+  clientSessionId :: Client msg -> ByteString
 
 instance ProtocolServerClient ErrorType BrokerMsg where
   type Client BrokerMsg = ProtocolClient ErrorType BrokerMsg
@@ -475,6 +476,7 @@ instance ProtocolServerClient ErrorType BrokerMsg where
   clientServer = protocolClientServer
   clientTransportHost = transportHost'
   clientSessionTs = sessionTs
+  clientSessionId = sessionId
 
 instance ProtocolServerClient ErrorType NtfResponse where
   type Client NtfResponse = ProtocolClient ErrorType NtfResponse
@@ -484,6 +486,7 @@ instance ProtocolServerClient ErrorType NtfResponse where
   clientServer = protocolClientServer
   clientTransportHost = transportHost'
   clientSessionTs = sessionTs
+  clientSessionId = sessionId
 
 instance ProtocolServerClient XFTPErrorType FileResponse where
   type Client FileResponse = XFTPClient
@@ -493,6 +496,7 @@ instance ProtocolServerClient XFTPErrorType FileResponse where
   clientServer = X.xftpClientServer
   clientTransportHost = X.xftpTransportHost
   clientSessionTs = X.xftpSessionTs
+  clientSessionId = X.xftpSessionId
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
@@ -514,7 +518,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       where
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
-          TM.delete tSess smpClients
+          TM.lookup tSess smpClients
+            $>>= tryReadTMVar
+            >>= mapM_ (\c' -> when (either (const False) (sameClient client) c') $ TM.delete tSess smpClients)
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
           let cs = S.fromList $ map qConnId qs
@@ -584,7 +590,7 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
         when (null okConns && S.null cs && null finalErrs) . liftIO $
-          closeClient' c smpClients tSess
+          closeClient c smpClients tSess
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
@@ -604,7 +610,10 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 
     clientDisconnected :: NtfClient -> IO ()
     clientDisconnected client = do
-      atomically $ TM.delete tSess ntfClients
+      atomically $
+        TM.lookup tSess ntfClients
+          $>>= tryReadTMVar
+          >>= mapM_ (\c' -> when (either (const False) (sameClient client) c') $ TM.delete tSess ntfClients)
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -625,7 +634,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
 
     clientDisconnected :: XFTPClient -> IO ()
     clientDisconnected client = do
-      atomically $ TM.delete tSess xftpClients
+      atomically $ removeClientVar client tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -638,6 +647,18 @@ getTSessVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.
       var <- newEmptyTMVar
       TM.insert tSess var clients
       pure var
+
+removeClientVar :: ProtocolServerClient err msg => Client msg -> TransportSession msg -> TMap (TransportSession msg) (ClientVar msg) -> STM ()
+removeClientVar c = removeTSessVar_ (\r -> either (const False) (sameClient c) r)
+
+sameClient :: ProtocolServerClient err msg => Client msg -> Client msg -> Bool
+sameClient c c' = clientSessionId c == clientSessionId c'
+
+removeTSessVar_ :: (a -> Bool) -> TransportSession msg -> TMap (TransportSession msg) (TMVar a) -> STM ()
+removeTSessVar_ same tSess vs =
+  TM.lookup tSess vs
+    $>>= tryReadTMVar
+    >>= mapM_ (\v -> when (same v) $ TM.delete tSess vs)
 
 waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (ProtoType msg)) => AgentClient -> TransportSession msg -> ClientVar msg -> m (Client msg)
 waitForProtocolClient c (_, srv, _) clientVar = do
@@ -741,10 +762,6 @@ closeProtocolServerClients c clientsSel =
 closeClient :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
   atomically (TM.lookupDelete tSess $ clientSel c) >>= mapM_ (closeClient_ c)
-
-closeClient' :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
-closeClient' c clientSel tSess =
-  atomically (TM.lookup tSess $ clientSel c) >>= mapM_ (closeClient_ c)
 
 closeClient_ :: ProtocolServerClient err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c cVar = do
