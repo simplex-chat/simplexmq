@@ -557,10 +557,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
           reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
           loop
     cleanup :: Int -> STM ()
-    cleanup swId =
-      TM.lookup tSess smpSubWorkers
-        $>>= tryReadTMVar
-        >>= mapM_ (\SubWorker {subWorkerId} -> when (swId == subWorkerId) $ TM.delete tSess smpSubWorkers)
+    cleanup swId = removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
@@ -644,13 +641,13 @@ getTSessVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.
       pure var
 
 removeClientVar :: ProtocolServerClient err msg => Client msg -> TransportSession msg -> TMap (TransportSession msg) (ClientVar msg) -> STM ()
-removeClientVar = removeTSessVar_ . either (const False) . sameClient
+removeClientVar = removeTSessVar . either (const False) . sameClient
 
 sameClient :: ProtocolServerClient err msg => Client msg -> Client msg -> Bool
 sameClient c c' = clientSessionId c == clientSessionId c'
 
-removeTSessVar_ :: (a -> Bool) -> TransportSession msg -> TMap (TransportSession msg) (TMVar a) -> STM ()
-removeTSessVar_ same tSess vs =
+removeTSessVar :: (a -> Bool) -> TransportSession msg -> TMap (TransportSession msg) (TMVar a) -> STM ()
+removeTSessVar same tSess vs =
   TM.lookup tSess vs
     $>>= tryReadTMVar
     >>= mapM_ (\v -> when (same v) $ TM.delete tSess vs)
