@@ -7,7 +7,10 @@ import Control.DeepSeq
 import Control.Monad (unless, void)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
+import Database.SQLite.Simple (Only (..))
+import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Agent.Store.SQLite
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration (..), MigrationsToRun (..), toDownMigration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Util (ifM)
@@ -28,6 +31,8 @@ schemaDumpTest :: Spec
 schemaDumpTest = do
   it "verify and overwrite schema dump" testVerifySchemaDump
   it "verify schema down migrations" testSchemaMigrations
+  it "should NOT create user record for new database" testUsersMigrationNew
+  it "should create user record for old database" testUsersMigrationOld
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
@@ -60,6 +65,25 @@ testSchemaMigrations = do
       Migrations.run st $ MTRUp [m]
       schema''' <- getSchema testDB testSchema
       schema''' `shouldBe` schema'
+
+testUsersMigrationNew :: IO ()
+testUsersMigrationNew = do
+  Right st <- createSQLiteStore testDB "" False Migrations.app MCError
+  withTransaction' st (`SQL.query_` "SELECT user_id FROM users;")
+    `shouldReturn` ([] :: [Only Int])
+  closeSQLiteStore st
+
+testUsersMigrationOld :: IO ()
+testUsersMigrationOld = do
+  let beforeUsers = takeWhile (("m20230110_users" /=) . name) Migrations.app
+  Right st <- createSQLiteStore testDB "" False beforeUsers MCError
+  withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users';")
+    `shouldReturn` ([] :: [Only String])
+  closeSQLiteStore st
+  Right st' <- createSQLiteStore testDB "" False Migrations.app MCYesUp
+  withTransaction' st' (`SQL.query_` "SELECT user_id FROM users;")
+    `shouldReturn` ([Only (1 :: Int)])
+  closeSQLiteStore st'
 
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =
