@@ -36,7 +36,6 @@ import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchet
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
-import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
@@ -47,15 +46,13 @@ import qualified Data.Set as S
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
-import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
-import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
-import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
+import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -2109,9 +2106,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 getSMPAgentClient' :: AgentConfig -> InitialAgentServers -> FilePath -> IO AgentClient
 getSMPAgentClient' cfg' initServers dbPath = do
   Right st <- liftIO $ createAgentStore dbPath "" False MCError
-  c <- getSMPAgentClient cfg' initServers st False
-  when (dbNew st) $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
-  pure c
+  getSMPAgentClient cfg' initServers st False
 
 testServerMultipleIdentities :: HasCallStack => IO ()
 testServerMultipleIdentities =
