@@ -78,7 +78,6 @@ import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
-import Simplex.Messaging.Builder (Builder, byteString, toLazyByteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
@@ -316,9 +315,9 @@ serializeTransportError = \case
   TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
-tPutBlock :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
+tPutBlock :: Transport c => THandle c -> LB.ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, blockSize} block =
-  bimapM (const $ pure TELargeMsg) (cPut' c . toLazyByteString) $
+  bimapM (const $ pure TELargeMsg) (cPut' c) $
     C.pad' block blockSize
 
 -- | Receive block from SMP transport.
@@ -363,7 +362,7 @@ smpThHandle :: forall c. THandle c -> Version -> THandle c
 smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
-sendHandshake th = ExceptT . tPutBlock th . byteString . smpEncode
+sendHandshake th = ExceptT . tPutBlock th . LB.fromStrict . smpEncode
 
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th

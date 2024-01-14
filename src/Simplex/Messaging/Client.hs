@@ -87,6 +87,7 @@ import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
@@ -96,8 +97,6 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Builder (Builder)
-import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -136,7 +135,7 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue Builder,
+    sndQ :: TBQueue LB.ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
@@ -675,7 +674,7 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | BB.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | LB.length s > fromIntegral (blockSize - 2) = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s

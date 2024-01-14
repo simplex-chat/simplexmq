@@ -24,14 +24,14 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy.Internal as LB
 import Data.ByteString.Internal (c2w, w2c)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
-import Simplex.Messaging.Builder (Builder, word16BE)
-import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -141,8 +141,8 @@ instance Encoding Large where
     Large <$> A.take len
   {-# INLINE smpP #-}
 
-encodeLarge :: Builder -> Builder
-encodeLarge s = word16BE (fromIntegral $ BB.length s) <> s
+encodeLarge :: LB.ByteString -> LB.ByteString
+encodeLarge s = LB.chunk (encodeWord16 $ fromIntegral $ LB.length s) s
 {-# INLINE encodeLarge #-}
 
 instance Encoding SystemTime where

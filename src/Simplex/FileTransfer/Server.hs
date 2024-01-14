@@ -18,6 +18,7 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
+import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -43,7 +44,6 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
-import Simplex.Messaging.Builder (builder)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
@@ -242,7 +242,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
               send "padding error" -- TODO respond with BLOCK error?
               done
             Right t -> do
-              send $ builder t
+              send $ lazyByteString t
               -- timeout sending file in the same way as receiving
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
                 withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)

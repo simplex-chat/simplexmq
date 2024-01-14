@@ -13,9 +13,10 @@ import Control.Monad
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Builder as BB
+import Data.ByteString.Builder (Builder, lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time (UTCTime)
@@ -25,7 +26,6 @@ import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Description (mb)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
-import Simplex.Messaging.Builder (Builder, builder)
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
     ProtocolClientError (..),
@@ -142,7 +142,7 @@ sendXFTPCommand c@XFTPClient {http2Client = HTTP2Client {sessionId}} pKey fId cm
       xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   sendXFTPTransmission c t chunkSpec_
 
-sendXFTPTransmission :: XFTPClient -> Builder -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
+sendXFTPTransmission :: XFTPClient -> LB.ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}} t chunkSpec_ = do
   let req = H.requestStreaming N.methodPost "/" [] streamBody
       reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
@@ -156,9 +156,9 @@ sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessio
       _ -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
   where
-    streamBody :: (BB.Builder -> IO ()) -> IO () -> IO ()
+    streamBody :: (Builder -> IO ()) -> IO () -> IO ()
     streamBody send done = do
-      send $ builder t
+      send $ lazyByteString t
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
         withFile filePath ReadMode $ \h -> do
           hSeek h AbsoluteSeek $ fromIntegral chunkOffset

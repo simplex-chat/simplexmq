@@ -177,8 +177,6 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (HostName, ServiceName)
-import Simplex.Messaging.Builder (Builder, char8, lazyByteString)
-import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1297,7 +1295,7 @@ tPut th delay_ = fmap concat . mapM tPutBatch . batchTransmissions (batch th) (b
       TBTransmissions s n _ -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
       TBTransmission s _ -> (: []) <$> tPutLog th s
 
-tPutLog :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
+tPutLog :: Transport c => THandle c -> LB.ByteString -> IO (Either TransportError ())
 tPutLog th s = do
   r <- tPutBlock th s
   case r of
@@ -1306,7 +1304,7 @@ tPutLog th s = do
   pure r
 
 -- Builder in TBTransmissions does not include byte with transmissions count, it is added by tEncodeBatch
-data TransportBatch r = TBTransmissions Builder Int [r] | TBTransmission Builder r | TBLargeTransmission r
+data TransportBatch r = TBTransmissions LB.ByteString Int [r] | TBTransmission LB.ByteString r | TBLargeTransmission r
 
 batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch ()]
 batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
@@ -1320,28 +1318,28 @@ batchTransmissions' batch bSize
     mkBatch1 :: (SentRawTransmission, r) -> TransportBatch r
     mkBatch1 (t, r)
       -- 2 bytes are reserved for pad size
-      | BB.length s <= bSize - 2 = TBTransmission s r
+      | LB.length s <= fromIntegral (bSize - 2) = TBTransmission s r
       | otherwise = TBLargeTransmission r
       where
         s = tEncode t
-    addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], Builder, Int, [r]) -> ([TransportBatch r], Builder, Int, [r])
+    addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], LB.ByteString, Int, [r]) -> ([TransportBatch r], LB.ByteString, Int, [r])
     addTransmission (t, r) acc@(bs, b, n, rs)
       -- 3 = 2 bytes reserved for pad size + 1 for transmission count
-      | len + BB.length b <= bSize - 3 && n < 255 = (bs, s <> b, 1 + n, r : rs)
-      | len <= bSize - 3 = (addBatch acc, s, 1, [r])
+      | len + LB.length b <= fromIntegral (bSize - 3) && n < 255 = (bs, s <> b, 1 + n, r : rs)
+      | len <= fromIntegral (bSize - 3) = (addBatch acc, s, 1, [r])
       | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, [])
       where
         s = encodeLarge $ tEncode t
-        len = BB.length s
-    addBatch :: ([TransportBatch r], Builder, Int, [r]) -> [TransportBatch r]
+        len = LB.length s
+    addBatch :: ([TransportBatch r], LB.ByteString, Int, [r]) -> [TransportBatch r]
     addBatch (bs, b, n, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
 
-tEncode :: SentRawTransmission -> Builder
-tEncode (sig, t) = lazyByteString $ LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
+tEncode :: SentRawTransmission -> LB.ByteString
+tEncode (sig, t) = LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
 {-# INLINE tEncode #-}
 
-tEncodeBatch :: Int -> Builder -> Builder
-tEncodeBatch n s = char8 (lenEncode n) <> s
+tEncodeBatch :: Int -> LB.ByteString -> LB.ByteString
+tEncodeBatch = LB.chunk . B.singleton . lenEncode
 {-# INLINE tEncodeBatch #-}
 
 encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> ByteString
