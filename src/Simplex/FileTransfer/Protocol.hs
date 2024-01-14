@@ -17,7 +17,7 @@ import Control.Applicative ((<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
-import Simplex.Messaging.Builder (Builder)
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)

@@ -13,7 +13,7 @@ import Control.Monad
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Builder as BB
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -35,7 +35,6 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import Simplex.Messaging.Client.Agent ()
-import Simplex.Messaging.Builder (Builder, builder)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
@@ -156,9 +155,9 @@ sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessio
       _ -> pure (r, body)
     Left e -> throwError $ PCEResponseError e
   where
-    streamBody :: (BB.Builder -> IO ()) -> IO () -> IO ()
+    streamBody :: (Builder -> IO ()) -> IO () -> IO ()
     streamBody send done = do
-      send $ builder t
+      send t
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
         withFile filePath ReadMode $ \h -> do
           hSeek h AbsoluteSeek $ fromIntegral chunkOffset

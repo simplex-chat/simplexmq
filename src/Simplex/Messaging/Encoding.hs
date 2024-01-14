@@ -22,10 +22,10 @@ where
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftL, shiftR, (.|.))
-import Simplex.Messaging.Builder (Builder, word16BE)
-import qualified Simplex.Messaging.Builder as BB
+import Data.ByteString.Builder (Builder, byteString, lazyByteString, word16BE)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.ByteString.Internal (c2w, w2c)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
@@ -141,8 +141,8 @@ instance Encoding Large where
     Large <$> A.take len
   {-# INLINE smpP #-}
 
-encodeLarge :: Builder -> Builder
-encodeLarge s = word16BE (fromIntegral $ BB.length s) <> s
+encodeLarge :: LB.ByteString -> Builder
+encodeLarge s = byteString (encodeWord16 $ fromIntegral $ LB.length s) <> lazyByteString s
 {-# INLINE encodeLarge #-}
 
 instance Encoding SystemTime where

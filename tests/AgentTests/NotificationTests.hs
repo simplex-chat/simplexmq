@@ -508,7 +508,7 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     conns <- replicateM (n :: Int) $ makeConnection a b
     _ <- registerTestToken a "abcd" NMInstant apnsQ
     liftIO $ threadDelay 5000000
-    forM_ conns $ \(aliceId, bobId) -> do
+    forM_ (zip [0..] conns) $ \(i, (aliceId, bobId)) -> do
       msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello"
       get b ##> ("", aliceId, SENT msgId)
       void $ messageNotification apnsQ
