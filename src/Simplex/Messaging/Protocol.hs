@@ -146,6 +146,7 @@ module Simplex.Messaging.Protocol
     tEncode,
     tEncodeBatch,
     batchTransmissions,
+    batchTransmissions',
 
     -- * exports for tests
     CommandTag (..),
@@ -162,6 +163,8 @@ import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy.Internal as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
@@ -174,6 +177,8 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (HostName, ServiceName)
+import Simplex.Messaging.Builder (Builder, char8, lazyByteString)
+import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1286,13 +1291,13 @@ instance Encoding CommandError where
 tPut :: Transport c => THandle c -> Maybe Int -> NonEmpty SentRawTransmission -> IO [Either TransportError ()]
 tPut th delay_ = fmap concat . mapM tPutBatch . batchTransmissions (batch th) (blockSize th)
   where
-    tPutBatch :: TransportBatch -> IO [Either TransportError ()]
+    tPutBatch :: TransportBatch () -> IO [Either TransportError ()]
     tPutBatch = \case
-      TBLargeTransmission -> [Left TELargeMsg] <$ putStrLn "tPut error: large message"
-      TBTransmissions n s -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
-      TBTransmission s -> (: []) <$> tPutLog th s
+      TBLargeTransmission _ -> [Left TELargeMsg] <$ putStrLn "tPut error: large message"
+      TBTransmissions s n _ -> replicate n <$> (tPutLog th (tEncodeBatch n s) <* mapM_ threadDelay delay_)
+      TBTransmission s _ -> (: []) <$> tPutLog th s
 
-tPutLog :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutLog :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
 tPutLog th s = do
   r <- tPutBlock th s
   case r of
@@ -1300,43 +1305,43 @@ tPutLog th s = do
     _ -> pure ()
   pure r
 
--- ByteString does not include length byte, it is added by tEncodeBatch
-data TransportBatch = TBTransmissions Int ByteString | TBTransmission ByteString | TBLargeTransmission
+-- Builder in TBTransmissions does not include byte with transmissions count, it is added by tEncodeBatch
+data TransportBatch r = TBTransmissions Builder Int [r] | TBTransmission Builder r | TBLargeTransmission r
+
+batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch ()]
+batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
 
 -- | encodes and batches transmissions into blocks,
-batchTransmissions :: Bool -> Int -> NonEmpty SentRawTransmission -> [TransportBatch]
-batchTransmissions batch bSize
-  | batch = reverse . mkBatch [] . L.map tEncode
-  | otherwise = map (mkBatch1 . tEncode) . L.toList
+batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (SentRawTransmission, r) -> [TransportBatch r]
+batchTransmissions' batch bSize
+  | batch = addBatch . foldr addTransmission ([], mempty, 0, [])
+  | otherwise = map mkBatch1 . L.toList
   where
-    mkBatch :: [TransportBatch] -> NonEmpty ByteString -> [TransportBatch]
-    mkBatch rs ts =
-      let (n, s, ts_) = encodeBatch 0 "" ts
-          r = if n == 0 then TBLargeTransmission else TBTransmissions n s
-          rs' = r : rs
-       in case ts_ of
-            Just ts' -> mkBatch rs' ts'
-            _ -> rs'
-    mkBatch1 :: ByteString -> TransportBatch
-    mkBatch1 s = if B.length s > bSize - 2 then TBLargeTransmission else TBTransmission s
-    encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
-    encodeBatch n s ts@(t :| ts_)
-      | n == 255 = (n, s, Just ts)
-      | otherwise =
-          let s' = s <> smpEncode (Large t)
-              n' = n + 1
-           in if B.length s' > bSize - 3 -- one byte is reserved for the number of messages in the batch
-                then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
-                else case L.nonEmpty ts_ of
-                  Just ts' -> encodeBatch n' s' ts'
-                  _ -> (n', s', Nothing)
+    mkBatch1 :: (SentRawTransmission, r) -> TransportBatch r
+    mkBatch1 (t, r)
+      -- 2 bytes are reserved for pad size
+      | BB.length s <= bSize - 2 = TBTransmission s r
+      | otherwise = TBLargeTransmission r
+      where
+        s = tEncode t
+    addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], Builder, Int, [r]) -> ([TransportBatch r], Builder, Int, [r])
+    addTransmission (t, r) acc@(bs, b, n, rs)
+      -- 3 = 2 bytes reserved for pad size + 1 for transmission count
+      | len + BB.length b <= bSize - 3 && n < 255 = (bs, s <> b, 1 + n, r : rs)
+      | len <= bSize - 3 = (addBatch acc, s, 1, [r])
+      | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, [])
+      where
+        s = encodeLarge $ tEncode t
+        len = BB.length s
+    addBatch :: ([TransportBatch r], Builder, Int, [r]) -> [TransportBatch r]
+    addBatch (bs, b, n, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
 
-tEncode :: SentRawTransmission -> ByteString
-tEncode (sig, t) = smpEncode (C.signatureBytes sig) <> t
+tEncode :: SentRawTransmission -> Builder
+tEncode (sig, t) = lazyByteString $ LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
 {-# INLINE tEncode #-}
 
-tEncodeBatch :: Int -> ByteString -> ByteString
-tEncodeBatch n s = lenEncode n `B.cons` s
+tEncodeBatch :: Int -> Builder -> Builder
+tEncodeBatch n s = char8 (lenEncode n) <> s
 {-# INLINE tEncodeBatch #-}
 
 encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> ByteString

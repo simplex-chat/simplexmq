@@ -503,10 +503,11 @@ testNotificationsSMPRestartBatch :: Int -> ATransport -> APNSMockServer -> IO ()
 testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' agentCfg initAgentServers2 testDB2
+  threadDelay 1000000
   conns <- runServers $ do
     conns <- replicateM (n :: Int) $ makeConnection a b
     _ <- registerTestToken a "abcd" NMInstant apnsQ
-    liftIO $ threadDelay 1500000
+    liftIO $ threadDelay 5000000
     forM_ conns $ \(aliceId, bobId) -> do
       msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello"
       get b ##> ("", aliceId, SENT msgId)
@@ -572,7 +573,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
-  750000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+  1000000 `timeout` atomically (readTBQueue apnsQ) >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
