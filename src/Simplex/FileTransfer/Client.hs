@@ -25,7 +25,6 @@ import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Description (mb)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
-import Simplex.Messaging.Builder (Builder, builder)
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
     ProtocolClientError (..),
@@ -36,6 +35,7 @@ import Simplex.Messaging.Client
     transportClientConfig,
   )
 import Simplex.Messaging.Client.Agent ()
+import Simplex.Messaging.Builder (Builder, builder)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String

@@ -85,6 +85,8 @@ import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
+import Simplex.Messaging.Builder (Builder)
+import qualified Simplex.Messaging.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -96,8 +98,6 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Builder (Builder)
-import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String

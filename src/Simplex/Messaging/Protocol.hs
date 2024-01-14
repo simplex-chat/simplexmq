@@ -161,6 +161,8 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Simplex.Messaging.Builder (Builder, char8, lazyByteString)
+import qualified Simplex.Messaging.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -177,8 +179,6 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (HostName, ServiceName)
-import Simplex.Messaging.Builder (Builder, char8, lazyByteString)
-import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
