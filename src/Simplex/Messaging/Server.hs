@@ -439,7 +439,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-    void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+    void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
