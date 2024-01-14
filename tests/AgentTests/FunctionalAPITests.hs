@@ -258,7 +258,7 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
-    it "join connection when reply queue creation fails" $
+    fit "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError t
   describe "Users" $ do
     it "should create and delete user with connections" $
@@ -1400,43 +1400,66 @@ testDeleteConnectionAsync t = do
 
 testJoinConnectionAsyncReplyError :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyError t = do
+  print 1
   let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2]}
   a <- getSMPAgentClient' agentCfg initAgentServers testDB
   b <- getSMPAgentClient' agentCfg initAgentServersSrv2 testDB2
+  print 2
   (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     bId <- createConnectionAsync a 1 "1" True SCMInvitation SMSubscribe
+    liftIO $ print 3
     ("1", bId', INV (ACR _ qInfo)) <- get a
     liftIO $ bId' `shouldBe` bId
+    liftIO $ print 4
     aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" SMSubscribe
+    liftIO $ print 5
     liftIO $ threadDelay 500000
     ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
     pure (aId, bId)
   nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+  liftIO $ print 6
   withSmpServerOn t testPort2 $ do
+    liftIO $ print 7
     ("2", aId', OK) <- get b
     liftIO $ aId' `shouldBe` aId
+    liftIO $ print 8
     confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
       pGet a >>= \case
         ("", "", APC _ (UP _ [_])) -> do
+          liftIO $ print 9.1
           ("", _, CONF confId _ "bob's connInfo") <- get a
+          liftIO $ print 10.1
           pure confId
         ("", _, APC _ (CONF confId _ "bob's connInfo")) -> do
+          liftIO $ print 9.2
           ("", "", UP _ [_]) <- nGet a
+          liftIO $ print 10.2
           pure confId
         r -> error $ "unexpected response " <> show r
+    liftIO $ print 11
     nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    liftIO $ print 12
     runRight_ $ do
       allowConnectionAsync a "3" bId confId "alice's connInfo"
-      liftIO $ threadDelay 500000
+      liftIO $ print 13
+      liftIO $ threadDelay 1000000
       ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {}], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
       pure ()
     withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+      liftIO $ print 14
+      liftIO $ threadDelay 1000000
+      pGet a >>= \r -> liftIO (print r) >> (pure r =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False)
+      liftIO $ print 15
       pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
-      pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
+      liftIO $ print 16
       get a ##> ("", bId, CON)
+      liftIO $ print 17
       get b ##> ("", aId, INFO "alice's connInfo")
+      liftIO $ print 18
       get b ##> ("", aId, CON)
+      liftIO $ print 19
       exchangeGreetings a bId b aId
+      liftIO $ print 20
   disconnectAgentClient a
   disconnectAgentClient b
 
