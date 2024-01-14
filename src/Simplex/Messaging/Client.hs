@@ -72,7 +72,9 @@ module Simplex.Messaging.Client
     ClientCommand,
 
     -- * For testing
+    ClientBatch (..),
     PCTransmission,
+    batchClientTransmissions,
     mkTransmission,
     clientStub,
   )
@@ -96,13 +98,11 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Builder (Builder)
-import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
-import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -136,7 +136,7 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue Builder,
+    sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
@@ -173,7 +173,7 @@ clientStub sessionId = do
             }
       }
 
-type SMPClient = ProtocolClient ErrorType BrokerMsg
+type SMPClient = ProtocolClient ErrorType SMP.BrokerMsg
 
 -- | Type for client command data
 type ClientCommand msg = (Maybe C.APrivateSignKey, EntityId, ProtoCommand msg)
@@ -634,7 +634,7 @@ type PCTransmission err msg = (SentRawTransmission, Request err msg)
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
 sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
-  bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
+  bs <- batchClientTransmissions batch blockSize <$> mapM (mkTransmission c) cs
   validate . concat =<< mapM (sendBatch c) bs
   where
     validate :: [Response err msg] -> IO (NonEmpty (Response err msg))
@@ -651,21 +651,57 @@ sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
 
 streamProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
 streamProtocolCommands c@ProtocolClient {batch, blockSize} cs cb = do
-  bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
+  bs <- batchClientTransmissions batch blockSize <$> mapM (mkTransmission c) cs
   mapM_ (cb <=< sendBatch c) bs
 
-sendBatch :: ProtocolClient err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
+sendBatch :: ProtocolClient err msg -> ClientBatch err msg -> IO [Response err msg]
 sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
-    TBLargeTransmission Request {entityId} -> do
+    CBLargeTransmission Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError TELargeMsg]
-    TBTransmissions s n rs -> do
+    CBTransmissions s n rs -> do
       when (n > 0) $ atomically $ writeTBQueue sndQ $ tEncodeBatch n s
       mapConcurrently (getResponse c) rs
-    TBTransmission s r -> do
+    CBTransmission s r -> do
       atomically $ writeTBQueue sndQ s
       (: []) <$> getResponse c r
+
+data ClientBatch err msg
+  = -- ByteString in CBTransmissions does not include count byte, it is added by tEncodeBatch
+    CBTransmissions ByteString Int [Request err msg]
+  | CBTransmission ByteString (Request err msg)
+  | CBLargeTransmission (Request err msg)
+
+-- | encodes and batches transmissions into blocks
+batchClientTransmissions :: forall err msg. Bool -> Int -> NonEmpty (PCTransmission err msg) -> [ClientBatch err msg]
+batchClientTransmissions batch blkSize
+  | batch = reverse . mkBatch []
+  | otherwise = map mkBatch1 . L.toList
+  where
+    mkBatch :: [ClientBatch err msg] -> NonEmpty (PCTransmission err msg) -> [ClientBatch err msg]
+    mkBatch bs ts =
+      let (b, ts_) = encodeBatch "" 0 [] ts
+          bs' = b : bs
+       in maybe bs' (mkBatch bs') ts_
+    mkBatch1 :: PCTransmission err msg -> ClientBatch err msg
+    mkBatch1 (t, r)
+      | B.length s <= blkSize - 2 = CBTransmission s r
+      | otherwise = CBLargeTransmission r
+      where
+        s = tEncode t
+    encodeBatch :: ByteString -> Int -> [Request err msg] -> NonEmpty (PCTransmission err msg) -> (ClientBatch err msg, Maybe (NonEmpty (PCTransmission err msg)))
+    encodeBatch s n rs ts@((t, r) :| ts_)
+      | B.length s' <= blkSize - 3 && n < 255 =
+          case L.nonEmpty ts_ of
+            Just ts' -> encodeBatch s' n' rs' ts'
+            Nothing -> (CBTransmissions s' n' (reverse rs'), Nothing)
+      | n == 0 = (CBLargeTransmission r, L.nonEmpty ts_)
+      | otherwise = (CBTransmissions s n (reverse rs), Just ts)
+      where
+        s' = s <> smpEncode (Large $ tEncode t)
+        n' = n + 1
+        rs' = r : rs
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
@@ -675,11 +711,11 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | BB.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s
-          | batch = tEncodeBatch 1 . encodeLarge $ tEncode t
+          | batch = tEncodeBatch 1 . smpEncode . Large $ tEncode t
           | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64

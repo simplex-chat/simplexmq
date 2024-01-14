@@ -69,7 +69,7 @@ import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
@@ -78,7 +78,6 @@ import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
-import Simplex.Messaging.Builder (Builder, byteString, toLazyByteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
@@ -134,9 +133,6 @@ class Transport c where
 
   -- | Write bytes to connection
   cPut :: c -> ByteString -> IO ()
-
-  -- | Write bytes to connection
-  cPut' :: c -> LB.ByteString -> IO ()
 
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
   getLn :: c -> IO ByteString
@@ -221,11 +217,8 @@ instance Transport TLS where
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut cxt = cPut' cxt . LB.fromStrict
-
-  cPut' :: TLS -> LB.ByteString -> IO ()
-  cPut' TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
-    withTimedErr t_ $ T.sendData tlsContext s
+  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
+    withTimedErr t_ . T.sendData tlsContext $ BL.fromStrict s
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
@@ -316,10 +309,10 @@ serializeTransportError = \case
   TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
-tPutBlock :: Transport c => THandle c -> Builder -> IO (Either TransportError ())
+tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, blockSize} block =
-  bimapM (const $ pure TELargeMsg) (cPut' c . toLazyByteString) $
-    C.pad' block blockSize
+  bimapM (const $ pure TELargeMsg) (cPut c) $
+    C.pad block blockSize
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
@@ -363,7 +356,7 @@ smpThHandle :: forall c. THandle c -> Version -> THandle c
 smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
-sendHandshake th = ExceptT . tPutBlock th . byteString . smpEncode
+sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
