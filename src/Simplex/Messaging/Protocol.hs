@@ -1326,7 +1326,6 @@ batchTransmissions' batch bSize
         s = tEncode t
     addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], Builder, Int, [r]) -> ([TransportBatch r], Builder, Int, [r])
     addTransmission (t, r) acc@(bs, b, n, rs)
-      -- 3 = 2 bytes reserved for pad size + 1 for transmission count
       | len + BB.length b <= bSize - 3 && n < 255 = (bs, s <> b, 1 + n, r : rs)
       | len <= bSize - 3 = (addBatch acc, s, 1, [r])
       | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, [])
