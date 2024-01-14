@@ -1320,7 +1320,7 @@ batchTransmissions' batch bSize
     mkBatch1 :: (SentRawTransmission, r) -> TransportBatch r
     mkBatch1 (t, r)
       -- 2 bytes are reserved for pad size
-      | BB.length s <= bSize - 2 = TBTransmission s r
+      | BB.length s <= fromIntegral (bSize - 2) = TBTransmission s r
       | otherwise = TBLargeTransmission r
       where
         s = tEncode t
