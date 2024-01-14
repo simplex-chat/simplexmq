@@ -11,7 +11,6 @@ module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),
     Large (..),
-    encodeLarge,
     _smpP,
     smpEncodeList,
     smpListP,
@@ -24,8 +23,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
-import qualified Data.ByteString.Lazy.Internal as LB
 import Data.ByteString.Internal (c2w, w2c)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
@@ -140,12 +137,6 @@ instance Encoding Large where
     len <- fromIntegral <$> smpP @Word16
     Large <$> A.take len
   {-# INLINE smpP #-}
-
-encodeLarge :: LB.ByteString -> LB.ByteString
-encodeLarge = \case
-  s@(LB.Chunk c cs) -> LB.Chunk (encodeWord16 (fromIntegral $ LB.length s) <> c) cs
-  LB.Empty -> LB.Chunk (encodeWord16 0) LB.Empty
-{-# INLINE encodeLarge #-}
 
 instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds

@@ -369,7 +369,7 @@ receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
 send :: Transport c => THandle c -> NtfServerClient -> IO ()
 send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h Nothing [(Nothing, encodeTransmission v sessionId t)]
+  void . liftIO $ tPut h [(Nothing, encodeTransmission v sessionId t)]
   atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where

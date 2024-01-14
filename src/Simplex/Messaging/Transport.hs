@@ -134,9 +134,6 @@ class Transport c where
   -- | Write bytes to connection
   cPut :: c -> ByteString -> IO ()
 
-  -- | Write bytes to connection
-  cPut' :: c -> LB.ByteString -> IO ()
-
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
   getLn :: c -> IO ByteString
 
@@ -220,11 +217,8 @@ instance Transport TLS where
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut cxt = cPut' cxt . LB.fromStrict
-
-  cPut' :: TLS -> LB.ByteString -> IO ()
-  cPut' TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
-    withTimedErr t_ $ T.sendData tlsContext s
+  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} =
+    withTimedErr t_ . T.sendData tlsContext . LB.fromStrict
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do

@@ -87,7 +87,6 @@ import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
@@ -98,7 +97,6 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol
@@ -659,9 +657,11 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
     TBLargeTransmission Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError TELargeMsg]
-    TBTransmissions s n rs -> do
-      when (n > 0) $ atomically $ writeTBQueue sndQ $ tEncodeBatch n s
-      mapConcurrently (getResponse c) rs
+    TBTransmissions s n rs
+      | n > 0 -> do
+          atomically $ writeTBQueue sndQ s
+          mapConcurrently (getResponse c) rs
+      | otherwise -> pure []
     TBTransmission s r -> do
       atomically $ writeTBQueue sndQ s
       (: []) <$> getResponse c r
@@ -678,7 +678,7 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s
-          | batch = tEncodeBatch 1 . smpEncode . Large $ tEncode t
+          | batch = tEncodeBatch1 t
           | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64

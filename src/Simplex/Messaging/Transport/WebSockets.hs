@@ -72,9 +72,6 @@ instance Transport WS where
   cPut :: WS -> ByteString -> IO ()
   cPut = sendBinaryData . wsConnection
 
-  cPut' :: WS -> LB.ByteString -> IO ()
-  cPut' = sendBinaryData . wsConnection
-
   getLn :: WS -> IO ByteString
   getLn c = do
     s <- trimCR <$> receiveData (wsConnection c)

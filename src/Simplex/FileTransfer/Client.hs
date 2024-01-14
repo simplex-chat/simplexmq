@@ -16,7 +16,6 @@ import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time (UTCTime)
