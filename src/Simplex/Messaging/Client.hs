@@ -135,7 +135,7 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue LB.ByteString,
+    sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
@@ -674,11 +674,11 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | LB.length s > fromIntegral (blockSize - 2) = pure $ Left $ PCETransportError TELargeMsg
+      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s
-          | batch = tEncodeBatch 1 . encodeLarge $ tEncode t
+          | batch = tEncodeBatch 1 . smpEncode . Large $ tEncode t
           | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
