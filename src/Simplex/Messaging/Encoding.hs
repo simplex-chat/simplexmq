@@ -142,7 +142,9 @@ instance Encoding Large where
   {-# INLINE smpP #-}
 
 encodeLarge :: LB.ByteString -> LB.ByteString
-encodeLarge s = LB.chunk (encodeWord16 $ fromIntegral $ LB.length s) s
+encodeLarge = \case
+  s@(LB.Chunk c cs) -> LB.Chunk (encodeWord16 (fromIntegral $ LB.length s) <> c) cs
+  LB.Empty -> LB.Chunk (encodeWord16 0) LB.Empty
 {-# INLINE encodeLarge #-}
 
 instance Encoding SystemTime where

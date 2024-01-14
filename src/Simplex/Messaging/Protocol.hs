@@ -1325,7 +1325,7 @@ batchTransmissions' batch bSize
     addTransmission :: (SentRawTransmission, r) -> ([TransportBatch r], LB.ByteString, Int, [r]) -> ([TransportBatch r], LB.ByteString, Int, [r])
     addTransmission (t, r) acc@(bs, b, n, rs)
       -- 3 = 2 bytes reserved for pad size + 1 for transmission count
-      | len + LB.length b <= fromIntegral (bSize - 3) && n < 255 = (bs, s <> b, 1 + n, r : rs)
+      | len + LB.length b <= fromIntegral (bSize - 3) && n < 255 = (bs, s `append` b, 1 + n, r : rs)
       | len <= fromIntegral (bSize - 3) = (addBatch acc, s, 1, [r])
       | otherwise = (TBLargeTransmission r : addBatch acc, mempty, 0, [])
       where
@@ -1333,13 +1333,25 @@ batchTransmissions' batch bSize
         len = LB.length s
     addBatch :: ([TransportBatch r], LB.ByteString, Int, [r]) -> [TransportBatch r]
     addBatch (bs, b, n, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
+    append :: LB.ByteString -> LB.ByteString -> LB.ByteString
+    append s = \case
+      s'@(LB.Chunk c cs)
+        | LB.length s < fromIntegral LB.smallChunkSize -> LB.Chunk (LB.toStrict s <> c) cs
+        | otherwise -> s <> s'
+      LB.Empty -> s
 
 tEncode :: SentRawTransmission -> LB.ByteString
-tEncode (sig, t) = LB.chunk (smpEncode $ C.signatureBytes sig) (LB.fromStrict t)
+tEncode (sig, t)
+  | B.length t < LB.smallChunkSize = LB.Chunk (sig' <> t) LB.Empty
+  | otherwise = LB.Chunk sig' (LB.fromStrict t)
+  where
+    sig' = smpEncode $ C.signatureBytes sig
 {-# INLINE tEncode #-}
 
 tEncodeBatch :: Int -> LB.ByteString -> LB.ByteString
-tEncodeBatch = LB.chunk . B.singleton . lenEncode
+tEncodeBatch n = \case
+  LB.Chunk c cs -> LB.Chunk (lenEncode n `B.cons` c) cs
+  LB.Empty -> LB.Chunk (B.singleton $ lenEncode n) LB.Empty
 {-# INLINE tEncodeBatch #-}
 
 encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> ByteString
