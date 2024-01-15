@@ -533,8 +533,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
           incClientStat c userId client "DISCONNECT" ""
           notifySub "" $ hostEvent DISCONNECT client
+          putStrLn $ "sent DISCONNECT event " <> show (clientSessionId client)
           unless (null conns) $ notifySub "" $ DOWN srv conns
-          unless (null qs) $ do
+          qs' <- atomically $ RQ.getSessQueues tSess $ pendingSubs c
+          unless (null qs') $ do
+            putStrLn $ "has to resubsribe " <> show (clientSessionId client)
             atomically $ mapM_ (releaseGetLock c) qs
             unliftIO u $ resubscribeSMPSession c tSess
 
@@ -547,16 +550,19 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
   where
     newSubWorker v = do
       subWorkerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
+      liftIO $ putStrLn $ show (clientId c) <> " newSubWorker " <> show subWorkerId
       subWorkerAsync <- async $ runSubWorker subWorkerId `E.catchAny` const (atomically $ cleanup subWorkerId)
       atomically $ putTMVar v SubWorker {subWorkerId, subWorkerAsync}
     runSubWorker swId = do
+      liftIO $ putStrLn $ show (clientId c) <> " runSubWorker " <> show swId
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically $ do
-          qs <- RQ.getSessQueues tSess (pendingSubs c)
+          qs <- RQ.getSessQueues tSess $ pendingSubs c
           when (null qs) $ cleanup swId
           pure qs
+        liftIO $ when (null pending) $ putStrLn $ show (clientId c) <> " runSubWorker exiting " <> show swId
         forM_ (L.nonEmpty pending) $ \qs -> do
           void . runExceptT $ reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
           loop
@@ -565,6 +571,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
+  liftIO $ putStrLn "reconnectSMPClient"
   NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
@@ -582,6 +589,9 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       cs <- atomically . RQ.getConns $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+      liftIO $ print "resubscribe"
+      liftIO $ putStrLn $ "errs: " <> show errs
+      liftIO $ putStrLn $ "okConns: " <> show okConns
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns

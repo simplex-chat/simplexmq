@@ -107,8 +107,8 @@ pGet :: forall m. MonadIO m => AgentClient -> m (ATransmission 'Agent)
 pGet c = do
   t@(_, _, APC _ cmd) <- atomically (readTBQueue $ subQ c)
   case cmd of
-    CONNECT {} -> pGet c
-    DISCONNECT {} -> pGet c
+    CONNECT {} -> liftIO (print "CONNECT") >> pGet c
+    DISCONNECT {} -> liftIO (print "DISCONNECT") >> pGet c
     _ -> pure t
 
 pattern Msg :: MsgBody -> ACommand 'Agent e
