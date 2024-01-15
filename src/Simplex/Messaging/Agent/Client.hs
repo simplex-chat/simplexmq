@@ -154,7 +154,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
-import GHC.Conc (unsafeIOToSTM)
+-- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -525,7 +525,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       where
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
-          removeClientVar c client tSess smpClients
+          removeClientVar client tSess smpClients
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
           let cs = S.fromList $ map qConnId qs
@@ -535,12 +535,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
           incClientStat c userId client "DISCONNECT" ""
-          putStrLn $ show (clientId c) <> " sending DISCONNECT event"
           notifySub "" $ hostEvent DISCONNECT client
           unless (null conns) $ notifySub "" $ DOWN srv conns
-          qs' <- atomically $ RQ.getSessQueues tSess $ pendingSubs c
-          unless (null qs') $ do
-            putStrLn $ show (clientId c) <> " has to resubsribe"
+          unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
             unliftIO u $ resubscribeSMPSession c tSess
 
@@ -549,16 +546,16 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
 
 resubscribeSMPSession :: AgentMonad' m => AgentClient -> SMPTransportSession -> m ()
 resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
-  atomically (getTSessVar tSess smpSubWorkers) >>= either newSubWorker (\v -> atomically (tryReadTMVar v) >>= \w_ -> maybe (liftIO $ putStrLn $ show (clientId c) <> " empty worker var") (\SubWorker {subWorkerId} -> liftIO $ putStrLn $ show (clientId c) <> " worker var with worker " <> show subWorkerId) w_ >> liftIO (putStrLn $ show (clientId c) <> " worker for " <> show tSess <> " exists") >> pure ())
+  atomically (getTSessVar tSess smpSubWorkers) >>= either newSubWorker (\_ -> pure ())
   where
     newSubWorker v = do
       subWorkerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
-      liftIO $ putStrLn $ show (clientId c) <> " newSubWorker " <> show subWorkerId <> " for " <> show tSess
-      subWorkerAsync <- async $ runSubWorker subWorkerId `E.catchAny` const (atomically $ cleanup subWorkerId)
-      atomically $ unsafeIOToSTM (putStrLn $ show (clientId c) <> " putTMVar for worker " <> show subWorkerId) >> putTMVar v SubWorker {subWorkerId, subWorkerAsync}
-    runSubWorker swId = do
-      liftIO $ threadDelay 100000
-      liftIO $ putStrLn $ show (clientId c) <> " runSubWorker " <> show swId <> " for " <> show tSess
+      subWorkerAsync <- async $ runSubWorker v subWorkerId `E.catchAny` const (atomically $ cleanup subWorkerId)
+      atomically $ putTMVar v SubWorker {subWorkerId, subWorkerAsync}
+    runSubWorker v swId = do
+      -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar - not waiting may result in terminated worker remaining in the map.
+      -- It sometimes happens if there are no pending subscriptions.
+      atomically $ whenM (isEmptyTMVar v) retry
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryInterval ri $ \_ loop -> do
@@ -566,16 +563,14 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
           qs <- RQ.getSessQueues tSess $ pendingSubs c
           when (null qs) $ cleanup swId
           pure qs
-        liftIO $ when (null pending) $ putStrLn $ show (clientId c) <> " runSubWorker exiting " <> show swId <> " for " <> show tSess
         forM_ (L.nonEmpty pending) $ \qs -> do
           void . runExceptT $ reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
           loop
     cleanup :: Int -> STM ()
-    cleanup swId = unsafeIOToSTM (putStrLn $ show (clientId c) <> " runSubWorker cleanup " <> show swId) >> removeTSessVar c ((swId ==) . subWorkerId) tSess smpSubWorkers
+    cleanup swId = removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
-  liftIO $ putStrLn $ show (clientId c) <> " reconnectSMPClient"
   NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
@@ -586,18 +581,14 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       maxTC <- asks $ maxSubscriptionTimeouts . config
       let err = if tc' >= maxTC then CRITICAL True else INTERNAL
           msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-      when (tc' >= maxTC) $ atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
-      when (tc' < maxTC) $ liftIO $ putStrLn $ show (clientId c) <> " hidden INTERNAL error"
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
   where
     resubscribe :: m ()
     resubscribe = do
       cs <- atomically . RQ.getConns $ activeSubs c
       -- ??? sometimes it happens that subscribeQueues does not return
-      rs <- subscribeQueues c (L.toList qs) `E.catch` \(e :: E.SomeException) -> liftIO (putStrLn (show (clientId c) <> " subscribeQueues exception " <> show e) >> E.throwIO e)
+      rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      liftIO $ putStrLn $ show (clientId c) <> " resubscribe results"
-      liftIO $ putStrLn $ show (clientId c) <> " errs: " <> show errs
-      liftIO $ putStrLn $ show (clientId c) <> " okConns: " <> show okConns
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
@@ -625,7 +616,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 
     clientDisconnected :: NtfClient -> IO ()
     clientDisconnected client = do
-      atomically $ removeClientVar c client tSess ntfClients
+      atomically $ removeClientVar client tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -646,7 +637,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
 
     clientDisconnected :: XFTPClient -> IO ()
     clientDisconnected client = do
-      atomically $ removeClientVar c client tSess xftpClients
+      atomically $ removeClientVar client tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -660,18 +651,17 @@ getTSessVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.
       TM.insert tSess var clients
       pure var
 
-removeClientVar :: ProtocolServerClient err msg => AgentClient -> Client msg -> TransportSession msg -> TMap (TransportSession msg) (ClientVar msg) -> STM ()
-removeClientVar c = removeTSessVar c . either (const False) . sameClient
+removeClientVar :: ProtocolServerClient err msg => Client msg -> TransportSession msg -> TMap (TransportSession msg) (ClientVar msg) -> STM ()
+removeClientVar = removeTSessVar . either (const False) . sameClient
 
 sameClient :: ProtocolServerClient err msg => Client msg -> Client msg -> Bool
 sameClient c c' = clientSessionId c == clientSessionId c'
 
-removeTSessVar :: AgentClient -> (a -> Bool) -> TransportSession msg -> TMap (TransportSession msg) (TMVar a) -> STM ()
-removeTSessVar c same tSess vs = do
-  unsafeIOToSTM (putStrLn $ show (clientId c) <> " removeTSessVar for " <> show tSess)
+removeTSessVar :: (a -> Bool) -> TransportSession msg -> TMap (TransportSession msg) (TMVar a) -> STM ()
+removeTSessVar same tSess vs =
   TM.lookup tSess vs
-    $>>= (\v -> unsafeIOToSTM (putStrLn $ show (clientId c) <> " removeTSessVar, found in map for " <> show tSess) >> tryReadTMVar v)
-    >>= \w_ -> unsafeIOToSTM (maybe (putStrLn $ show (clientId c) <> " no worker") (\_ -> pure ()) w_) >> mapM_ (\v -> when (same v) $ unsafeIOToSTM (putStrLn $ show (clientId c) <> " removeTSessVar, removing for " <> show tSess) >> TM.delete tSess vs) w_
+    $>>= tryReadTMVar
+    >>= mapM_ (\v -> when (same v) $ TM.delete tSess vs)
 
 waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (ProtoType msg)) => AgentClient -> TransportSession msg -> ClientVar msg -> m (Client msg)
 waitForProtocolClient c (_, srv, _) clientVar = do
@@ -708,11 +698,9 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
           liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
           if temporaryAgentError e
             then retryAction
-            else do
-              liftIO $ putStrLn $ show (clientId c) <> " client connection failed, removing from map for " <> show tSess
-              atomically $ do
-                putTMVar clientVar (Left e)
-                TM.delete tSess clients
+            else atomically $ do
+              putTMVar clientVar (Left e)
+              TM.delete tSess clients
           throwError e
     tryConnectAsync :: m ()
     tryConnectAsync = newAsyncAction connectAsync $ asyncClients c
@@ -1045,7 +1033,6 @@ temporaryOrHostError = \case
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
-  liftIO $ putStrLn $ show (clientId c) <> " subscribeQueues"
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
@@ -1059,9 +1046,7 @@ subscribeQueues c qs = do
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
     subscribeQueues_ :: UnliftIO m -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ u smp qs' = do
-      liftIO $ putStrLn $ show (clientId c) <> " subscribeQueues_"
       rs <- sendBatch subscribeSMPQueues smp qs'
-      liftIO $ putStrLn $ show (clientId c) <> " subscribeQueues_ results: " <> show rs
       mapM_ (uncurry $ processSubResult c) rs
       when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
         resubscribeSMPSession c (transportSession' smp)
@@ -1071,8 +1056,7 @@ type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
 
 -- statBatchSize is not used to batch the commands, only for traffic statistics
 sendTSessionBatches :: forall m q r. AgentMonad' m => ByteString -> Int -> (q -> RcvQueue) -> (SMPClient -> NonEmpty q -> IO (BatchResponses SMPClientError r)) -> AgentClient -> [q] -> m [(RcvQueue, Either AgentErrorType r)]
-sendTSessionBatches statCmd statBatchSize toRQ action c qs = do
-  liftIO $ putStrLn $ show (clientId c) <> " sendTSessionBatches"
+sendTSessionBatches statCmd statBatchSize toRQ action c qs =
   concatMap L.toList <$> (mapConcurrently sendClientBatch =<< batchQueues)
   where
     batchQueues :: m [(SMPTransportSession, NonEmpty q)]
@@ -1084,12 +1068,10 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs = do
           let tSess = mkSMPTSession (toRQ q) mode
            in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> m (BatchResponses AgentErrorType r)
-    sendClientBatch (tSess@(userId, srv, _), qs') = do
-      liftIO $ putStrLn $ show (clientId c) <> " sendClientBatch"
+    sendClientBatch (tSess@(userId, srv, _), qs') =
       runExceptT (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map ((,Left e) . toRQ) qs'
         Right smp -> liftIO $ do
-          liftIO $ putStrLn $ show (clientId c) <> " sendClientBatch has client"
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
           rs <- L.map agentError <$> action smp qs'
           statBatch
