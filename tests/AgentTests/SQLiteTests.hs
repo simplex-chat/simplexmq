@@ -34,7 +34,6 @@ import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
@@ -70,7 +69,6 @@ createEncryptedStore key keepKey = do
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
   Right st <- createSQLiteStore (testDB <> show r) key keepKey Migrations.app MCError
-  withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1);")
   pure st
 
 removeStore :: SQLiteStore -> IO ()
