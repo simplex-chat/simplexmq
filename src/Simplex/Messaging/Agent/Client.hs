@@ -550,24 +550,22 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
   where
     newSubWorker v = do
       subWorkerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
-      subWorkerAsync <- async $ runSubWorker v subWorkerId `E.catchAny` \_ -> atomically $ cleanup subWorkerId
+      subWorkerAsync <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v subWorkerId)
       atomically $ putTMVar v SubWorker {subWorkerId, subWorkerAsync}
-    runSubWorker v swId = do
-      -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar - not waiting may result in terminated worker remaining in the map.
-      -- It sometimes happens if there are no pending subscriptions.
-      atomically $ whenM (isEmptyTMVar v) retry
+    runSubWorker = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryInterval ri $ \_ loop -> do
-        pending <- atomically $ do
-          qs <- RQ.getSessQueues tSess $ pendingSubs c
-          when (null qs) $ cleanup swId
-          pure qs
+        pending <- atomically . RQ.getSessQueues tSess $ pendingSubs c
         forM_ (L.nonEmpty pending) $ \qs -> do
           void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
-    cleanup :: Int -> STM ()
-    cleanup swId = removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
+    cleanup :: TMVar SubWorker -> Int -> STM ()
+    cleanup v swId = do
+      -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
+      -- Not waiting may result in terminated worker remaining in the map.
+      whenM (isEmptyTMVar v) retry
+      removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
