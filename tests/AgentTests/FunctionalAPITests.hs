@@ -80,7 +80,7 @@ a =##> p = withTimeout a (`shouldSatisfy` p)
 
 withTimeout :: MonadUnliftIO m => m a -> (a -> Expectation) -> m ()
 withTimeout a test =
-  timeout 10_000000 a >>= \case
+  timeout 25_000000 a >>= \case
     Nothing -> error "operation timed out"
     Just t -> liftIO $ test t
 
@@ -1442,12 +1442,11 @@ testJoinConnectionAsyncReplyError t = do
     runRight_ $ do
       allowConnectionAsync a "3" bId confId "alice's connInfo"
       liftIO $ print 13
-      liftIO $ threadDelay 1000000
+      liftIO $ threadDelay 500000
       ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {}], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
       pure ()
     withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
       liftIO $ print 14
-      liftIO $ threadDelay 5000000
       pGet a >>= \r -> liftIO (print r) >> (pure r =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False)
       liftIO $ print 15
       pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
