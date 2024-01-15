@@ -697,6 +697,9 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
             then retryAction
             else atomically $ do
               putTMVar clientVar (Left e)
+              -- TODO This can result in removing some other client from the map.
+              -- We need to identify these clients before they are connected and only remove if it's the same client in the map.
+              -- probably ClientVar needs it's own ID at a point it's created, and not rely on session ID of the connected client.
               TM.delete tSess clients
           throwError e
     tryConnectAsync :: m ()
