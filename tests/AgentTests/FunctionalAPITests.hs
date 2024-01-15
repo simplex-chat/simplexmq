@@ -258,7 +258,7 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
-    fit "join connection when reply queue creation fails" $
+    it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError t
   describe "Users" $ do
     it "should create and delete user with connections" $

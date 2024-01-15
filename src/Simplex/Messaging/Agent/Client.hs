@@ -297,11 +297,11 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
     whenExists w
       | hasWork = hasWorkToDo (toW w) $> w
       | otherwise = pure w
-    runWorker w = runWorkerAsync (toW w) . void $ runExceptT runWork
+    runWorker w = runWorkerAsync (toW w) runWork
       where
-        runWork :: ExceptT AgentErrorType m ()
-        runWork = tryAgentError (work w) >>= restartOrDelete
-        restartOrDelete :: Either AgentErrorType () -> ExceptT AgentErrorType m ()
+        runWork :: m ()
+        runWork = tryAgentError' (work w) >>= restartOrDelete
+        restartOrDelete :: Either AgentErrorType () -> m ()
         restartOrDelete e_ = do
           t <- liftIO getSystemTime
           maxRestarts <- asks $ maxWorkerRestartsPerMin . config
@@ -550,7 +550,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
   where
     newSubWorker v = do
       subWorkerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
-      subWorkerAsync <- async $ runSubWorker v subWorkerId `E.catchAny` const (atomically $ cleanup subWorkerId)
+      subWorkerAsync <- async $ runSubWorker v subWorkerId `E.catchAny` \_ -> atomically $ cleanup subWorkerId
       atomically $ putTMVar v SubWorker {subWorkerId, subWorkerAsync}
     runSubWorker v swId = do
       -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar - not waiting may result in terminated worker remaining in the map.
@@ -564,7 +564,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
           when (null qs) $ cleanup swId
           pure qs
         forM_ (L.nonEmpty pending) $ \qs -> do
-          void . runExceptT $ reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
+          void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
     cleanup :: Int -> STM ()
     cleanup swId = removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
@@ -586,7 +586,6 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
     resubscribe :: m ()
     resubscribe = do
       cs <- atomically . RQ.getConns $ activeSubs c
-      -- ??? sometimes it happens that subscribeQueues does not return
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
       liftIO $ do
@@ -1069,7 +1068,7 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs =
            in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> m (BatchResponses AgentErrorType r)
     sendClientBatch (tSess@(userId, srv, _), qs') =
-      runExceptT (getSMPServerClient c tSess) >>= \case
+      tryAgentError' (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map ((,Left e) . toRQ) qs'
         Right smp -> liftIO $ do
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd

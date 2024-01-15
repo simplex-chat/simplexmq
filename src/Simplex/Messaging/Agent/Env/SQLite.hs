@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
+    tryAgentError',
     catchAgentError,
     agentFinally,
     Env (..),
@@ -33,6 +34,7 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -249,6 +251,11 @@ newXFTPAgent = do
 tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
 {-# INLINE tryAgentError #-}
+
+-- unlike runExceptT, this ensures we catch IO exceptions as well
+tryAgentError' :: AgentMonad' m => ExceptT AgentErrorType m a -> m (Either AgentErrorType a)
+tryAgentError' = fmap join . runExceptT . tryAgentError
+{-# INLINE tryAgentError' #-}
 
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
 catchAgentError = catchAllErrors mkInternal
