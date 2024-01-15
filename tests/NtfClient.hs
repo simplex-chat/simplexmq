@@ -57,6 +57,9 @@ testHost = "localhost"
 ntfTestPort :: ServiceName
 ntfTestPort = "6001"
 
+ntfTestPort2 :: ServiceName
+ntfTestPort2 = "6002"
+
 apnsTestPort :: ServiceName
 apnsTestPort = "6010"
 
@@ -77,7 +80,7 @@ testNtfClient client = do
 ntfServerCfg :: NtfServerConfig
 ntfServerCfg =
   NtfServerConfig
-    { transports = undefined,
+    { transports = [],
       subIdBytes = 24,
       regCodeBytes = 32,
       clientQSize = 1,
@@ -105,16 +108,19 @@ ntfServerCfg =
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
-withNtfServerStoreLog t = withNtfServerCfg t ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile}
+withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t)]}
 
 withNtfServerThreadOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' = withNtfServerCfg t ntfServerCfg {transports = [(port', t)]}
+withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t)]}
 
-withNtfServerCfg :: ATransport -> NtfServerConfig -> (ThreadId -> IO a) -> IO a
-withNtfServerCfg t cfg =
-  serverBracket
-    (\started -> runNtfServerBlocking started cfg {transports = [(ntfTestPort, t)]})
-    (pure ())
+withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
+withNtfServerCfg cfg@NtfServerConfig {transports} =
+  case transports of
+    [] -> error "no transports configured"
+    _ ->
+      serverBracket
+        (\started -> runNtfServerBlocking started cfg)
+        (pure ())
 
 withNtfServerOn :: ATransport -> ServiceName -> IO a -> IO a
 withNtfServerOn t port' = withNtfServerThreadOn t port' . const

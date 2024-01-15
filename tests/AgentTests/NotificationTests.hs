@@ -13,6 +13,7 @@ import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentCl
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Reader (runReaderT)
 import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -24,14 +25,16 @@ import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2)
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, xit')
 import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent.Client (withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfToken (..))
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..), SubscriptionMode (..))
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
@@ -60,6 +63,9 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
+      it "should work with multiple configured servers" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          testNtfTokenMultipleServers t apns
     describe "Managing notification subscriptions" $ do
       -- fails on Ubuntu CI?
       xit' "should create notification subscription for existing connection" $ \_ -> do
@@ -200,6 +206,38 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
   -- so that repeat verification happens without restarting the clients, when notification arrives
   withNtfServer t . runRight_ $ do
+    verification <- ntfData .-> "verification"
+    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+      atomically $ readTBQueue apnsQ
+    verification' <- ntfData' .-> "verification"
+    nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+    liftIO $ sendApnsResponse' APNSRespOk
+    verifyNtfToken a' tkn nonce' verification'
+    NTActive <- checkNtfToken a' tkn
+    disconnectAgentClient a'
+
+testNtfTokenMultipleServers :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenMultipleServers t APNSMockServer {apnsQ} = do
+  a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
+  let tkn = DeviceToken PPApnsTest "abcd"
+  -- start both servers
+  ntfData <- withNtfServerOn t ntfTestPort . withNtfServerOn t ntfTestPort2 . runRight $ do
+    -- start registering a new token, the agent picks a server and stores its choice
+    NTRegistered <- registerNtfToken a tkn NMPeriodic
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+      atomically $ readTBQueue apnsQ
+    liftIO $ sendApnsResponse APNSRespOk
+    pure ntfData
+  -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
+  threadDelay 1000000
+  disconnectAgentClient a
+  a' <- getSMPAgentClient' agentCfg initAgentServers2 testDB
+  -- only start the server that has been picked in the step before
+  Just NtfToken {ntfServer = ProtocolServer {port}} <- runRight $ runReaderT (withStore' a' getSavedNtfToken) (agentEnv a')
+  withNtfServerOn t port . runRight_ $ do
+    -- continue with the token registration
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
