@@ -382,8 +382,8 @@ data AgentStatsKey = AgentStatsKey
   }
   deriving (Eq, Ord, Show)
 
-newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
-newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
+newAgentClient :: Maybe Int -> InitialAgentServers -> Env -> STM AgentClient
+newAgentClient clientId_ InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -417,7 +417,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   smpSubWorkers <- TM.empty
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
-  clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
+  clientId <- maybe nextClientId pure clientId_
   return
     AgentClient
       { active,
@@ -455,6 +455,8 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         clientId,
         agentEnv
       }
+  where
+    nextClientId = stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
@@ -533,11 +535,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
           incClientStat c userId client "DISCONNECT" ""
           notifySub "" $ hostEvent DISCONNECT client
-          putStrLn $ "sent DISCONNECT event " <> show (clientSessionId client)
+          putStrLn $ show (clientId c) <> " sent DISCONNECT event"
           unless (null conns) $ notifySub "" $ DOWN srv conns
           qs' <- atomically $ RQ.getSessQueues tSess $ pendingSubs c
           unless (null qs') $ do
-            putStrLn $ "has to resubsribe " <> show (clientSessionId client)
+            putStrLn $ show (clientId c) <> " has to resubsribe"
             atomically $ mapM_ (releaseGetLock c) qs
             unliftIO u $ resubscribeSMPSession c tSess
 
@@ -571,7 +573,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
-  liftIO $ putStrLn "reconnectSMPClient"
+  liftIO $ putStrLn $ show (clientId c) <> " reconnectSMPClient"
   NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
@@ -589,9 +591,9 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       cs <- atomically . RQ.getConns $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      liftIO $ print "resubscribe"
-      liftIO $ putStrLn $ "errs: " <> show errs
-      liftIO $ putStrLn $ "okConns: " <> show okConns
+      liftIO $ putStrLn $ show (clientId c) <> " resubscribe results"
+      liftIO $ putStrLn $ show (clientId c) <> " errs: " <> show errs
+      liftIO $ putStrLn $ show (clientId c) <> " okConns: " <> show okConns
       liftIO $ do
         let conns = S.toList $ S.fromList okConns `S.difference` cs
         unless (null conns) $ notifySub "" $ UP srv conns
@@ -1036,6 +1038,7 @@ temporaryOrHostError = \case
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
+  liftIO $ putStrLn $ show (clientId c) <> " subscribeQueues"
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
@@ -1050,6 +1053,7 @@ subscribeQueues c qs = do
     subscribeQueues_ :: UnliftIO m -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ u smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
+      liftIO $ putStrLn $ show (clientId c) <> " subscribeQueues_ results: " <> show rs
       mapM_ (uncurry $ processSubResult c) rs
       when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
         resubscribeSMPSession c (transportSession' smp)

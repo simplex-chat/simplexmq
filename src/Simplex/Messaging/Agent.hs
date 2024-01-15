@@ -38,6 +38,7 @@ module Simplex.Messaging.Agent
     AgentErrorMonad,
     SubscriptionsInfo (..),
     getSMPAgentClient,
+    getSMPAgentClient_,
     disconnectAgentClient,
     resumeAgentClient,
     withConnLock,
@@ -176,11 +177,15 @@ import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
-getSMPAgentClient cfg initServers store backgroundMode =
+getSMPAgentClient = getSMPAgentClient_ Nothing
+{-# INLINE getSMPAgentClient #-}
+
+getSMPAgentClient_ :: (MonadRandom m, MonadUnliftIO m) => Maybe Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient_ clientId_ cfg initServers store backgroundMode =
   liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient initServers
+      c <- getAgentClient_ clientId_ initServers
       void $ runAgentThreads c `forkFinally` const (disconnectAgentClient c)
       pure c
     runAgentThreads c
@@ -462,7 +467,12 @@ withAgentEnv c = (`runReaderT` agentEnv c)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 getAgentClient :: AgentMonad' m => InitialAgentServers -> m AgentClient
-getAgentClient initServers = ask >>= atomically . newAgentClient initServers
+getAgentClient = getAgentClient_ Nothing
+{-# INLINE getAgentClient #-}
+
+getAgentClient_ :: AgentMonad' m => Maybe Int -> InitialAgentServers -> m AgentClient
+getAgentClient_ clientId_ initServers = ask >>= atomically . newAgentClient clientId_ initServers
+{-# INLINE getAgentClient_ #-}
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =
