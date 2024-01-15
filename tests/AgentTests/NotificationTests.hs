@@ -220,35 +220,28 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
 
 testNtfTokenMultipleServers :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenMultipleServers t APNSMockServer {apnsQ} = do
-  a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
   let tkn = DeviceToken PPApnsTest "abcd"
-  -- start both servers
-  ntfData <- withNtfServerOn t ntfTestPort . withNtfServerOn t ntfTestPort2 . runRight $ do
-    -- start registering a new token, the agent picks a server and stores its choice
-    NTRegistered <- registerNtfToken a tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
-    liftIO $ sendApnsResponse APNSRespOk
-    pure ntfData
-  -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
-  threadDelay 1000000
-  disconnectAgentClient a
-  a' <- getSMPAgentClient' agentCfg initAgentServers2 testDB
-  -- only start the server that has been picked in the step before
-  Just NtfToken {ntfServer = ProtocolServer {port}} <- runRight $ runReaderT (withStore' a' getSavedNtfToken) (agentEnv a')
-  withNtfServerOn t port . runRight_ $ do
-    -- continue with the token registration
-    verification <- ntfData .-> "verification"
-    nonce <- C.cbNonce <$> ntfData .-> "nonce"
-    Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-      atomically $ readTBQueue apnsQ
-    verification' <- ntfData' .-> "verification"
-    nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
-    liftIO $ sendApnsResponse' APNSRespOk
-    verifyNtfToken a' tkn nonce' verification'
-    NTActive <- checkNtfToken a' tkn
-    disconnectAgentClient a'
+  a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
+  withNtfServerThreadOn t ntfTestPort $ \ntf ->
+    withNtfServerThreadOn t ntfTestPort2 $ \ntf2 -> runRight_ $ do
+      -- register a new token, the agent picks a server and stores its choice
+      NTRegistered <- registerNtfToken a tkn NMPeriodic
+      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+        atomically $ readTBQueue apnsQ
+      verification <- ntfData .-> "verification"
+      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      liftIO $ sendApnsResponse APNSRespOk
+      verifyNtfToken a tkn nonce verification
+      NTActive <- checkNtfToken a tkn
+      -- shut down the "other" server
+      Just NtfToken {ntfServer = ProtocolServer {port}} <- runReaderT (withStore' a getSavedNtfToken) (agentEnv a)
+      liftIO . killThread $ if port == ntfTestPort then ntf2 else ntf
+      -- still works
+      NTActive <- checkNtfToken a tkn
+      liftIO . killThread $ if port == ntfTestPort then ntf else ntf2
+      -- negative test, the correct server is now gone
+      Left _ <- tryError (checkNtfToken a tkn)
+      pure ()
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
