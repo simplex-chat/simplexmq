@@ -49,7 +49,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
-  it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
+  fit "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
   it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
   it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
   describe "XFTP server test via agent API" $ do
@@ -432,17 +432,25 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
   withXFTPServer $ do
     filePath1 <- createRandomFile' "testfile1"
 
+    liftIO $ print 1
+
     -- send file 1
     sndr <- getSMPAgentClient' agentCfg initAgentServers testDB
     (_, _, rfd1_1, rfd1_2) <- runRight $ testSend sndr filePath1
+
+    liftIO $ print 2
 
     -- receive file 1 successfully
     rcp <- getSMPAgentClient' agentCfg initAgentServers testDB2
     runRight_ . void $
       testReceive rcp rfd1_1 filePath1
 
+    liftIO $ print 3
+
     serverFiles <- listDirectory xftpServerFiles
     length serverFiles `shouldBe` 6
+
+    liftIO $ print 4
 
     -- delete file 1 on server from file system
     forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
@@ -450,16 +458,24 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
     threadDelay 1000000
     length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
+    liftIO $ print 5
+
     -- create and send file 2
     filePath2 <- createRandomFile' "testfile2"
     (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
 
+    liftIO $ print 6
+
     length <$> listDirectory xftpServerFiles `shouldReturn` 6
+
+    liftIO $ print 7
 
     runRight_ . void $ do
       -- receive file 1 again
       -- TODO should fail with AUTH error
       _rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
+
+      liftIO $ print 8
 
       -- receive file 2
       testReceive' rcp rfd2 filePath2
