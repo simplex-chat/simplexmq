@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -194,8 +195,8 @@ agentCfg =
     { tcpPort = agentTestPort,
       tbqSize = 4,
       -- database = testDB,
-      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS)},
-      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
+      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
+      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,
@@ -204,6 +205,8 @@ agentCfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
     }
+  where
+    networkConfig = defaultNetworkConfig {tcpConnectTimeout = 3_000_000, tcpTimeout = 2_000_000}
 
 type AgentTestMonad m = (MonadUnliftIO m, MonadRandom m, MonadFail m)
 
