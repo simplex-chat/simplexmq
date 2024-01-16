@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
+    tryAgentError',
     catchAgentError,
     agentFinally,
     Env (..),
@@ -33,6 +34,7 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -112,8 +114,7 @@ data AgentConfig = AgentConfig
     certificateFile :: FilePath,
     e2eEncryptVRange :: VersionRange,
     smpAgentVRange :: VersionRange,
-    smpClientVRange :: VersionRange,
-    initialClientId :: Int
+    smpClientVRange :: VersionRange
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -184,15 +185,13 @@ defaultAgentConfig =
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
-      smpClientVRange = supportedSMPClientVRange,
-      initialClientId = 0
+      smpClientVRange = supportedSMPClientVRange
     }
 
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
     random :: TVar ChaChaDRG,
-    clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,
@@ -200,14 +199,13 @@ data Env = Env
   }
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
-newSMPAgentEnv config@AgentConfig {initialClientId} store = do
+newSMPAgentEnv config store = do
   random <- C.newRandom
-  clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
-  pure Env {config, store, random, clientCounter, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
+  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
@@ -249,6 +247,11 @@ newXFTPAgent = do
 tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
 {-# INLINE tryAgentError #-}
+
+-- unlike runExceptT, this ensures we catch IO exceptions as well
+tryAgentError' :: AgentMonad' m => ExceptT AgentErrorType m a -> m (Either AgentErrorType a)
+tryAgentError' = fmap join . runExceptT . tryAgentError
+{-# INLINE tryAgentError' #-}
 
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
 catchAgentError = catchAllErrors mkInternal

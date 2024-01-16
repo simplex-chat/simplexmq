@@ -48,9 +48,11 @@ runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, 
     smpAgent _ = do
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
       tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+      clientId <- newTVarIO 0
       runTransportServer started tcpPort tlsServerParams defaultTransportServerConfig $ \(h :: c) -> do
         liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
-        c <- getAgentClient initServers
+        cId <- atomically $ stateTVar clientId $ \i -> (i + 1, i + 1)
+        c <- getAgentClient cId initServers
         logConnection c True
         race_ (connectClient h c) (runAgentClient c)
           `E.finally` disconnectAgentClient c

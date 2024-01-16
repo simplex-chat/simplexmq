@@ -33,7 +33,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 xftpServerVersion :: String
-xftpServerVersion = "1.2.0.5"
+xftpServerVersion = "1.2.0.6"
 
 xftpServerCLI :: FilePath -> FilePath -> IO ()
 xftpServerCLI cfgPath logPath = do

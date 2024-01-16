@@ -38,6 +38,7 @@ module Simplex.Messaging.Agent
     AgentErrorMonad,
     SubscriptionsInfo (..),
     getSMPAgentClient,
+    getSMPAgentClient_,
     disconnectAgentClient,
     resumeAgentClient,
     withConnLock,
@@ -176,11 +177,15 @@ import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
-getSMPAgentClient cfg initServers store backgroundMode =
+getSMPAgentClient = getSMPAgentClient_ 1
+{-# INLINE getSMPAgentClient #-}
+
+getSMPAgentClient_ :: (MonadRandom m, MonadUnliftIO m) => Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient initServers
+      c <- getAgentClient clientId initServers
       void $ runAgentThreads c `forkFinally` const (disconnectAgentClient c)
       pure c
     runAgentThreads c
@@ -461,8 +466,9 @@ withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: AgentMonad' m => InitialAgentServers -> m AgentClient
-getAgentClient initServers = ask >>= atomically . newAgentClient initServers
+getAgentClient :: AgentMonad' m => Int -> InitialAgentServers -> m AgentClient
+getAgentClient clientId initServers = ask >>= atomically . newAgentClient clientId initServers
+{-# INLINE getAgentClient #-}
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =
@@ -2041,7 +2047,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               handleNotifyAck :: m () -> m ()
               handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
           SMP.END ->
-            atomically (TM.lookup tSess smpClients $>>= tryReadTMVar >>= processEND)
+            atomically (TM.lookup tSess smpClients $>>= (tryReadTMVar . sessionVar) >>= processEND)
               >>= logServer "<--" c srv rId
             where
               processEND = \case
