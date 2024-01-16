@@ -255,44 +255,36 @@ testNtfTokenMultipleServers t APNSMockServer {apnsQ} = do
 
 testNtfTokenChangeServers :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenChangeServers t APNSMockServer {apnsQ} =
-  withNtfServer t $ do
-    let tkn = DeviceToken PPApnsTest "abcd"
-
-    runRight_ $ do
+  withNtfServerThreadOn t ntfTestPort $ \ntf -> do
+    tkn1 <- runRight $ do
       a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
-      -- register a new token, the agent picks a server and stores its choice
-      NTRegistered <- registerNtfToken a tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-        atomically $ readTBQueue apnsQ
-      verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      liftIO $ sendApnsResponse APNSRespOk
-      verifyNtfToken a tkn nonce verification
+      tkn <- registerTestToken a "abcd" NMInstant apnsQ
       NTActive <- checkNtfToken a tkn
       setNtfServers a [testNtfServer2]
       NTActive <- checkNtfToken a tkn -- still works on old server
       disconnectAgentClient a
+      pure tkn
 
     threadDelay 1000000
 
-    a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
+    a <- liftIO $ getSMPAgentClient' 2 agentCfg initAgentServers testDB
     runRight_ $ do
       getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
-      NTActive <- checkNtfToken a tkn
-      -- update token from new server
-      setNtfServers a [testNtfServer2]
-      deleteNtfToken a tkn
-      void (registerNtfToken a tkn NMPeriodic) `catchError` \BROKER {brokerErr = NETWORK} -> pure () -- ok, not yet started
-      getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but registered
+      NTActive <- checkNtfToken a tkn1
+      setNtfServers a [testNtfServer2] -- just change configured server list
+      getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
+      -- trigger token replace
+      tkn2 <- registerTestToken a "xyzw" NMInstant apnsQ
+      -- registerNtfToken a tkn2 NMInstant >>= \r -> liftIO $ r `shouldBe` NTRegistered
+      getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
+      deleteNtfToken a tkn2 -- force server switch
+
+      Left BROKER {brokerErr = NETWORK} <- tryError $ registerTestToken a "qwer" NMInstant apnsQ -- ok, it's down for now
+      getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
+
+    killThread ntf
     withNtfServerOn t ntfTestPort2 $ runRight_ $ do
-      registerNtfToken a tkn NMPeriodic >>= \r -> liftIO $ r `shouldBe` NTRegistered
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-        atomically $ readTBQueue apnsQ
-      verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      liftIO $ sendApnsResponse APNSRespOk
-      verifyNtfToken a tkn nonce verification
-      getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2
+      tkn <- registerTestToken a "qwer" NMInstant apnsQ
       checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
@@ -402,8 +394,8 @@ registerTestToken :: AgentClient -> ByteString -> NotificationsMode -> TBQueue A
 registerTestToken a token mode apnsQ = do
   let tkn = DeviceToken PPApnsTest token
   NTRegistered <- registerNtfToken a tkn mode
-  APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-    atomically $ readTBQueue apnsQ
+  Just APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+    timeout 1000000 . atomically $ readTBQueue apnsQ
   verification' <- ntfData' .-> "verification"
   nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
   liftIO $ sendApnsResponse' APNSRespOk
