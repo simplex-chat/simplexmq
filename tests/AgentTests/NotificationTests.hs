@@ -26,7 +26,7 @@ import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, te
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, xit')
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (withStore')
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
+import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
@@ -221,7 +221,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
 testNtfTokenMultipleServers :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenMultipleServers t APNSMockServer {apnsQ} = do
   let tkn = DeviceToken PPApnsTest "abcd"
-  a <- getSMPAgentClient' agentCfg initAgentServers2 testDB
+  a <- getSMPAgentClient' 1 agentCfg initAgentServers2 testDB
   withNtfServerThreadOn t ntfTestPort $ \ntf ->
     withNtfServerThreadOn t ntfTestPort2 $ \ntf2 -> runRight_ $ do
       -- register a new token, the agent picks a server and stores its choice
