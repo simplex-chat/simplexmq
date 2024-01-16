@@ -672,10 +672,10 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
   where
     tryConnectClient :: (Client msg -> m a) -> m () -> m a
     tryConnectClient successAction retryAction =
-      tryAgentError (connectClient v) >>= \r -> case r of
+      tryAgentError (connectClient v) >>= \case
         Right client -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
-          atomically $ putTMVar (sessionVar v) r
+          atomically $ putTMVar (sessionVar v) (Right client)
           liftIO $ incClientStat c userId client "CLIENT" "OK"
           atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
           successAction client
