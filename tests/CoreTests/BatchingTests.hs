@@ -5,9 +5,8 @@ module CoreTests.BatchingTests (batchingTests) where
 import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString as B
 import qualified Data.List.NonEmpty as L
-import Simplex.Messaging.Builder (Builder)
-import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -170,8 +169,8 @@ randomSENDCmd c len = do
   msg <- atomically $ C.randomBytes len g
   mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
 
-lenOk :: Builder -> Bool
-lenOk s = 0 < BB.length s && BB.length s <= smpBlockSize - 2
+lenOk :: ByteString -> Bool
+lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2
 
 lenOk1 :: TransportBatch r -> Bool
 lenOk1 = \case

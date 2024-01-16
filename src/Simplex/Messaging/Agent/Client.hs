@@ -154,6 +154,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+-- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -296,11 +297,11 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
     whenExists w
       | hasWork = hasWorkToDo (toW w) $> w
       | otherwise = pure w
-    runWorker w = runWorkerAsync (toW w) . void $ runExceptT runWork
+    runWorker w = runWorkerAsync (toW w) runWork
       where
-        runWork :: ExceptT AgentErrorType m ()
-        runWork = tryAgentError (work w) >>= restartOrDelete
-        restartOrDelete :: Either AgentErrorType () -> ExceptT AgentErrorType m ()
+        runWork :: m ()
+        runWork = tryAgentError' (work w) >>= restartOrDelete
+        restartOrDelete :: Either AgentErrorType () -> m ()
         restartOrDelete e_ = do
           t <- liftIO getSystemTime
           maxRestarts <- asks $ maxWorkerRestartsPerMin . config
@@ -382,8 +383,8 @@ data AgentStatsKey = AgentStatsKey
   }
   deriving (Eq, Ord, Show)
 
-newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
-newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -417,7 +418,6 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   smpSubWorkers <- TM.empty
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
-  clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   return
     AgentClient
       { active,
@@ -547,21 +547,22 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
   where
     newSubWorker v = do
       subWorkerId <- atomically $ stateTVar (workerSeq c) $ \next -> (next, next + 1)
-      subWorkerAsync <- async $ runSubWorker subWorkerId `E.catchAny` const (atomically $ cleanup subWorkerId)
+      subWorkerAsync <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v subWorkerId)
       atomically $ putTMVar v SubWorker {subWorkerId, subWorkerAsync}
-    runSubWorker swId = do
+    runSubWorker = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
       withRetryInterval ri $ \_ loop -> do
-        pending <- atomically $ do
-          qs <- RQ.getSessQueues tSess (pendingSubs c)
-          when (null qs) $ cleanup swId
-          pure qs
+        pending <- atomically . RQ.getSessQueues tSess $ pendingSubs c
         forM_ (L.nonEmpty pending) $ \qs -> do
-          void . runExceptT $ reconnectSMPClient timeoutCounts c tSess qs `catchAgentError` \_ -> pure ()
+          void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
-    cleanup :: Int -> STM ()
-    cleanup swId = removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
+    cleanup :: TMVar SubWorker -> Int -> STM ()
+    cleanup v swId = do
+      -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
+      -- Not waiting may result in terminated worker remaining in the map.
+      whenM (isEmptyTMVar v) retry
+      removeTSessVar ((swId ==) . subWorkerId) tSess smpSubWorkers
 
 reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
@@ -693,6 +694,9 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
             then retryAction
             else atomically $ do
               putTMVar clientVar (Left e)
+              -- TODO This can result in removing some other client from the map.
+              -- We need to identify these clients before they are connected and only remove if it's the same client in the map.
+              -- probably ClientVar needs it's own ID at a point it's created, and not rely on session ID of the connected client.
               TM.delete tSess clients
           throwError e
     tryConnectAsync :: m ()
@@ -1062,7 +1066,7 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs =
            in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> m (BatchResponses AgentErrorType r)
     sendClientBatch (tSess@(userId, srv, _), qs') =
-      runExceptT (getSMPServerClient c tSess) >>= \case
+      tryAgentError' (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map ((,Left e) . toRQ) qs'
         Right smp -> liftIO $ do
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd

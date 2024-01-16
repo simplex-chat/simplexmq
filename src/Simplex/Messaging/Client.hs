@@ -96,10 +96,7 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Builder (Builder)
-import qualified Simplex.Messaging.Builder as BB
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol
@@ -136,7 +133,7 @@ data PClient err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue Builder,
+    sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
@@ -660,9 +657,11 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
     TBLargeTransmission Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError TELargeMsg]
-    TBTransmissions s n rs -> do
-      when (n > 0) $ atomically $ writeTBQueue sndQ $ tEncodeBatch n s
-      mapConcurrently (getResponse c) rs
+    TBTransmissions s n rs
+      | n > 0 -> do
+          atomically $ writeTBQueue sndQ s
+          mapConcurrently (getResponse c) rs
+      | otherwise -> pure []
     TBTransmission s r -> do
       atomically $ writeTBQueue sndQ s
       (: []) <$> getResponse c r
@@ -675,11 +674,11 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t r
-      | BB.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
+      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
       | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
       where
         s
-          | batch = tEncodeBatch 1 . encodeLarge $ tEncode t
+          | batch = tEncodeBatch1 t
           | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
