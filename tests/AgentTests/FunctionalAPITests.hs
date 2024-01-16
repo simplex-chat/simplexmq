@@ -1492,7 +1492,7 @@ testUsersNoServer t = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
 testSwitchConnection :: InitialAgentServers -> IO ()
 testSwitchConnection servers = do
   a <- getSMPAgentClient' 1 agentCfg servers testDB
-  b <- getSMPAgentClient' 2 agentCfg {initialClientId = 1} servers testDB2
+  b <- getSMPAgentClient' 2 agentCfg servers testDB2
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
@@ -1577,7 +1577,7 @@ testSwitchAsync servers = do
     withA :: (AgentClient -> IO a) -> IO a
     withA = withAgent 1 agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg {initialClientId = 1} servers testDB2
+    withB = withAgent 2 agentCfg servers testDB2
 
 withAgent :: Int -> AgentConfig -> InitialAgentServers -> FilePath -> (AgentClient -> IO a) -> IO a
 withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) disconnectAgentClient
@@ -1594,7 +1594,7 @@ sessionSubscribe withC connIds a =
 testSwitchDelete :: InitialAgentServers -> IO ()
 testSwitchDelete servers = do
   a <- getSMPAgentClient' 1 agentCfg servers testDB
-  b <- getSMPAgentClient' 2 agentCfg {initialClientId = 1} servers testDB2
+  b <- getSMPAgentClient' 2 agentCfg servers testDB2
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
@@ -1658,7 +1658,7 @@ testAbortSwitchStarted servers = do
     withA :: (AgentClient -> IO a) -> IO a
     withA = withAgent 1 agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg {initialClientId = 1} servers testDB2
+    withB = withAgent 2 agentCfg servers testDB2
 
 testAbortSwitchStartedReinitiate :: HasCallStack => InitialAgentServers -> IO ()
 testAbortSwitchStartedReinitiate servers = do
@@ -1709,7 +1709,7 @@ testAbortSwitchStartedReinitiate servers = do
     withA :: (AgentClient -> IO a) -> IO a
     withA = withAgent 1 agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg {initialClientId = 1} servers testDB2
+    withB = withAgent 2 agentCfg servers testDB2
 
 switchPhaseRcvP :: ConnId -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ATransmission 'Agent -> Bool
 switchPhaseRcvP cId sphase swchStatuses = switchPhaseP cId QDRcv sphase (\stats -> rcvSwchStatuses' stats == swchStatuses)
@@ -1763,7 +1763,7 @@ testCannotAbortSwitchSecured servers = do
     withA :: (AgentClient -> IO a) -> IO a
     withA = withAgent 1 agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg {initialClientId = 1} servers testDB2
+    withB = withAgent 2 agentCfg servers testDB2
 
 testSwitch2Connections :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2Connections servers = do
@@ -1821,7 +1821,7 @@ testSwitch2Connections servers = do
     withA :: (AgentClient -> IO a) -> IO a
     withA = withAgent 1 agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg {initialClientId = 1} servers testDB2
+    withB = withAgent 2 agentCfg servers testDB2
 
 testSwitch2ConnectionsAbort1 :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2ConnectionsAbort1 servers = do
@@ -1874,7 +1874,7 @@ testSwitch2ConnectionsAbort1 servers = do
     withA :: (AgentClient -> IO a) -> IO a
     withA = withAgent 1 agentCfg servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg {initialClientId = 1} servers testDB2
+    withB = withAgent 2 agentCfg servers testDB2
 
 testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testCreateQueueAuth clnt1 clnt2 = do
@@ -2106,7 +2106,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> FilePath -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
   Right st <- liftIO $ createAgentStore dbPath "" False MCError
-  getSMPAgentClient_ (Just clientId) cfg' initServers st False
+  getSMPAgentClient_ clientId cfg' initServers st False
 
 testServerMultipleIdentities :: HasCallStack => IO ()
 testServerMultipleIdentities =

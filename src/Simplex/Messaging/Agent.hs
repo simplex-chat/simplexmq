@@ -177,15 +177,15 @@ import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
-getSMPAgentClient = getSMPAgentClient_ Nothing
+getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: (MonadRandom m, MonadUnliftIO m) => Maybe Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
-getSMPAgentClient_ clientId_ cfg initServers store backgroundMode =
+getSMPAgentClient_ :: (MonadRandom m, MonadUnliftIO m) => Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient_ clientId_ initServers
+      c <- getAgentClient clientId initServers
       void $ runAgentThreads c `forkFinally` const (disconnectAgentClient c)
       pure c
     runAgentThreads c
@@ -466,13 +466,9 @@ withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: AgentMonad' m => InitialAgentServers -> m AgentClient
-getAgentClient = getAgentClient_ Nothing
+getAgentClient :: AgentMonad' m => Int -> InitialAgentServers -> m AgentClient
+getAgentClient clientId initServers = ask >>= atomically . newAgentClient clientId initServers
 {-# INLINE getAgentClient #-}
-
-getAgentClient_ :: AgentMonad' m => Maybe Int -> InitialAgentServers -> m AgentClient
-getAgentClient_ clientId_ initServers = ask >>= atomically . newAgentClient clientId_ initServers
-{-# INLINE getAgentClient_ #-}
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =

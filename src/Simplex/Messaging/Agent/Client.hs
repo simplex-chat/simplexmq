@@ -383,8 +383,8 @@ data AgentStatsKey = AgentStatsKey
   }
   deriving (Eq, Ord, Show)
 
-newAgentClient :: Maybe Int -> InitialAgentServers -> Env -> STM AgentClient
-newAgentClient clientId_ InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -418,7 +418,6 @@ newAgentClient clientId_ InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv =
   smpSubWorkers <- TM.empty
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
-  clientId <- maybe nextClientId pure clientId_
   return
     AgentClient
       { active,
@@ -456,8 +455,6 @@ newAgentClient clientId_ InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv =
         clientId,
         agentEnv
       }
-  where
-    nextClientId = stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store

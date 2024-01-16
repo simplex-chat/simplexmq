@@ -24,7 +24,7 @@ import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2)
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, xit')
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers)
+import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -551,7 +551,7 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
 testSwitchNotifications :: InitialAgentServers -> APNSMockServer -> IO ()
 testSwitchNotifications servers APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient' 1 agentCfg servers testDB
-  b <- getSMPAgentClient' 2 agentCfg {initialClientId = 1} servers testDB2
+  b <- getSMPAgentClient' 2 agentCfg servers testDB2
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
