@@ -428,10 +428,10 @@ runXFTPSndWorker c srv Worker {doWork} = do
               size = FileSize $ sum $ map (fromIntegral . sndChunkSize) chunks
           -- snd description
           sndDescrChunks <- mapM toSndDescrChunk chunks
-          let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks}
+          let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks, redirect = False}
           validFdSnd <- either (throwError . INTERNAL) pure $ validateFileDescription fdSnd
           -- rcv descriptions
-          let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = []}
+          let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = [], redirect = False}
               fdRcvs = createRcvFileDescriptions fdRcv chunks
           validFdRcvs <- either (throwError . INTERNAL) pure $ mapM validateFileDescription fdRcvs
           pure (validFdSnd, validFdRcvs)

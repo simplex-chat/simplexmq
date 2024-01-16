@@ -30,6 +30,9 @@ module Simplex.FileTransfer.Description
     kb,
     mb,
     gb,
+    FileDescriptionURI (..),
+    encodeFileDescriptionURI,
+    decodeFileDescriptionURI,
   )
 where
 
@@ -50,10 +53,14 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.String
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Network.HTTP.Types (urlDecode, urlEncode)
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -69,7 +76,8 @@ data FileDescription (p :: FileParty) = FileDescription
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
-    chunks :: [FileChunk]
+    chunks :: [FileChunk],
+    redirect :: Bool
   }
   deriving (Eq, Show)
 
@@ -147,7 +155,8 @@ data YAMLFileDescription = YAMLFileDescription
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: String,
-    replicas :: [YAMLServerReplicas]
+    replicas :: [YAMLServerReplicas],
+    redirect :: Maybe Bool
   }
   deriving (Eq, Show)
 
@@ -204,7 +213,7 @@ validateFileDescription fd@FileDescription {size, chunks}
     chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription p -> YAMLFileDescription
-encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks} =
+encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks, redirect} =
   YAMLFileDescription
     { party = toFileParty party,
       size = B.unpack $ strEncode size,
@@ -212,8 +221,27 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
       key,
       nonce,
       chunkSize = B.unpack $ strEncode chunkSize,
-      replicas = encodeFileReplicas chunkSize chunks
+      replicas = encodeFileReplicas chunkSize chunks,
+      redirect = if redirect then Just True else Nothing
     }
+
+newtype FileDescriptionURI = FileDescriptionURI Text
+  deriving (Show)
+
+encodeFileDescriptionURI :: FileDescription 'FRecipient -> Either String FileDescriptionURI
+encodeFileDescriptionURI fd@FileDescription {chunks} =
+  case chunks of
+    [_] -> Right . FileDescriptionURI $ "https://simplex.chat/file/#?d=" <> decodeUtf8 (urlEncode True yaml)
+    _ -> Left "must have exactly one chunk"
+  where
+    yaml = strEncode fd
+
+decodeFileDescriptionURI :: FileDescriptionURI -> Either String (FileDescription 'FRecipient)
+decodeFileDescriptionURI (FileDescriptionURI uri) =
+  case T.drop 4 <$> T.breakOn "#?d=" uri of
+    (_, "") -> Left "malformed URI"
+    ("https://simplex.chat/file/", params) -> strDecode . urlDecode True $ encodeUtf8 params
+    _ -> Left "not a file URI"
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
@@ -285,13 +313,13 @@ unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
        in FileServerReplica {chunkNo, server, replicaId, replicaKey, digest = digest', chunkSize = chunkSize'}
 
 decodeFileDescription :: YAMLFileDescription -> Either String AFileDescription
-decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chunkSize, replicas} = do
+decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chunkSize, replicas, redirect} = do
   size' <- strDecode $ B.pack size
   chunkSize' <- strDecode $ B.pack chunkSize
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
   pure $ case aFileParty party of
-    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks}
+    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks, redirect = fromMaybe False redirect}
   where
     decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 

@@ -82,7 +82,8 @@ fileDesc =
                   FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
                 ]
             }
-        ]
+        ],
+      redirect = False
     }
   where
     defaultChunkSize = FileSize $ mb 8
@@ -128,7 +129,8 @@ yamlFileDesc =
                   "3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
                 ]
             }
-        ]
+        ],
+      redirect = Nothing
     }
 
 testParseYAMLFileDescription :: IO ()

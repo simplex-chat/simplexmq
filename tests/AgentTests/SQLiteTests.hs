@@ -656,7 +656,8 @@ rcvFileDescr1 =
               chunkSize = defaultChunkSize,
               replicas = [FileChunkReplica {server = xftpServer1, replicaId, replicaKey = testFileReplicaKey}]
             }
-        ]
+        ],
+      redirect = False
     }
   where
     defaultChunkSize = FileSize $ mb 8

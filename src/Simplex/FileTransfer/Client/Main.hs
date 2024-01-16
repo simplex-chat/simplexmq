@@ -297,8 +297,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
-          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = False}
+          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = False}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
     uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
