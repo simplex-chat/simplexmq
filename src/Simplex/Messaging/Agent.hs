@@ -2047,7 +2047,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               handleNotifyAck :: m () -> m ()
               handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
           SMP.END ->
-            atomically (TM.lookup tSess smpClients $>>= tryReadTMVar >>= processEND)
+            atomically (TM.lookup tSess smpClients $>>= (tryReadTMVar . sessionVar) >>= processEND)
               >>= logServer "<--" c srv rId
             where
               processEND = \case
