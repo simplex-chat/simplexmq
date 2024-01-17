@@ -53,20 +53,6 @@ pqRatchetVersion = 3
 supportedE2EEncryptVRange :: VersionRange
 supportedE2EEncryptVRange = mkVersionRange 1 currentE2EEncryptVersion
 
-data E2ERachetKEM = E2ERachetKEM KEMPublicKey (Maybe KEMCiphertext)
-  deriving (Eq, Show)
-
-instance Encoding E2ERachetKEM where
-  smpEncode (E2ERachetKEM k ct) = smpEncode (k, ct)
-  smpP = E2ERachetKEM <$> smpP <*> smpP
-
-type RcvE2ERatchetParams a = E2ERatchetParams a KEMPublicKey
-
-type SndE2ERatchetParams a = E2ERatchetParams a E2ERachetKEM
-
-toSndE2EParams :: RcvE2ERatchetParams a -> SndE2ERatchetParams a
-toSndE2EParams (E2ERatchetParams v k1 k2 kem_) = E2ERatchetParams v k1 k2 ((`E2ERachetKEM` Nothing) <$> kem_)
-
 data E2ERatchetParams (a :: Algorithm) kem
   = E2ERatchetParams Version (PublicKey a) (PublicKey a) (Maybe kem)
   deriving (Eq, Show)
@@ -113,6 +99,20 @@ instance (AlgorithmI a, StrEncoding kem) => StrEncoding (E2ERatchetParamsUri a k
       kemP vs query
         | maxVersion vs >= pqRatchetVersion = queryParam_ "kem" query
         | otherwise = pure Nothing
+
+data E2ERachetKEM = E2ERachetKEM KEMPublicKey (Maybe KEMCiphertext)
+  deriving (Eq, Show)
+
+instance Encoding E2ERachetKEM where
+  smpEncode (E2ERachetKEM k ct) = smpEncode (k, ct)
+  smpP = E2ERachetKEM <$> smpP <*> smpP
+
+type RcvE2ERatchetParams a = E2ERatchetParams a KEMPublicKey
+
+type SndE2ERatchetParams a = E2ERatchetParams a E2ERachetKEM
+
+toSndE2EParams :: RcvE2ERatchetParams a -> SndE2ERatchetParams a
+toSndE2EParams (E2ERatchetParams v k1 k2 kem_) = E2ERatchetParams v k1 k2 ((`E2ERachetKEM` Nothing) <$> kem_)
 
 data PrivateE2ERachetKEM = PrivateE2ERachetKEM KEMKeyPair (Maybe KEMSharedKey)
 
