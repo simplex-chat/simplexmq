@@ -33,6 +33,7 @@ import UnliftIO.STM
 
 data XFTPServerConfig = XFTPServerConfig
   { xftpPort :: ServiceName,
+    controlPort :: Maybe ServiceName,
     fileIdSize :: Int,
     storeLogFile :: Maybe FilePath,
     filesPath :: FilePath,

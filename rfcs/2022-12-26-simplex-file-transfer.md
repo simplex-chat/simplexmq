@@ -149,6 +149,19 @@ parts:
 
 This file description is sent to all recipients via normal messages, split to 15780 byte chunks if needed.
 
+### Server address syntax
+
+The server address is a URI with the following format:
+
+```abnf
+xftpServerURI = %s"xftp://" xftpServer
+xftpServer = serverIdentity "@" srvHost [":" port]
+srvHost = <hostname> ; RFC1123, RFC5891
+port = 1*DIGIT
+serverIdentity = base64url
+base64url = <base64url encoded binary> ; RFC4648, section 5
+```
+
 ### Receiving file
 
 Having received the description, the recipient will:

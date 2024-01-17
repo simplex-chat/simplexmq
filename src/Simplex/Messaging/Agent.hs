@@ -38,6 +38,7 @@ module Simplex.Messaging.Agent
     AgentErrorMonad,
     SubscriptionsInfo (..),
     getSMPAgentClient,
+    getSMPAgentClient_,
     disconnectAgentClient,
     resumeAgentClient,
     withConnLock,
@@ -65,6 +66,7 @@ module Simplex.Messaging.Agent
     resubscribeConnections,
     sendMessage,
     sendMessages,
+    sendMessagesB,
     ackMessage,
     switchConnection,
     abortConnectionSwitch,
@@ -175,11 +177,15 @@ import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
-getSMPAgentClient cfg initServers store backgroundMode =
+getSMPAgentClient = getSMPAgentClient_ 1
+{-# INLINE getSMPAgentClient #-}
+
+getSMPAgentClient_ :: (MonadRandom m, MonadUnliftIO m) => Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient initServers
+      c <- getAgentClient clientId initServers
       void $ runAgentThreads c `forkFinally` const (disconnectAgentClient c)
       pure c
     runAgentThreads c
@@ -288,6 +294,9 @@ type MsgReq = (ConnId, MsgFlags, MsgBody)
 -- | Send multiple messages to different connections (SEND command)
 sendMessages :: MonadUnliftIO m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
 sendMessages c = withAgentEnv c . sendMessages' c
+
+sendMessagesB :: (MonadUnliftIO m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB c = withAgentEnv c . sendMessagesB' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
 ackMessage c = withAgentEnv c .:. ackMessage' c
@@ -457,8 +466,9 @@ withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: AgentMonad' m => InitialAgentServers -> m AgentClient
-getAgentClient initServers = ask >>= atomically . newAgentClient initServers
+getAgentClient :: AgentMonad' m => Int -> InitialAgentServers -> m AgentClient
+getAgentClient clientId initServers = ask >>= atomically . newAgentClient clientId initServers
+{-# INLINE getAgentClient #-}
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =
@@ -880,14 +890,14 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId msgFlags msg = liftEither . runIdentity =<< sendMessagesB c (Identity (Right (connId, msgFlags, msg)))
+sendMessage' c connId msgFlags msg = liftEither . runIdentity =<< sendMessagesB' c (Identity (Right (connId, msgFlags, msg)))
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
 sendMessages' :: forall m. AgentMonad' m => AgentClient -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
-sendMessages' c = sendMessagesB c . map Right
+sendMessages' c = sendMessagesB' c . map Right
 
-sendMessagesB :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
-sendMessagesB c reqs = withConnLocks c connIds "sendMessages" $ do
+sendMessagesB' :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
   reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   let reqs'' = fmap (>>= prepareConn) reqs'
   enqueueMessagesB c reqs''
@@ -924,7 +934,7 @@ resumeConnCmds c connId =
 
 getAsyncCmdWorker :: AgentMonad' m => Bool -> AgentClient -> Maybe SMPServer -> m Worker
 getAsyncCmdWorker hasWork c server =
-  getAgentWorker hasWork c server (asyncCmdWorkers c) (runCommandProcessing c server)
+  getAgentWorker "async_cmd" hasWork c server (asyncCmdWorkers c) (runCommandProcessing c server)
 
 runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> Worker -> m ()
 runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
@@ -1120,7 +1130,7 @@ resumeMsgDelivery = void .:. getDeliveryWorker False
 
 getDeliveryWorker :: AgentMonad' m => Bool -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
 getDeliveryWorker hasWork c cData sq =
-  getAgentWorker' fst mkLock hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
+  getAgentWorker' fst mkLock "msg_delivery" hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
   where
     mkLock w = do
       retryLock <- newEmptyTMVar
@@ -1789,12 +1799,11 @@ getAgentMigrations' :: AgentMonad m => AgentClient -> m [UpMigration]
 getAgentMigrations' c = map upMigration <$> withStore' c (Migrations.getCurrent . DB.conn)
 
 debugAgentLocks' :: AgentMonad' m => AgentClient -> m AgentLocks
-debugAgentLocks' AgentClient {connLocks = cs, invLocks = is, reconnectLocks = rs, deleteLock = d} = do
+debugAgentLocks' AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do
   connLocks <- getLocks cs
   invLocks <- getLocks is
-  srvLocks <- getLocks rs
   delLock <- atomically $ tryReadTMVar d
-  pure AgentLocks {connLocks, invLocks, srvLocks, delLock}
+  pure AgentLocks {connLocks, invLocks, delLock}
   where
     getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 
@@ -2039,7 +2048,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               handleNotifyAck :: m () -> m ()
               handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
           SMP.END ->
-            atomically (TM.lookup tSess smpClients $>>= tryReadTMVar >>= processEND)
+            atomically (TM.lookup tSess smpClients $>>= (tryReadTMVar . sessionVar) >>= processEND)
               >>= logServer "<--" c srv rId
             where
               processEND = \case

@@ -69,7 +69,7 @@ import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
@@ -217,8 +217,8 @@ instance Transport TLS where
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} s =
-    withTimedErr t_ . T.sendData tlsContext $ BL.fromStrict s
+  cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} =
+    withTimedErr t_ . T.sendData tlsContext . LB.fromStrict
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do

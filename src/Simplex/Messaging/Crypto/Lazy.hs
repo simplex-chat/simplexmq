@@ -41,7 +41,6 @@ import qualified Crypto.MAC.Poly1305 as Poly1305
 import Data.Bifunctor (first)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
-import qualified Data.ByteString as S
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -175,7 +174,7 @@ secretBoxTailTag sbProcess secret nonce msg = run <$> sbInit_ secret nonce
 
 -- passes lazy bytestring via initialized secret box returning the reversed list of chunks
 secretBoxLazy_ :: (SbState -> ByteString -> (ByteString, SbState)) -> SbState -> LazyByteString -> ([ByteString], SbState)
-secretBoxLazy_ sbProcess state = foldlChunks update ([], state)
+secretBoxLazy_ sbProcess state = LB.foldlChunks update ([], state)
   where
     update (cs, st) chunk = let (!c, !st') = sbProcess st chunk in (c : cs, st')
 
@@ -231,10 +230,3 @@ cryptoPassed :: CE.CryptoFailable b -> Either CryptoError b
 cryptoPassed = \case
   CE.CryptoPassed a -> Right a
   CE.CryptoFailed e -> Left $ CryptoPoly1305Error e
-
-foldlChunks :: (a -> S.ByteString -> a) -> a -> LazyByteString -> a
-foldlChunks f = go
-  where
-    go !a LB.Empty = a
-    go !a (LB.Chunk c cs) = go (f a c) cs
-{-# INLINE foldlChunks #-}

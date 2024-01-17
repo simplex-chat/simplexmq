@@ -78,6 +78,7 @@ module Simplex.Messaging.Agent.Client
     agentDRG,
     getAgentSubscriptions,
     Worker (..),
+    SessionVar (..),
     SubscriptionsInfo (..),
     SubInfo (..),
     AgentOperation (..),
@@ -116,6 +117,10 @@ module Simplex.Messaging.Agent.Client
     getNextServer,
     withUserServers,
     withNextSrv,
+    AgentWorkersDetails (..),
+    getAgentWorkersDetails,
+    AgentWorkersSummary (..),
+    getAgentWorkersSummary,
   )
 where
 
@@ -148,7 +153,9 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+-- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -209,21 +216,25 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
-import System.Timeout (timeout)
-import UnliftIO (mapConcurrently)
+import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
 import UnliftIO.Directory (getTemporaryDirectory)
 import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type ClientVar msg = TMVar (Either AgentErrorType (Client msg))
+data SessionVar a = SessionVar
+  { sessionVar :: TMVar a,
+    sessionVarId :: Int
+  }
+
+type ClientVar msg = SessionVar (Either AgentErrorType (Client msg)) 
 
 type SMPClientVar = ClientVar SMP.BrokerMsg
 
 type NtfClientVar = ClientVar NtfResponse
 
-type XFTPClientVar = TMVar (Either AgentErrorType XFTPClient)
+type XFTPClientVar = ClientVar FileResponse
 
 type SMPTransportSession = TransportSession SMP.BrokerMsg
 
@@ -264,24 +275,22 @@ data AgentClient = AgentClient
     invLocks :: TMap ByteString Lock,
     -- lock to prevent concurrency between periodic and async connection deletions
     deleteLock :: Lock,
-    -- locks to prevent concurrent reconnections to SMP servers
-    reconnectLocks :: TMap SMPTransportSession Lock,
-    reconnections :: TAsyncs,
+    -- smpSubWorkers for SMP servers sessions
+    smpSubWorkers :: TMap SMPTransportSession (SessionVar (Async ())),
     asyncClients :: TAsyncs,
     agentStats :: TMap AgentStatsKey (TVar Int),
     clientId :: Int,
     agentEnv :: Env
   }
 
-getAgentWorker :: (AgentMonad' m, Ord k) => Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT AgentErrorType m ()) -> m Worker
+getAgentWorker :: (AgentMonad' m, Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT AgentErrorType m ()) -> m Worker
 getAgentWorker = getAgentWorker' id pure
 
-getAgentWorker' :: (AgentMonad' m, Ord k) => (a -> Worker) -> (Worker -> STM a) -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT AgentErrorType m ()) -> m a
-getAgentWorker' toW fromW hasWork c key ws work = do
+getAgentWorker' :: forall a k m. (AgentMonad' m, Ord k, Show k) => (a -> Worker) -> (Worker -> STM a) -> String -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT AgentErrorType m ()) -> m a
+getAgentWorker' toW fromW name hasWork c key ws work = do
   atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
   where
     getWorker = TM.lookup key ws
-    deleteWorker wId = mapM_ $ \w -> when (wId == workerId (toW w)) $ TM.delete key ws
     createWorker = do
       w <- fromW =<< newWorker c
       TM.insert key w ws
@@ -289,26 +298,56 @@ getAgentWorker' toW fromW hasWork c key ws work = do
     whenExists w
       | hasWork = hasWorkToDo (toW w) $> w
       | otherwise = pure w
-    runWorker w = do
-      let w'@Worker {workerId} = toW w
-      runWorkerAsync w' . void . runExceptT $
-        work w `agentFinally` atomically (getWorker >>= deleteWorker workerId)
+    runWorker w = runWorkerAsync (toW w) runWork
+      where
+        runWork :: m ()
+        runWork = tryAgentError' (work w) >>= restartOrDelete
+        restartOrDelete :: Either AgentErrorType () -> m ()
+        restartOrDelete e_ = do
+          t <- liftIO getSystemTime
+          maxRestarts <- asks $ maxWorkerRestartsPerMin . config
+          -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
+          restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
+          when restart runWork
+        shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
+          | wId == workerId (toW w') =
+              checkRestarts . updateRestartCount t =<< readTVar restarts
+          | otherwise =
+              pure False -- there is a new worker in the map, no action
+          where
+            checkRestarts rc
+              | restartCount rc < maxRestarts = do
+                  writeTVar restarts rc
+                  hasWorkToDo' doWork
+                  void $ tryPutTMVar action Nothing
+                  notifyErr INTERNAL
+                  pure True
+              | otherwise = do
+                  TM.delete key ws
+                  notifyErr $ CRITICAL True
+                  pure False
+              where
+                notifyErr err = do
+                  let e = either ((", error: " <>) . show) (\_ -> ", no error") e_
+                      msg = "Worker " <> name <> " for " <> show key <> " terminated " <> show (restartCount rc) <> " times" <> e
+                  writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
   workerId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
   doWork <- newTMVar ()
   action <- newTMVar Nothing
-  pure Worker {workerId, doWork, action}
+  restarts <- newTVar $ RestartCount 0 0
+  pure Worker {workerId, doWork, action, restarts}
 
 runWorkerAsync :: AgentMonad' m => Worker -> m () -> m ()
-runWorkerAsync Worker {action} worker =
+runWorkerAsync Worker {action} work =
   bracket
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
     (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
     (\a -> when (isNothing a) start) -- start worker if it's not running
   where
-    start = atomically . putTMVar action . Just =<< async worker
+    start = atomically . putTMVar action . Just =<< async work
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
@@ -332,7 +371,6 @@ data AgentState = ASForeground | ASSuspending | ASSuspended
 data AgentLocks = AgentLocks
   { connLocks :: Map String String,
     invLocks :: Map String String,
-    srvLocks :: Map String String,
     delLock :: Maybe String
   }
   deriving (Show)
@@ -346,8 +384,8 @@ data AgentStatsKey = AgentStatsKey
   }
   deriving (Eq, Ord, Show)
 
-newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
-newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -378,11 +416,9 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   connLocks <- TM.empty
   invLocks <- TM.empty
   deleteLock <- createLock
-  reconnectLocks <- TM.empty
-  reconnections <- newTAsyncs
+  smpSubWorkers <- TM.empty
   asyncClients <- newTAsyncs
   agentStats <- TM.empty
-  clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   return
     AgentClient
       { active,
@@ -414,8 +450,7 @@ newAgentClient InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
         connLocks,
         invLocks,
         deleteLock,
-        reconnectLocks,
-        reconnections,
+        smpSubWorkers,
         asyncClients,
         agentStats,
         clientId,
@@ -467,25 +502,24 @@ instance ProtocolServerClient XFTPErrorType FileResponse where
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getClientVar tSess smpClients)
-    >>= either
-      (newProtocolClient c tSess smpClients connectClient reconnectSMPClient)
-      (waitForProtocolClient c tSess)
+  atomically (getTSessVar c tSess smpClients)
+    >>= either newClient (waitForProtocolClient c tSess)
   where
-    connectClient :: m SMPClient
-    connectClient = do
+    newClient = newProtocolClient c tSess smpClients connectClient resubscribeSMPSession
+    connectClient :: SMPClientVar -> m SMPClient
+    connectClient v = do
       cfg <- getClientConfig c smpCfg
       u <- askUnliftIO
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg (Just msgQ) $ clientDisconnected u)
+      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg (Just msgQ) $ clientDisconnected u v)
 
-    clientDisconnected :: UnliftIO m -> SMPClient -> IO ()
-    clientDisconnected u client = do
+    clientDisconnected :: UnliftIO m -> SMPClientVar -> SMPClient -> IO ()
+    clientDisconnected u v client = do
       removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ do
-          TM.delete tSess smpClients
+          removeTSessVar v tSess smpClients
           qs <- RQ.getDelSessQueues tSess $ activeSubs c
           mapM_ (`RQ.addQueue` pendingSubs c) qs
           let cs = S.fromList $ map qConnId qs
@@ -499,27 +533,49 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            unliftIO u $ reconnectServer c tSess
+            unliftIO u $ resubscribeSMPSession c tSess
 
         notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
-reconnectServer :: AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectServer c tSess = newAsyncAction tryReconnectSMPClient $ reconnections c
+resubscribeSMPSession :: AgentMonad' m => AgentClient -> SMPTransportSession -> m ()
+resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
+  atomically (getTSessVar c tSess smpSubWorkers) >>= either newSubWorker (\_ -> pure ())
   where
-    tryReconnectSMPClient aId = do
+    newSubWorker v = do
+      a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
+      atomically $ putTMVar (sessionVar v) a
+    runSubWorker = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop ->
-        reconnectSMPClient c tSess `catchAgentError` const loop
-      atomically . removeAsyncAction aId $ reconnections c
+      timeoutCounts <- newTVarIO 0
+      withRetryInterval ri $ \_ loop -> do
+        pending <- atomically . RQ.getSessQueues tSess $ pendingSubs c
+        forM_ (L.nonEmpty pending) $ \qs -> do
+          void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
+          loop
+    cleanup :: SessionVar (Async ()) -> STM ()
+    cleanup v = do
+      -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
+      -- Not waiting may result in terminated worker remaining in the map.
+      whenM (isEmptyTMVar $ sessionVar v) retry
+      removeTSessVar v tSess smpSubWorkers
 
-reconnectSMPClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m ()
-reconnectSMPClient c tSess@(_, srv, _) =
-  withLockMap_ (reconnectLocks c) tSess "reconnect" $
-    atomically (RQ.getSessQueues tSess $ pendingSubs c) >>= mapM_ resubscribe . L.nonEmpty
+reconnectSMPClient :: forall m. AgentMonad m => TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> m ()
+reconnectSMPClient tc c tSess@(_, srv, _) qs = do
+  NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
+  -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
+  let t = (length qs `div` 90 + 1) * tcpTimeout * 3
+  t `timeout` resubscribe >>= \case
+    Just _ -> atomically $ writeTVar tc 0
+    Nothing -> do
+      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+      maxTC <- asks $ maxSubscriptionTimeouts . config
+      let err = if tc' >= maxTC then CRITICAL True else INTERNAL
+          msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
   where
-    resubscribe :: NonEmpty RcvQueue -> m ()
-    resubscribe qs = do
+    resubscribe :: m ()
+    resubscribe = do
       cs <- atomically . RQ.getConns $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
@@ -528,26 +584,29 @@ reconnectSMPClient c tSess@(_, srv, _) =
         unless (null conns) $ notifySub "" $ UP srv conns
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      mapM_ (throwError . snd) $ listToMaybe tempErrs
+      forM_ (listToMaybe tempErrs) $ \(_, err) -> do
+        when (null okConns && S.null cs && null finalErrs) . liftIO $
+          closeClient c smpClients tSess
+        throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfTransportSession -> m NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getClientVar tSess ntfClients)
+  atomically (getTSessVar c tSess ntfClients)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient $ \_ _ -> pure ())
       (waitForProtocolClient c tSess)
   where
-    connectClient :: m NtfClient
-    connectClient = do
+    connectClient :: NtfClientVar -> m NtfClient
+    connectClient v = do
       cfg <- getClientConfig c ntfCfg
-      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg Nothing clientDisconnected)
+      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg Nothing $ clientDisconnected v)
 
-    clientDisconnected :: NtfClient -> IO ()
-    clientDisconnected client = do
-      atomically $ TM.delete tSess ntfClients
+    clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
+    clientDisconnected v client = do
+      atomically $ removeTSessVar v tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -555,60 +614,68 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 getXFTPServerClient :: forall m. AgentMonad m => AgentClient -> XFTPTransportSession -> m XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getClientVar tSess xftpClients)
+  atomically (getTSessVar c tSess xftpClients)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient $ \_ _ -> pure ())
       (waitForProtocolClient c tSess)
   where
-    connectClient :: m XFTPClient
-    connectClient = do
+    connectClient :: XFTPClientVar -> m XFTPClient
+    connectClient v = do
       cfg <- asks $ xftpCfg . config
       xftpNetworkConfig <- readTVarIO useNetworkConfig
-      liftEitherError (protocolClientError XFTP $ B.unpack $ strEncode srv) (X.getXFTPClient tSess cfg {xftpNetworkConfig} clientDisconnected)
+      liftEitherError (protocolClientError XFTP $ B.unpack $ strEncode srv) (X.getXFTPClient tSess cfg {xftpNetworkConfig} $ clientDisconnected v)
 
-    clientDisconnected :: XFTPClient -> IO ()
-    clientDisconnected client = do
-      atomically $ TM.delete tSess xftpClients
+    clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
+    clientDisconnected v client = do
+      atomically $ removeTSessVar v tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-getClientVar :: forall a s. TransportSession s -> TMap (TransportSession s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
-getClientVar tSess clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup tSess clients
+getTSessVar :: forall a s. AgentClient -> TransportSession s -> TMap (TransportSession s) (SessionVar a) -> STM (Either (SessionVar a) (SessionVar a))
+getTSessVar c tSess vs = maybe (Left <$> newSessionVar) (pure . Right) =<< TM.lookup tSess vs
   where
-    newClientVar :: STM (TMVar a)
-    newClientVar = do
-      var <- newEmptyTMVar
-      TM.insert tSess var clients
-      pure var
+    newSessionVar :: STM (SessionVar a)
+    newSessionVar = do
+      sessionVar <- newEmptyTMVar
+      sessionVarId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
+      let v = SessionVar {sessionVar, sessionVarId}
+      TM.insert tSess v vs
+      pure v
+
+removeTSessVar :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM ()
+removeTSessVar v tSess vs =
+  TM.lookup tSess vs
+    >>= mapM_ (\v' -> when (sessionVarId v == sessionVarId v') $ TM.delete tSess vs)
 
 waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (ProtoType msg)) => AgentClient -> TransportSession msg -> ClientVar msg -> m (Client msg)
-waitForProtocolClient c (_, srv, _) clientVar = do
+waitForProtocolClient c (_, srv, _) v = do
   NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
-  client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
+  client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
   liftEither $ case client_ of
     Just (Right smpClient) -> Right smpClient
     Just (Left e) -> Left e
     Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
+-- clientConnected arg is only passed for SMP server
 newProtocolClient ::
   forall err msg m.
   (AgentMonad m, ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) =>
   AgentClient ->
   TransportSession msg ->
   TMap (TransportSession msg) (ClientVar msg) ->
-  m (Client msg) ->
+  (ClientVar msg -> m (Client msg)) ->
   (AgentClient -> TransportSession msg -> m ()) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconnectClient clientVar = tryConnectClient pure tryConnectAsync
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v = tryConnectClient pure tryConnectAsync
   where
     tryConnectClient :: (Client msg -> m a) -> m () -> m a
     tryConnectClient successAction retryAction =
-      tryError connectClient >>= \r -> case r of
+      tryAgentError (connectClient v) >>= \case
         Right client -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
-          atomically $ putTMVar clientVar r
+          atomically $ putTMVar (sessionVar v) (Right client)
           liftIO $ incClientStat c userId client "CLIENT" "OK"
           atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
           successAction client
@@ -617,15 +684,15 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient reconne
           if temporaryAgentError e
             then retryAction
             else atomically $ do
-              putTMVar clientVar (Left e)
-              TM.delete tSess clients
+              putTMVar (sessionVar v) (Left e)
+              removeTSessVar v tSess clients
           throwError e
     tryConnectAsync :: m ()
     tryConnectAsync = newAsyncAction connectAsync $ asyncClients c
     connectAsync :: Int -> m ()
     connectAsync aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop -> void $ tryConnectClient (const $ reconnectClient c tSess) loop
+      withRetryInterval ri $ \_ loop -> void $ tryConnectClient (const $ clientConnected c tSess) loop
       atomically . removeAsyncAction aId $ asyncClients c
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
@@ -643,7 +710,7 @@ closeAgentClient c = liftIO $ do
   closeProtocolServerClients c smpClients
   closeProtocolServerClients c ntfClients
   closeProtocolServerClients c xftpClients
-  cancelActions . actions $ reconnections c
+  atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
   cancelActions . actions $ asyncClients c
   clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
   clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
@@ -657,6 +724,8 @@ closeAgentClient c = liftIO $ do
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
+    cancelReconnect :: SessionVar (Async ())  -> IO ()
+    cancelReconnect v = void . forkIO $ atomically (readTMVar $ sessionVar v) >>= uninterruptibleCancel
 
 cancelWorker :: Worker -> IO ()
 cancelWorker Worker {doWork, action} = do
@@ -684,9 +753,9 @@ closeClient c clientSel tSess =
   atomically (TM.lookupDelete tSess $ clientSel c) >>= mapM_ (closeClient_ c)
 
 closeClient_ :: ProtocolServerClient err msg => AgentClient -> ClientVar msg -> IO ()
-closeClient_ c cVar = do
+closeClient_ c v = do
   NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
-  tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
+  tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 
@@ -947,7 +1016,7 @@ temporaryOrHostError = \case
   e -> temporaryAgentError e
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
@@ -965,13 +1034,13 @@ subscribeQueues c qs = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
       when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
-        reconnectServer c (transportSession' smp)
+        resubscribeSMPSession c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
 
 -- statBatchSize is not used to batch the commands, only for traffic statistics
-sendTSessionBatches :: forall m q r. AgentMonad m => ByteString -> Int -> (q -> RcvQueue) -> (SMPClient -> NonEmpty q -> IO (BatchResponses SMPClientError r)) -> AgentClient -> [q] -> m [(RcvQueue, Either AgentErrorType r)]
+sendTSessionBatches :: forall m q r. AgentMonad' m => ByteString -> Int -> (q -> RcvQueue) -> (SMPClient -> NonEmpty q -> IO (BatchResponses SMPClientError r)) -> AgentClient -> [q] -> m [(RcvQueue, Either AgentErrorType r)]
 sendTSessionBatches statCmd statBatchSize toRQ action c qs =
   concatMap L.toList <$> (mapConcurrently sendClientBatch =<< batchQueues)
   where
@@ -985,7 +1054,7 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs =
            in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> m (BatchResponses AgentErrorType r)
     sendClientBatch (tSess@(userId, srv, _), qs') =
-      tryError (getSMPServerClient c tSess) >>= \case
+      tryAgentError' (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map ((,Left e) . toRQ) qs'
         Right smp -> liftIO $ do
           logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
@@ -1086,7 +1155,7 @@ enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtf
   withSMPClient c rq "NKEY <nkey>" $ \smp ->
     enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
-enableQueuesNtfs :: forall m. AgentMonad m => AgentClient -> [(RcvQueue, SMP.NtfPublicVerifyKey, SMP.RcvNtfPublicDhKey)] -> m [(RcvQueue, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
+enableQueuesNtfs :: forall m. AgentMonad' m => AgentClient -> [(RcvQueue, SMP.NtfPublicVerifyKey, SMP.RcvNtfPublicDhKey)] -> m [(RcvQueue, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
 enableQueuesNtfs = sendTSessionBatches "NKEY" 90 fst3 enableQueues_
   where
     fst3 (x, _, _) = x
@@ -1100,7 +1169,7 @@ disableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} =
   withSMPClient c rq "NDEL" $ \smp ->
     disableSMPQueueNotifications smp rcvPrivateKey rcvId
 
-disableQueuesNtfs :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+disableQueuesNtfs :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueuesNtfs
 
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
@@ -1127,7 +1196,7 @@ deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
   withSMPClient c rq "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-deleteQueues :: forall m. AgentMonad m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
+deleteQueues :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 deleteQueues = sendTSessionBatches "DEL" 90 id $ sendBatch deleteSMPQueues
 
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> MsgFlags -> ByteString -> m ()
@@ -1265,11 +1334,11 @@ withWork c doWork getWork action =
   withStore' c getWork >>= \case
     Right (Just r) -> action r
     Right Nothing -> noWork
-    Left e@SEWorkItemError {} -> noWork >> notifyErr e
-    Left e -> notifyErr e
+    Left e@SEWorkItemError {} -> noWork >> notifyErr (CRITICAL False) e
+    Left e -> notifyErr INTERNAL e
   where
     noWork = liftIO $ noWorkToDo doWork
-    notifyErr e = atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ show e)
+    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err $ show e)
 
 noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
@@ -1483,6 +1552,114 @@ getAgentSubscriptions c = do
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
 
+data AgentWorkersDetails = AgentWorkersDetails
+  { smpClients_ :: [Text],
+    ntfClients_ :: [Text],
+    xftpClients_ :: [Text],
+    smpDeliveryWorkers_ :: Map Text Int,
+    asyncCmdWorkers_ :: Map Text Int,
+    smpSubWorkers_ :: [Text],
+    asyncCients_ :: [Int],
+    ntfWorkers_ :: Map Text Int,
+    ntfSMPWorkers_ :: Map Text Int,
+    xftpRcvWorkers_ :: Map Text Int,
+    xftpSndWorkers_ :: Map Text Int,
+    xftpDelWorkers_ :: Map Text Int
+  }
+  deriving (Show)
+
+getAgentWorkersDetails :: MonadIO m => AgentClient -> m AgentWorkersDetails
+getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}, agentEnv} = do
+  smpClients_ <- textKeys <$> readTVarIO smpClients
+  ntfClients_ <- textKeys <$> readTVarIO ntfClients
+  xftpClients_ <- textKeys <$> readTVarIO xftpClients
+  smpDeliveryWorkers_ <- workerStats . fmap fst =<< readTVarIO smpDeliveryWorkers
+  asyncCmdWorkers_ <- workerStats =<< readTVarIO asyncCmdWorkers
+  smpSubWorkers_ <- textKeys <$> readTVarIO smpSubWorkers
+  asyncCients_ <- M.keys <$> readTVarIO actions
+  ntfWorkers_ <- workerStats =<< readTVarIO ntfWorkers
+  ntfSMPWorkers_ <- workerStats =<< readTVarIO ntfSMPWorkers
+  xftpRcvWorkers_ <- workerStats =<< readTVarIO xftpRcvWorkers
+  xftpSndWorkers_ <- workerStats =<< readTVarIO xftpSndWorkers
+  xftpDelWorkers_ <- workerStats =<< readTVarIO xftpDelWorkers
+  pure
+    AgentWorkersDetails
+      { smpClients_,
+        ntfClients_,
+        xftpClients_,
+        smpDeliveryWorkers_,
+        asyncCmdWorkers_,
+        smpSubWorkers_,
+        asyncCients_,
+        ntfWorkers_,
+        ntfSMPWorkers_,
+        xftpRcvWorkers_,
+        xftpSndWorkers_,
+        xftpDelWorkers_
+      }
+  where
+    textKeys :: StrEncoding k => Map k v -> [Text]
+    textKeys = map textKey . M.keys
+    textKey :: StrEncoding k => k -> Text
+    textKey = decodeASCII . strEncode
+    workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text Int)
+    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts}) -> do
+      RestartCount {restartCount} <- readTVarIO restarts
+      pure (textKey qa, restartCount)
+    Env {ntfSupervisor, xftpAgent} = agentEnv
+    NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
+    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
+
+data AgentWorkersSummary = AgentWorkersSummary
+  { smpClientsCount :: Int,
+    ntfClientsCount :: Int,
+    xftpClientsCount :: Int,
+    smpDeliveryWorkersCount :: Int,
+    asyncCmdWorkersCount :: Int,
+    smpSubWorkersCount :: Int,
+    asyncCientsCount :: Int,
+    ntfWorkersCount :: Int,
+    ntfSMPWorkersCount :: Int,
+    xftpRcvWorkersCount :: Int,
+    xftpSndWorkersCount :: Int,
+    xftpDelWorkersCount :: Int
+  }
+  deriving (Show)
+
+getAgentWorkersSummary :: MonadIO m => AgentClient -> m AgentWorkersSummary
+getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, asyncClients = TAsyncs {actions}, agentEnv} = do
+  smpClientsCount <- M.size <$> readTVarIO smpClients
+  ntfClientsCount <- M.size <$> readTVarIO ntfClients
+  xftpClientsCount <- M.size <$> readTVarIO xftpClients
+  smpDeliveryWorkersCount <- M.size <$> readTVarIO smpDeliveryWorkers
+  asyncCmdWorkersCount <- M.size <$> readTVarIO asyncCmdWorkers
+  smpSubWorkersCount <- M.size <$> readTVarIO smpSubWorkers
+  asyncCientsCount <- M.size <$> readTVarIO actions
+  ntfWorkersCount <- M.size <$> readTVarIO ntfWorkers
+  ntfSMPWorkersCount <- M.size <$> readTVarIO ntfSMPWorkers
+  xftpRcvWorkersCount <- M.size <$> readTVarIO xftpRcvWorkers
+  xftpSndWorkersCount <- M.size <$> readTVarIO xftpSndWorkers
+  xftpDelWorkersCount <- M.size <$> readTVarIO xftpDelWorkers
+  pure
+    AgentWorkersSummary
+      { smpClientsCount,
+        ntfClientsCount,
+        xftpClientsCount,
+        smpDeliveryWorkersCount,
+        asyncCmdWorkersCount,
+        smpSubWorkersCount,
+        asyncCientsCount,
+        ntfWorkersCount,
+        ntfSMPWorkersCount,
+        xftpRcvWorkersCount,
+        xftpSndWorkersCount,
+        xftpDelWorkersCount
+      }
+  where
+    Env {ntfSupervisor, xftpAgent} = agentEnv
+    NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
+    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
+
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
@@ -1492,3 +1669,7 @@ $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
+
+$(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
+
+$(J.deriveJSON defaultJSON ''AgentWorkersSummary)

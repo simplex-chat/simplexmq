@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
+    tryAgentError',
     catchAgentError,
     agentFinally,
     Env (..),
@@ -28,9 +29,12 @@ module Simplex.Messaging.Agent.Env.SQLite
     NtfSupervisorCommand (..),
     XFTPAgent (..),
     Worker (..),
+    RestartCount (..),
+    updateRestartCount,
   )
 where
 
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -40,6 +44,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
+import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
@@ -90,6 +95,8 @@ data AgentConfig = AgentConfig
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
+    maxWorkerRestartsPerMin :: Int,
+    maxSubscriptionTimeouts :: Int,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
@@ -107,8 +114,7 @@ data AgentConfig = AgentConfig
     certificateFile :: FilePath,
     e2eEncryptVRange :: VersionRange,
     smpAgentVRange :: VersionRange,
-    smpClientVRange :: VersionRange,
-    initialClientId :: Int
+    smpClientVRange :: VersionRange
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -156,6 +162,10 @@ defaultAgentConfig =
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
+      maxWorkerRestartsPerMin = 5,
+      -- 3 consecutive subscription timeouts will result in alert to the user
+      -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
+      maxSubscriptionTimeouts = 3,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
@@ -175,15 +185,13 @@ defaultAgentConfig =
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
-      smpClientVRange = supportedSMPClientVRange,
-      initialClientId = 0
+      smpClientVRange = supportedSMPClientVRange
     }
 
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
     random :: TVar ChaChaDRG,
-    clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,
@@ -191,14 +199,13 @@ data Env = Env
   }
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
-newSMPAgentEnv config@AgentConfig {initialClientId} store = do
+newSMPAgentEnv config store = do
   random <- C.newRandom
-  clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
-  pure Env {config, store, random, clientCounter, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
+  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
@@ -241,6 +248,11 @@ tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
 {-# INLINE tryAgentError #-}
 
+-- unlike runExceptT, this ensures we catch IO exceptions as well
+tryAgentError' :: AgentMonad' m => ExceptT AgentErrorType m a -> m (Either AgentErrorType a)
+tryAgentError' = fmap join . runExceptT . tryAgentError
+{-# INLINE tryAgentError' #-}
+
 catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
 catchAgentError = catchAllErrors mkInternal
 {-# INLINE catchAgentError #-}
@@ -256,5 +268,16 @@ mkInternal = INTERNAL . show
 data Worker = Worker
   { workerId :: Int,
     doWork :: TMVar (),
-    action :: TMVar (Maybe (Async ()))
+    action :: TMVar (Maybe (Async ())),
+    restarts :: TVar RestartCount
   }
+
+data RestartCount = RestartCount
+  { restartMinute :: Int64,
+    restartCount :: Int
+  }
+
+updateRestartCount :: SystemTime -> RestartCount -> RestartCount
+updateRestartCount t (RestartCount minute count) = do
+  let min' = systemSeconds t `div` 60
+   in RestartCount min' $ if minute == min' then count + 1 else 1

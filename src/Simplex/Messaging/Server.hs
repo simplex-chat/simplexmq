@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -118,8 +119,8 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
-  restoreServerMessages
-  restoreServerStats
+  expired <- restoreServerMessages
+  restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
@@ -178,14 +179,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
+      stats <- asks serverStats
       labelMyThread "expireMessages"
       forever $ do
         liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- M.keysSet <$> readTVarIO ms
-        forM_ rIds $ \rId ->
-          atomically (getMsgQueue ms rId quota)
-            >>= atomically . (`deleteExpiredMsgs` old)
+        forM_ rIds $ \rId -> do
+          q <- atomically (getMsgQueue ms rId quota)
+          deleted <- atomically $ deleteExpiredMsgs q old
+          atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -198,7 +201,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
         hSetBuffering h LineBuffering
@@ -210,6 +213,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           qDeleted' <- atomically $ swapTVar qDeleted 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
+          msgExpired' <- atomically $ swapTVar msgExpired 0
           ps <- atomically $ periodStatCounts activeQueues ts
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
@@ -234,7 +238,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 weekCount psNtf,
                 monthCount psNtf,
                 show qCount',
-                show msgCount'
+                show msgCount',
+                show msgExpired'
               ]
           threadDelay' interval
 
@@ -338,10 +343,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPDelete queueId -> unliftIO u $ do
+              CPDelete queueId' -> unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
                 stats <- asks serverStats
+                queueId <- atomically (getQueue st SSender queueId') >>= \case
+                  Left _ -> pure queueId' -- fallback to using as recipientId directly
+                  Right QueueRec {recipientId} -> pure recipientId
                 r <- atomically $
                   deleteQueue st queueId $>>= \() ->
                     Right <$> delMsgQueueSize ms queueId
@@ -431,7 +439,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-    void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+    void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
@@ -758,7 +766,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
-              atomically $ mapM_ (deleteExpiredMsgs q) old
+              stats <- asks serverStats
+              deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
+              atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =
@@ -892,24 +902,27 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
           atomically (getMessages ms rId)
             >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
-restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
-restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
+restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m Int
+restoreServerMessages = asks (storeMsgsFile . config) >>= \case
+  Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
+  Nothing -> pure 0
   where
-    restoreMessages f = whenM (doesFileExist f) $ do
+    restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
       st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota old_) . B.lines) >>= \case
+      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired st ms quota old_) 0 . B.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
-        _ -> do
+        Right expired -> do
           renameFile f $ f <> ".bak"
           logInfo "messages restored"
+          pure expired
       where
-        restoreMsg st ms quota old_ s = do
+        restoreMsg !expired st ms quota old_ s = do
           r <- liftEither . first (msgErr "parsing") $ strDecode s
           case r of
             MLRv3 rId msg -> addToMsgQueue rId msg
@@ -919,14 +932,15 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
               addToMsgQueue rId msg'
           where
             addToMsgQueue rId msg = do
-              logFull <- atomically $ do
+              (isExpired, logFull) <- atomically $ do
                 q <- getMsgQueue ms rId quota
                 case msg of
                   Message {msgTs}
-                    | maybe True (systemSeconds msgTs >=) old_ -> isNothing <$> writeMsg q msg
-                    | otherwise -> pure False
-                  MessageQuota {} -> writeMsg q msg $> False
+                    | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
+                    | otherwise -> pure (True, False)
+                  MessageQuota {} -> writeMsg q msg $> (False, False)
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
+              pure $ if isExpired then expired + 1 else expired
             updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
               let nonce = C.cbNonce msgId
               msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
@@ -944,19 +958,21 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
-restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
-restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ()
+restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
-        Right d -> do
+        Right d@ServerStatsData {_qCount = statsQCount} -> do
           s <- asks serverStats
-          _qCount <- fmap (length . M.keys) . readTVarIO . queues =<< asks queueStore
-          _msgCount <- foldM (\n q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
-          atomically $ setServerStats s d {_qCount, _msgCount}
+          _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
+          _msgCount <- foldM (\(!n) q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
+          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
+          when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount
+          logInfo $ "Restored " <> tshow _msgCount <> " messages in " <> tshow _qCount <> " queues"
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure

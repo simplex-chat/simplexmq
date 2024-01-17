@@ -1432,6 +1432,8 @@ data AgentErrorType
     AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
+  | -- | critical agent errors that should be shown to the user, optionally with restart button
+    CRITICAL {offerRestart :: Bool, criticalErr :: String}
   | -- | agent inactive
     INACTIVE
   deriving (Eq, Show, Exception)
@@ -1543,6 +1545,7 @@ instance StrEncoding AgentErrorType where
       <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
+      <|> "CRITICAL " *> (CRITICAL <$> parseRead1 <* A.space <*> parseRead A.takeByteString)
       <|> "INACTIVE" $> INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
@@ -1560,6 +1563,7 @@ instance StrEncoding AgentErrorType where
     AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
+    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> bshow e
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack

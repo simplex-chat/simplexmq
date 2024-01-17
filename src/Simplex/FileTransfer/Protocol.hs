@@ -48,8 +48,7 @@ import Simplex.Messaging.Protocol
     encodeTransmission,
     messageTagP,
     tDecodeParseValidate,
-    tEncode,
-    tEncodeBatch,
+    tEncodeBatch1,
     tParse,
   )
 import Simplex.Messaging.Transport (SessionId, TransportError (..))
@@ -403,10 +402,8 @@ xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
     signTransmission t = ((`C.sign` t) <$> pKey, t)
 
 -- this function uses batch syntax but puts only one transmission in the batch
-xftpEncodeBatch1 :: (Maybe C.ASignature, ByteString) -> Either TransportError ByteString
-xftpEncodeBatch1 (sig, t) =
-  let t' = tEncodeBatch 1 . smpEncode . Large $ tEncode (sig, t)
-   in first (const TELargeMsg) $ C.pad t' xftpBlockSize
+xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
+xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 t) xftpBlockSize
 
 xftpDecodeTransmission :: ProtocolEncoding e c => SessionId -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission sessionId t = do
