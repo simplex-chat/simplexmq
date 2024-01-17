@@ -76,7 +76,10 @@ type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 a ##> t = withTimeout a (`shouldBe` t)
 
 (=##>) :: (Show a, HasCallStack, MonadUnliftIO m) => m a -> (a -> Bool) -> m ()
-a =##> p = withTimeout a (`shouldSatisfy` p)
+a =##> p =
+  withTimeout a $ \r -> do
+    unless (p r) $ liftIO $ putStrLn $ "value failed predicate: " <> show r
+    r `shouldSatisfy` p
 
 withTimeout :: MonadUnliftIO m => m a -> (a -> Expectation) -> m ()
 withTimeout a test =
@@ -592,7 +595,7 @@ testAllowConnectionClientRestart t = do
 
     runRight_ $ do
       allowConnectionAsync alice "1" bobId confId "alice's connInfo"
-      ("1", _, OK) <- get alice
+      get alice =##> \case ("1", _, OK) -> True; _ -> False
       pure ()
 
     threadDelay 100000 -- give time to enqueue confirmation (enqueueConfirmation)
@@ -1292,7 +1295,7 @@ testAsyncCommands =
     liftIO $ aliceId' `shouldBe` aliceId
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnectionAsync alice "3" bobId confId "alice's connInfo"
-    ("3", _, OK) <- get alice
+    get alice =##> \case ("3", _, OK) -> True; _ -> False
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -1303,20 +1306,20 @@ testAsyncCommands =
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessageAsync bob "4" aliceId (baseId + 1) Nothing
-    ("4", _, OK) <- get bob
+    get bob =##> \case ("4", _, OK) -> True; _ -> False
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessageAsync bob "5" aliceId (baseId + 2) Nothing
-    ("5", _, OK) <- get bob
+    get bob =##> \case ("5", _, OK) -> True; _ -> False
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
     4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessageAsync alice "6" bobId (baseId + 3) Nothing
-    ("6", _, OK) <- get alice
+    get alice =##> \case ("6", _, OK) -> True; _ -> False
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
-    ("7", _, OK) <- get alice
+    get alice =##> \case ("7", _, OK) -> True; _ -> False
     deleteConnectionAsync alice bobId
     get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
@@ -1335,7 +1338,7 @@ testAsyncCommandsRestore t = do
   withSmpServerStoreLogOn t testPort $ \_ -> do
     runRight_ $ do
       subscribeConnection alice' bobId
-      ("1", _, INV _) <- get alice'
+      get alice' =##> \case ("1", _, INV _) -> True; _ -> False
       pure ()
   disconnectAgentClient alice'
 
@@ -1346,8 +1349,7 @@ testAcceptContactAsync =
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" SMSubscribe
-    ("1", bobId', OK) <- get alice
-    liftIO $ bobId' `shouldBe` bobId
+    get alice =##> \case ("1", c, OK) -> c == bobId; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -1413,8 +1415,7 @@ testJoinConnectionAsyncReplyError t = do
     pure (aId, bId)
   nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
   withSmpServerOn t testPort2 $ do
-    ("2", aId', OK) <- get b
-    liftIO $ aId' `shouldBe` aId
+    get b =##> \case ("2", c, OK) -> c == aId; _ -> False
     confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
       pGet a >>= \case
         ("", "", APC _ (UP _ [_])) -> do
