@@ -11,7 +11,7 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
-import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader (runReaderT)
@@ -105,6 +105,11 @@ notificationTests t =
       testServerMatrix2 t $ \servers ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testSwitchNotifications servers apns
+    describe "should switch notifications to the new NTF server" $
+      testServerMatrix2 t $ \servers ->
+        withAPNSMockServer $ \apns ->
+          withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
+            testSwitchNotificationServer servers apns ntf
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -278,10 +283,8 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
       -- registerNtfToken a tkn2 NMInstant >>= \r -> liftIO $ r `shouldBe` NTRegistered
       getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
       deleteNtfToken a tkn2 -- force server switch
-
       Left BROKER {brokerErr = NETWORK} <- tryError $ registerTestToken a "qwer" NMInstant apnsQ -- ok, it's down for now
       getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
-
     killThread ntf
     withNtfServerOn t ntfTestPort2 $ runRight_ $ do
       tkn <- registerTestToken a "qwer" NMInstant apnsQ
@@ -641,6 +644,33 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
     testMessage "hello"
     _ <- switchConnectionAsync a "" bId
     switchComplete a bId b aId
+    liftIO $ threadDelay 500000
+    testMessage "hello again"
+  disconnectAgentClient a
+  disconnectAgentClient b
+
+testSwitchNotificationServer :: InitialAgentServers -> APNSMockServer -> ThreadId -> IO ()
+testSwitchNotificationServer servers APNSMockServer {apnsQ} ntf = do
+  a <- getSMPAgentClient' 1 agentCfg servers testDB
+  b <- getSMPAgentClient' 2 agentCfg servers testDB2
+  runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    aTkn <- registerTestToken a "abcd" NMInstant apnsQ
+    liftIO $ threadDelay 250000
+    let testMessage msg = do
+          msgId <- sendMessage b aId (SMP.MsgFlags True) msg
+          get b ##> ("", aId, SENT msgId)
+          void $ messageNotification apnsQ
+          get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
+          ackMessage a bId msgId Nothing
+    testMessage "hello"
+    -- switch over to a new server
+    setNtfServers a [testNtfServer2]
+    deleteNtfToken a aTkn
+    _ <- registerTestToken a "abcd" NMInstant apnsQ
+    getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2
+    liftIO $ killThread ntf -- shut down old server
     liftIO $ threadDelay 500000
     testMessage "hello again"
   disconnectAgentClient a
