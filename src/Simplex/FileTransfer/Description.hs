@@ -228,20 +228,23 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
 newtype FileDescriptionURI = FileDescriptionURI Text
   deriving (Show)
 
-encodeFileDescriptionURI :: FileDescription 'FRecipient -> Either String FileDescriptionURI
-encodeFileDescriptionURI fd@FileDescription {chunks} =
-  case chunks of
-    [_] -> Right . FileDescriptionURI $ "https://simplex.chat/file/#?d=" <> decodeUtf8 (urlEncode True yaml)
-    _ -> Left "must have exactly one chunk"
+encodeFileDescriptionURI :: Int -> FileDescription 'FRecipient -> Maybe FileDescriptionURI
+encodeFileDescriptionURI maxSize fd = if T.length uri > maxSize then Nothing else Just (FileDescriptionURI uri)
   where
+    uri = "simplex:/file#?d=" <> decodeUtf8 (urlEncode True yaml)
     yaml = strEncode fd
 
 decodeFileDescriptionURI :: FileDescriptionURI -> Either String (FileDescription 'FRecipient)
 decodeFileDescriptionURI (FileDescriptionURI uri) =
   case T.drop 4 <$> T.breakOn "#?d=" uri of
     (_, "") -> Left "malformed URI"
-    ("https://simplex.chat/file/", params) -> strDecode . urlDecode True $ encodeUtf8 params
+    -- XXX: could be using ConnReqScheme, but that makes an import loop
+    ("simplex:/file", params) -> decode params
+    ("https://simplex.chat/file", params) -> decode params
+    -- TODO: allow custom servers
     _ -> Left "not a file URI"
+  where
+    decode = strDecode . urlDecode True . encodeUtf8
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
