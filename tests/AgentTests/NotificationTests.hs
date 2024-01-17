@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -10,9 +11,10 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
-import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Reader (runReaderT)
 import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -21,17 +23,19 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
-import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2)
+import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer2)
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, xit')
 import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent.Client (withStore')
 import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfToken (..))
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..), SubscriptionMode (..))
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
@@ -60,6 +64,12 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
+      it "should work with multiple configured servers" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          testNtfTokenMultipleServers t apns
+      it "should keep working with active token until replaced" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          testNtfTokenChangeServers t apns
     describe "Managing notification subscriptions" $ do
       -- fails on Ubuntu CI?
       xit' "should create notification subscription for existing connection" $ \_ -> do
@@ -95,6 +105,11 @@ notificationTests t =
       testServerMatrix2 t $ \servers ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testSwitchNotifications servers apns
+    describe "should switch notifications to the new NTF server" $
+      testServerMatrix2 t $ \servers ->
+        withAPNSMockServer $ \apns ->
+          withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
+            testSwitchNotificationServer servers apns ntf
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -212,6 +227,69 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken a' tkn
     disconnectAgentClient a'
 
+getTestNtfTokenPort :: (MonadUnliftIO m, MonadError AgentErrorType m) => AgentClient -> m String
+getTestNtfTokenPort a =
+  runReaderT (withStore' a getSavedNtfToken) (agentEnv a) >>= \case
+    Just NtfToken {ntfServer = ProtocolServer {port}} -> pure port
+    Nothing -> error "no active NtfToken"
+
+testNtfTokenMultipleServers :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenMultipleServers t APNSMockServer {apnsQ} = do
+  let tkn = DeviceToken PPApnsTest "abcd"
+  a <- getSMPAgentClient' 1 agentCfg initAgentServers2 testDB
+  withNtfServerThreadOn t ntfTestPort $ \ntf ->
+    withNtfServerThreadOn t ntfTestPort2 $ \ntf2 -> runRight_ $ do
+      -- register a new token, the agent picks a server and stores its choice
+      NTRegistered <- registerNtfToken a tkn NMPeriodic
+      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+        atomically $ readTBQueue apnsQ
+      verification <- ntfData .-> "verification"
+      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      liftIO $ sendApnsResponse APNSRespOk
+      verifyNtfToken a tkn nonce verification
+      NTActive <- checkNtfToken a tkn
+      -- shut down the "other" server
+      port <- getTestNtfTokenPort a
+      liftIO . killThread $ if port == ntfTestPort then ntf2 else ntf
+      -- still works
+      NTActive <- checkNtfToken a tkn
+      liftIO . killThread $ if port == ntfTestPort then ntf else ntf2
+      -- negative test, the correct server is now gone
+      Left _ <- tryError (checkNtfToken a tkn)
+      pure ()
+
+testNtfTokenChangeServers :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenChangeServers t APNSMockServer {apnsQ} =
+  withNtfServerThreadOn t ntfTestPort $ \ntf -> do
+    tkn1 <- runRight $ do
+      a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
+      tkn <- registerTestToken a "abcd" NMInstant apnsQ
+      NTActive <- checkNtfToken a tkn
+      setNtfServers a [testNtfServer2]
+      NTActive <- checkNtfToken a tkn -- still works on old server
+      disconnectAgentClient a
+      pure tkn
+
+    threadDelay 1000000
+
+    a <- liftIO $ getSMPAgentClient' 2 agentCfg initAgentServers testDB
+    runRight_ $ do
+      getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
+      NTActive <- checkNtfToken a tkn1
+      setNtfServers a [testNtfServer2] -- just change configured server list
+      getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
+      -- trigger token replace
+      tkn2 <- registerTestToken a "xyzw" NMInstant apnsQ
+      -- registerNtfToken a tkn2 NMInstant >>= \r -> liftIO $ r `shouldBe` NTRegistered
+      getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
+      deleteNtfToken a tkn2 -- force server switch
+      Left BROKER {brokerErr = NETWORK} <- tryError $ registerTestToken a "qwer" NMInstant apnsQ -- ok, it's down for now
+      getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
+    killThread ntf
+    withNtfServerOn t ntfTestPort2 $ runRight_ $ do
+      tkn <- registerTestToken a "qwer" NMInstant apnsQ
+      checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
+
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
@@ -319,8 +397,8 @@ registerTestToken :: AgentClient -> ByteString -> NotificationsMode -> TBQueue A
 registerTestToken a token mode apnsQ = do
   let tkn = DeviceToken PPApnsTest token
   NTRegistered <- registerNtfToken a tkn mode
-  APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-    atomically $ readTBQueue apnsQ
+  Just APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+    timeout 1000000 . atomically $ readTBQueue apnsQ
   verification' <- ntfData' .-> "verification"
   nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
   liftIO $ sendApnsResponse' APNSRespOk
@@ -566,6 +644,33 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
     testMessage "hello"
     _ <- switchConnectionAsync a "" bId
     switchComplete a bId b aId
+    liftIO $ threadDelay 500000
+    testMessage "hello again"
+  disconnectAgentClient a
+  disconnectAgentClient b
+
+testSwitchNotificationServer :: InitialAgentServers -> APNSMockServer -> ThreadId -> IO ()
+testSwitchNotificationServer servers APNSMockServer {apnsQ} ntf = do
+  a <- getSMPAgentClient' 1 agentCfg servers testDB
+  b <- getSMPAgentClient' 2 agentCfg servers testDB2
+  runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetingsMsgId 4 a bId b aId
+    aTkn <- registerTestToken a "abcd" NMInstant apnsQ
+    liftIO $ threadDelay 250000
+    let testMessage msg = do
+          msgId <- sendMessage b aId (SMP.MsgFlags True) msg
+          get b ##> ("", aId, SENT msgId)
+          void $ messageNotification apnsQ
+          get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
+          ackMessage a bId msgId Nothing
+    testMessage "hello"
+    -- switch over to a new server
+    setNtfServers a [testNtfServer2]
+    deleteNtfToken a aTkn
+    _ <- registerTestToken a "abcd" NMInstant apnsQ
+    getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2
+    liftIO $ killThread ntf -- shut down old server
     liftIO $ threadDelay 500000
     testMessage "hello again"
   disconnectAgentClient a
