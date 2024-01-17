@@ -128,9 +128,12 @@ run st = \case
   where
     runUp Migration {name, up, down} = withTransaction' st $ \db -> do
       when (name == "m20220811_onion_hosts") $ updateServers db
-      insert db >> execSQL db up
+      insert db >> execSQL db up'
       where
         insert db = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
+        up'
+          | dbNew st && name == "m20230110_users" = fromQuery new_m20230110_users
+          | otherwise = up
         updateServers db = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
           let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
            in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)

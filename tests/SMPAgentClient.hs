@@ -10,12 +10,14 @@
 
 module SMPAgentClient where
 
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Database.SQLite.Simple as SQL
 import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
@@ -31,7 +33,8 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
+import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
@@ -223,6 +226,7 @@ withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
    in serverBracket
         ( \started -> do
             Right st <- liftIO $ createAgentStore db' "" False MCError
+            when (dbNew st) . liftIO $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
             runSMPAgentBlocking t cfg' initServers' st started
         )
         afterProcess
