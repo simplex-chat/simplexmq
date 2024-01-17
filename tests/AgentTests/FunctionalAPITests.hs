@@ -81,7 +81,7 @@ a =##> p =
     unless (p r) $ liftIO $ putStrLn $ "value failed predicate: " <> show r
     r `shouldSatisfy` p
 
-withTimeout :: MonadUnliftIO m => m a -> (a -> Expectation) -> m ()
+withTimeout :: (HasCallStack, MonadUnliftIO m) => m a -> (a -> Expectation) -> m ()
 withTimeout a test =
   timeout 10_000000 a >>= \case
     Nothing -> error "operation timed out"
@@ -166,15 +166,18 @@ runRight action =
     Left e -> error $ "Unexpected error: " <> show e
 
 getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission 'Agent -> Bool] -> Expectation
-getInAnyOrder _ [] = pure ()
-getInAnyOrder c rs = do
-  r <- pGet c
+getInAnyOrder c = inAnyOrder (pGet c)
+
+inAnyOrder :: (Show a, MonadIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
+inAnyOrder _ [] = pure ()
+inAnyOrder g rs = do
+  r <- g
   let rest = filter (not . expected r) rs
   if length rest < length rs
-    then getInAnyOrder c rest
+    then inAnyOrder g rest
     else error $ "unexpected event: " <> show r
   where
-    expected :: ATransmission 'Agent -> (ATransmission 'Agent -> Bool) -> Bool
+    expected :: a -> (a -> Bool) -> Bool
     expected r rp = rp r
 
 functionalAPITests :: ATransport -> Spec
@@ -1306,8 +1309,10 @@ testAsyncCommands =
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessageAsync bob "4" aliceId (baseId + 1) Nothing
-    get bob =##> \case ("4", _, OK) -> True; _ -> False
-    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    inAnyOrder (get bob)
+      [ \case {("4", _, OK) -> True; _ -> False},
+        \case {("", c, Msg "how are you?") -> c == aliceId; _ -> False}
+      ]
     ackMessageAsync bob "5" aliceId (baseId + 2) Nothing
     get bob =##> \case ("5", _, OK) -> True; _ -> False
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
@@ -1316,8 +1321,10 @@ testAsyncCommands =
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessageAsync alice "6" bobId (baseId + 3) Nothing
-    get alice =##> \case ("6", _, OK) -> True; _ -> False
-    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    inAnyOrder (get alice)
+      [ \case {("6", _, OK) -> True; _ -> False},
+        \case {("", c, Msg "message 1") -> c == bobId; _ -> False}
+      ]
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
     get alice =##> \case ("7", _, OK) -> True; _ -> False
     deleteConnectionAsync alice bobId
