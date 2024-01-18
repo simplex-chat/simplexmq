@@ -116,6 +116,20 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfA
       void $ getXFTPRcvWorker True c (Just server)
     downloadChunk _ = throwError $ INTERNAL "no replicas"
 
+-- XXX: the caller is tasked to decode URI into ValidFileDescription 'FRecipient, otherwise the error would have to be added to AgentErrorType where it doesn't belong
+xftpReceiveFileFollow' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
+xftpReceiveFileFollow' c userId vfd@(ValidFileDescription fd@FileDescription {redirect}) cfArgs = do
+  rcvFileId <- xftpReceiveFile' c userId vfd cfArgs
+  if redirect then fetch rcvFileId >>= follow else pure rcvFileId
+  where
+    fetch descrFileId = do
+      error "TODO: wait until chunks are ready"
+      error "TODO: decrypt file"
+      error "TODO: parse VFD"
+    follow vfdNext@(ValidFileDescription FileDescription {redirect = again})
+      | again = throwError (INTERNAL "TODO: refusing to follow chained redirects")
+      | otherwise = xftpReceiveFile' c userId vfdNext (error "TODO: cfArgsNext")
+
 getPrefixPath :: AgentMonad m => String -> m FilePath
 getPrefixPath suffix = do
   workPath <- getXFTPWorkPath
@@ -271,6 +285,30 @@ xftpSendFile' c userId file numRecipients = do
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce
   void $ getXFTPSndWorker True c Nothing
   pure fId
+
+{- XXX: should be something like this:
+    xftpSendFilePublic' :: AgentMonad m => AgentClient -> UserId -> SndFileId -> m (Maybe SndFileId, FileDescriptionURI)
+  But that would require generating "extra" recipients after the fact.
+-}
+xftpSendFilePublic' :: AgentMonad m => AgentClient -> UserId -> CryptoFile -> m (SndFileId, Maybe SndFileId, FileDescriptionURI)
+xftpSendFilePublic' c userId file = do
+  sndFileId <- xftpSendFile' c userId file 1 -- XXX: generate one (shared) recipient description
+  error "TODO: wait for sndFileId to be filled in by worker"
+  directFD <- error "TODO: generate FileDescription"
+  case encodeFileDescriptionURI qrSizeLimit directFD of
+    Just uri -> pure (sndFileId, Nothing, uri)
+    Nothing -> do
+      redirect <- error "TODO: store description as CryptoFile"
+      redirectFileId <- xftpSendFile' c userId redirect 1
+      error "TODO: wait for redirectFileId to be filled in by worker"
+      redirectFD <- error "TODO: generate redirect FileDescription"
+      case encodeFileDescriptionURI qrSizeLimit directFD of
+        Nothing -> throwError $ INTERNAL "oops, gig-sized redirect file"
+        Just uri -> pure (sndFileId, Just redirectFileId, uri)
+
+-- | URL length in QR code before jumping up to a next size.
+qrSizeLimit :: Int
+qrSizeLimit = 1002 -- ~3 chunks in URLencoded YAML with some spare size for server hosts
 
 resumeXFTPSndWork :: AgentMonad' m => AgentClient -> Maybe XFTPServer -> m ()
 resumeXFTPSndWork = void .: getXFTPSndWorker False
