@@ -1142,7 +1142,7 @@ submitPendingMsg c cData sq = do
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq (Worker {doWork}, qLock) = do
-  ri <- asks $ messageRetryInterval . config
+  AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     waitForWork doWork
@@ -1166,7 +1166,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndMsg RISlow
+                  _ -> do
+                    ts <- liftIO getCurrentTime
+                    if msgExpired ts quotaExceededTimeout then notifyDelMsgs msgId e ts else retrySndMsg RISlow
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1175,8 +1177,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
-                    | otherwise ->
-                        ifM (msgExpired helloTimeout) connErr (retrySndMsg RIFast)
+                    -- otherwise branch is not used in clients with v2+ of agent protocol (since June 2022)
+                    -- TODO remove in v6
+                    | otherwise -> do
+                        ts <- liftIO getCurrentTime
+                        if msgExpired ts helloTimeout then connErr else retrySndMsg RIFast
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -1196,14 +1201,12 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
-                      let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                      ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg RIFast)
+                      let msgTimeout = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
+                      ts <- liftIO getCurrentTime
+                      if msgExpired ts msgTimeout then notifyDelMsgs msgId e ts else retrySndMsg RIFast
                   | otherwise -> notifyDel msgId err
               where
-                msgExpired timeoutSel = do
-                  msgTimeout <- asks $ timeoutSel . config
-                  currentTime <- liftIO getCurrentTime
-                  pure $ diffUTCTime currentTime internalTs > msgTimeout
+                msgExpired currentTs msgTimeout = diffUTCTime currentTs internalTs > msgTimeout
                 retrySndMsg riMode = do
                   withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
                   retrySndOp c $ loop riMode
@@ -1279,6 +1282,13 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     when (isJust rq_) $ removeConfirmations db connId
                   unless (duplexHandshake == Just True) . void $ enqueueMessage c cData sq SMP.noMsgFlags HELLO
   where
+    notifyDelMsgs :: InternalId -> AgentErrorType -> UTCTime -> m ()
+    notifyDelMsgs msgId err currentTs = do
+      notifyDel msgId $ MERR (unId msgId) err
+      msgIds_ <- withStore' c $ \db -> getExpiredSndMessages db connId sq currentTs
+      forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
+        notify $ MERRS (L.map unId msgIds) err
+        withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False
     delMsg :: InternalId -> m ()
     delMsg = delMsgKeep False
     delMsgKeep :: Bool -> InternalId -> m ()
