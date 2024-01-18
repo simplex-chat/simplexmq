@@ -86,6 +86,7 @@ module Simplex.Messaging.Agent.Client
     AgentState (..),
     AgentLocks (..),
     AgentStatsKey (..),
+    mkSMPTransportSession,
     getAgentWorker,
     getAgentWorker',
     cancelWorker,
@@ -155,7 +156,6 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
--- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -228,15 +228,13 @@ data SessionVar a = SessionVar
     sessionVarId :: Int
   }
 
-type ClientVar msg = SessionVar (Either AgentErrorType (Client msg)) 
+type ClientVar msg = SessionVar (Either AgentErrorType (Client msg))
 
 type SMPClientVar = ClientVar SMP.BrokerMsg
 
 type NtfClientVar = ClientVar NtfResponse
 
 type XFTPClientVar = ClientVar FileResponse
-
-type SMPTransportSession = TransportSession SMP.BrokerMsg
 
 type NtfTransportSession = TransportSession NtfResponse
 
@@ -259,7 +257,7 @@ data AgentClient = AgentClient
     pendingSubs :: TRcvQueues,
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     workerSeq :: TVar Int,
-    smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
+    smpDeliveryWorkers :: TMap SMPTransportSession Worker,
     asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
     connCmdsQueued :: TMap ConnId Bool,
     ntfNetworkOp :: TVar AgentOpState,
@@ -712,7 +710,7 @@ closeAgentClient c = liftIO $ do
   closeProtocolServerClients c xftpClients
   atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
   cancelActions . actions $ asyncClients c
-  clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
+  clearWorkers smpDeliveryWorkers >>= mapM_ cancelWorker
   clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
   clear connCmdsQueued
   atomically . RQ.clear $ activeSubs c
@@ -724,7 +722,7 @@ closeAgentClient c = liftIO $ do
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
-    cancelReconnect :: SessionVar (Async ())  -> IO ()
+    cancelReconnect :: SessionVar (Async ()) -> IO ()
     cancelReconnect v = void . forkIO $ atomically (readTMVar $ sessionVar v) >>= uninterruptibleCancel
 
 cancelWorker :: Worker -> IO ()
@@ -739,9 +737,9 @@ throwWhenInactive :: AgentClient -> STM ()
 throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
 
 -- this function is used to remove workers once delivery is complete, not when it is removed from the map
-throwWhenNoDelivery :: AgentClient -> SndQueue -> STM ()
-throwWhenNoDelivery c sq =
-  unlessM (TM.member (qAddress sq) $ smpDeliveryWorkers c) $
+throwWhenNoDelivery :: AgentClient -> SMPTransportSession -> STM ()
+throwWhenNoDelivery c tSess =
+  unlessM (TM.member tSess $ smpDeliveryWorkers c) $
     throwSTM ThreadKilled
 
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
@@ -1573,7 +1571,7 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
   smpClients_ <- textKeys <$> readTVarIO smpClients
   ntfClients_ <- textKeys <$> readTVarIO ntfClients
   xftpClients_ <- textKeys <$> readTVarIO xftpClients
-  smpDeliveryWorkers_ <- workerStats . fmap fst =<< readTVarIO smpDeliveryWorkers
+  smpDeliveryWorkers_ <- workerStats =<< readTVarIO smpDeliveryWorkers
   asyncCmdWorkers_ <- workerStats =<< readTVarIO asyncCmdWorkers
   smpSubWorkers_ <- textKeys <$> readTVarIO smpSubWorkers
   asyncCients_ <- M.keys <$> readTVarIO actions

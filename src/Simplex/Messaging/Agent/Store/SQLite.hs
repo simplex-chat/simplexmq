@@ -107,9 +107,15 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSndMsgDelivery,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
-    getPendingQueueMsg,
-    updatePendingMsgRIState,
+    getPendingSessionMsg,
+    -- getPendingQueueMsg,
+    -- updatePendingMsgRIState,
+    updateSndQueueDelivery,
     deletePendingMsgs,
+    getExpiredSndMessages,
+    deleteExpiredSndMessages,
+    setQuotaAvailable,
+    updateDeliveryDelay,
     setMsgUserAck,
     getRcvMsg,
     getLastMsg,
@@ -263,6 +269,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRError, Migration (..), MigrationsToRun (..), mtrErrorDescription)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Client (SMPTransportSession)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -978,6 +985,9 @@ updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
     "UPDATE snd_messages SET rcpt_internal_id = ?, rcpt_status = ? WHERE conn_id = ? AND internal_snd_id = ?"
     (agentMsgId, msgRcptStatus, connId, sndMsgId)
 
+getPendingSessionMsg :: DB.Connection -> SMPTransportSession -> IO (Either StoreError (Maybe (ConnData, SndQueue, Maybe RcvQueue, PendingMsgData)))
+getPendingSessionMsg _db _tSess = undefined
+
 getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError (Maybe (Maybe RcvQueue, PendingMsgData)))
 getPendingQueueMsg db connId SndQueue {dbQueueId} =
   getWorkItem "message" getMsgId getMsgData markMsgFailed
@@ -1033,13 +1043,28 @@ getWorkItem itemName getId getItem markFailed =
         mkError :: E.SomeException -> StoreError
         mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
 
-updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
-updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
-  DB.execute db "UPDATE snd_messages SET retry_int_slow = ?, retry_int_fast = ? WHERE conn_id = ? AND internal_id = ?" (slowInterval, fastInterval, connId, msgId)
+-- updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
+-- updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
+--   DB.execute db "UPDATE snd_messages SET retry_int_slow = ?, retry_int_fast = ? WHERE conn_id = ? AND internal_id = ?" (slowInterval, fastInterval, connId, msgId)
+
+updateSndQueueDelivery :: DB.Connection -> ConnId -> SndQueue -> Bool -> Int64 -> IO ()
+updateSndQueueDelivery _db _connId _sq _quotaExceeded _delay = undefined
 
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deletePendingMsgs db connId SndQueue {dbQueueId} =
   DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
+
+getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
+getExpiredSndMessages = undefined
+
+deleteExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> [InternalId] -> IO ()
+deleteExpiredSndMessages = undefined
+
+setQuotaAvailable :: DB.Connection -> ConnId -> SndQueue -> IO ()
+setQuotaAvailable = undefined
+
+updateDeliveryDelay :: DB.Connection -> ConnId -> SndQueue -> IO ()
+updateDeliveryDelay = undefined
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do

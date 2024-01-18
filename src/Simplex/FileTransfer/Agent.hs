@@ -316,7 +316,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
-        AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
+        AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, xftpRetryInterval = ri} = cfg
         encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
         encryptFileForUpload SndFile {key, nonce, srcFile} fsEncPath = do
           let CryptoFile {filePath} = srcFile
@@ -345,7 +345,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           where
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
-              withRetryInterval (riFast ri) $ \_ loop ->
+              withRetryInterval ri $ \_ loop ->
                 createWithNextSrv usedSrvs
                   `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where

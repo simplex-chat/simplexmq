@@ -4,13 +4,16 @@
 
 module Simplex.Messaging.Agent.RetryInterval
   ( RetryInterval (..),
-    RetryInterval2 (..),
-    RetryIntervalMode (..),
+    -- RetryInterval2 (..),
+    -- RetryIntervalMode (..),
+    RIState (..),
     RI2State (..),
     withRetryInterval,
     withRetryIntervalCount,
-    withRetryLock2,
-    updateRetryInterval2,
+    -- withRetryLock2,
+    -- updateRetryInterval2,
+    updateRetryInterval,
+    nextDelay,
   )
 where
 
@@ -27,6 +30,12 @@ data RetryInterval = RetryInterval
     maxInterval :: Int64
   }
 
+data RIState = RIState
+  { retryDelay :: Int64,
+    retryElapsed :: Int64
+  }
+  deriving (Eq, Show)
+
 data RetryInterval2 = RetryInterval2
   { riSlow :: RetryInterval,
     riFast :: RetryInterval
@@ -37,6 +46,14 @@ data RI2State = RI2State
     fastInterval :: Int64
   }
   deriving (Show)
+
+updateRetryInterval :: RIState -> RetryInterval -> RetryInterval
+updateRetryInterval RIState {retryDelay, retryElapsed} RetryInterval {initialInterval, increaseAfter, maxInterval} =
+  RetryInterval
+    { initialInterval = retryDelay,
+      increaseAfter = max 0 (increaseAfter - retryElapsed),
+      maxInterval
+    }
 
 updateRetryInterval2 :: RI2State -> RetryInterval2 -> RetryInterval2
 updateRetryInterval2 RI2State {slowInterval, fastInterval} RetryInterval2 {riSlow, riFast} =

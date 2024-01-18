@@ -51,6 +51,7 @@ import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.RetryInterval.Delivery
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
@@ -89,9 +90,8 @@ data AgentConfig = AgentConfig
     ntfCfg :: ProtocolClientConfig,
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
-    messageRetryInterval :: RetryInterval2,
-    messageTimeout :: NominalDiffTime,
-    helloTimeout :: NominalDiffTime,
+    messageDeliveryCfg :: MsgDeliveryConfig,
+    xftpRetryInterval :: RetryInterval,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
@@ -125,24 +125,12 @@ defaultReconnectInterval =
       maxInterval = 180_000000
     }
 
-defaultMessageRetryInterval :: RetryInterval2
-defaultMessageRetryInterval =
-  RetryInterval2
-    { riFast =
-        RetryInterval
-          { initialInterval = 1_000000,
-            increaseAfter = 10_000000,
-            maxInterval = 60_000000
-          },
-      riSlow =
-        -- TODO: these timeouts can be increased in v5.0 once most clients are updated
-        -- to resume sending on QCONT messages.
-        -- After that local message expiration period should be also increased.
-        RetryInterval
-          { initialInterval = 60_000000,
-            increaseAfter = 60_000000,
-            maxInterval = 3600_000000 -- 1 hour
-          }
+defaultXFTPRetryInterval :: RetryInterval
+defaultXFTPRetryInterval =
+  RetryInterval
+    { initialInterval = 1_000000,
+      increaseAfter = 10_000000,
+      maxInterval = 60_000000
     }
 
 defaultAgentConfig :: AgentConfig
@@ -156,9 +144,8 @@ defaultAgentConfig =
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
-      messageRetryInterval = defaultMessageRetryInterval,
-      messageTimeout = 2 * nominalDay,
-      helloTimeout = 2 * nominalDay,
+      messageDeliveryCfg = defaultMsgDeliveryConfig,
+      xftpRetryInterval = defaultXFTPRetryInterval,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms

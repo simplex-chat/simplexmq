@@ -147,11 +147,12 @@ import Simplex.Messaging.Agent.Lock (withLock)
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.RetryInterval.Delivery
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
+import Simplex.Messaging.Client (ProtocolClient (..), SMPTransportSession, ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -782,7 +783,7 @@ subscribeConnections' c connIds = do
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-  mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) cs
+  mapM_ (mapM_ (\(_, sqs) -> mapM_ (resumeMsgDelivery c) sqs) . sndQueue) cs
   mapM_ (resumeConnCmds c) $ M.keys cs
   rcvRs <- connResults <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
@@ -1089,7 +1090,7 @@ enqueueMessageB c reqs = do
   aVRange <- asks $ maxVersion . smpAgentVRange . config
   reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db aVRange) reqs
   forME reqMids $ \((cData, sq :| sqs, _, _), InternalId msgId) -> do
-    submitPendingMsg c cData sq
+    submitPendingMsg c sq
     let sqs' = filter isActiveSndQ sqs
     pure $ Right (msgId, if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
@@ -1116,45 +1117,47 @@ enqueueSavedMessageB :: (AgentMonad' m, Foldable t) => AgentClient -> t (ConnDat
 enqueueSavedMessageB c reqs = do
   -- saving to the database is in the start to avoid race conditions when delivery is read from queue before it is saved
   void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) reqs
-  forM_ reqs $ \(cData, sqs, _) ->
-    forM sqs $ submitPendingMsg c cData
+  forM_ reqs $ \(_, sqs, _) ->
+    forM sqs $ submitPendingMsg c
   where
     storeDeliveries :: DB.Connection -> (ConnData, [SndQueue], AgentMsgId) -> [IO ()]
     storeDeliveries db (ConnData {connId}, sqs, msgId) = do
       let mId = InternalId msgId
        in map (\sq -> createSndMsgDelivery db connId sq mId) sqs
 
-resumeMsgDelivery :: forall m. AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
-resumeMsgDelivery = void .:. getDeliveryWorker False
+resumeMsgDelivery :: forall m. AgentMonad' m => AgentClient -> SndQueue -> m ()
+resumeMsgDelivery = void .: getDeliveryWorker False
 
-getDeliveryWorker :: AgentMonad' m => Bool -> AgentClient -> ConnData -> SndQueue -> m (Worker, TMVar ())
-getDeliveryWorker hasWork c cData sq =
-  getAgentWorker' fst mkLock "msg_delivery" hasWork c (qAddress sq) (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c cData sq)
-  where
-    mkLock w = do
-      retryLock <- newEmptyTMVar
-      pure (w, retryLock)
+getDeliveryWorker :: AgentMonad' m => Bool -> AgentClient -> SndQueue -> m Worker
+getDeliveryWorker hasWork c sq = do
+  tSess <- mkSMPTransportSession c sq
+  getAgentWorker "msg_delivery" hasWork c tSess (smpDeliveryWorkers c) (runSmpQueueMsgDelivery c tSess)
 
-submitPendingMsg :: AgentMonad' m => AgentClient -> ConnData -> SndQueue -> m ()
-submitPendingMsg c cData sq = do
+submitPendingMsg :: AgentMonad' m => AgentClient -> SndQueue -> m ()
+submitPendingMsg c sq = do
   atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
-  void $ getDeliveryWorker True c cData sq
+  void $ getDeliveryWorker True c sq
 
-runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> m ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, duplexHandshake} sq (Worker {doWork}, qLock) = do
-  ri <- asks $ messageRetryInterval . config
+runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> Worker -> m ()
+runSmpQueueMsgDelivery c@AgentClient {subQ} tSess@(_, srv, _) Worker {doWork} = do
+  dCfg <- asks $ messageDeliveryCfg . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     waitForWork doWork
     atomically $ throwWhenInactive c
-    atomically $ throwWhenNoDelivery c sq
+    atomically $ throwWhenNoDelivery c tSess
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
-      \(rq_, PendingMsgData {msgId, msgType, msgBody, msgFlags, msgRetryState, internalTs}) -> do
+    withWork c doWork (`getPendingSessionMsg` tSess) (deliverMessage dCfg)
+  where
+    deliverMessage
+      dCfg@MsgDeliveryConfig {messageRetryInterval = ri}
+      (cData@ConnData {userId, connId, duplexHandshake}, sq@SndQueue {quotaExceeded = qe, retryState}, rq_, PendingMsgData {msgId, msgType, msgBody, msgFlags, msgRetryState, internalTs}) = do
         atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
-            ri' = maybe id updateRetryInterval2 msgRetryState ri
-        withRetryLock2 ri' qLock $ \riState loop -> do
+            ri = (if qe then quotaExceededRetryInterval else messageRetryInterval) dCfg
+            ri' = maybe id updateRetryInterval retryState ri
+        withRetryIntervalCount ri' $ \n delay loop -> do
+          -- withRetryLock2 ri' qLock $ \riState loop -> do
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
@@ -1163,50 +1166,62 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
             Left e -> do
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
               case e of
+                -- never loop on quota exceeded error, ignoring messageConsecutiveRetries,
+                -- to avoid blocking delivery in other queues.
                 SMP SMP.QUOTA -> case msgType of
-                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> retrySndMsg RISlow
+                  AM_CONN_INFO -> connError NOT_AVAILABLE
+                  AM_CONN_INFO_REPLY -> connError NOT_AVAILABLE
+                  _ -> ifM (msgExpired quotaExceededTimeout) (notifyDelMessages err) (updateDeliverAfter True delay)
                 SMP SMP.AUTH -> case msgType of
-                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
+                  AM_CONN_INFO -> connError NOT_AVAILABLE
+                  AM_CONN_INFO_REPLY -> connError NOT_AVAILABLE
+                  AM_RATCHET_INFO -> connError NOT_AVAILABLE
                   AM_HELLO_
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
-                    | otherwise ->
-                        ifM (msgExpired helloTimeout) connErr (retrySndMsg RIFast)
+                    -- otherwise branch is not used in clients with v2+ of agent protocol (June 2022)
+                    -- TODO remove in v6
+                    | otherwise -> retrySndMsg n delay err
                     where
                       connErr = case rq_ of
                         -- party initiating connection
-                        Just _ -> connError msgId NOT_AVAILABLE
+                        Just _ -> connError NOT_AVAILABLE
                         -- party joining connection
-                        _ -> connError msgId NOT_ACCEPTED
-                  AM_REPLY_ -> notifyDel msgId err
-                  AM_A_MSG_ -> notifyDel msgId err
-                  AM_A_RCVD_ -> notifyDel msgId err
-                  AM_QCONT_ -> notifyDel msgId err
-                  AM_QADD_ -> qError msgId "QADD: AUTH"
-                  AM_QKEY_ -> qError msgId "QKEY: AUTH"
-                  AM_QUSE_ -> qError msgId "QUSE: AUTH"
-                  AM_QTEST_ -> qError msgId "QTEST: AUTH"
-                  AM_EREADY_ -> notifyDel msgId err
+                        _ -> connError NOT_ACCEPTED
+                  AM_REPLY_ -> notifyDel err
+                  AM_A_MSG_ -> notifyDel err
+                  AM_A_RCVD_ -> notifyDel err
+                  AM_QCONT_ -> notifyDel err
+                  AM_QADD_ -> qError "QADD: AUTH"
+                  AM_QKEY_ -> qError "QKEY: AUTH"
+                  AM_QUSE_ -> qError "QUSE: AUTH"
+                  AM_QTEST_ -> qError "QTEST: AUTH"
+                  AM_EREADY_ -> notifyDel err
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
-                  | temporaryOrHostError e -> do
-                      let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                      ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySndMsg RIFast)
-                  | otherwise -> notifyDel msgId err
+                  | temporaryOrHostError e -> retrySndMsg n delay err
+                  | otherwise -> notifyDel err
               where
                 msgExpired timeoutSel = do
-                  msgTimeout <- asks $ timeoutSel . config
+                  let msgTimeout = timeoutSel dCfg
                   currentTime <- liftIO getCurrentTime
                   pure $ diffUTCTime currentTime internalTs > msgTimeout
-                retrySndMsg riMode = do
-                  withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
-                  retrySndOp c $ loop riMode
+                notifyDelMessages err = do
+                  notifyDel err
+                  mIds <- withStore' c $ \db -> getExpiredSndMessages db connId sq
+                  forM_ mIds $ \mId' -> notify $ MERR (unId mId') $ BROKER (B.unpack $ strEncode srv) TIMEOUT
+                  withStore' c $ \db -> deleteExpiredSndMessages db connId sq mIds
+                retrySndMsg n delay err
+                  | n + 1 < messageConsecutiveRetries dCfg = retrySndOp c loop
+                  | otherwise = ifM (msgExpired messageTimeout) (notifyDelMessages err) (updateDeliverAfter False delay)
+                updateDeliverAfter qe' delay = do
+                  let ri = (if qe then quotaExceededRetryInterval else messageRetryInterval) dCfg
+                      -- TODO elapsed instead of 0?
+                      delay' = if qe == qe' then nextDelay 0 delay ri else initialInterval ri
+                  withStore' c $ \db -> updateSndQueueDelivery db connId sq qe' delay'
+            -- retrySndOp c $ loop riMode
             Right () -> do
               case msgType of
                 AM_CONN_INFO -> setConfirmed
@@ -1255,11 +1270,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                         Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
                           -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
                           case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
-                            Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
+                            Nothing -> internalErr "sent QTEST: queue not found in connection"
                             Just (sq', sq'' : sqs') -> do
                               checkSQSwchStatus sq' SSSendingQTEST
                               -- remove the delivery from the map to stop the thread when the delivery loop is complete
-                              atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
+                              -- atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
                               withStore' c $ \db -> do
                                 when primary $ setSndQueuePrimary db connId sq
                                 deletePendingMsgs db connId sq'
@@ -1267,29 +1282,29 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                               let sqs'' = sq'' :| sqs'
                                   conn' = DuplexConnection cData' rqs sqs''
                               notify . SWITCH QDSnd SPCompleted $ connectionStats conn'
-                            _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
-                        _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
-                    _ -> internalErr msgId "QTEST sent not in duplex connection"
+                            _ -> internalErr "sent QTEST: there is only one queue in connection"
+                        _ -> internalErr "sent QTEST: queue not in connection or not replacing another queue"
+                    _ -> internalErr "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
-              delMsgKeep (msgType == AM_A_MSG_) msgId
+              delMsgKeep (msgType == AM_A_MSG_)
               where
                 setConfirmed = do
                   withStore' c $ \db -> do
                     setSndQueueStatus db sq Confirmed
                     when (isJust rq_) $ removeConfirmations db connId
                   unless (duplexHandshake == Just True) . void $ enqueueMessage c cData sq SMP.noMsgFlags HELLO
-  where
-    delMsg :: InternalId -> m ()
-    delMsg = delMsgKeep False
-    delMsgKeep :: Bool -> InternalId -> m ()
-    delMsgKeep keepForReceipt msgId = withStore' c $ \db -> deleteSndMsgDelivery db connId sq msgId keepForReceipt
-    notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
-    notify cmd = atomically $ writeTBQueue subQ ("", connId, APC (sAEntity @e) cmd)
-    notifyDel :: AEntityI e => InternalId -> ACommand 'Agent e -> m ()
-    notifyDel msgId cmd = notify cmd >> delMsg msgId
-    connError msgId = notifyDel msgId . ERR . CONN
-    qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
-    internalErr msgId = notifyDel msgId . ERR . INTERNAL
+        where
+          delMsg :: m ()
+          delMsg = delMsgKeep False
+          delMsgKeep :: Bool -> m ()
+          delMsgKeep keepForReceipt = withStore' c $ \db -> deleteSndMsgDelivery db connId sq msgId keepForReceipt
+          notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
+          notify cmd = atomically $ writeTBQueue subQ ("", connId, APC (sAEntity @e) cmd)
+          notifyDel :: AEntityI e => ACommand 'Agent e -> m ()
+          notifyDel cmd = notify cmd >> delMsg
+          connError = notifyDel . ERR . CONN
+          qError = notifyDel . ERR . AGENT . A_QUEUE
+          internalErr = notifyDel . ERR . INTERNAL
 
 retrySndOp :: AgentMonad m => AgentClient -> m () -> m ()
 retrySndOp c loop = do
@@ -2176,9 +2191,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             case findQ addr sqs of
               Just sq -> do
                 logServer "<--" c srv rId $ "MSG <QCONT>:" <> logSecret srvMsgId
-                atomically $
-                  TM.lookup (qAddress sq) (smpDeliveryWorkers c)
-                    >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
+                withStore' c $ \db -> setQuotaAvailable db connId sq
+              -- atomically $
+              --   TM.lookup (qAddress sq) (smpDeliveryWorkers c)
+              --     >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
               Nothing -> qError "QCONT: queue address not found"
 
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> m ()
@@ -2403,7 +2419,7 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = 
 confirmQueueAsync :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> SubscriptionMode -> m ()
 confirmQueueAsync v c cData sq srv connInfo e2eEncryption_ subMode = do
   storeConfirmation c cData sq e2eEncryption_ =<< mkAgentConfirmation v c cData sq srv connInfo subMode
-  submitPendingMsg c cData sq
+  submitPendingMsg c sq
 
 confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> SubscriptionMode -> m ()
 confirmQueue v@(Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption_ subMode = do
@@ -2427,7 +2443,7 @@ mkAgentConfirmation (Compatible agentVersion) c cData sq srv connInfo subMode
 enqueueConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
 enqueueConfirmation c cData sq connInfo e2eEncryption_ = do
   storeConfirmation c cData sq e2eEncryption_ $ AgentConnInfo connInfo
-  submitPendingMsg c cData sq
+  submitPendingMsg c sq
 
 storeConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Maybe (CR.E2ERatchetParams 'C.X448) -> AgentMessage -> m ()
 storeConfirmation c ConnData {connId, connAgentVersion} sq e2eEncryption_ agentMsg = withStore c $ \db -> runExceptT $ do
@@ -2448,10 +2464,10 @@ enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
   mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
 
 enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.E2ERatchetParams 'C.X448 -> m AgentMsgId
-enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
+enqueueRatchetKey c ConnData {connId} sq e2eEncryption = do
   aVRange <- asks $ smpAgentVRange . config
   msgId <- storeRatchetKey $ maxVersion aVRange
-  submitPendingMsg c cData sq
+  submitPendingMsg c sq
   pure $ unId msgId
   where
     storeRatchetKey :: Version -> m InternalId
