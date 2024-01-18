@@ -280,7 +280,6 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
       getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
       -- trigger token replace
       tkn2 <- registerTestToken a "xyzw" NMInstant apnsQ
-      -- registerNtfToken a tkn2 NMInstant >>= \r -> liftIO $ r `shouldBe` NTRegistered
       getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
       deleteNtfToken a tkn2 -- force server switch
       Left BROKER {brokerErr = NETWORK} <- tryError $ registerTestToken a "qwer" NMInstant apnsQ -- ok, it's down for now
@@ -656,7 +655,7 @@ testSwitchNotificationServer servers APNSMockServer {apnsQ} ntf = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    aTkn <- registerTestToken a "abcd" NMInstant apnsQ
+    _aTkn <- registerTestToken a "abcd" NMInstant apnsQ
     liftIO $ threadDelay 250000
     let testMessage msg = do
           msgId <- sendMessage b aId (SMP.MsgFlags True) msg
@@ -665,9 +664,13 @@ testSwitchNotificationServer servers APNSMockServer {apnsQ} ntf = do
           get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
           ackMessage a bId msgId Nothing
     testMessage "hello"
+    -- replacing token keeps server
+    aTkn2 <- registerTestToken a "xyzw" NMInstant apnsQ
+    getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
+    testMessage "still there"
     -- switch over to a new server
     setNtfServers a [testNtfServer2]
-    deleteNtfToken a aTkn
+    deleteNtfToken a aTkn2
     _ <- registerTestToken a "abcd" NMInstant apnsQ
     getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2
     liftIO $ killThread ntf -- shut down old server
