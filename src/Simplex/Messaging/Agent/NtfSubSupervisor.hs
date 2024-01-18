@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.Except
@@ -38,7 +39,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, SMPServer, sameSrvAddr)
-import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
+import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM, (<$$>))
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO, threadDelay)
@@ -144,7 +145,10 @@ getNtfSMPWorker hasWork c server = do
   getAgentWorker "ntf_smp" hasWork c server ws $ runNtfSMPWorker c server
 
 withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
-withNtfServer c action = getNtfServer c >>= mapM_ action
+withNtfServer c action = do
+  fromToken_ <- (\NtfToken {ntfServer} -> ntfServer) <$$> getNtfToken
+  fromServers_ <- getNtfServer c
+  mapM_ action (fromToken_ <|> fromServers_)
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> Worker -> m ()
 runNtfWorker c srv Worker {doWork} = do
