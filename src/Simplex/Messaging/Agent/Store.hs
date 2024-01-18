@@ -28,7 +28,7 @@ import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Agent.RetryInterval (RI2State)
+import Simplex.Messaging.Agent.RetryInterval (RI2State, RIState)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
 import Simplex.Messaging.Encoding.String
@@ -149,6 +149,8 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
+    quotaExceeded :: Bool,
+    retryState :: Maybe RIState,
     -- | database queue ID (within connection)
     dbQueueId :: DBQueueId q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
