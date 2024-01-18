@@ -676,6 +676,11 @@ testSwitchNotificationServer servers APNSMockServer {apnsQ} ntf = do
     liftIO $ killThread ntf -- shut down old server
     liftIO $ threadDelay 500000
     testMessage "hello again"
+    -- switching smp queues
+    _ <- switchConnectionAsync a "" bId
+    switchComplete a bId b aId
+    liftIO $ threadDelay 500000
+    testMessage "hey, other there"
   disconnectAgentClient a
   disconnectAgentClient b
 
