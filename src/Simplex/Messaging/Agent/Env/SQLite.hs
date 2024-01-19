@@ -92,6 +92,7 @@ data AgentConfig = AgentConfig
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
+    quotaExceededTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
@@ -135,13 +136,10 @@ defaultMessageRetryInterval =
             maxInterval = 60_000000
           },
       riSlow =
-        -- TODO: these timeouts can be increased in v5.0 once most clients are updated
-        -- to resume sending on QCONT messages.
-        -- After that local message expiration period should be also increased.
         RetryInterval
-          { initialInterval = 60_000000,
+          { initialInterval = 180_000000, -- 3 minutes
             increaseAfter = 60_000000,
-            maxInterval = 3600_000000 -- 1 hour
+            maxInterval = 3 * 3600_000000 -- 3 hours
           }
     }
 
@@ -159,6 +157,7 @@ defaultAgentConfig =
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
+      quotaExceededTimeout = 7 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
