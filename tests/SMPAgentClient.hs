@@ -206,7 +206,7 @@ agentCfg =
       -- database = testDB,
       smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
       ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
-      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
+      reconnectInterval = fastRetryInterval,
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,
       ntfSMPWorkerDelay = 100,
@@ -216,6 +216,12 @@ agentCfg =
     }
   where
     networkConfig = defaultNetworkConfig {tcpConnectTimeout = 3_000_000, tcpTimeout = 2_000_000}
+
+fastRetryInterval :: RetryInterval
+fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
+
+fastMessageRetryInterval :: RetryInterval2
+fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = fastRetryInterval}
 
 type AgentTestMonad m = (MonadUnliftIO m, MonadRandom m, MonadFail m)
 

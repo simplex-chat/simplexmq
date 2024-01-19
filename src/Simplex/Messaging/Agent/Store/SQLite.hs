@@ -110,6 +110,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getPendingQueueMsg,
     updatePendingMsgRIState,
     deletePendingMsgs,
+    getExpiredSndMessages,
     setMsgUserAck,
     getRcvMsg,
     getLastMsg,
@@ -1040,6 +1041,20 @@ updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
 deletePendingMsgs :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deletePendingMsgs db connId SndQueue {dbQueueId} =
   DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
+
+getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [InternalId]
+getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs =
+  map fromOnly
+    <$> DB.query
+      db
+      [sql|
+        SELECT d.internal_id
+        FROM snd_message_deliveries d
+        JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id
+        WHERE d.conn_id = ? AND d.snd_queue_id = ? AND d.failed = 0 AND m.internal_ts < ?
+        ORDER BY d.internal_id ASC
+      |]
+      (connId, dbQueueId, expireTs)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do

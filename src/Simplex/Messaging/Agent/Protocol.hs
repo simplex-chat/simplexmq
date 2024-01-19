@@ -337,6 +337,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   MID :: AgentMsgId -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
+  MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
   MSGNTF :: SMPMsgMeta -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
@@ -398,6 +399,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
   MERR_ :: ACommandTag Agent AEConn
+  MERRS_ :: ACommandTag Agent AEConn
   MSG_ :: ACommandTag Agent AEConn
   MSGNTF_ :: ACommandTag Agent AEConn
   ACK_ :: ACommandTag Client AEConn
@@ -452,6 +454,7 @@ aCommandTag = \case
   MID _ -> MID_
   SENT _ -> SENT_
   MERR {} -> MERR_
+  MERRS {} -> MERRS_
   MSG {} -> MSG_
   MSGNTF {} -> MSGNTF_
   ACK {} -> ACK_
@@ -1611,6 +1614,7 @@ instance StrEncoding ACmdTag where
       "MID" -> ct MID_
       "SENT" -> ct SENT_
       "MERR" -> ct MERR_
+      "MERRS" -> ct MERRS_
       "MSG" -> ct MSG_
       "MSGNTF" -> ct MSGNTF_
       "ACK" -> t ACK_
@@ -1667,6 +1671,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     MID_ -> "MID"
     SENT_ -> "SENT"
     MERR_ -> "MERR"
+    MERRS_ -> "MERRS"
     MSG_ -> "MSG"
     MSGNTF_ -> "MSGNTF"
     ACK_ -> "ACK"
@@ -1736,6 +1741,7 @@ commandP binaryP =
           MID_ -> s (MID <$> A.decimal)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
+          MERRS_ -> s (MERRS <$> strP_ <*> strP)
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
           MSGNTF_ -> s (MSGNTF <$> strP)
           RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
@@ -1788,12 +1794,13 @@ serializeCommand = \case
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND msgFlags msgBody -> B.unwords [s SEND_, smpEncode msgFlags, serializeBinary msgBody]
-  MID mId -> s (MID_, Str $ bshow mId)
-  SENT mId -> s (SENT_, Str $ bshow mId)
-  MERR mId e -> s (MERR_, Str $ bshow mId, e)
+  MID mId -> s (MID_, mId)
+  SENT mId -> s (SENT_, mId)
+  MERR mId e -> s (MERR_, mId, e)
+  MERRS mIds e -> s (MERRS_, mIds, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
-  ACK mId rcptInfo_ -> s (ACK_, Str $ bshow mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
+  ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
   SWCH -> s SWCH_
   OFF -> s OFF_
