@@ -72,7 +72,7 @@ processNtfSub c (connId, cmd) = do
       logInfo $ "processNtfSub, NSCCreate - a = " <> tshow a
       case a of
         Nothing -> do
-          withNtfServer c $ \ntfServer -> do
+          withTokenServer $ \ntfServer -> do
             case clientNtfCreds of
               Just ClientNtfCreds {notifierId} -> do
                 let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey
@@ -99,7 +99,7 @@ processNtfSub c (connId, cmd) = do
                 | isDeleteNtfSubAction action -> do
                     if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
                       then resetSubscription
-                      else withNtfServer c $ \ntfServer -> do
+                      else withTokenServer $ \ntfServer -> do
                         withStore' c $ \db -> supervisorUpdateNtfSub db sub {ntfServer} (NtfSubNTFAction NSACreate)
                         void $ getNtfNTFWorker True c ntfServer
                 | otherwise -> case action of
@@ -111,7 +111,7 @@ processNtfSub c (connId, cmd) = do
               void $ getNtfNTFWorker True c subNtfServer
             resetSubscription :: m ()
             resetSubscription =
-              withNtfServer c $ \ntfServer -> do
+              withTokenServer $ \ntfServer -> do
                 let sub' = sub {ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
                 withStore' c $ \db -> supervisorUpdateNtfSub db sub' (NtfSubSMPAction NSASmpKey)
                 void $ getNtfSMPWorker True c smpServer
@@ -143,8 +143,8 @@ getNtfSMPWorker hasWork c server = do
   ws <- asks $ ntfSMPWorkers . ntfSupervisor
   getAgentWorker "ntf_smp" hasWork c server ws $ runNtfSMPWorker c server
 
-withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
-withNtfServer c action = getNtfServer c >>= mapM_ action
+withTokenServer :: AgentMonad' m => (NtfServer -> m ()) -> m ()
+withTokenServer action = getNtfToken >>= mapM_ (\NtfToken {ntfServer} -> action ntfServer)
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> Worker -> m ()
 runNtfWorker c srv Worker {doWork} = do
