@@ -145,10 +145,10 @@ getNtfSMPWorker hasWork c server = do
   getAgentWorker "ntf_smp" hasWork c server ws $ runNtfSMPWorker c server
 
 withNtfServer :: AgentMonad' m => AgentClient -> (NtfServer -> m ()) -> m ()
-withNtfServer c action = do
-  fromToken_ <- (\NtfToken {ntfServer} -> ntfServer) <$$> getNtfToken
-  fromServers_ <- getNtfServer c
-  mapM_ action (fromToken_ <|> fromServers_)
+withNtfServer c action =
+  getNtfToken >>= \case
+    Just NtfToken {ntfServer} -> action ntfServer
+    Nothing -> getNtfServer c >>= mapM_ action
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> Worker -> m ()
 runNtfWorker c srv Worker {doWork} = do
