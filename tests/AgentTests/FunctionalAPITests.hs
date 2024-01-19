@@ -117,6 +117,9 @@ pGet c = do
 pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
+pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> ACommand 'Agent e
+pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} _ msgBody
+
 pattern Rcvd :: AgentMsgId -> ACommand 'Agent e
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
 
@@ -878,7 +881,12 @@ testExpireMessage t = do
   nGet b =##> \case ("", "", DOWN _ [c]) -> c == aId; _ -> False
   4 <- runRight $ sendMessage a bId SMP.noMsgFlags "1"
   threadDelay 1000000
+  5 <- runRight $ sendMessage a bId SMP.noMsgFlags "2" -- this won't expire
   get a =##> \case ("", c, MERR 4 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    withUP a bId $ \case ("", _, SENT 5) -> True; _ -> False
+    withUP b aId $ \case ("", _, MsgErr 4 (MsgSkipped 3 3) "2") -> True; _ -> False
+    ackMessage b aId 4 Nothing
 
 testExpireManyMessages :: HasCallStack => ATransport -> IO ()
 testExpireManyMessages t = do
@@ -892,28 +900,53 @@ testExpireManyMessages t = do
     5 <- sendMessage a bId SMP.noMsgFlags "2"
     6 <- sendMessage a bId SMP.noMsgFlags "3"
     liftIO $ threadDelay 1000000
+    7 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
     get a =##> \case ("", c, MERR 4 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    withUP a bId $ \case ("", _, SENT 7) -> True; _ -> False
+    withUP b aId $ \case ("", _, MsgErr 4 (MsgSkipped 3 5) "4") -> True; _ -> False
+    ackMessage b aId 4 Nothing
+
+withUP :: AgentClient -> ConnId -> (AEntityTransmission 'AEConn -> Bool) -> ExceptT AgentErrorType IO ()
+withUP a bId p =
+  liftIO $
+    getInAnyOrder
+      a
+      [ \case ("", "", APC SAENone (UP _ [c])) -> c == bId; _ -> False,
+        \case (corrId, c, APC SAEConn cmd) -> c == bId && p (corrId, c, cmd); _ -> False
+      ]
 
 testExpireMessageQuota :: HasCallStack => ATransport -> IO ()
-testExpireMessageQuota t = do
+testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> runRight_ $ do
-    (_aId, bId) <- makeConnection a b
+  (aId, bId) <- runRight $ do
+    (aId, bId) <- makeConnection a b
     liftIO $ threadDelay 500000
     disconnectAgentClient b
     4 <- sendMessage a bId SMP.noMsgFlags "1"
     get a ##> ("", bId, SENT 4)
     5 <- sendMessage a bId SMP.noMsgFlags "2"
+    liftIO $ threadDelay 1000000
+    6 <- sendMessage a bId SMP.noMsgFlags "3" -- this won't expire
     get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
+    pure (aId, bId)
+  b' <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+  runRight_ $ do
+    subscribeConnection b' aId
+    get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
+    ackMessage b' aId 4 Nothing
+    get a ##> ("", bId, SENT 6)
+    get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 4) "3") -> c == aId; _ -> False
+    ackMessage b' aId 6 Nothing
 
 testExpireManyMessagesQuota :: HasCallStack => ATransport -> IO ()
-testExpireManyMessagesQuota t = do
+testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> runRight_ $ do
-    (_aId, bId) <- makeConnection a b
+  (aId, bId) <- runRight $ do
+    (aId, bId) <- makeConnection a b
     liftIO $ threadDelay 500000
     disconnectAgentClient b
     4 <- sendMessage a bId SMP.noMsgFlags "1"
@@ -921,8 +954,19 @@ testExpireManyMessagesQuota t = do
     5 <- sendMessage a bId SMP.noMsgFlags "2"
     6 <- sendMessage a bId SMP.noMsgFlags "3"
     7 <- sendMessage a bId SMP.noMsgFlags "4"
+    liftIO $ threadDelay 1000000
+    8 <- sendMessage a bId SMP.noMsgFlags "5" -- this won't expire
     get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
     get a =##> \case ("", c, MERRS [6, 7] (SMP QUOTA)) -> bId == c; _ -> False
+    pure (aId, bId)
+  b' <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+  runRight_ $ do
+    subscribeConnection b' aId
+    get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
+    ackMessage b' aId 4 Nothing
+    get a ##> ("", bId, SENT 8)
+    get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 6) "5") -> c == aId; _ -> False
+    ackMessage b' aId 6 Nothing
 
 testRatchetSync :: HasCallStack => ATransport -> IO ()
 testRatchetSync t = withAgentClients2 $ \alice bob ->

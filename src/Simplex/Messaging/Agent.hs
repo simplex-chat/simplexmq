@@ -1168,7 +1168,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   _ -> do
                     ts <- liftIO getCurrentTime
-                    if msgExpired ts quotaExceededTimeout then notifyDelMsgs msgId e ts else retrySndMsg RISlow
+                    if msgExpired ts quotaExceededTimeout then notifyDelMsgs msgId e $ addUTCTime (-quotaExceededTimeout) ts else retrySndMsg RISlow
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1203,7 +1203,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   | temporaryOrHostError e -> do
                       let msgTimeout = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
                       ts <- liftIO getCurrentTime
-                      if msgExpired ts msgTimeout then notifyDelMsgs msgId e ts else retrySndMsg RIFast
+                      if msgExpired ts msgTimeout then notifyDelMsgs msgId e $ addUTCTime (- msgTimeout) ts else retrySndMsg RIFast
                   | otherwise -> notifyDel msgId err
               where
                 msgExpired currentTs msgTimeout = diffUTCTime currentTs internalTs > msgTimeout
