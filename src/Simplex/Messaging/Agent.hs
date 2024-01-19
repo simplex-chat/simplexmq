@@ -1167,8 +1167,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   _ -> do
-                    ts <- liftIO getCurrentTime
-                    if msgExpired ts quotaExceededTimeout then notifyDelMsgs msgId e $ addUTCTime (-quotaExceededTimeout) ts else retrySndMsg RISlow
+                    expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
+                    if internalTs < expireTs then notifyDelMsgs msgId e expireTs else retrySndMsg RISlow
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -1180,8 +1180,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                     -- otherwise branch is not used in clients with v2+ of agent protocol (since June 2022)
                     -- TODO remove in v6
                     | otherwise -> do
-                        ts <- liftIO getCurrentTime
-                        if msgExpired ts helloTimeout then connErr else retrySndMsg RIFast
+                        expireTs <- addUTCTime (-helloTimeout) <$> liftIO getCurrentTime
+                        if internalTs < expireTs then connErr else retrySndMsg RIFast
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -1202,11 +1202,10 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   -- the message sending would be retried
                   | temporaryOrHostError e -> do
                       let msgTimeout = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                      ts <- liftIO getCurrentTime
-                      if msgExpired ts msgTimeout then notifyDelMsgs msgId e $ addUTCTime (- msgTimeout) ts else retrySndMsg RIFast
+                      expireTs <- addUTCTime (-msgTimeout) <$> liftIO getCurrentTime
+                      if internalTs < expireTs then notifyDelMsgs msgId e expireTs else retrySndMsg RIFast
                   | otherwise -> notifyDel msgId err
               where
-                msgExpired currentTs msgTimeout = diffUTCTime currentTs internalTs > msgTimeout
                 retrySndMsg riMode = do
                   withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
                   retrySndOp c $ loop riMode
@@ -1283,9 +1282,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
                   unless (duplexHandshake == Just True) . void $ enqueueMessage c cData sq SMP.noMsgFlags HELLO
   where
     notifyDelMsgs :: InternalId -> AgentErrorType -> UTCTime -> m ()
-    notifyDelMsgs msgId err currentTs = do
+    notifyDelMsgs msgId err expireTs = do
       notifyDel msgId $ MERR (unId msgId) err
-      msgIds_ <- withStore' c $ \db -> getExpiredSndMessages db connId sq currentTs
+      msgIds_ <- withStore' c $ \db -> getExpiredSndMessages db connId sq expireTs
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
         withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False

@@ -1043,7 +1043,7 @@ deletePendingMsgs db connId SndQueue {dbQueueId} =
   DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
 
 getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [InternalId]
-getExpiredSndMessages db connId SndQueue {dbQueueId} currentTs =
+getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs =
   map fromOnly
     <$> DB.query
       db
@@ -1054,7 +1054,7 @@ getExpiredSndMessages db connId SndQueue {dbQueueId} currentTs =
         WHERE d.conn_id = ? AND d.snd_queue_id = ? AND d.failed = 0 AND m.internal_ts < ?
         ORDER BY d.internal_id ASC
       |]
-      (connId, dbQueueId, currentTs)
+      (connId, dbQueueId, expireTs)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
