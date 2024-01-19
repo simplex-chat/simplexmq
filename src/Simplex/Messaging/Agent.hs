@@ -1287,7 +1287,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {userId, connId, dupl
       msgIds_ <- withStore' c $ \db -> getExpiredSndMessages db connId sq expireTs
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
-        withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False
+        withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
     delMsg :: InternalId -> m ()
     delMsg = delMsgKeep False
     delMsgKeep :: Bool -> InternalId -> m ()
