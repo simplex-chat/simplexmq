@@ -1043,18 +1043,23 @@ deletePendingMsgs db connId SndQueue {dbQueueId} =
   DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
 
 getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [InternalId]
-getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs =
-  map fromOnly
-    <$> DB.query
-      db
-      [sql|
-        SELECT d.internal_id
-        FROM snd_message_deliveries d
-        JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id
-        WHERE d.conn_id = ? AND d.snd_queue_id = ? AND d.failed = 0 AND m.internal_ts < ?
-        ORDER BY d.internal_id ASC
-      |]
-      (connId, dbQueueId, expireTs)
+getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
+  msgId_ :: Maybe InternalId <-
+    maybeFirstRow fromOnly $
+      DB.query db "SELECT MAX(internal_id) FROM messages WHERE conn_id = ? AND internal_ts < ?" (connId, expireTs)
+  case msgId_ of
+    Nothing -> pure []
+    Just msgId ->
+      map fromOnly
+        <$> DB.query
+          db
+          [sql|
+            SELECT internal_id
+            FROM snd_message_deliveries
+            WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0 AND internal_id < ?
+            ORDER BY internal_id ASC
+          |]
+          (connId, dbQueueId, msgId)
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
