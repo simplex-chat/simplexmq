@@ -32,6 +32,7 @@ module Simplex.FileTransfer.Description
     gb,
     FileDescriptionURI (..),
     encodeFileDescriptionURI,
+    qrSizeLimit,
     decodeFileDescriptionURI,
   )
 where
@@ -42,7 +43,7 @@ import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, bimap)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -55,7 +56,7 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8, decodeUtf8')
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -226,15 +227,23 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
     }
 
 newtype FileDescriptionURI = FileDescriptionURI Text
-  deriving (Show)
+  deriving (Eq, Show)
 
-encodeFileDescriptionURI :: Int -> FileDescription 'FRecipient -> Maybe FileDescriptionURI
-encodeFileDescriptionURI maxSize fd = if T.length uri > maxSize then Nothing else Just (FileDescriptionURI uri)
+instance StrEncoding FileDescriptionURI where
+  strEncode (FileDescriptionURI t) = encodeUtf8 t
+  strDecode = bimap show FileDescriptionURI . decodeUtf8'
+
+encodeFileDescriptionURI :: FileDescription 'FRecipient -> Maybe FileDescriptionURI
+encodeFileDescriptionURI fd = if T.length uri > qrSizeLimit then Nothing else Just (FileDescriptionURI uri)
   where
     uri = "simplex:/file#?d=" <> decodeUtf8 (urlEncode True yaml)
     yaml = strEncode fd
 
-decodeFileDescriptionURI :: FileDescriptionURI -> Either String (FileDescription 'FRecipient)
+-- | URL length in QR code before jumping up to a next size.
+qrSizeLimit :: Int
+qrSizeLimit = 1002 -- ~3 chunks in URLencoded YAML with some spare size for server hosts
+
+decodeFileDescriptionURI :: FileDescriptionURI -> Either String (ValidFileDescription 'FRecipient)
 decodeFileDescriptionURI (FileDescriptionURI uri) =
   case T.drop 4 <$> T.breakOn "#?d=" uri of
     (_, "") -> Left "malformed URI"

@@ -22,7 +22,7 @@ import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpSendFilePublic, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
 import qualified Simplex.Messaging.Crypto as C
@@ -32,7 +32,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
-import System.FilePath ((</>))
+import System.FilePath ((<.>), (</>))
 import System.Timeout (timeout)
 import Test.Hspec
 import XFTPCLI
@@ -42,6 +42,7 @@ xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
+  fit "should send and receive file with a public link" testXFTPAgentSendReceivePublic
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
@@ -134,6 +135,28 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
         rfId <- testReceiveCF rcp rfd cfArgs originalFilePath
         xftpDeleteRcvFile rcp rfId
       disconnectAgentClient rcp
+
+testXFTPAgentSendReceivePublic :: HasCallStack => IO ()
+testXFTPAgentSendReceivePublic = withXFTPServer $ do
+  filePathIn <- createRandomFile
+  -- send file, delete snd file internally
+  sndr <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  var <- newEmptyTMVarIO
+  sndFileId <- runRight $ xftpSendFilePublic sndr 1 (CryptoFile filePathIn Nothing) 1 var
+  public <- timeout 5000000 (atomically $ takeTMVar var) >>= maybe (error "too long") pure
+  -- uri `shouldBe` FileDescriptionURI "simplex:/TODO"
+  disconnectAgentClient sndr
+  uri <- case public of
+    [(redirFileId, Just uri)] -> pure uri
+    _ -> error $ show public
+
+  rcp <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  vfd <- either fail pure $ decodeFileDescriptionURI uri
+  print vfd
+  let filePathOut = filePathIn <.> "out"
+  rcvFileId <- runRight $ xftpReceiveFile rcp 1 vfd Nothing
+  print rcvFileId
+  disconnectAgentClient rcp
 
 createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = createRandomFile' "testfile"

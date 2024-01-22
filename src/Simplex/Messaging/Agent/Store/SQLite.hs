@@ -2244,13 +2244,13 @@ createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath (Cry
   pure rcvFileEntityId
   where
     insertRcvFile :: FileDescription 'FRecipient -> IO (Either StoreError (RcvFileId, DBRcvFileId))
-    insertRcvFile FileDescription {size, digest, key, nonce, chunkSize} = runExceptT $ do
+    insertRcvFile FileDescription {size, digest, key, nonce, chunkSize, redirect} = runExceptT $ do
       rcvFileEntityId <- ExceptT $
         createWithRandomId gVar $ \rcvFileEntityId ->
           DB.execute
             db
-            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize) :. (prefixPath, tmpPath, savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving))
+            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, redirect, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect) :. (prefixPath, tmpPath, savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving))
       rcvFileId <- liftIO $ insertedRowId db
       pure (rcvFileEntityId, rcvFileId)
     insertChunk :: FileChunk -> DBRcvFileId -> IO Int64
@@ -2296,11 +2296,11 @@ getRcvFile db rcvFileId = runExceptT $ do
           |]
           (Only rcvFileId)
       where
-        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, Bool) -> RcvFile
-        toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted)) =
+        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, Bool, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, Bool) -> RcvFile
+        toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
-           in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
+           in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
       chunks <-
@@ -2513,13 +2513,13 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> IO (Either StoreError SndFileId)
-createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce =
+createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> Bool -> FilePath -> C.SbKey -> C.CbNonce -> IO (Either StoreError SndFileId)
+createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients redirect prefixPath key nonce =
   createWithRandomId gVar $ \sndFileEntityId ->
     DB.execute
       db
-      "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status) VALUES (?,?,?,?,?,?,?,?,?,?)"
-      (sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients, prefixPath, key, nonce, SFSNew)
+      "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, redirect, prefix_path, key, nonce, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+      ((sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients, redirect) :. (prefixPath, key, nonce, SFSNew))
 
 getSndFileByEntityId :: DB.Connection -> SndFileId -> IO (Either StoreError SndFile)
 getSndFileByEntityId db sndFileEntityId = runExceptT $ do
@@ -2543,17 +2543,17 @@ getSndFile db sndFileId = runExceptT $ do
         DB.query
           db
           [sql|
-            SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, digest, prefix_path, key, nonce, status, deleted
+            SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, redirect, digest, prefix_path, key, nonce, status, deleted
             FROM snd_files
             WHERE snd_file_id = ?
           |]
           (Only sndFileId)
       where
-        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce, SndFileStatus, Bool) -> SndFile
-        toFile (sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce, status, deleted) =
+        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Bool) :. (Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce, SndFileStatus, Bool) -> SndFile
+        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, redirect) :. (digest, prefixPath, key, nonce, status, deleted)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs
-           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, chunks = []}
+           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, redirect, digest, prefixPath, key, nonce, status, deleted, chunks = []}
     getChunks :: SndFileId -> UserId -> Int -> FilePath -> IO [SndFileChunk]
     getChunks sndFileEntityId userId numRecipients filePrefixPath = do
       chunks <-

@@ -15,6 +15,7 @@ module Simplex.FileTransfer.Client.Main
     CLIError (..),
     xftpClientCLI,
     cliSendFile,
+    cliSendFileOpts,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
@@ -259,6 +260,12 @@ runE a =
 cliSendFile :: SendOptions -> ExceptT CLIError IO ()
 cliSendFile opts = cliSendFileOpts opts True $ printProgress "Uploaded"
 
+getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
+getXFTPServer gen = \case
+  srv :| [] -> pure srv
+  servers -> do
+    atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+
 cliSendFileOpts :: SendOptions -> Bool -> (Int64 -> Int64 -> IO ()) -> ExceptT CLIError IO ()
 cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} printInfo notifyProgress = do
   let (_, fileName) = splitFileName filePath
@@ -334,62 +341,15 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
           pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
-        getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
-        getXFTPServer gen = \case
-          srv :| [] -> pure srv
-          servers -> do
-            atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+        -- getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
+        -- getXFTPServer gen = \case
+        --   srv :| [] -> pure srv
+        --   servers -> do
+        --     atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
 
     -- M chunks, R replicas, N recipients
     -- rcvReplicas: M[SentFileChunk] -> M * R * N [SentRecipientReplica]
     -- rcvChunks: M * R * N [SentRecipientReplica] -> N[ M[FileChunk] ]
-    createRcvFileDescriptions :: FileDescription 'FRecipient -> [SentFileChunk] -> [FileDescription 'FRecipient]
-    createRcvFileDescriptions fd sentChunks = map (\chunks -> (fd :: (FileDescription 'FRecipient)) {chunks}) rcvChunks
-      where
-        rcvReplicas :: [SentRecipientReplica]
-        rcvReplicas =
-          concatMap
-            ( \SentFileChunk {chunkNo, digest, chunkSize, replicas} ->
-                concatMap
-                  ( \SentFileChunkReplica {server, recipients} ->
-                      zipWith (\rcvNo (replicaId, replicaKey) -> SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize}) [1 ..] recipients
-                  )
-                  replicas
-            )
-            sentChunks
-        rcvChunks :: [[FileChunk]]
-        rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
-        sortChunks :: [FileChunk] -> [FileChunk]
-        sortChunks = map reverseReplicas . sortOn (\FileChunk {chunkNo} -> chunkNo)
-        reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
-        addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
-        addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
-          M.alter (Just . addOrChangeRecipient) rcvNo m
-          where
-            addOrChangeRecipient :: Maybe (Map Int FileChunk) -> Map Int FileChunk
-            addOrChangeRecipient = \case
-              Just m' -> M.alter (Just . addOrChangeChunk) chunkNo m'
-              _ -> M.singleton chunkNo $ FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
-            addOrChangeChunk :: Maybe FileChunk -> FileChunk
-            addOrChangeChunk = \case
-              Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
-              _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
-            replica = FileChunkReplica {server, replicaId, replicaKey}
-    createSndFileDescription :: FileDescription 'FSender -> [SentFileChunk] -> FileDescription 'FSender
-    createSndFileDescription fd sentChunks = fd {chunks = sndChunks}
-      where
-        sndChunks :: [FileChunk]
-        sndChunks =
-          map
-            ( \SentFileChunk {chunkNo, sndId, sndPrivateKey, chunkSize, digest, replicas} ->
-                FileChunk {chunkNo, digest, chunkSize, replicas = sndReplicas replicas (ChunkReplicaId sndId) sndPrivateKey}
-            )
-            sentChunks
-        -- SentFileChunk having sndId and sndPrivateKey represents the current implementation's limitation
-        -- that sender uploads each chunk only to one server, so we can use the first replica's server for FileChunkReplica
-        sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
-        sndReplicas [] _ _ = []
-        sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
     writeFileDescriptions :: String -> [FileDescription 'FRecipient] -> FileDescription 'FSender -> IO ([FilePath], FilePath)
     writeFileDescriptions fileName fdRcvs fdSnd = do
       outDir <- uniqueCombine (fromMaybe "." outputDir) (fileName <> ".xftp")
@@ -401,6 +361,55 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       let fdSndPath = outDir </> "snd.xftp.private"
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
+
+createRcvFileDescriptions :: FileDescription 'FRecipient -> [SentFileChunk] -> [FileDescription 'FRecipient]
+createRcvFileDescriptions fd sentChunks = map (\chunks -> (fd :: (FileDescription 'FRecipient)) {chunks}) rcvChunks
+  where
+    rcvReplicas :: [SentRecipientReplica]
+    rcvReplicas =
+      concatMap
+        ( \SentFileChunk {chunkNo, digest, chunkSize, replicas} ->
+            concatMap
+              ( \SentFileChunkReplica {server, recipients} ->
+                  zipWith (\rcvNo (replicaId, replicaKey) -> SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize}) [1 ..] recipients
+              )
+              replicas
+        )
+        sentChunks
+    rcvChunks :: [[FileChunk]]
+    rcvChunks = map (sortChunks . M.elems) $ M.elems $ foldl' addRcvChunk M.empty rcvReplicas
+    sortChunks :: [FileChunk] -> [FileChunk]
+    sortChunks = map reverseReplicas . sortOn (\FileChunk {chunkNo} -> chunkNo)
+    reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
+    addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
+    addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
+      M.alter (Just . addOrChangeRecipient) rcvNo m
+      where
+        addOrChangeRecipient :: Maybe (Map Int FileChunk) -> Map Int FileChunk
+        addOrChangeRecipient = \case
+          Just m' -> M.alter (Just . addOrChangeChunk) chunkNo m'
+          _ -> M.singleton chunkNo $ FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
+        addOrChangeChunk :: Maybe FileChunk -> FileChunk
+        addOrChangeChunk = \case
+          Just ch@FileChunk {replicas} -> ch {replicas = replica : replicas}
+          _ -> FileChunk {chunkNo, digest, chunkSize, replicas = [replica]}
+        replica = FileChunkReplica {server, replicaId, replicaKey}
+
+createSndFileDescription :: FileDescription 'FSender -> [SentFileChunk] -> FileDescription 'FSender
+createSndFileDescription fd sentChunks = fd {chunks = sndChunks}
+  where
+    sndChunks :: [FileChunk]
+    sndChunks =
+      map
+        ( \SentFileChunk {chunkNo, sndId, sndPrivateKey, chunkSize, digest, replicas} ->
+            FileChunk {chunkNo, digest, chunkSize, replicas = sndReplicas replicas (ChunkReplicaId sndId) sndPrivateKey}
+        )
+        sentChunks
+    -- SentFileChunk having sndId and sndPrivateKey represents the current implementation's limitation
+    -- that sender uploads each chunk only to one server, so we can use the first replica's server for FileChunkReplica
+    sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
+    sndReplicas [] _ _ = []
+    sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
 
 getChunkDigest :: XFTPChunkSpec -> IO ByteString
 getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =

@@ -49,6 +49,8 @@ import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
+import Simplex.FileTransfer.Description (ValidFileDescription)
+import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
@@ -233,6 +235,7 @@ data XFTPAgent = XFTPAgent
     xftpWorkDir :: TVar (Maybe FilePath),
     xftpRcvWorkers :: TMap (Maybe XFTPServer) Worker,
     xftpSndWorkers :: TMap (Maybe XFTPServer) Worker,
+    xftpSndCallbacks :: TMap SndFileId (SndFileId -> ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> IO ()),
     xftpDelWorkers :: TMap XFTPServer Worker
   }
 
@@ -241,8 +244,9 @@ newXFTPAgent = do
   xftpWorkDir <- newTVar Nothing
   xftpRcvWorkers <- TM.empty
   xftpSndWorkers <- TM.empty
+  xftpSndCallbacks <- TM.empty
   xftpDelWorkers <- TM.empty
-  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
+  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpSndCallbacks, xftpDelWorkers}
 
 tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
