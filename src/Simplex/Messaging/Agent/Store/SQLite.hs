@@ -1056,8 +1056,7 @@ getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
         |]
         (connId, expireTs)
   case msgId_ of
-    Nothing -> pure []
-    Just msgId ->
+    Just (Just msgId) ->
       map fromOnly
         <$> DB.query
           db
@@ -1068,6 +1067,7 @@ getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
             ORDER BY internal_id ASC
           |]
           (connId, dbQueueId, msgId)
+    _ -> pure []
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
