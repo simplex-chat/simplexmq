@@ -1046,7 +1046,7 @@ getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [I
 getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs =
   lastExpiredMessageId >>= maybe (pure []) deleteExpiredDeliveries . join
   where
-    -- type is Maybe (Maybe InternalId) is because MAX always returns one row, possibly with NULL value
+    -- type is Maybe (Maybe InternalId) because MAX always returns one row, possibly with NULL value
     lastExpiredMessageId :: IO (Maybe (Maybe InternalId))
     lastExpiredMessageId =
       maybeFirstRow fromOnly $
