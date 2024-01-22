@@ -1044,7 +1044,7 @@ deletePendingMsgs db connId SndQueue {dbQueueId} =
 
 getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [InternalId]
 getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
-  -- tyoe is Maybe (Maybe InternalId) is because MAX always returns one row, possibly with NULL value
+  -- type is Maybe (Maybe InternalId) is because MAX always returns one row, possibly with NULL value
   msgId_ :: Maybe (Maybe InternalId) <-
     maybeFirstRow fromOnly $
       DB.query
