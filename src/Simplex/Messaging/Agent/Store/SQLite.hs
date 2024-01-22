@@ -1043,20 +1043,23 @@ deletePendingMsgs db connId SndQueue {dbQueueId} =
   DB.execute db "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ?" (connId, dbQueueId)
 
 getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [InternalId]
-getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
-  -- type is Maybe (Maybe InternalId) is because MAX always returns one row, possibly with NULL value
-  msgId_ :: Maybe (Maybe InternalId) <-
-    maybeFirstRow fromOnly $
-      DB.query
-        db
-        [sql|
-          SELECT MAX(internal_id)
-          FROM messages
-          WHERE conn_id = ? AND internal_snd_id IS NOT NULL AND internal_ts < ?
-        |]
-        (connId, expireTs)
-  case msgId_ of
-    Just (Just msgId) ->
+getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs =
+  lastExpiredMessageId >>= maybe (pure []) deleteExpiredDeliveries . join
+  where
+    -- type is Maybe (Maybe InternalId) is because MAX always returns one row, possibly with NULL value
+    lastExpiredMessageId :: IO (Maybe (Maybe InternalId))
+    lastExpiredMessageId =
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT MAX(internal_id)
+            FROM messages
+            WHERE conn_id = ? AND internal_snd_id IS NOT NULL AND internal_ts < ?
+          |]
+          (connId, expireTs)
+    deleteExpiredDeliveries :: InternalId -> IO [InternalId]
+    deleteExpiredDeliveries msgId =
       map fromOnly
         <$> DB.query
           db
@@ -1067,7 +1070,6 @@ getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
             ORDER BY internal_id ASC
           |]
           (connId, dbQueueId, msgId)
-    _ -> pure []
 
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
