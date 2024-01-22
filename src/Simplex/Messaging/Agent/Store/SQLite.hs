@@ -1056,7 +1056,7 @@ getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
           [sql|
             SELECT internal_id
             FROM snd_message_deliveries
-            WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0 AND internal_id < ?
+            WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0 AND internal_id <= ?
             ORDER BY internal_id ASC
           |]
           (connId, dbQueueId, msgId)
