@@ -1044,9 +1044,17 @@ deletePendingMsgs db connId SndQueue {dbQueueId} =
 
 getExpiredSndMessages :: DB.Connection -> ConnId -> SndQueue -> UTCTime -> IO [InternalId]
 getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
-  msgId_ :: Maybe InternalId <-
+  -- tyoe is Maybe (Maybe InternalId) is because MAX always returns one row, possibly with NULL value
+  msgId_ :: Maybe (Maybe InternalId) <-
     maybeFirstRow fromOnly $
-      DB.query db "SELECT MAX(internal_id) FROM messages WHERE conn_id = ? AND internal_ts < ?" (connId, expireTs)
+      DB.query
+        db
+        [sql|
+          SELECT MAX(internal_id)
+          FROM messages
+          WHERE conn_id = ? AND internal_snd_id IS NOT NULL AND internal_ts < ?
+        |]
+        (connId, expireTs)
   case msgId_ of
     Nothing -> pure []
     Just msgId ->
