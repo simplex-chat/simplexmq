@@ -1,3 +1,27 @@
+# 5.5.0
+
+Code:
+- compatible with GHC 8.10.7 to support compilation for armv7a.
+- migrate to `crypton` from deprecated `cryptonite` (the seed for DRG is now sha512-hashed).
+- use ChaChaDRG for all random IDs, keys and nonces, only using hashed entropy as seed.
+- more efficient transaction batching in SMP protocol client and server.
+
+Agent:
+- stabilize message reception and delivery, migrate message delivery to database queue.
+- additional event MSGNTF confirming that message received via notification is processed.
+- efficient processing of messages sent to multiple recipients with batched database transactions.
+- new worker abstraction for all queued tasks resilient to race conditions and some database errors.
+- many fixed race conditions.
+- background mode for iOS NSE.
+- additional error reporting to client on critical errors (to be show as alert in the clients).
+- functional api to get worker statistics.
+
+SMP/XFTP servers:
+- fix socket and memory leak on servers with high load (inactive clients without subscriptions are disconnected after set time of inactivity).
+- control port improvements.
+- fix statistics for stored queues, messages and files.
+- make writing to store log atomic (fixes a rare bug in XFTP server).
+
 # 5.4.0
 
 Migrate to GHC 9.6.3

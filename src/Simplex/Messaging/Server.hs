@@ -203,9 +203,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
-      withFile statsFilePath AppendMode $ \h -> liftIO $ do
-        hSetBuffering h LineBuffering
-        forever $ do
+      forever $ do
+        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+          hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomically $ swapTVar fromTime ts
           qCreated' <- atomically $ swapTVar qCreated 0
@@ -241,7 +241,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 show msgCount',
                 show msgExpired'
               ]
-          threadDelay' interval
+        liftIO $ threadDelay' interval
 
     runClient :: Transport c => TProxy c -> c -> M ()
     runClient tp h = do

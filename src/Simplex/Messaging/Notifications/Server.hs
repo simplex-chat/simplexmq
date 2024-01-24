@@ -109,9 +109,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
       let interval = 1000000 * logInterval
-      withFile statsFilePath AppendMode $ \h -> liftIO $ do
-        hSetBuffering h LineBuffering
-        forever $ do
+      forever $ do
+        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+          hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomically $ swapTVar fromTime ts
           tknCreated' <- atomically $ swapTVar tknCreated 0
@@ -141,7 +141,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                 weekCount sub,
                 monthCount sub
               ]
-          threadDelay' interval
+        liftIO $ threadDelay' interval
 
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do

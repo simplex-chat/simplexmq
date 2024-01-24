@@ -10,12 +10,14 @@
 
 module SMPAgentClient where
 
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Database.SQLite.Simple as SQL
 import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
@@ -31,10 +33,11 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
+import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
@@ -177,11 +180,17 @@ testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:50
 testSMPServer2 :: SMPServer
 testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
 
+testNtfServer :: NtfServer
+testNtfServer = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"
+
+testNtfServer2 :: NtfServer
+testNtfServer2 = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6002"
+
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = userServers [noAuthSrv testSMPServer],
-      ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
+      ntf = [testNtfServer],
       xftp = userServers [noAuthSrv testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
@@ -197,7 +206,7 @@ agentCfg =
       -- database = testDB,
       smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
       ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
-      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
+      reconnectInterval = fastRetryInterval,
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,
       ntfSMPWorkerDelay = 100,
@@ -208,6 +217,12 @@ agentCfg =
   where
     networkConfig = defaultNetworkConfig {tcpConnectTimeout = 3_000_000, tcpTimeout = 2_000_000}
 
+fastRetryInterval :: RetryInterval
+fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
+
+fastMessageRetryInterval :: RetryInterval2
+fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = fastRetryInterval}
+
 type AgentTestMonad m = (MonadUnliftIO m, MonadRandom m, MonadFail m)
 
 withSmpAgentThreadOn_ :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m () -> (ThreadId -> m a) -> m a
@@ -217,6 +232,7 @@ withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
    in serverBracket
         ( \started -> do
             Right st <- liftIO $ createAgentStore db' "" False MCError
+            when (dbNew st) . liftIO $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
             runSMPAgentBlocking t cfg' initServers' st started
         )
         afterProcess
