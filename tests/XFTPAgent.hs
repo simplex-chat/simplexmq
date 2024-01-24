@@ -7,8 +7,8 @@
 module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, getSMPAgentClient', rfGet, runRight, runRight_, sfGet)
-import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM
+-- import Control.Concurrent (threadDelay)
+-- import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -33,10 +33,12 @@ import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), Protocol
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((<.>), (</>))
-import System.Timeout (timeout)
+-- import System.Timeout (timeout)
 import Test.Hspec
 import XFTPCLI
 import XFTPClient
+import UnliftIO
+import UnliftIO.Concurrent
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
@@ -141,11 +143,13 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
   filePathIn <- createRandomFile
   -- send file, delete snd file internally
   sndr <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  var <- newEmptyTMVarIO
-  sndFileId <- runRight $ xftpSendFilePublic sndr 1 (CryptoFile filePathIn Nothing) 1 var
-  public <- timeout 5000000 (atomically $ takeTMVar var) >>= maybe (error "too long") pure
-  -- uri `shouldBe` FileDescriptionURI "simplex:/TODO"
+  public <- bracket (async $ forever (sfGet sndr)) cancel $ \_ -> do
+    var <- newEmptyTMVarIO
+    sndFileId <- runRight $ xftpSendFilePublic sndr 1 (CryptoFile filePathIn Nothing) 1 var
+    timeout 30000000 (atomically $ takeTMVar var) >>= maybe (error "too slow") pure
   disconnectAgentClient sndr
+  show public `shouldBe` "hi"
+
   uri <- case public of
     [(redirFileId, Just uri)] -> pure uri
     _ -> error $ show public
