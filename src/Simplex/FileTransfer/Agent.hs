@@ -268,7 +268,7 @@ xftpSendFilePublic' :: forall m. AgentMonad m => AgentClient -> UserId -> Crypto
 xftpSendFilePublic' c userId file numRecipients uris = askUnliftIO >>= \u -> xftpSendFile_ c userId file numRecipients False $ Just (directDone u)
   where
     directDone :: UnliftIO m -> SndFileId -> sd -> [ValidFileDescription 'FRecipient] -> IO ()
-    directDone u _sfId _sndDescr rcvDescrs = mapConcurrently (sendRedirect u) rcvDescrs >>= atomically . putTMVar uris
+    directDone u _sfId _sndDescr rcvDescrs = void . async $ mapConcurrently (sendRedirect u) rcvDescrs >>= atomically . putTMVar uris
     sendRedirect :: UnliftIO m -> ValidFileDescription FRecipient -> IO (SndFileId, Maybe FileDescriptionURI)
     sendRedirect u rcvDescrDirect = unliftIO u $ do
       prefixPath <- getPrefixPath "redirect.xftp"

@@ -148,11 +148,9 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
     sndFileId <- runRight $ xftpSendFilePublic sndr 1 (CryptoFile filePathIn Nothing) 1 var
     timeout 30000000 (atomically $ takeTMVar var) >>= maybe (error "too slow") pure
   disconnectAgentClient sndr
-  show public `shouldBe` "hi"
-
   uri <- case public of
-    [(redirFileId, Just uri)] -> pure uri
-    _ -> error $ show public
+    [(_redirectSndFileId, Just uri)] -> pure uri
+    _ -> (show public `shouldBe` "[(_redirectSndFileId, Just uri)]") >> error "it isn't"
 
   rcp <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   vfd <- either fail pure $ decodeFileDescriptionURI uri
@@ -160,6 +158,7 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
   let filePathOut = filePathIn <.> "out"
   rcvFileId <- runRight $ xftpReceiveFile rcp 1 vfd Nothing
   print rcvFileId
+  error "TODO: xftpReceiveFile with callback"
   disconnectAgentClient rcp
 
 createRandomFile :: HasCallStack => IO FilePath
