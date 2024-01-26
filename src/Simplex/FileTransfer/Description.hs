@@ -12,6 +12,7 @@
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
+    RedirectMeta (..),
     AFileDescription (..),
     ValidFileDescription, -- constructor is not exported, use pattern
     pattern ValidFileDescription,
@@ -78,7 +79,13 @@ data FileDescription (p :: FileParty) = FileDescription
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
     chunks :: [FileChunk],
-    redirect :: Bool
+    redirect :: Maybe RedirectMeta
+  }
+  deriving (Eq, Show)
+
+data RedirectMeta = RedirectMeta
+  { size :: FileSize Int64,
+    digest :: FileDigest
   }
   deriving (Eq, Show)
 
@@ -157,7 +164,7 @@ data YAMLFileDescription = YAMLFileDescription
     nonce :: C.CbNonce,
     chunkSize :: String,
     replicas :: [YAMLServerReplicas],
-    redirect :: Maybe Bool
+    redirect :: Maybe RedirectMeta
   }
   deriving (Eq, Show)
 
@@ -180,7 +187,15 @@ data FileServerReplica = FileServerReplica
 newtype FileSize a = FileSize {unFileSize :: a}
   deriving (Eq, Show)
 
+instance FromJSON a => FromJSON (FileSize a) where
+  parseJSON v = FileSize <$> Y.parseJSON v
+
+instance ToJSON a => ToJSON (FileSize a) where
+  toJSON = Y.toJSON . unFileSize
+
 $(J.deriveJSON defaultJSON ''YAMLServerReplicas)
+
+$(J.deriveJSON defaultJSON ''RedirectMeta)
 
 $(J.deriveJSON defaultJSON ''YAMLFileDescription)
 
@@ -223,7 +238,7 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
       nonce,
       chunkSize = B.unpack $ strEncode chunkSize,
       replicas = encodeFileReplicas chunkSize chunks,
-      redirect = if redirect then Just True else Nothing
+      redirect
     }
 
 newtype FileDescriptionURI = FileDescriptionURI Text
@@ -331,7 +346,7 @@ decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chun
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
   pure $ case aFileParty party of
-    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks, redirect = fromMaybe False redirect}
+    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks, redirect}
   where
     decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 

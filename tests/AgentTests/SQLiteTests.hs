@@ -659,7 +659,7 @@ rcvFileDescr1 =
               replicas = [FileChunkReplica {server = xftpServer1, replicaId, replicaKey = testFileReplicaKey}]
             }
         ],
-      redirect = False
+      redirect = Nothing
     }
   where
     defaultChunkSize = FileSize $ mb 8
@@ -681,9 +681,9 @@ testGetNextRcvChunkToDownload st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvChunkToDownload db xftpServer1 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) Nothing
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
-    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) Nothing
 
     Left e <- getNextRcvChunkToDownload db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"
@@ -698,10 +698,10 @@ testGetNextRcvFileToDecrypt st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvFileToDecrypt db 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) Nothing
     DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 1"
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
-    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) Nothing
     DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 2"
 
     Left e <- getNextRcvFileToDecrypt db 86400
@@ -717,9 +717,9 @@ testGetNextSndFileToPrepare st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextSndFileToPrepare db 86400
 
-    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 False "filepath" testFileSbKey testFileCbNonce
+    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
-    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1  False "filepath" testFileSbKey testFileCbNonce
+    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     DB.execute_ db "UPDATE snd_files SET status = 'new' WHERE snd_file_id = 2"
 
     Left e <- getNextSndFileToPrepare db 86400
@@ -745,12 +745,12 @@ testGetNextSndChunkToUpload st = do
     Right Nothing <- getNextSndChunkToUpload db xftpServer1 86400
 
     -- create file 1
-    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 False "filepath" testFileSbKey testFileCbNonce
+    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     updateSndFileEncrypted db 1 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica_ db 1 newSndChunkReplica1
     DB.execute_ db "UPDATE snd_files SET num_recipients = 'bad' WHERE snd_file_id = 1"
     -- create file 2
-    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 False "filepath" testFileSbKey testFileCbNonce
+    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     updateSndFileEncrypted db 2 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica_ db 2 newSndChunkReplica1
 

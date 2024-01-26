@@ -47,7 +47,8 @@ data RcvFile = RcvFile
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
-    redirect :: Bool,
+    redirectEntityId :: Maybe RcvFileId,
+    redirect :: Maybe RedirectMeta,
     chunks :: [RcvFileChunk],
     prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
@@ -118,7 +119,6 @@ data SndFile = SndFile
     sndFileEntityId :: SndFileId,
     userId :: Int64,
     numRecipients :: Int,
-    redirect :: Bool,
     digest :: Maybe FileDigest,
     key :: C.SbKey,
     nonce :: C.CbNonce,
@@ -126,7 +126,8 @@ data SndFile = SndFile
     srcFile :: CryptoFile,
     prefixPath :: Maybe FilePath,
     status :: SndFileStatus,
-    deleted :: Bool
+    deleted :: Bool,
+    redirect :: Maybe RedirectMeta
   }
   deriving (Eq, Show)
 

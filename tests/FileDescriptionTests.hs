@@ -83,7 +83,7 @@ fileDesc =
                 ]
             }
         ],
-      redirect = False
+      redirect = Nothing
     }
   where
     defaultChunkSize = FileSize $ mb 8

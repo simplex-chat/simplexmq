@@ -171,6 +171,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRcvFileStatus,
     updateRcvFileError,
     updateRcvFileComplete,
+    updateRcvFileRedirect,
     updateRcvFileNoTmpPath,
     updateRcvFileDeleted,
     deleteRcvFile',
@@ -2262,39 +2263,44 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
   firstRow fromOnly SEXFTPServerNotFound $
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> IO (Either StoreError RcvFileId)
-createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath (CryptoFile savePath cfArgs) = runExceptT $ do
-  (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile fd
+createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe RcvFileId -> IO (Either StoreError RcvFileId)
+createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file redirectEntityId_ = runExceptT $ do
+  (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile db gVar userId fd prefixPath tmpPath file redirectEntityId_
   liftIO $
     forM_ chunks $ \fc@FileChunk {replicas} -> do
-      chunkId <- insertChunk fc rcvFileId
-      forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertReplica rno replica chunkId
+      chunkId <- insertRcvFileChunk db fc rcvFileId
+      forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertRcvFileChunkReplica db rno replica chunkId
   pure rcvFileEntityId
-  where
-    insertRcvFile :: FileDescription 'FRecipient -> IO (Either StoreError (RcvFileId, DBRcvFileId))
-    insertRcvFile FileDescription {size, digest, key, nonce, chunkSize, redirect} = runExceptT $ do
-      rcvFileEntityId <- ExceptT $
-        createWithRandomId gVar $ \rcvFileEntityId ->
-          DB.execute
-            db
-            "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, redirect, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect) :. (prefixPath, tmpPath, savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving))
-      rcvFileId <- liftIO $ insertedRowId db
-      pure (rcvFileEntityId, rcvFileId)
-    insertChunk :: FileChunk -> DBRcvFileId -> IO Int64
-    insertChunk FileChunk {chunkNo, chunkSize, digest} rcvFileId = do
+
+insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe RcvFileId -> IO (Either StoreError (RcvFileId, DBRcvFileId))
+insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectEntityId_ = runExceptT $ do
+  let (redirectDigest_, redirectSize_) = case redirect of
+        Just RedirectMeta {digest = d, size = s} -> (Just d, Just s)
+        Nothing -> (Nothing, Nothing)
+  rcvFileEntityId <- ExceptT $
+    createWithRandomId gVar $ \rcvFileEntityId ->
       DB.execute
         db
-        "INSERT INTO rcv_file_chunks (rcv_file_id, chunk_no, chunk_size, digest) VALUES (?,?,?,?)"
-        (rcvFileId, chunkNo, chunkSize, digest)
-      insertedRowId db
-    insertReplica :: Int -> FileChunkReplica -> Int64 -> IO ()
-    insertReplica replicaNo FileChunkReplica {server, replicaId, replicaKey} chunkId = do
-      srvId <- createXFTPServer_ db server
-      DB.execute
-        db
-        "INSERT INTO rcv_file_chunk_replicas (replica_number, rcv_file_chunk_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?,?)"
-        (replicaNo, chunkId, srvId, replicaId, replicaKey)
+        "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, redirect_entity_id, redirect_digest, redirect_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectEntityId_, redirectDigest_, redirectSize_))
+  rcvFileId <- liftIO $ insertedRowId db
+  pure (rcvFileEntityId, rcvFileId)
+
+insertRcvFileChunk :: DB.Connection -> FileChunk -> DBRcvFileId -> IO Int64
+insertRcvFileChunk db FileChunk {chunkNo, chunkSize, digest} rcvFileId = do
+  DB.execute
+    db
+    "INSERT INTO rcv_file_chunks (rcv_file_id, chunk_no, chunk_size, digest) VALUES (?,?,?,?)"
+    (rcvFileId, chunkNo, chunkSize, digest)
+  insertedRowId db
+
+insertRcvFileChunkReplica :: DB.Connection -> Int -> FileChunkReplica -> Int64 -> IO ()
+insertRcvFileChunkReplica db replicaNo FileChunkReplica {server, replicaId, replicaKey} chunkId = do
+  srvId <- createXFTPServer_ db server
+  DB.execute
+    db
+    "INSERT INTO rcv_file_chunk_replicas (replica_number, rcv_file_chunk_id, xftp_server_id, replica_id, replica_key) VALUES (?,?,?,?,?)"
+    (replicaNo, chunkId, srvId, replicaId, replicaKey)
 
 getRcvFileByEntityId :: DB.Connection -> RcvFileId -> IO (Either StoreError RcvFile)
 getRcvFileByEntityId db rcvFileEntityId = runExceptT $ do
@@ -2318,17 +2324,18 @@ getRcvFile db rcvFileId = runExceptT $ do
         DB.query
           db
           [sql|
-            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, deleted
+            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, deleted, redirect_entity_id, redirect_size, redirect_digest
             FROM rcv_files
             WHERE rcv_file_id = ?
           |]
           (Only rcvFileId)
       where
-        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, Bool, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, Bool) -> RcvFile
-        toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted)) =
+        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, Bool, Maybe RcvFileId, Maybe (FileSize Int64), Maybe FileDigest) -> RcvFile
+        toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted, redirectEntityId, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
-           in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
+              redirect = RedirectMeta <$> redirectSize_ <*> redirectDigest_
+           in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirectEntityId, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
       chunks <-
@@ -2393,6 +2400,15 @@ updateRcvFileComplete :: DB.Connection -> DBRcvFileId -> IO ()
 updateRcvFileComplete db rcvFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET tmp_path = NULL, status = ?, updated_at = ? WHERE rcv_file_id = ?" (RFSComplete, updatedAt, rcvFileId)
+
+updateRcvFileRedirect :: DB.Connection -> RcvFileId -> FileDescription 'FRecipient -> IO (Either StoreError ())
+updateRcvFileRedirect db rcvFileEntityId FileDescription {key, nonce, chunkSize, chunks} = runExceptT $ do
+  updatedAt <- liftIO getCurrentTime
+  rcvFileId <- ExceptT $ getRcvFileIdByEntityId_ db rcvFileEntityId
+  liftIO $ DB.execute db "UPDATE rcv_files SET key = ?, nonce = ?, chunk_size = ?, updated_at = ? WHERE rcv_file_id = ?" (key, nonce, chunkSize, updatedAt, rcvFileId)
+  liftIO $ forM_ chunks $ \fc@FileChunk {replicas} -> do
+    chunkId <- insertRcvFileChunk db fc rcvFileId
+    forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertRcvFileChunkReplica db rno replica chunkId
 
 updateRcvFileNoTmpPath :: DB.Connection -> DBRcvFileId -> IO ()
 updateRcvFileNoTmpPath db rcvFileId = do
@@ -2541,13 +2557,18 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> Bool -> FilePath -> C.SbKey -> C.CbNonce -> IO (Either StoreError SndFileId)
-createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients redirect prefixPath key nonce =
+createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectMeta -> IO (Either StoreError SndFileId)
+createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ =
   createWithRandomId gVar $ \sndFileEntityId ->
     DB.execute
       db
-      "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, redirect, prefix_path, key, nonce, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-      ((sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients, redirect) :. (prefixPath, key, nonce, SFSNew))
+      "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+      ((sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_))
+  where
+    (redirectSize_, redirectDigest_) =
+      case redirect_ of
+        Nothing -> (Nothing, Nothing)
+        Just RedirectMeta {size, digest} -> (Just size, Just digest)
 
 getSndFileByEntityId :: DB.Connection -> SndFileId -> IO (Either StoreError SndFile)
 getSndFileByEntityId db sndFileEntityId = runExceptT $ do
@@ -2571,17 +2592,18 @@ getSndFile db sndFileId = runExceptT $ do
         DB.query
           db
           [sql|
-            SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, redirect, digest, prefix_path, key, nonce, status, deleted
+            SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, digest, prefix_path, key, nonce, status, deleted, redirect_size, redirect_digest
             FROM snd_files
             WHERE snd_file_id = ?
           |]
           (Only sndFileId)
       where
-        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Bool) :. (Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce, SndFileStatus, Bool) -> SndFile
-        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, redirect) :. (digest, prefixPath, key, nonce, status, deleted)) =
+        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, Bool, Maybe (FileSize Int64), Maybe FileDigest) -> SndFile
+        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, deleted, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs
-           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, redirect, digest, prefixPath, key, nonce, status, deleted, chunks = []}
+              redirect = RedirectMeta <$> redirectSize_ <*> redirectDigest_
+           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, redirect, chunks = []}
     getChunks :: SndFileId -> UserId -> Int -> FilePath -> IO [SndFileChunk]
     getChunks sndFileEntityId userId numRecipients filePrefixPath = do
       chunks <-

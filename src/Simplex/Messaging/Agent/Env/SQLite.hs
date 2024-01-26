@@ -234,7 +234,6 @@ data XFTPAgent = XFTPAgent
     xftpWorkDir :: TVar (Maybe FilePath),
     xftpRcvWorkers :: TMap (Maybe XFTPServer) Worker,
     xftpSndWorkers :: TMap (Maybe XFTPServer) Worker,
-    xftpSndCallbacks :: TMap SndFileId (SndFileId -> ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> IO ()),
     xftpDelWorkers :: TMap XFTPServer Worker
   }
 
@@ -243,9 +242,8 @@ newXFTPAgent = do
   xftpWorkDir <- newTVar Nothing
   xftpRcvWorkers <- TM.empty
   xftpSndWorkers <- TM.empty
-  xftpSndCallbacks <- TM.empty
   xftpDelWorkers <- TM.empty
-  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpSndCallbacks, xftpDelWorkers}
+  pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal

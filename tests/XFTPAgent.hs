@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,6 +8,7 @@
 module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, getSMPAgentClient', rfGet, runRight, runRight_, sfGet)
+
 -- import Control.Concurrent (threadDelay)
 -- import Control.Concurrent.STM
 import Control.Logger.Simple
@@ -22,7 +24,7 @@ import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendFile, xftpSendFilePublic, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
 import qualified Simplex.Messaging.Crypto as C
@@ -32,13 +34,16 @@ import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
-import System.FilePath ((<.>), (</>))
+import System.FilePath ((</>))
+
 -- import System.Timeout (timeout)
+
+import Simplex.Messaging.Util (tshow)
 import Test.Hspec
-import XFTPCLI
-import XFTPClient
 import UnliftIO
 import UnliftIO.Concurrent
+import XFTPCLI
+import XFTPClient
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
@@ -140,26 +145,53 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
 
 testXFTPAgentSendReceivePublic :: HasCallStack => IO ()
 testXFTPAgentSendReceivePublic = withXFTPServer $ do
+  --- sender
   filePathIn <- createRandomFile
-  -- send file, delete snd file internally
+  let fileSize = 18874368
   sndr <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  public <- bracket (async $ forever (sfGet sndr)) cancel $ \_ -> do
-    var <- newEmptyTMVarIO
-    sndFileId <- runRight $ xftpSendFilePublic sndr 1 (CryptoFile filePathIn Nothing) 1 var
-    timeout 30000000 (atomically $ takeTMVar var) >>= maybe (error "too slow") pure
+  directFileId <- runRight $ xftpSendFile sndr 1 (CryptoFile filePathIn Nothing) 1
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 4194304 fileSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 8388608 fileSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 12582912 fileSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 16777216 fileSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 17825792 fileSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG fileSize fileSize)
+  vfdDirect <-
+    sfGet sndr >>= \case
+      (_, _, SFDONE _snd (vfd : _)) -> pure vfd
+      r -> error $ "Expected SFDONE, got " <> show r
+  redirectFileId <- runRight $ xftpSendDescription sndr 1 vfdDirect
+  logNote $ "File sent, sending redirect: " <> tshow redirectFileId
+  sfGet sndr `shouldReturn` ("", redirectFileId, SFPROG 65536 65536)
+  ValidFileDescription fdRedirect <-
+    sfGet sndr >>= \case
+      (_, _, SFDONE _snd (vfd : _)) -> pure vfd
+      r -> error $ "Expected SFDONE, got " <> show r
+  case fdRedirect of
+    FileDescription {redirect = Just _} -> pure ()
+    _ -> error "missing RedirectMeta"
+  uri <- maybe (error "URI too large") pure $ encodeFileDescriptionURI fdRedirect
   disconnectAgentClient sndr
-  uri <- case public of
-    [(_redirectSndFileId, Just uri)] -> pure uri
-    _ -> (show public `shouldBe` "[(_redirectSndFileId, Just uri)]") >> error "it isn't"
-
+  --- recipient
   rcp <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   vfd <- either fail pure $ decodeFileDescriptionURI uri
-  print vfd
-  let filePathOut = filePathIn <.> "out"
   rcvFileId <- runRight $ xftpReceiveFile rcp 1 vfd Nothing
-  print rcvFileId
-  error "TODO: xftpReceiveFile with callback"
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 (65536 + fileSize))
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 ({- 65536 + -} fileSize))
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 8388608 ({- 65536 + -} fileSize))
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 12582912 ({- 65536 + -} fileSize))
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 16777216 ({- 65536 + -} fileSize))
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 17825792 ({- 65536 + -} fileSize))
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG fileSize ({- 65536 + -} fileSize))
+  out <-
+    rfGet rcp >>= \case
+      (_, _, RFDONE out) -> pure out
+      r -> error $ "Expected RFDONE, got " <> show r
   disconnectAgentClient rcp
+
+  inBytes <- B.readFile filePathIn
+  B.readFile out `shouldReturn` inBytes
+  logInfo "congrats"
 
 createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = createRandomFile' "testfile"

@@ -93,7 +93,7 @@ module Simplex.Messaging.Agent
     xftpReceiveFile,
     xftpDeleteRcvFile,
     xftpSendFile,
-    xftpSendFilePublic,
+    xftpSendDescription,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFileRemote,
     rcNewHostPairing,
@@ -138,8 +138,8 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpReceiveFile', xftpSendFile', xftpSendFilePublic')
-import Simplex.FileTransfer.Description (FileDescriptionURI, ValidFileDescription)
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpReceiveFile', xftpSendFile', xftpSendDescription')
+import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
@@ -402,8 +402,8 @@ xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> CryptoFile -> Int 
 xftpSendFile c = withAgentEnv c .:. xftpSendFile' c
 
 -- | Send XFTP file
-xftpSendFilePublic :: AgentErrorMonad m => AgentClient -> UserId -> CryptoFile -> Int -> TMVar [(SndFileId, Maybe FileDescriptionURI)] -> m SndFileId
-xftpSendFilePublic c = withAgentEnv c .:: xftpSendFilePublic' c
+xftpSendDescription :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m SndFileId
+xftpSendDescription c = withAgentEnv c .: xftpSendDescription' c
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
 xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> SndFileId -> m ()

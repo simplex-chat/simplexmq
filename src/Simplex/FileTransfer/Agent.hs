@@ -20,7 +20,7 @@ module Simplex.FileTransfer.Agent
     xftpDeleteRcvFile',
     -- Sending files
     xftpSendFile',
-    xftpSendFilePublic',
+    xftpSendDescription',
     deleteSndFileInternal,
     deleteSndFileRemote,
   )
@@ -38,6 +38,7 @@ import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -59,9 +60,8 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
@@ -101,24 +101,57 @@ closeXFTPAgent a = do
     stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
-xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect = todo}) cfArgs = do
+xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect}) cfArgs = do
   g <- asks random
   prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
-      relTmpPath = relPrefixPath </> "xftp.encrypted"
-      relSavePath = relPrefixPath </> "xftp.decrypted"
-  createDirectory =<< toFSFilePath relTmpPath
-  createEmptyFile =<< toFSFilePath relSavePath
-  let saveFile = CryptoFile relSavePath cfArgs
-  fId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile
-  forM_ chunks downloadChunk
-  pure fId
-  where
-    downloadChunk :: AgentMonad m => FileChunk -> m ()
-    downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
-      void $ getXFTPRcvWorker True c (Just server)
-    downloadChunk _ = throwError $ INTERNAL "no replicas"
+  case redirect of
+    Nothing -> do
+      let relTmpPath = relPrefixPath </> "xftp.encrypted"
+          relSavePath = relPrefixPath </> "xftp.decrypted"
+      createDirectory =<< toFSFilePath relTmpPath
+      createEmptyFile =<< toFSFilePath relSavePath
+      let saveFile = CryptoFile relSavePath cfArgs
+      directId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile Nothing
+      forM_ chunks (downloadChunk c)
+      pure directId
+    Just RedirectMeta {size, digest} -> do
+      -- prepare temporary destination description
+      let relTmpPath = relPrefixPath </> "xftp.encrypted"
+          relSavePath = relPrefixPath </> "xftp.decrypted"
+      createDirectory =<< toFSFilePath relTmpPath
+      createEmptyFile =<< toFSFilePath relSavePath
+      let saveFile = CryptoFile relSavePath cfArgs
+      tmpKey <- atomically $ C.randomSbKey g
+      tmpNonce <- atomically $ C.randomCbNonce g
+      let dstFd = FileDescription
+            { party = SFRecipient,
+              size,
+              digest,
+              redirect = Nothing,
+              -- updated later with updateRcvFileRedirect
+              key = tmpKey,
+              nonce = tmpNonce,
+              chunkSize = FileSize 0,
+              chunks = []
+            }
+      dstId <- withStore c $ \db -> createRcvFile db g userId dstFd relPrefixPath relTmpPath saveFile Nothing
+      -- download redirect description
+      let relTmpPathRedirect = relPrefixPath </> "xftp.redirect-encrypted"
+          relSavePathRedirect = relPrefixPath </> "xftp.redirect-decrypted"
+      createDirectory =<< toFSFilePath relTmpPathRedirect
+      createEmptyFile =<< toFSFilePath relSavePathRedirect
+      cfArgsRedirect <- atomically $ CF.randomArgs g
+      let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
+      _redirectId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect (Just dstId)
+      forM_ chunks (downloadChunk c)
+      pure dstId
+
+downloadChunk :: AgentMonad m => AgentClient -> FileChunk -> m ()
+downloadChunk c FileChunk {replicas = (FileChunkReplica {server} : _)} = do
+  void $ getXFTPRcvWorker True c (Just server)
+downloadChunk _ _ = throwError $ INTERNAL "no replicas"
 
 getPrefixPath :: AgentMonad m => String -> m FilePath
 getPrefixPath suffix = do
@@ -176,14 +209,17 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
       atomically $ waitUntilForeground c
-      (complete, progress) <- withStore c $ \db -> runExceptT $ do
+      (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
-        RcvFile {size = FileSize total, chunks} <- ExceptT $ getRcvFile db rcvFileId
+        RcvFile {size = FileSize currentSize, chunks, redirectEntityId, redirect} <- ExceptT $ getRcvFile db rcvFileId
         let rcvd = receivedSize chunks
             complete = all chunkReceived chunks
+            total = case redirect of
+              Nothing -> currentSize
+              Just RedirectMeta {size = FileSize redirectSize} -> currentSize + redirectSize
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
-        pure (complete, RFPROG rcvd total)
-      notify c rcvFileEntityId progress
+        pure (fromMaybe rcvFileEntityId redirectEntityId, complete, RFPROG rcvd total)
+      notify c entityId progress
       when complete . void $
         getXFTPRcvWorker True c Nothing
       where
@@ -227,7 +263,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks, redirect = todo} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks, redirect, redirectEntityId} = do
       let CryptoFile savePath cfArgs = saveFile
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
@@ -237,11 +273,28 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
-      -- TODO: handle redirect
-      notify c rcvFileEntityId $ RFDONE fsSavePath
-      forM_ tmpPath (removePath <=< toFSFilePath)
-      atomically $ waitUntilForeground c
-      withStore' c (`updateRcvFileComplete` rcvFileId)
+      case (redirect, redirectEntityId) of
+        (Nothing, Nothing) -> do
+          notify c rcvFileEntityId $ RFDONE fsSavePath
+          forM_ tmpPath (removePath <=< toFSFilePath)
+          atomically $ waitUntilForeground c
+          withStore' c (`updateRcvFileComplete` rcvFileId)
+        (Just RedirectMeta {size = redirectSize, digest = redirectDigest}, Just nextId) -> do
+          forM_ tmpPath (removePath <=< toFSFilePath)
+          atomically $ waitUntilForeground c
+          withStore' c (`updateRcvFileComplete` rcvFileId)
+          -- proceed with redirect
+          yaml <- liftError (INTERNAL . show) $ CF.readFile $ CryptoFile fsSavePath cfArgs
+          next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
+            Left err -> throwError $ INTERNAL $ "bad redirect yaml: " <> err
+            Right (ValidFileDescription fd@FileDescription {size, digest})
+              | size /= redirectSize || digest /= redirectDigest -> throwError $ INTERNAL "bad redirect"
+              | otherwise -> pure fd
+          -- spawn more work
+          withStore c $ \db -> updateRcvFileRedirect db nextId next
+          forM_ nextChunks (downloadChunk c)
+        _ ->
+          throwError $ INTERNAL "missing redirect/entityId"
       where
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
@@ -264,27 +317,8 @@ xftpDeleteRcvFile' c rcvFileEntityId = do
 notify :: forall m e. (MonadUnliftIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
 
-xftpSendFilePublic' :: forall m. AgentMonad m => AgentClient -> UserId -> CryptoFile -> Int -> TMVar [(SndFileId, Maybe FileDescriptionURI)] -> m SndFileId
-xftpSendFilePublic' c userId file numRecipients uris = askUnliftIO >>= \u -> xftpSendFile_ c userId file numRecipients False $ Just (directDone u)
-  where
-    directDone :: UnliftIO m -> SndFileId -> sd -> [ValidFileDescription 'FRecipient] -> IO ()
-    directDone u _sfId _sndDescr rcvDescrs = void . async $ mapConcurrently (sendRedirect u) rcvDescrs >>= atomically . putTMVar uris
-    sendRedirect :: UnliftIO m -> ValidFileDescription FRecipient -> IO (SndFileId, Maybe FileDescriptionURI)
-    sendRedirect u rcvDescrDirect = unliftIO u $ do
-      prefixPath <- getPrefixPath "redirect.xftp"
-      createDirectory prefixPath -- XXX: clean up?
-      let tmpYaml = prefixPath </> "redirect.yaml"
-      liftIO . B.writeFile tmpYaml $ strEncode rcvDescrDirect
-      var <- newEmptyTMVarIO
-      redirectSndFileId <- xftpSendFile_ c userId (CryptoFile tmpYaml Nothing) 1 True $ Just (redirectDone var)
-      (redirectSndFileId,) <$> atomically (takeTMVar var)
-    redirectDone var _sfId _sndDescr = mapM_ $ \(ValidFileDescription rfd) -> atomically . putTMVar var $ encodeFileDescriptionURI rfd
-
 xftpSendFile' :: AgentMonad m => AgentClient -> UserId -> CryptoFile -> Int -> m SndFileId
-xftpSendFile' c userId file numRecipients = xftpSendFile_ c userId file numRecipients False Nothing
-
-xftpSendFile_ :: AgentMonad m => AgentClient -> UserId -> CryptoFile -> Int -> Bool -> Maybe (SndFileId -> ValidFileDescription FSender -> [ValidFileDescription FRecipient] -> IO ()) -> m SndFileId
-xftpSendFile_ c userId file numRecipients redirect sentAction = do
+xftpSendFile' c userId file numRecipients = do
   g <- asks random
   prefixPath <- getPrefixPath "snd.xftp"
   createDirectory prefixPath
@@ -292,8 +326,23 @@ xftpSendFile_ c userId file numRecipients redirect sentAction = do
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients redirect relPrefixPath key nonce
-  forM_ sentAction $ \action -> atomically $ TM.insert fId action (xftpSndCallbacks . xftpAgent $ agentEnv c)
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing
+  void $ getXFTPSndWorker True c Nothing
+  pure fId
+
+xftpSendDescription' :: forall m. AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m SndFileId
+xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) = do
+  g <- asks random
+  prefixPath <- getPrefixPath "snd.xftp"
+  createDirectory prefixPath
+  let relPrefixPath = takeFileName prefixPath
+  let directYaml = prefixPath </> "direct.yaml"
+  cfArgs <- atomically $ CF.randomArgs g
+  let file = CryptoFile directYaml (Just cfArgs)
+  liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
+  key <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
+  fId <- withStore c $ \db -> createSndFile db g userId file 1 relPrefixPath key nonce $ Just RedirectMeta {size, digest}
   void $ getXFTPSndWorker True c Nothing
   pure fId
 
@@ -435,7 +484,6 @@ runXFTPSndWorker c srv Worker {doWork} = do
         notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
         forM_ prefixPath $ removePath <=< toFSFilePath
         withStore' c $ \db -> updateSndFileComplete db sndFileId
-        atomically (TM.lookupDelete sndFileEntityId $ xftpSndCallbacks . xftpAgent $ agentEnv c) >>= mapM_ (\action -> liftIO $ action sndFileEntityId sndDescr rcvDescrs)
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> m SndFileChunkReplica
         addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
@@ -454,7 +502,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
               size = FileSize $ sum $ map (fromIntegral . sndChunkSize) chunks
           -- snd description
           sndDescrChunks <- mapM toSndDescrChunk chunks
-          let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks, redirect}
+          let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks, redirect = Nothing}
           validFdSnd <- either (throwError . INTERNAL) pure $ validateFileDescription fdSnd
           -- rcv descriptions
           let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = [], redirect}
