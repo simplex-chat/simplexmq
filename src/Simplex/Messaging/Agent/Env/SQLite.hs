@@ -49,8 +49,6 @@ import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
-import Simplex.FileTransfer.Description (ValidFileDescription)
-import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite

@@ -47,6 +47,7 @@ import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
+import qualified Simplex.FileTransfer.Protocol as XFTP
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -125,17 +126,18 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
       let saveFile = CryptoFile relSavePath cfArgs
       tmpKey <- atomically $ C.randomSbKey g
       tmpNonce <- atomically $ C.randomCbNonce g
-      let dstFd = FileDescription
-            { party = SFRecipient,
-              size,
-              digest,
-              redirect = Nothing,
-              -- updated later with updateRcvFileRedirect
-              key = tmpKey,
-              nonce = tmpNonce,
-              chunkSize = FileSize 0,
-              chunks = []
-            }
+      let dstFd =
+            FileDescription
+              { party = SFRecipient,
+                size,
+                digest,
+                redirect = Nothing,
+                -- updated later with updateRcvFileRedirect
+                key = tmpKey,
+                nonce = tmpNonce,
+                chunkSize = FileSize 0,
+                chunks = []
+              }
       dstId <- withStore c $ \db -> createRcvFile db g userId dstFd relPrefixPath relTmpPath saveFile Nothing
       -- download redirect description
       let relTmpPathRedirect = relPrefixPath </> "xftp.redirect-encrypted"
@@ -216,7 +218,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
             complete = all chunkReceived chunks
             total = case redirect of
               Nothing -> currentSize
-              Just RedirectMeta {size = FileSize redirectSize} -> currentSize + redirectSize
+              Just RedirectMeta {size = FileSize finalSize} -> finalSize
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
         pure (fromMaybe rcvFileEntityId redirectEntityId, complete, RFPROG rcvd total)
       notify c entityId progress
@@ -286,15 +288,15 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           -- proceed with redirect
           yaml <- liftError (INTERNAL . show) $ CF.readFile $ CryptoFile fsSavePath cfArgs
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
-            Left err -> throwError $ INTERNAL $ "bad redirect yaml: " <> err
+            Left _ -> throwError $ XFTP XFTP.REDIRECT
             Right (ValidFileDescription fd@FileDescription {size, digest})
-              | size /= redirectSize || digest /= redirectDigest -> throwError $ INTERNAL "bad redirect"
+              | size /= redirectSize || digest /= redirectDigest -> throwError $ XFTP XFTP.REDIRECT
               | otherwise -> pure fd
-          -- spawn more work
+          -- register and download chunks from the actual file
           withStore c $ \db -> updateRcvFileRedirect db nextId next
           forM_ nextChunks (downloadChunk c)
         _ ->
-          throwError $ INTERNAL "missing redirect/entityId"
+          throwError $ INTERNAL "inconsistent redirect/entityId"
       where
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
