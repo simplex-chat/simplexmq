@@ -279,6 +279,7 @@ CREATE TABLE rcv_files(
   save_file_key BLOB,
   save_file_nonce BLOB,
   failed INTEGER DEFAULT 0,
+  redirect_id INTEGER REFERENCES rcv_files ON DELETE CASCADE,
   redirect_entity_id BLOB,
   redirect_size INTEGER,
   redirect_digest BLOB,
