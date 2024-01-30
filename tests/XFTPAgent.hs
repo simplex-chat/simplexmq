@@ -20,7 +20,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
-import Simplex.FileTransfer.Description (FileDescription (..), ValidFileDescription, decodeFileDescriptionURI, encodeFileDescriptionURI, mb, pattern ValidFileDescription)
+import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionURI (..), ValidFileDescription, mb, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
@@ -32,9 +32,10 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
-import Simplex.Messaging.Util (tshow)
 import Test.Hspec
 import UnliftIO
 import UnliftIO.Concurrent
@@ -159,18 +160,22 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
   redirectFileId <- runRight $ xftpSendDescription sndr 1 vfdDirect
   logInfo $ "File sent, sending redirect: " <> tshow redirectFileId
   sfGet sndr `shouldReturn` ("", redirectFileId, SFPROG 65536 65536)
-  ValidFileDescription fdRedirect <-
+  vfdRedirect@(ValidFileDescription fdRedirect) <-
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
       r -> error $ "Expected SFDONE, got " <> show r
   case fdRedirect of
     FileDescription {redirect = Just _} -> pure ()
     _ -> error "missing RedirectMeta"
-  uri <- maybe (error "URI too large") pure $ encodeFileDescriptionURI fdRedirect
+  let uri = strEncode $ FileDescriptionURI SSSimplex vfdRedirect
+  case strDecode uri of
+    Left err -> fail err
+    Right ok -> ok `shouldBe` FileDescriptionURI SSSimplex vfdRedirect
   disconnectAgentClient sndr
   --- recipient
   rcp <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  vfd <- either fail pure $ decodeFileDescriptionURI uri
+  FileDescriptionURI _ss vfd <- either fail pure $ strDecode uri
+
   rcvFileId <- runRight $ xftpReceiveFile rcp 1 vfd Nothing
   rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 fileSize)
   rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 fileSize)

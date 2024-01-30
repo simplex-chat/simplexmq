@@ -32,9 +32,7 @@ module Simplex.FileTransfer.Description
     mb,
     gb,
     FileDescriptionURI (..),
-    encodeFileDescriptionURI,
-    qrSizeLimit,
-    decodeFileDescriptionURI,
+    qrSizeLimit
   )
 where
 
@@ -44,7 +42,7 @@ import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first, bimap)
+import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -57,7 +55,7 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8, encodeUtf8, decodeUtf8')
+import Data.Text.Encoding (decodeUtf8, decodeUtf8', encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -69,6 +67,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.ServiceScheme (ServiceScheme)
 import Simplex.Messaging.Util (bshow, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
@@ -241,34 +240,20 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
       redirect
     }
 
-newtype FileDescriptionURI = FileDescriptionURI Text
+data FileDescriptionURI = FileDescriptionURI ServiceScheme (ValidFileDescription 'FRecipient)
   deriving (Eq, Show)
 
 instance StrEncoding FileDescriptionURI where
-  strEncode (FileDescriptionURI t) = encodeUtf8 t
-  strDecode = bimap show FileDescriptionURI . decodeUtf8'
-
-encodeFileDescriptionURI :: FileDescription 'FRecipient -> Maybe FileDescriptionURI
-encodeFileDescriptionURI fd = if T.length uri > qrSizeLimit then Nothing else Just (FileDescriptionURI uri)
-  where
-    uri = "simplex:/file#?d=" <> decodeUtf8 (urlEncode True yaml)
-    yaml = strEncode fd
+  strEncode (FileDescriptionURI ss vfd) = mconcat [strEncode ss, "/file#?d=", urlEncode True $ strEncode vfd]
+  strP = do
+    ss <- strP
+    _ <- "/file#?d="
+    dUrl <- A.takeByteString
+    either fail (pure . FileDescriptionURI ss) . strDecode $ urlDecode True dUrl
 
 -- | URL length in QR code before jumping up to a next size.
 qrSizeLimit :: Int
 qrSizeLimit = 1002 -- ~2 chunks in URLencoded YAML with some spare size for server hosts
-
-decodeFileDescriptionURI :: FileDescriptionURI -> Either String (ValidFileDescription 'FRecipient)
-decodeFileDescriptionURI (FileDescriptionURI uri) =
-  case T.drop 4 <$> T.breakOn "#?d=" uri of
-    (_, "") -> Left "malformed URI"
-    -- XXX: could be using ConnReqScheme, but that makes an import loop
-    ("simplex:/file", params) -> decode params
-    ("https://simplex.chat/file", params) -> decode params
-    -- TODO: allow custom servers
-    _ -> Left "not a file URI"
-  where
-    decode = strDecode . urlDecode True . encodeUtf8
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
