@@ -256,7 +256,7 @@ encodeFileDescriptionURI fd = if T.length uri > qrSizeLimit then Nothing else Ju
 
 -- | URL length in QR code before jumping up to a next size.
 qrSizeLimit :: Int
-qrSizeLimit = 1002 -- ~3 chunks in URLencoded YAML with some spare size for server hosts
+qrSizeLimit = 1002 -- ~2 chunks in URLencoded YAML with some spare size for server hosts
 
 decodeFileDescriptionURI :: FileDescriptionURI -> Either String (ValidFileDescription 'FRecipient)
 decodeFileDescriptionURI (FileDescriptionURI uri) =

@@ -47,6 +47,7 @@ data RcvFile = RcvFile
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
+    redirectDbId :: Maybe DBRcvFileId,
     redirectEntityId :: Maybe RcvFileId,
     redirect :: Maybe RedirectMeta,
     chunks :: [RcvFileChunk],

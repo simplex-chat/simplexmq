@@ -107,48 +107,25 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
   prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
-  case redirect of
-    Nothing -> do
-      let relTmpPath = relPrefixPath </> "xftp.encrypted"
-          relSavePath = relPrefixPath </> "xftp.decrypted"
-      createDirectory =<< toFSFilePath relTmpPath
-      createEmptyFile =<< toFSFilePath relSavePath
-      let saveFile = CryptoFile relSavePath cfArgs
-      directId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile Nothing
-      forM_ chunks (downloadChunk c)
-      pure directId
-    Just RedirectMeta {size, digest} -> do
-      -- prepare temporary destination description
-      let relTmpPath = relPrefixPath </> "xftp.encrypted"
-          relSavePath = relPrefixPath </> "xftp.decrypted"
-      createDirectory =<< toFSFilePath relTmpPath
-      createEmptyFile =<< toFSFilePath relSavePath
-      let saveFile = CryptoFile relSavePath cfArgs
-      tmpKey <- atomically $ C.randomSbKey g
-      tmpNonce <- atomically $ C.randomCbNonce g
-      let dstFd =
-            FileDescription
-              { party = SFRecipient,
-                size,
-                digest,
-                redirect = Nothing,
-                -- updated later with updateRcvFileRedirect
-                key = tmpKey,
-                nonce = tmpNonce,
-                chunkSize = FileSize 0,
-                chunks = []
-              }
-      dstId <- withStore c $ \db -> createRcvFile db g userId dstFd relPrefixPath relTmpPath saveFile Nothing
-      -- download redirect description
+      relTmpPath = relPrefixPath </> "xftp.encrypted"
+      relSavePath = relPrefixPath </> "xftp.decrypted"
+  createDirectory =<< toFSFilePath relTmpPath
+  createEmptyFile =<< toFSFilePath relSavePath
+  let saveFile = CryptoFile relSavePath cfArgs
+  fId <- case redirect of
+    Nothing -> withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile
+    Just _ -> do
+      -- prepare description paths
       let relTmpPathRedirect = relPrefixPath </> "xftp.redirect-encrypted"
           relSavePathRedirect = relPrefixPath </> "xftp.redirect-decrypted"
       createDirectory =<< toFSFilePath relTmpPathRedirect
       createEmptyFile =<< toFSFilePath relSavePathRedirect
       cfArgsRedirect <- atomically $ CF.randomArgs g
       let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
-      _redirectId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect (Just dstId)
-      forM_ chunks (downloadChunk c)
-      pure dstId
+      -- create download tasks
+      withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile
+  forM_ chunks (downloadChunk c)
+  pure fId
 
 downloadChunk :: AgentMonad m => AgentClient -> FileChunk -> m ()
 downloadChunk c FileChunk {replicas = (FileChunkReplica {server} : _)} = do
@@ -265,7 +242,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks, redirect, redirectEntityId} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks, redirect, redirectDbId} = do
       let CryptoFile savePath cfArgs = saveFile
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
@@ -275,7 +252,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
-      case (redirect, redirectEntityId) of
+      case (redirect, redirectDbId) of
         (Nothing, Nothing) -> do
           notify c rcvFileEntityId $ RFDONE fsSavePath
           forM_ tmpPath (removePath <=< toFSFilePath)

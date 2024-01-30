@@ -46,7 +46,8 @@ For redirects it will prepare a `RcvFile` for redirect and then a placeholder, f
 Agent messages would be sent using the entity ID of the final file, which is stored along with redirect metadata in `RcvFile` for the redirect.
 
 ```sql
-ALTER TABLE rcv_files ADD COLUMN redirect_entity_id BLOB;
+ALTER TABLE rcv_files ADD COLUMN redirect_id INTEGER REFERENCES rcv_files ON DELETE CASCADE; -- for later updates
+ALTER TABLE rcv_files ADD COLUMN redirect_entity_id BLOB; -- for notifications
 ALTER TABLE rcv_files ADD COLUMN redirect_size INTEGER;
 ALTER TABLE rcv_files ADD COLUMN redirect_digest BLOB;
 ```
