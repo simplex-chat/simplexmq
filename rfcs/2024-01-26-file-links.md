@@ -11,8 +11,8 @@ A file description with a redirect contains an extra field with final file size 
 The flow would be like this:
 
 - Sending:
-  1. Upload file as usual with `xftpSendFile`, get recipient file description in `SFDONE` message.
-  2. Upload file description with `xftpSendDescription`, get its redirect-description in its `SFDONE` message.
+  1. Upload file as usual with `xftpSendFile`, get recipient file descriptions in `SFDONE` message.
+  2. Upload one of the file descriptions with `xftpSendDescription`, get its redirect-description in its `SFDONE` message.
   3. Use `encodeFileDescriptionURI` to get a QR-sized URI.
   4. Show QR code / copy link.
 - Receiving:
@@ -41,7 +41,7 @@ ALTER TABLE snd_files ADD COLUMN redirect_digest BLOB;
 
 ### Receiving
 
-`xftpSendDescription` gets a file description as an argument and knows if it should follow redirect procedure or run an ordinary download.
+`xftpReceiveFile` gets a file description as an argument and knows if it should follow redirect procedure or run an ordinary download.
 For redirects it will prepare a `RcvFile` for redirect and then a placeholder, for the final file.
 Agent messages would be sent using the entity ID of the final file, which is stored along with redirect metadata in `RcvFile` for the redirect.
 
@@ -50,6 +50,8 @@ ALTER TABLE rcv_files ADD COLUMN redirect_entity_id BLOB;
 ALTER TABLE rcv_files ADD COLUMN redirect_size INTEGER;
 ALTER TABLE rcv_files ADD COLUMN redirect_digest BLOB;
 ```
+
+These additional fields will exist on the file that is a short description to receive an actual description of the final file.
 
 While a description YAML is being downloaded, the application will get `RFPROG` messages tagged for final entity, containing bytes downloaded so far and the total size from the original file.
 When the description is fully downloaded, the worker would decode description and check if the stated size and digest match the declared in redirect.

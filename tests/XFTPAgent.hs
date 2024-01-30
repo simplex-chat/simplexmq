@@ -10,8 +10,6 @@ module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, getSMPAgentClient', rfGet, runRight, runRight_, sfGet)
 
--- import Control.Concurrent (threadDelay)
--- import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -36,9 +34,6 @@ import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), Protocol
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
-
--- import System.Timeout (timeout)
-
 import Simplex.Messaging.Util (tshow)
 import Test.Hspec
 import UnliftIO
