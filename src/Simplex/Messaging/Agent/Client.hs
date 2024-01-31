@@ -669,41 +669,40 @@ newProtocolClient ::
   (AgentClient -> TransportSession msg -> m ()) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v =
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnectedAsync v =
   -- attempt sync connect first
   tryAgentError (connectClient v) >>= \case
-    Right client -> do
-      gotClient client
-      pure client
+    Right client -> putClient client $> client
     Left e -> do
-      gotError e $ newAsyncAction asyncConnectLoop (asyncClients c) -- initiate reconnect loop for temporary errors
+      handleErr e $ newAsyncAction asyncConnectLoop (asyncClients c) -- initiate reconnect loop for temporary errors
       throwError e -- signal error to caller
   where
-    asyncConnectLoop :: Int -> m ()
-    asyncConnectLoop aId = do
-      ri <- asks $ reconnectInterval . config
-      withRetryInterval ri (\_ loop -> retryConnectClient loop) `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
-      where
-        -- does not return anything, restarts instead of throwing errors
-        retryConnectClient loop =
-          tryAgentError (connectClient v) >>= \case
-            Right client -> gotClient client >> clientConnected c tSess
-            Left e -> gotError e loop
-    gotClient :: Client msg -> m ()
-    gotClient client = do
+    putClient :: Client msg -> m ()
+    putClient client = do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       r <- atomically $ tryPutTMVar (sessionVar v) (Right client)
       unless r $ logError "couldn't put connected client"
       liftIO $ incClientStat c userId client "CLIENT" "OK"
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
-    gotError :: AgentErrorType -> m () -> m ()
-    gotError e handleTmp = do
+    handleErr :: AgentErrorType -> m () -> m ()
+    handleErr e handleTmp = do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
       if temporaryAgentError e
         then handleTmp
         else atomically $ do
           void $ tryPutTMVar (sessionVar v) (Left e)
           removeTSessVar v tSess clients
+    asyncConnectLoop :: Int -> m ()
+    asyncConnectLoop aId = do
+      ri <- asks $ reconnectInterval . config
+      withRetryInterval ri (const retryConnectClient)
+        `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
+      where
+        -- does not return anything, restarts instead of throwing errors
+        retryConnectClient loop =
+          tryAgentError (connectClient v) >>= \case
+            Right client -> putClient client >> clientConnectedAsync c tSess
+            Left e -> handleErr e loop
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
