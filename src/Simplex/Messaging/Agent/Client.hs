@@ -681,7 +681,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
     putClient client = do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       r <- atomically $ tryPutTMVar (sessionVar v) (Right client)
-      unless r $ logError "couldn't put connected client"
+      unless r $ logError "newProtocolClient: cannot put connected client"
       liftIO $ incClientStat c userId client "CLIENT" "OK"
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
     handleErr :: AgentErrorType -> m () -> m ()
@@ -689,9 +689,11 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
       if temporaryAgentError e
         then handleTmp
-        else atomically $ do
-          void $ tryPutTMVar (sessionVar v) (Left e)
-          removeTSessVar v tSess clients
+        else do
+          r <- atomically $ do
+            removeTSessVar v tSess clients
+            tryPutTMVar (sessionVar v) (Left e)
+          unless r $ logError "newProtocolClient: cannot put client error"
     asyncConnectLoop :: Int -> m ()
     asyncConnectLoop aId = do
       ri <- asks $ reconnectInterval . config
