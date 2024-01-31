@@ -669,34 +669,41 @@ newProtocolClient ::
   (AgentClient -> TransportSession msg -> m ()) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v = tryConnectClient syncResult tryConnectAsync
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v =
+  -- attempt sync connect first
+  tryAgentError (connectClient v) >>= \case
+    Right client -> do
+      gotClient client
+      pure client
+    Left e -> do
+      gotError e $ newAsyncAction asyncConnectLoop (asyncClients c) -- initiate reconnect loop for temporary errors
+      throwError e -- signal error to caller
   where
-    tryConnectClient :: (Client msg -> m a) -> m () -> m a
-    tryConnectClient successAction retryAction =
-      tryAgentError (connectClient v) >>= \case
-        Right client -> do
-          logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
-          atomically $ putTMVar (sessionVar v) (Right client)
-          liftIO $ incClientStat c userId client "CLIENT" "OK"
-          atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
-          successAction client
-        Left e -> do
-          liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
-          if temporaryAgentError e
-            then retryAction
-            else atomically $ do
-              putTMVar (sessionVar v) (Left e)
-              removeTSessVar v tSess clients
-          throwError e
-    syncResult = pure -- a connection succeeded on the first try, return client
-    asyncResult _ = clientConnected c tSess -- a connection succeeded later, when the caller is gone
-    tryConnectAsync :: m ()
-    tryConnectAsync = newAsyncAction connectAsync $ asyncClients c
-    connectAsync :: Int -> m ()
-    connectAsync aId = do
+    asyncConnectLoop :: Int -> m ()
+    asyncConnectLoop aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri (\_ loop -> tryConnectClient asyncResult loop)
-        `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
+      withRetryInterval ri (\_ loop -> retryConnectClient loop) `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
+      where
+        -- does not return anything, restarts instead of throwing errors
+        retryConnectClient loop =
+          tryAgentError (connectClient v) >>= \case
+            Right client -> gotClient client >> clientConnected c tSess
+            Left e -> gotError e loop
+    gotClient :: Client msg -> m ()
+    gotClient client = do
+      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
+      r <- atomically $ tryPutTMVar (sessionVar v) (Right client)
+      unless r $ logError "couldn't put connected client"
+      liftIO $ incClientStat c userId client "CLIENT" "OK"
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
+    gotError :: AgentErrorType -> m () -> m ()
+    gotError e handleTmp = do
+      liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
+      if temporaryAgentError e
+        then handleTmp
+        else atomically $ do
+          void $ tryPutTMVar (sessionVar v) (Left e)
+          removeTSessVar v tSess clients
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
