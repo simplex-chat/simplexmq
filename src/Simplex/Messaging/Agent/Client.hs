@@ -155,6 +155,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+
 -- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
@@ -228,7 +229,7 @@ data SessionVar a = SessionVar
     sessionVarId :: Int
   }
 
-type ClientVar msg = SessionVar (Either AgentErrorType (Client msg)) 
+type ClientVar msg = SessionVar (Either AgentErrorType (Client msg))
 
 type SMPClientVar = ClientVar SMP.BrokerMsg
 
@@ -668,7 +669,7 @@ newProtocolClient ::
   (AgentClient -> TransportSession msg -> m ()) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v = tryConnectClient pure tryConnectAsync
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v = tryConnectClient syncResult tryConnectAsync
   where
     tryConnectClient :: (Client msg -> m a) -> m () -> m a
     tryConnectClient successAction retryAction =
@@ -687,13 +688,15 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
               putTMVar (sessionVar v) (Left e)
               removeTSessVar v tSess clients
           throwError e
+    syncResult = pure -- a connection succeeded on the first try, return client
+    asyncResult _ = clientConnected c tSess -- a connection succeeded later, when the caller is gone
     tryConnectAsync :: m ()
     tryConnectAsync = newAsyncAction connectAsync $ asyncClients c
     connectAsync :: Int -> m ()
     connectAsync aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop -> void $ tryConnectClient (const $ clientConnected c tSess) loop
-      atomically . removeAsyncAction aId $ asyncClients c
+      withRetryInterval ri (\_ loop -> tryConnectClient asyncResult loop)
+        `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
@@ -724,7 +727,7 @@ closeAgentClient c = liftIO $ do
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
-    cancelReconnect :: SessionVar (Async ())  -> IO ()
+    cancelReconnect :: SessionVar (Async ()) -> IO ()
     cancelReconnect v = void . forkIO $ atomically (readTMVar $ sessionVar v) >>= uninterruptibleCancel
 
 cancelWorker :: Worker -> IO ()

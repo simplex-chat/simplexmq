@@ -135,7 +135,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
         _ -> connectTCPClient hostName
   c <- liftIO $ do
     sock <- connectTCP port
-    mapM_ (setSocketKeepAlive sock) tcpKeepAlive
+    mapM_ (setSocketKeepAlive sock) tcpKeepAlive `E.onException` close sock
     let tCfg = clientTransportConfig cfg
     connectTLS (Just hostName) tCfg clientParams sock >>= getClientConnection tCfg
   client c `E.finally` liftIO (closeConnection c)

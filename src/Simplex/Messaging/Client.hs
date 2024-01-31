@@ -346,12 +346,12 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
       action <-
         async $
           runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
-            `finally` atomically (putTMVar cVar $ Left PCENetworkError)
+            `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
-      pure $ case c_ of
-        Just (Right c') -> Right c' {action = Just action}
-        Just (Left e) -> Left e
-        Nothing -> Left PCENetworkError
+      case c_ of
+        Just (Right c') -> pure $ Right c' {action = Just action}
+        Just (Left e) -> pure $ Left e
+        Nothing -> cancel action $> Left PCENetworkError
 
     useTransport :: (ServiceName, ATransport)
     useTransport = case port srv of
