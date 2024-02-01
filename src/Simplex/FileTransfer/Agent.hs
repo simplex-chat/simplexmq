@@ -242,7 +242,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks, redirect, redirectDbId} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, size, digest, key, nonce, tmpPath, saveFile, status, chunks, redirect, redirectDbId} = do
       let CryptoFile savePath cfArgs = saveFile
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
@@ -250,6 +250,9 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
+      when (FileSize encSize /= size) $ throwError $ XFTP XFTP.SIZE
+      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
+      when (FileDigest encDigest /= digest) $ throwError $ XFTP XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       case (redirect, redirectDbId) of
@@ -265,9 +268,10 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           -- proceed with redirect
           yaml <- liftError (INTERNAL . show) $ CF.readFile $ CryptoFile fsSavePath cfArgs
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
-            Left _ -> throwError $ XFTP XFTP.REDIRECT
-            Right (ValidFileDescription fd@FileDescription {size, digest})
-              | size /= redirectSize || digest /= redirectDigest -> throwError $ XFTP XFTP.REDIRECT
+            Left _ -> throwError $ XFTP XFTP.REDIRECT {redirectError = "YAML error"}
+            Right (ValidFileDescription fd@FileDescription {size = dstSize, digest = dstDigest})
+              | dstSize /= redirectSize  -> throwError $ XFTP XFTP.REDIRECT {redirectError = "size mismatch"}
+              | dstDigest /= redirectDigest -> throwError $ XFTP XFTP.REDIRECT {redirectError = "digest mismatch"}
               | otherwise -> pure fd
           -- register and download chunks from the actual file
           withStore c $ \db -> updateRcvFileRedirect db nextId next
