@@ -675,19 +675,15 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
   tryAgentError (connectClient v) >>= \case
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
-      -- tryPutTMVar is a precaution, it always succeeds here
-      r <- atomically $ tryPutTMVar (sessionVar v) (Right client)
-      unless r $ logError "newProtocolClient: cannot put connected client"
+      atomically $ putTMVar (sessionVar v) (Right client)
       liftIO $ incClientStat c userId client "CLIENT" "OK"
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
-      r <- atomically $ do
+      atomically $ do
         removeTSessVar v tSess clients
-        -- tryPutTMVar is a precaution, it always succeeds here
-        tryPutTMVar (sessionVar v) (Left e)
-      unless r $ logError "newProtocolClient: cannot put client error"
+        putTMVar (sessionVar v) (Left e)
       throwError e -- signal error to caller
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
