@@ -195,7 +195,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
             complete = all chunkReceived chunks
             total = case redirect of
               Nothing -> currentSize
-              Just RedirectMeta {size = FileSize finalSize} -> finalSize
+              Just RedirectFileInfo {size = FileSize finalSize} -> finalSize
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
         pure (fromMaybe rcvFileEntityId redirectEntityId, complete, RFPROG rcvd total)
       notify c entityId progress
@@ -261,7 +261,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           forM_ tmpPath (removePath <=< toFSFilePath)
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
-        (Just RedirectMeta {size = redirectSize, digest = redirectDigest}, Just nextId) -> do
+        (Just RedirectFileInfo {size = redirectSize, digest = redirectDigest}, Just nextId) -> do
           forM_ tmpPath (removePath <=< toFSFilePath)
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
@@ -325,7 +325,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  fId <- withStore c $ \db -> createSndFile db g userId file 1 relPrefixPath key nonce $ Just RedirectMeta {size, digest}
+  fId <- withStore c $ \db -> createSndFile db g userId file 1 relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
   void $ getXFTPSndWorker True c Nothing
   pure fId
 

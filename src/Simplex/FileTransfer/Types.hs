@@ -49,7 +49,7 @@ data RcvFile = RcvFile
     chunkSize :: FileSize Word32,
     redirectDbId :: Maybe DBRcvFileId,
     redirectEntityId :: Maybe RcvFileId,
-    redirect :: Maybe RedirectMeta,
+    redirect :: Maybe RedirectFileInfo,
     chunks :: [RcvFileChunk],
     prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
@@ -128,7 +128,7 @@ data SndFile = SndFile
     prefixPath :: Maybe FilePath,
     status :: SndFileStatus,
     deleted :: Bool,
-    redirect :: Maybe RedirectMeta
+    redirect :: Maybe RedirectFileInfo
   }
   deriving (Eq, Show)
 

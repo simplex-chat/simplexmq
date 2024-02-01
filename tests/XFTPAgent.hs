@@ -166,7 +166,7 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
       r -> error $ "Expected SFDONE, got " <> show r
   case fdRedirect of
     FileDescription {redirect = Just _} -> pure ()
-    _ -> error "missing RedirectMeta"
+    _ -> error "missing RedirectFileInfo"
   let uri = strEncode $ FileDescriptionURI SSSimplex vfdRedirect
   case strDecode uri of
     Left err -> fail err

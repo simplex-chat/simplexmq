@@ -2276,7 +2276,7 @@ createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file
 
 createRcvFileRedirect :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription FRecipient -> FilePath -> FilePath -> CryptoFile -> FilePath -> CryptoFile -> IO (Either StoreError RcvFileId)
 createRcvFileRedirect _ _ _ FileDescription {redirect = Nothing} _ _ _ _ _ = pure $ Left $ SEInternal "createRcvFileRedirect called without redirect"
-createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redirectChunks, redirect = Just RedirectMeta {size, digest}} prefixPath redirectPath redirectFile dstPath dstFile = runExceptT $ do
+createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redirectChunks, redirect = Just RedirectFileInfo {size, digest}} prefixPath redirectPath redirectFile dstPath dstFile = runExceptT $ do
   (dstEntityId, dstId) <- ExceptT $ insertRcvFile db gVar userId dummyDst prefixPath dstPath dstFile Nothing Nothing
   (_, redirectId) <- ExceptT $ insertRcvFile db gVar userId redirectFd prefixPath redirectPath redirectFile (Just dstId) (Just dstEntityId)
   liftIO $
@@ -2300,7 +2300,7 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
 insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> IO (Either StoreError (RcvFileId, DBRcvFileId))
 insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectId_ redirectEntityId_ = runExceptT $ do
   let (redirectDigest_, redirectSize_) = case redirect of
-        Just RedirectMeta {digest = d, size = s} -> (Just d, Just s)
+        Just RedirectFileInfo {digest = d, size = s} -> (Just d, Just s)
         Nothing -> (Nothing, Nothing)
   rcvFileEntityId <- ExceptT $
     createWithRandomId gVar $ \rcvFileEntityId ->
@@ -2359,7 +2359,7 @@ getRcvFile db rcvFileId = runExceptT $ do
         toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted, redirectDbId, redirectEntityId, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
-              redirect = RedirectMeta <$> redirectSize_ <*> redirectDigest_
+              redirect = RedirectFileInfo <$> redirectSize_ <*> redirectDigest_
            in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirectDbId, redirectEntityId, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
@@ -2581,7 +2581,7 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectMeta -> IO (Either StoreError SndFileId)
+createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> IO (Either StoreError SndFileId)
 createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ =
   createWithRandomId gVar $ \sndFileEntityId ->
     DB.execute
@@ -2592,7 +2592,7 @@ createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath k
     (redirectSize_, redirectDigest_) =
       case redirect_ of
         Nothing -> (Nothing, Nothing)
-        Just RedirectMeta {size, digest} -> (Just size, Just digest)
+        Just RedirectFileInfo {size, digest} -> (Just size, Just digest)
 
 getSndFileByEntityId :: DB.Connection -> SndFileId -> IO (Either StoreError SndFile)
 getSndFileByEntityId db sndFileEntityId = runExceptT $ do
@@ -2626,7 +2626,7 @@ getSndFile db sndFileId = runExceptT $ do
         toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, deleted, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs
-              redirect = RedirectMeta <$> redirectSize_ <*> redirectDigest_
+              redirect = RedirectFileInfo <$> redirectSize_ <*> redirectDigest_
            in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, redirect, chunks = []}
     getChunks :: SndFileId -> UserId -> Int -> FilePath -> IO [SndFileChunk]
     getChunks sndFileEntityId userId numRecipients filePrefixPath = do

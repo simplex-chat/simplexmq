@@ -12,7 +12,7 @@
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
-    RedirectMeta (..),
+    RedirectFileInfo (..),
     AFileDescription (..),
     ValidFileDescription, -- constructor is not exported, use pattern
     pattern ValidFileDescription,
@@ -75,11 +75,11 @@ data FileDescription (p :: FileParty) = FileDescription
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
     chunks :: [FileChunk],
-    redirect :: Maybe RedirectMeta
+    redirect :: Maybe RedirectFileInfo
   }
   deriving (Eq, Show)
 
-data RedirectMeta = RedirectMeta
+data RedirectFileInfo = RedirectFileInfo
   { size :: FileSize Int64,
     digest :: FileDigest
   }
@@ -160,7 +160,7 @@ data YAMLFileDescription = YAMLFileDescription
     nonce :: C.CbNonce,
     chunkSize :: String,
     replicas :: [YAMLServerReplicas],
-    redirect :: Maybe RedirectMeta
+    redirect :: Maybe RedirectFileInfo
   }
   deriving (Eq, Show)
 
@@ -191,7 +191,7 @@ instance ToJSON a => ToJSON (FileSize a) where
 
 $(J.deriveJSON defaultJSON ''YAMLServerReplicas)
 
-$(J.deriveJSON defaultJSON ''RedirectMeta)
+$(J.deriveJSON defaultJSON ''RedirectFileInfo)
 
 $(J.deriveJSON defaultJSON ''YAMLFileDescription)
 
