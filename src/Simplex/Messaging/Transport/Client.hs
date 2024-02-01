@@ -21,6 +21,7 @@ module Simplex.Messaging.Transport.Client
 where
 
 import Control.Applicative (optional)
+import Control.Logger.Simple (logError)
 import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -48,7 +49,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, (<$?>), catchAll, tshow)
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -135,7 +136,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
         _ -> connectTCPClient hostName
   c <- liftIO $ do
     sock <- connectTCP port
-    mapM_ (setSocketKeepAlive sock) tcpKeepAlive `E.onException` close sock
+    mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
     connectTLS (Just hostName) tCfg clientParams sock >>= getClientConnection tCfg
   client c `E.finally` liftIO (closeConnection c)
