@@ -42,7 +42,7 @@ import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -53,9 +53,6 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.String
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8, decodeUtf8', encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
