@@ -155,6 +155,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+
 -- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
@@ -228,7 +229,7 @@ data SessionVar a = SessionVar
     sessionVarId :: Int
   }
 
-type ClientVar msg = SessionVar (Either AgentErrorType (Client msg)) 
+type ClientVar msg = SessionVar (Either AgentErrorType (Client msg))
 
 type SMPClientVar = ClientVar SMP.BrokerMsg
 
@@ -668,32 +669,44 @@ newProtocolClient ::
   (AgentClient -> TransportSession msg -> m ()) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnected v = tryConnectClient pure tryConnectAsync
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnectedAsync v =
+  -- attempt sync connect first
+  tryAgentError (connectClient v) >>= \case
+    Right client -> putClient client $> client
+    Left e -> do
+      handleErr e $ newAsyncAction asyncConnectLoop (asyncClients c) -- initiate reconnect loop for temporary errors
+      throwError e -- signal error to caller
   where
-    tryConnectClient :: (Client msg -> m a) -> m () -> m a
-    tryConnectClient successAction retryAction =
-      tryAgentError (connectClient v) >>= \case
-        Right client -> do
-          logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
-          atomically $ putTMVar (sessionVar v) (Right client)
-          liftIO $ incClientStat c userId client "CLIENT" "OK"
-          atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
-          successAction client
-        Left e -> do
-          liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
-          if temporaryAgentError e
-            then retryAction
-            else atomically $ do
-              putTMVar (sessionVar v) (Left e)
-              removeTSessVar v tSess clients
-          throwError e
-    tryConnectAsync :: m ()
-    tryConnectAsync = newAsyncAction connectAsync $ asyncClients c
-    connectAsync :: Int -> m ()
-    connectAsync aId = do
+    putClient :: Client msg -> m ()
+    putClient client = do
+      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
+      -- tryPutTMVar is a precaution, it always succeeds here
+      r <- atomically $ tryPutTMVar (sessionVar v) (Right client)
+      unless r $ logError "newProtocolClient: cannot put connected client"
+      liftIO $ incClientStat c userId client "CLIENT" "OK"
+      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
+    handleErr :: AgentErrorType -> m () -> m ()
+    handleErr e handleTmp = do
+      liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
+      if temporaryAgentError e
+        then handleTmp
+        else do
+          r <- atomically $ do
+            removeTSessVar v tSess clients
+            -- tryPutTMVar is a precaution, it always succeeds here
+            tryPutTMVar (sessionVar v) (Left e)
+          unless r $ logError "newProtocolClient: cannot put client error"
+    asyncConnectLoop :: Int -> m ()
+    asyncConnectLoop aId = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop -> void $ tryConnectClient (const $ clientConnected c tSess) loop
-      atomically . removeAsyncAction aId $ asyncClients c
+      withRetryInterval ri (const retryConnectClient)
+        `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
+      where
+        -- does not return anything, restarts instead of throwing errors
+        retryConnectClient loop =
+          tryAgentError (connectClient v) >>= \case
+            Right client -> putClient client >> clientConnectedAsync c tSess
+            Left e -> handleErr e loop
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
@@ -724,7 +737,7 @@ closeAgentClient c = liftIO $ do
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
     clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
     clear sel = atomically $ writeTVar (sel c) mempty
-    cancelReconnect :: SessionVar (Async ())  -> IO ()
+    cancelReconnect :: SessionVar (Async ()) -> IO ()
     cancelReconnect v = void . forkIO $ atomically (readTMVar $ sessionVar v) >>= uninterruptibleCancel
 
 cancelWorker :: Worker -> IO ()
