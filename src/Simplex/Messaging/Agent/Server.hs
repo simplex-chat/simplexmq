@@ -34,21 +34,21 @@ import UnliftIO.STM
 -- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
 runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> m ()
 runSMPAgent t cfg initServers store =
-  runSMPAgentBlocking t cfg initServers store =<< newEmptyTMVarIO
+  runSMPAgentBlocking t cfg initServers store 0 =<< newEmptyTMVarIO
 
 -- | Runs an SMP agent as a TCP service using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> TMVar Bool -> m ()
-runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers store started = do
+runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Int -> TMVar Bool -> m ()
+runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers store initClientId started = do
   liftIO (newSMPAgentEnv cfg store) >>= runReaderT (smpAgent t)
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = do
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
       tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-      clientId <- newTVarIO 0
+      clientId <- newTVarIO initClientId
       runTransportServer started tcpPort tlsServerParams defaultTransportServerConfig $ \(h :: c) -> do
         liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
         cId <- atomically $ stateTVar clientId $ \i -> (i + 1, i + 1)

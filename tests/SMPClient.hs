@@ -130,7 +130,7 @@ serverBracket process afterProcess f = do
   E.bracket
     (forkIOWithUnmask ($ process started))
     (\t -> killThread t >> afterProcess >> waitFor started "stop")
-    (\t -> waitFor started "start" >> f t)
+    (\t -> waitFor started "start" >> f t >>= \r -> r <$ threadDelay 100000)
   where
     waitFor started s =
       5_000_000 `timeout` atomically (takeTMVar started) >>= \case
