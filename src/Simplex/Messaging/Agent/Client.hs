@@ -506,7 +506,10 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   atomically (getTSessVar c tSess smpClients)
     >>= either newClient (waitForProtocolClient c tSess)
   where
-    newClient = newProtocolClient c tSess smpClients connectClient resubscribeSMPSession
+    newClient v = do
+      pending <- atomically . RQ.getSessQueues tSess $ pendingSubs c
+      let onRetrySuccess = if null pending then Nothing else Just $ resubscribeSMPSession c tSess
+      newProtocolClient c tSess smpClients connectClient onRetrySuccess v
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
@@ -597,7 +600,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getTSessVar c tSess ntfClients)
     >>= either
-      (newProtocolClient c tSess ntfClients connectClient $ \_ _ -> pure ())
+      (newProtocolClient c tSess ntfClients connectClient Nothing)
       (waitForProtocolClient c tSess)
   where
     connectClient :: NtfClientVar -> m NtfClient
@@ -617,7 +620,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getTSessVar c tSess xftpClients)
     >>= either
-      (newProtocolClient c tSess xftpClients connectClient $ \_ _ -> pure ())
+      (newProtocolClient c tSess xftpClients connectClient Nothing)
       (waitForProtocolClient c tSess)
   where
     connectClient :: XFTPClientVar -> m XFTPClient
@@ -666,15 +669,15 @@ newProtocolClient ::
   TransportSession msg ->
   TMap (TransportSession msg) (ClientVar msg) ->
   (ClientVar msg -> m (Client msg)) ->
-  (AgentClient -> TransportSession msg -> m ()) ->
+  Maybe (m ()) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientConnectedAsync v =
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient onRetrySuccess_ v =
   -- attempt sync connect first
   tryAgentError (connectClient v) >>= \case
     Right client -> putClient client $> client
     Left e -> do
-      handleErr e $ newAsyncAction asyncConnectLoop (asyncClients c) -- initiate reconnect loop for temporary errors
+      forM_ onRetrySuccess_ $ \onSuccess -> handleErr e $ newAsyncAction (asyncConnectLoop onSuccess) (asyncClients c) -- initiate reconnect loop for temporary errors
       throwError e -- signal error to caller
   where
     putClient :: Client msg -> m ()
@@ -696,8 +699,8 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
             -- tryPutTMVar is a precaution, it always succeeds here
             tryPutTMVar (sessionVar v) (Left e)
           unless r $ logError "newProtocolClient: cannot put client error"
-    asyncConnectLoop :: Int -> m ()
-    asyncConnectLoop aId = do
+    asyncConnectLoop :: m () -> Int -> m ()
+    asyncConnectLoop onSuccess aId = do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri (const retryConnectClient)
         `E.finally` atomically (removeAsyncAction aId $ asyncClients c)
@@ -705,7 +708,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
         -- does not return anything, restarts instead of throwing errors
         retryConnectClient loop =
           tryAgentError (connectClient v) >>= \case
-            Right client -> putClient client >> clientConnectedAsync c tSess
+            Right client -> putClient client >> onSuccess
             Left e -> handleErr e loop
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
