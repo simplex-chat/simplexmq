@@ -680,6 +680,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
     putClient :: Client msg -> m ()
     putClient client = do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
+      -- tryPutTMVar is a precaution, it always succeeds here
       r <- atomically $ tryPutTMVar (sessionVar v) (Right client)
       unless r $ logError "newProtocolClient: cannot put connected client"
       liftIO $ incClientStat c userId client "CLIENT" "OK"
@@ -692,6 +693,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient clientC
         else do
           r <- atomically $ do
             removeTSessVar v tSess clients
+            -- tryPutTMVar is a precaution, it always succeeds here
             tryPutTMVar (sessionVar v) (Left e)
           unless r $ logError "newProtocolClient: cannot put client error"
     asyncConnectLoop :: Int -> m ()
