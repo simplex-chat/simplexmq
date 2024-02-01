@@ -339,7 +339,7 @@ data XFTPErrorType
   | -- | file IO error
     FILE_IO
   | -- | bad redirect data
-    REDIRECT
+    REDIRECT {redirectError :: String}
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -365,7 +365,7 @@ instance Encoding XFTPErrorType where
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
-    REDIRECT -> "REDIRECT"
+    REDIRECT err -> "REDIRECT " <> bshow err
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -382,7 +382,7 @@ instance Encoding XFTPErrorType where
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO
-      "REDIRECT" -> pure REDIRECT
+      "REDIRECT" -> REDIRECT <$> parseRead A.takeByteString
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"
