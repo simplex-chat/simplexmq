@@ -225,15 +225,15 @@ fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = 
 
 type AgentTestMonad m = (MonadUnliftIO m, MonadRandom m, MonadFail m)
 
-withSmpAgentThreadOn_ :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m () -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
+withSmpAgentThreadOn_ :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> Int -> m () -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn_ t (port', smpPort', db') initClientId afterProcess =
   let cfg' = agentCfg {tcpPort = port'}
       initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         ( \started -> do
             Right st <- liftIO $ createAgentStore db' "" False MCError
             when (dbNew st) . liftIO $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
-            runSMPAgentBlocking t cfg' initServers' st started
+            runSMPAgentBlocking t cfg' initServers' st initClientId started
         )
         afterProcess
 
@@ -241,7 +241,7 @@ userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoSe
 userServers srvs = M.fromList [(1, srvs)]
 
 withSmpAgentThreadOn :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a 0 $ removeFile db'
 
 withSmpAgentOn :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m a -> m a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const
