@@ -677,7 +677,9 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient onRetry
   tryAgentError (connectClient v) >>= \case
     Right client -> putClient client $> client
     Left e -> do
-      forM_ onRetrySuccess_ $ \onSuccess -> handleErr e $ newAsyncAction (asyncConnectLoop onSuccess) (asyncClients c) -- initiate reconnect loop for temporary errors
+      case onRetrySuccess_ of
+        Just onSuccess -> handleErr e $ newAsyncAction (asyncConnectLoop onSuccess) (asyncClients c) -- initiate reconnect loop for temporary errors
+        Nothing -> putError e
       throwError e -- signal error to caller
   where
     putClient :: Client msg -> m ()
@@ -691,14 +693,14 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient onRetry
     handleErr :: AgentErrorType -> m () -> m ()
     handleErr e handleTmp = do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
-      if temporaryAgentError e
-        then handleTmp
-        else do
-          r <- atomically $ do
-            removeTSessVar v tSess clients
-            -- tryPutTMVar is a precaution, it always succeeds here
-            tryPutTMVar (sessionVar v) (Left e)
-          unless r $ logError "newProtocolClient: cannot put client error"
+      if temporaryAgentError e then handleTmp else putError e
+    putError :: AgentErrorType -> m ()
+    putError e = do
+      r <- atomically $ do
+        removeTSessVar v tSess clients
+        -- tryPutTMVar is a precaution, it always succeeds here
+        tryPutTMVar (sessionVar v) (Left e)
+      unless r $ logError "newProtocolClient: cannot put client error"
     asyncConnectLoop :: m () -> Int -> m ()
     asyncConnectLoop onSuccess aId = do
       ri <- asks $ reconnectInterval . config
