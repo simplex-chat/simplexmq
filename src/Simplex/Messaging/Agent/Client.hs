@@ -1569,15 +1569,22 @@ data AgentWorkersDetails = AgentWorkersDetails
   { smpClients_ :: [Text],
     ntfClients_ :: [Text],
     xftpClients_ :: [Text],
-    smpDeliveryWorkers_ :: Map Text Int,
-    asyncCmdWorkers_ :: Map Text Int,
+    smpDeliveryWorkers_ :: Map Text WorkersDetails,
+    asyncCmdWorkers_ :: Map Text WorkersDetails,
     smpSubWorkers_ :: [Text],
     asyncCients_ :: [Int],
-    ntfWorkers_ :: Map Text Int,
-    ntfSMPWorkers_ :: Map Text Int,
-    xftpRcvWorkers_ :: Map Text Int,
-    xftpSndWorkers_ :: Map Text Int,
-    xftpDelWorkers_ :: Map Text Int
+    ntfWorkers_ :: Map Text WorkersDetails,
+    ntfSMPWorkers_ :: Map Text WorkersDetails,
+    xftpRcvWorkers_ :: Map Text WorkersDetails,
+    xftpSndWorkers_ :: Map Text WorkersDetails,
+    xftpDelWorkers_ :: Map Text WorkersDetails
+  }
+  deriving (Show)
+
+data WorkersDetails = WorkersDetails
+  { restarts :: Int,
+    hasWork :: Bool,
+    hasAction :: Bool
   }
   deriving (Show)
 
@@ -1615,10 +1622,12 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
     textKeys = map textKey . M.keys
     textKey :: StrEncoding k => k -> Text
     textKey = decodeASCII . strEncode
-    workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text Int)
-    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts}) -> do
+    workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text WorkersDetails)
+    workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts, doWork, action}) -> do
       RestartCount {restartCount} <- readTVarIO restarts
-      pure (textKey qa, restartCount)
+      hasWork <- atomically $ not <$> isEmptyTMVar doWork
+      hasAction <- atomically $ not <$> isEmptyTMVar action
+      pure (textKey qa, WorkersDetails {restarts = restartCount, hasWork, hasAction})
     Env {ntfSupervisor, xftpAgent} = agentEnv
     NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
     XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
@@ -1683,6 +1692,7 @@ $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
 
+$(J.deriveJSON defaultJSON ''WorkersDetails)
 $(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
 
 $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
