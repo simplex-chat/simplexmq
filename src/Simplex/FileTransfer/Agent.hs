@@ -268,10 +268,10 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           -- proceed with redirect
           yaml <- liftError (INTERNAL . show) $ CF.readFile $ CryptoFile fsSavePath cfArgs
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
-            Left _ -> throwError $ XFTP XFTP.REDIRECT {redirectError = "YAML error"}
+            Left _ -> throwError $ XFTP XFTP.REDIRECT
             Right (ValidFileDescription fd@FileDescription {size = dstSize, digest = dstDigest})
-              | dstSize /= redirectSize  -> throwError $ XFTP XFTP.REDIRECT {redirectError = "size mismatch"}
-              | dstDigest /= redirectDigest -> throwError $ XFTP XFTP.REDIRECT {redirectError = "digest mismatch"}
+              | dstSize /= redirectSize -> throwError $ XFTP XFTP.SIZE
+              | dstDigest /= redirectDigest -> throwError $ XFTP XFTP.DIGEST
               | otherwise -> pure fd
           -- register and download chunks from the actual file
           withStore c $ \db -> updateRcvFileRedirect db nextId next

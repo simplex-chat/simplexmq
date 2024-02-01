@@ -339,7 +339,7 @@ data XFTPErrorType
   | -- | file IO error
     FILE_IO
   | -- | bad redirect data
-    REDIRECT {redirectError :: String}
+    REDIRECT
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -365,7 +365,7 @@ instance Encoding XFTPErrorType where
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
-    REDIRECT err -> "REDIRECT " <> smpEncode err
+    REDIRECT -> "REDIRECT"
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -382,7 +382,7 @@ instance Encoding XFTPErrorType where
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO
-      "REDIRECT" -> REDIRECT <$> _smpP
+      "REDIRECT" -> pure REDIRECT
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"
