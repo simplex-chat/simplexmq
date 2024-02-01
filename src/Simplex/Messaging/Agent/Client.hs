@@ -1612,9 +1612,9 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
     workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text WorkersDetails)
     workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts, doWork, action}) -> do
       RestartCount {restartCount} <- readTVarIO restarts
-      workEmpty <- atomically $ isEmptyTMVar doWork
-      actionEmpty <- atomically $ isEmptyTMVar action
-      pure (textKey qa, WorkersDetails {restarts = restartCount, hasWork = not workEmpty, hasAction = not actionEmpty})
+      hasWork <- atomically $ not <$> isEmptyTMVar doWork
+      hasAction <- atomically $ not <$> isEmptyTMVar action
+      pure (textKey qa, WorkersDetails {restarts = restartCount, hasWork, hasAction})
     Env {ntfSupervisor, xftpAgent} = agentEnv
     NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
     XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
