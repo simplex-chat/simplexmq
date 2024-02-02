@@ -32,7 +32,7 @@ module Simplex.FileTransfer.Description
     mb,
     gb,
     FileDescriptionURI (..),
-    qrSizeLimit
+    qrSizeLimit,
   )
 where
 
@@ -57,9 +57,9 @@ import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import Network.HTTP.Types (urlDecode, urlEncode)
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
+import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
@@ -241,12 +241,15 @@ data FileDescriptionURI = FileDescriptionURI ServiceScheme (ValidFileDescription
   deriving (Eq, Show)
 
 instance StrEncoding FileDescriptionURI where
-  strEncode (FileDescriptionURI ss vfd) = mconcat [strEncode ss, "/file#?d=", urlEncode True $ strEncode vfd]
+  strEncode (FileDescriptionURI ss vfd) = strEncode ss <> "/file" <> "#/?" <> queryStr
+    where
+      queryStr = strEncode $ QSP QEscape [("d", strEncode vfd)]
   strP = do
     ss <- strP
-    _ <- "/file#?d="
-    dUrl <- A.takeByteString
-    either fail (pure . FileDescriptionURI ss) . strDecode $ urlDecode True dUrl
+    _ <- "/file" <* optional (A.char '/') <* "#/?"
+    query <- strP
+    vfd <- queryParam "d" query
+    pure $ FileDescriptionURI ss vfd
 
 -- | URL length in QR code before jumping up to a next size.
 qrSizeLimit :: Int
