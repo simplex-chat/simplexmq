@@ -47,9 +47,7 @@ data RcvFile = RcvFile
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
-    redirectDbId :: Maybe DBRcvFileId,
-    redirectEntityId :: Maybe RcvFileId,
-    redirect :: Maybe RedirectFileInfo,
+    redirect :: Maybe RcvFileRedirect,
     chunks :: [RcvFileChunk],
     prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
@@ -108,6 +106,13 @@ data RcvFileChunkReplica = RcvFileChunkReplica
     received :: Bool,
     delay :: Maybe Int64,
     retries :: Int
+  }
+  deriving (Eq, Show)
+
+data RcvFileRedirect = RcvFileRedirect
+  { redirectDbId :: DBRcvFileId,
+    redirectEntityId :: RcvFileId,
+    redirectFileInfo :: RedirectFileInfo
   }
   deriving (Eq, Show)
 

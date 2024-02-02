@@ -2359,8 +2359,11 @@ getRcvFile db rcvFileId = runExceptT $ do
         toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted, redirectDbId, redirectEntityId, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
-              redirect = RedirectFileInfo <$> redirectSize_ <*> redirectDigest_
-           in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirectDbId, redirectEntityId, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
+              redirect = RcvFileRedirect
+                <$> redirectDbId
+                <*> redirectEntityId
+                <*> (RedirectFileInfo <$> redirectSize_ <*> redirectDigest_)
+           in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do
       chunks <-

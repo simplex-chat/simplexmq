@@ -38,7 +38,6 @@ import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -190,14 +189,14 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       atomically $ waitUntilForeground c
       (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
-        RcvFile {size = FileSize currentSize, chunks, redirectEntityId, redirect} <- ExceptT $ getRcvFile db rcvFileId
+        RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
         let rcvd = receivedSize chunks
             complete = all chunkReceived chunks
-            total = case redirect of
-              Nothing -> currentSize
-              Just RedirectFileInfo {size = FileSize finalSize} -> finalSize
+            (entityId, total) = case redirect of
+              Nothing -> (rcvFileEntityId, currentSize)
+              Just RcvFileRedirect {redirectFileInfo = RedirectFileInfo {size = FileSize finalSize}, redirectEntityId} -> (redirectEntityId, finalSize)
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
-        pure (fromMaybe rcvFileEntityId redirectEntityId, complete, RFPROG rcvd total)
+        pure (entityId, complete, RFPROG rcvd total)
       notify c entityId progress
       when complete . void $
         getXFTPRcvWorker True c Nothing
@@ -242,7 +241,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, size, digest, key, nonce, tmpPath, saveFile, status, chunks, redirect, redirectDbId} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, size, digest, key, nonce, tmpPath, saveFile, status, chunks, redirect} = do
       let CryptoFile savePath cfArgs = saveFile
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
@@ -255,13 +254,14 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       when (FileDigest encDigest /= digest) $ throwError $ XFTP XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
-      case (redirect, redirectDbId) of
-        (Nothing, Nothing) -> do
+      case redirect of
+        Nothing -> do
           notify c rcvFileEntityId $ RFDONE fsSavePath
           forM_ tmpPath (removePath <=< toFSFilePath)
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
-        (Just RedirectFileInfo {size = redirectSize, digest = redirectDigest}, Just nextId) -> do
+        Just RcvFileRedirect {redirectFileInfo, redirectDbId} -> do
+          let RedirectFileInfo {size = redirectSize, digest = redirectDigest} = redirectFileInfo
           forM_ tmpPath (removePath <=< toFSFilePath)
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
@@ -274,10 +274,8 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
               | dstDigest /= redirectDigest -> throwError . XFTP $ XFTP.REDIRECT "digest mismatch"
               | otherwise -> pure fd
           -- register and download chunks from the actual file
-          withStore c $ \db -> updateRcvFileRedirect db nextId next
+          withStore c $ \db -> updateRcvFileRedirect db redirectDbId next
           forM_ nextChunks (downloadChunk c)
-        _ ->
-          throwError $ INTERNAL "inconsistent redirect/entityId"
       where
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
