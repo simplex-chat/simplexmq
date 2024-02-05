@@ -471,9 +471,9 @@ verifyTransmission sig_ signed queueId cmd =
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
-    Cmd SSender PROXY {} -> pure $ VRVerified Nothing
-    Cmd SSender PHS -> pure $ VRVerified Nothing
+    Cmd SSender PRXY {} -> pure $ VRVerified Nothing
     Cmd SSender PFWD {} -> pure $ VRVerified Nothing
+    Cmd SSender RFWD {} -> pure $ VRVerified Nothing
   where
     verifyCmd :: SParty p -> (QueueRec -> Bool) -> M VerificationResult
     verifyCmd party f = do
@@ -527,7 +527,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
           case command of
             SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
             PING -> pure (corrId, "", PONG)
-            PROXY relay auth ->
+            PRXY relay auth ->
               ifM
                 allowProxy
                 (setupProxy relay)
@@ -536,8 +536,8 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 allowProxy = do
                   ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
                   pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-            PHS -> error "TODO: processCommand.PHS"
             PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
+            RFWD _dhPub _encBlock -> error "TODO: processCommand.RFWD"
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
@@ -878,7 +878,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
           (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
           (_, dummySignKey) <- atomically . C.generateKeyPair =<< asks random
           let dummyRelayKeySignature = C.sign' dummySignKey $ smpEncode dummyRelayDhPublic
-          pure (corrId, relaySessionId, RKEY dummyRelayDhPublic dummyRelayKeySignature)
+          pure (corrId, relaySessionId, PKEY dummyRelayDhPublic dummyRelayKeySignature)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)

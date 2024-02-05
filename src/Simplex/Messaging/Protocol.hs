@@ -301,9 +301,9 @@ data Command (p :: Party) where
   PING :: Command Sender
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
-  PROXY :: SMPServer -> Maybe BasicAuth -> Command Sender -- request a relay server connection by URI
-  PHS :: Command Sender -- identify connection as a proxy, set up shared key
-  PFWD :: C.PublicKeyX25519 -> ByteString -> Command Sender -- use CorrId as CbNonce
+  PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender -- request a relay server connection by URI
+  PFWD :: C.PublicKeyX25519 -> ByteString -> Command Sender -- use CorrId as CbNonce, client to proxy
+  RFWD :: C.PublicKeyX25519 -> ByteString -> Command Sender -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
 
@@ -340,8 +340,10 @@ data BrokerMsg where
   MSG :: RcvMessage -> BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
-  RKEY :: C.PublicKeyX25519 -> C.Signature C.Ed25519 -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
-  RRES :: ByteString -> BrokerMsg -- Encrypted response. E.g. relay to client, hidden from proxy
+  -- Should include certificate chain
+  PKEY :: C.PublicKeyX25519 -> C.Signature C.Ed25519 -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  RRES :: ByteString -> BrokerMsg -- relay to proxy
+  PRES :: ByteString -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
@@ -533,7 +535,9 @@ data CommandTag (p :: Party) where
   DEL_ :: CommandTag Recipient
   SEND_ :: CommandTag Sender
   PING_ :: CommandTag Sender
-  PROXY_ :: CommandTag Sender
+  PRXY_ :: CommandTag Sender
+  PFWD_ :: CommandTag Sender
+  RFWD_ :: CommandTag Sender
   NSUB_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
@@ -547,8 +551,9 @@ data BrokerMsgTag
   | MSG_
   | NID_
   | NMSG_
-  | RKEY_
+  | PKEY_
   | RRES_
+  | PRES_
   | END_
   | OK_
   | ERR_
@@ -576,7 +581,9 @@ instance PartyI p => Encoding (CommandTag p) where
     DEL_ -> "DEL"
     SEND_ -> "SEND"
     PING_ -> "PING"
-    PROXY_ -> "PROXY"
+    PRXY_ -> "PRXY"
+    PFWD_ -> "PFWD"
+    RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
   smpP = messageTagP
 
@@ -593,7 +600,9 @@ instance ProtocolMsgTag CmdTag where
     "DEL" -> Just $ CT SRecipient DEL_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
-    "PROXY" -> Just $ CT SSender PROXY_
+    "PRXY" -> Just $ CT SSender PRXY_
+    "PFWD" -> Just $ CT SSender PFWD_
+    "RFWD" -> Just $ CT SSender RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
     _ -> Nothing
 
@@ -610,8 +619,9 @@ instance Encoding BrokerMsgTag where
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
-    RKEY_ -> "RKEY"
+    PKEY_ -> "PKEY"
     RRES_ -> "RRES"
+    PRES_ -> "PRES"
     END_ -> "END"
     OK_ -> "OK"
     ERR_ -> "ERR"
@@ -624,8 +634,9 @@ instance ProtocolMsgTag BrokerMsgTag where
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
-    "RKEY" -> Just RKEY_
+    "PKEY" -> Just PKEY_
     "RRES" -> Just RRES_
+    "PRES" -> Just PRES_
     "END" -> Just END_
     "OK" -> Just OK_
     "ERR" -> Just ERR_
@@ -1123,9 +1134,9 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
       | otherwise -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
-    PROXY host auth_ -> e (PROXY_, ' ', strEncode host, ' ', auth_)
-    PHS -> error "TODO: e PHS_"
+    PRXY host auth_ -> e (PRXY_, ' ', strEncode host, ' ', auth_)
     PFWD {} -> error "TODO: e (PFWD_,,)"
+    RFWD {} -> error "TODO: e (RFWD_,,)"
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1149,7 +1160,7 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
     PING
       | isNothing sig && B.null queueId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
-    PROXY {}
+    PRXY {}
       | isNothing sig && B.null queueId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
@@ -1187,7 +1198,9 @@ instance ProtocolEncoding ErrorType Cmd where
           | v == 1 -> SEND noMsgFlags <$> (unTail <$> _smpP)
           | otherwise -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
-        PROXY_ -> PROXY <$> (_smpP >>= either fail pure . strDecode) <*> _smpP
+        PFWD_ -> error "TODO: PFWD_"
+        RFWD_ -> error "TODO: RFWD_"
+        PRXY_ -> PRXY <$> (_smpP >>= either fail pure . strDecode) <*> _smpP
 
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
@@ -1206,8 +1219,9 @@ instance ProtocolEncoding ErrorType BrokerMsg where
       | otherwise -> e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
-    RKEY dhPub sig -> e (RKEY_, ' ', dhPub, ' ', C.signatureBytes sig)
+    PKEY dhPub sig -> e (PKEY_, ' ', dhPub, ' ', C.signatureBytes sig)
     RRES encBlock -> e (RRES_, ' ', Tail encBlock)
+    PRES encBlock -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -1228,8 +1242,9 @@ instance ProtocolEncoding ErrorType BrokerMsg where
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
-    RKEY_ -> RKEY <$> _smpP <*> (_smpP >>= either fail pure . C.decodeSignature)
+    PKEY_ -> PKEY <$> _smpP <*> (_smpP >>= either fail pure . C.decodeSignature)
     RRES_ -> RRES <$> (unTail <$> _smpP)
+    PRES_ -> error "TODO: PRES_"
     END_ -> pure END
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP

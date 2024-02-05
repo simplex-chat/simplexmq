@@ -36,14 +36,14 @@ testNoProxy :: IO ()
 testNoProxy = do
   withSmpServerConfigOn (transport @TLS) cfg testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 $ \(th :: THandle TLS) -> do
-      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PROXY testSMPServer Nothing)
+      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer Nothing)
       reply `shouldBe` Right (ERR AUTH)
 
 testProxyAuth :: IO ()
 testProxyAuth = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort $ \(th :: THandle TLS) -> do
-      (_, s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PROXY testSMPServer2 $ Just "wrong")
+      (_, s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer2 $ Just "wrong")
       traceShowM s
       reply `shouldBe` Right (ERR AUTH)
   where
@@ -53,9 +53,9 @@ testProxyConnect :: IO ()
 testProxyConnect = do
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort $ \(th :: THandle TLS) -> do
-      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PROXY testSMPServer2 Nothing)
+      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer2 Nothing)
       case reply of
-        Right RKEY {} -> pure ()
+        Right PKEY {} -> pure ()
         _ -> fail $ "bad reply: " <> show reply
 
 todo :: IO ()
