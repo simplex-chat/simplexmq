@@ -13,6 +13,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -247,8 +248,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runClient tp h = do
       kh <- asks serverIdentity
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
+      g <- asks random
+      ks <- atomically $ C.generateKeyPair g
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake h kh smpServerVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake h ks kh smpServerVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 
@@ -424,10 +427,10 @@ receive th Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
     write rcvQ $ snd as
   where
     cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
-    cmdAction (sig, signed, (corrId, queueId, cmdOrError)) =
+    cmdAction (auth, authorized, (corrId, queueId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, queueId, ERR e)
-        Right cmd -> verified <$> verifyTransmission sig signed queueId cmd
+        Right cmd -> verified <$> verifyTransmission auth authorized queueId cmd
           where
             verified = \case
               VRVerified qr -> Right (qr, (corrId, queueId, cmd))
@@ -439,7 +442,8 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-    void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+    -- TODO we can authorize responses as well
+    void . liftIO . tPut h $ L.map (\t -> Right (TAuthNone, encodeTransmission v sessionId t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
@@ -463,11 +467,11 @@ disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expC
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 
-verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
-verifyTransmission sig_ signed queueId cmd =
+verifyTransmission :: TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
+verifyTransmission auth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
-    Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
+    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdSignature auth authorized k
+    Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature auth authorized . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
@@ -478,35 +482,49 @@ verifyTransmission sig_ signed queueId cmd =
       q_ <- atomically $ getQueue st party queueId
       pure $ case q_ of
         Right q -> Just q `verified` f q
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    verifyMaybe :: Maybe C.APublicVerifyKey -> Bool
-    verifyMaybe = maybe (isNothing sig_) $ verifyCmdSignature sig_ signed
+        _ -> dummyVerifyCmd authorized auth `seq` VRFailed
+    verifyMaybe :: Maybe C.APublicAuthKey -> Bool
+    verifyMaybe = maybe (isAuthNone auth) $ verifyCmdSignature auth authorized
     verified q cond = if cond then VRVerified q else VRFailed
 
-verifyCmdSignature :: Maybe C.ASignature -> ByteString -> C.APublicVerifyKey -> Bool
-verifyCmdSignature sig_ signed key = maybe False (verify key) sig_
+verifyCmdSignature :: TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
+verifyCmdSignature auth authorized key = case auth of
+  TAuthNone -> False
+  TAuthSignature sig -> verify key sig
+  TAuthEncHash _ -> False
   where
-    verify :: C.APublicVerifyKey -> C.ASignature -> Bool
-    verify (C.APublicVerifyKey a k) sig@(C.ASignature a' s) =
-      case (testEquality a a', C.signatureSize k == C.signatureSize s) of
-        (Just Refl, True) -> C.verify' k s signed
-        _ -> dummyVerifyCmd signed sig `seq` False
+    verify :: C.APublicAuthKey -> C.ASignature -> Bool
+    verify (C.APublicAuthKey a k) sig@(C.ASignature a' s) =
+      case testEquality a a' of
+        Just Refl | C.signatureSize k == C.signatureSize s -> C.verify' k s authorized
+        _ -> dummyVerifyCmd authorized (TAuthSignature sig) `seq` False
 
-dummyVerifyCmd :: ByteString -> C.ASignature -> Bool
-dummyVerifyCmd signed (C.ASignature _ s) = C.verify' (dummyPublicKey s) s signed
+dummyVerifyCmd :: ByteString -> TransmissionAuth -> Bool
+dummyVerifyCmd authorized = \case
+  TAuthNone -> False
+  TAuthSignature (C.ASignature a s) -> C.verify' (dummyPublicKey a) s authorized
+  TAuthEncHash _ -> False
 
 -- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
 -- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes
-dummyPublicKey :: C.Signature a -> C.PublicKey a
+dummyPublicKey :: C.SAlgorithm a -> C.PublicKey a
 dummyPublicKey = \case
-  C.SignatureEd25519 _ -> dummyKeyEd25519
-  C.SignatureEd448 _ -> dummyKeyEd448
+  C.SEd25519 -> dummyKeyEd25519
+  C.SEd448 -> dummyKeyEd448
+  C.SX25519 -> dummyKeyX25519
+  C.SX448 -> dummyKeyX448
 
 dummyKeyEd25519 :: C.PublicKey 'C.Ed25519
 dummyKeyEd25519 = "MCowBQYDK2VwAyEA139Oqs4QgpqbAmB0o7rZf6T19ryl7E65k4AYe0kE3Qs="
 
 dummyKeyEd448 :: C.PublicKey 'C.Ed448
 dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/XopbOSaq9qyLhrgJWKOLyNrQPNVvpMA"
+
+dummyKeyX25519 :: C.PublicKey 'C.X25519
+dummyKeyX25519 = ""
+
+dummyKeyX448 :: C.PublicKey 'C.X448
+dummyKeyX448 = ""
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
@@ -545,7 +563,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
+        createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
@@ -593,14 +611,14 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureQueue_ :: QueueStore -> SndPublicVerifyKey -> m (Transmission BrokerMsg)
+        secureQueue_ :: QueueStore -> SndPublicAuthKey -> m (Transmission BrokerMsg)
         secureQueue_ st sKey = time "KEY" $ do
           withLog $ \s -> logSecureQueue s queueId sKey
           stats <- asks serverStats
           atomically $ modifyTVar' (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
-        addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
+        addQueueNotifier_ :: QueueStore -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvNtfDhSecret = C.dh' dhKey privDhKey

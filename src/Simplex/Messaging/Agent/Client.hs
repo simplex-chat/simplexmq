@@ -200,9 +200,10 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
+    NtfPublicAuthKey,
     SMPMsgMeta (..),
     SProtocolType (..),
-    SndPublicVerifyKey,
+    SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
     XFTPServer,
@@ -507,8 +508,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
+      g <- asks random
       u <- askUnliftIO
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg (Just msgQ) $ clientDisconnected u v)
+      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected u v)
 
     clientDisconnected :: UnliftIO m -> SMPClientVar -> SMPClient -> IO ()
     clientDisconnected u v client = do
@@ -606,7 +608,8 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
     connectClient :: NtfClientVar -> m NtfClient
     connectClient v = do
       cfg <- getClientConfig c ntfCfg
-      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient tSess cfg Nothing $ clientDisconnected v)
+      g <- asks random
+      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg Nothing $ clientDisconnected v)
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
     clientDisconnected v client = do
@@ -860,17 +863,17 @@ data ProtocolTestFailure = ProtocolTestFailure
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
-  C.SignAlg a <- asks $ cmdSignAlg . config
+  C.AuthAlg a <- asks $ cmdAuthAlg . config
   g <- asks random
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    getProtocolClient tSess cfg Nothing (\_ -> pure ()) >>= \case
+    getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right smp -> do
-        (rKey, rpKey) <- atomically $ C.generateSignatureKeyPair a g
-        (sKey, _) <- atomically $ C.generateSignatureKeyPair a g
+        rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair a g
+        (sKey, _) <- atomically $ C.generateAuthKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rpKey rKey dhKey auth SMSubscribe
+          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe
           liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
@@ -894,8 +897,8 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
     let tSess = (userId, srv, Nothing)
     X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
       Right xftp -> do
-        (sndKey, spKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
-        (rcvKey, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+        (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+        (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         createTestChunk filePath
         digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
         let file = FileInfo {sndKey, size = chSize, digest}
@@ -948,15 +951,15 @@ getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
 newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> SubscriptionMode -> m (NewRcvQueue, SMPQueueUri)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
-  C.SignAlg a <- asks (cmdSignAlg . config)
+  C.AuthAlg a <- asks (cmdAuthAlg . config)
   g <- asks random
-  (recipientKey, rcvPrivateKey) <- atomically $ C.generateSignatureKeyPair a g
+  rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (dhKey, privDhKey) <- atomically $ C.generateKeyPair g
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv "" "NEW"
   tSess <- mkTransportSession c userId srv connId
   QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey auth subMode
+    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rKeys dhKey auth subMode
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
@@ -1054,7 +1057,7 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs =
               let n = (length qs - 1) `div` statBatchSize + 1
                in incClientStatN c userId smp n statCmd "OK"
 
-sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateSignKey, SMP.RecipientId) -> IO (NonEmpty (Either SMPClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
+sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateAuthKey, SMP.RecipientId) -> IO (NonEmpty (Either SMPClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
 sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
@@ -1132,23 +1135,23 @@ decryptSMPMessage v rq SMP.RcvMessage {msgId, msgTs, msgFlags, msgBody = SMP.Enc
   where
     decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
 
-secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
+secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicAuthKey -> m ()
 secureQueue c rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
   withSMPClient c rq "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
-enableQueueNotifications :: AgentMonad m => AgentClient -> RcvQueue -> SMP.NtfPublicVerifyKey -> SMP.RcvNtfPublicDhKey -> m (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
+enableQueueNotifications :: AgentMonad m => AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> m (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =
   withSMPClient c rq "NKEY <nkey>" $ \smp ->
     enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
-enableQueuesNtfs :: forall m. AgentMonad' m => AgentClient -> [(RcvQueue, SMP.NtfPublicVerifyKey, SMP.RcvNtfPublicDhKey)] -> m [(RcvQueue, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
+enableQueuesNtfs :: forall m. AgentMonad' m => AgentClient -> [(RcvQueue, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)] -> m [(RcvQueue, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
 enableQueuesNtfs = sendTSessionBatches "NKEY" 90 fst3 enableQueues_
   where
     fst3 (x, _, _) = x
-    enableQueues_ :: SMPClient -> NonEmpty (RcvQueue, SMP.NtfPublicVerifyKey, SMP.RcvNtfPublicDhKey) -> IO (NonEmpty (RcvQueue, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
+    enableQueues_ :: SMPClient -> NonEmpty (RcvQueue, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey) -> IO (NonEmpty (RcvQueue, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
     enableQueues_ smp qs' = L.zipWith ((,) . fst3) qs' <$> enableSMPQueuesNtfs smp (L.map queueCreds qs')
-    queueCreds :: (RcvQueue, SMP.NtfPublicVerifyKey, SMP.RcvNtfPublicDhKey) -> (SMP.RcvPrivateSignKey, SMP.RecipientId, SMP.NtfPublicVerifyKey, SMP.RcvNtfPublicDhKey)
+    queueCreds :: (RcvQueue, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey) -> (SMP.RcvPrivateAuthKey, SMP.RecipientId, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)
     queueCreds (RcvQueue {rcvPrivateKey, rcvId}, notifierKey, rcvNtfPublicDhKey) = (rcvPrivateKey, rcvId, notifierKey, rcvNtfPublicDhKey)
 
 disableQueueNotifications :: AgentMonad m => AgentClient -> RcvQueue -> m ()
@@ -1193,7 +1196,7 @@ sendAgentMessage c sq@SndQueue {sndId, sndPrivateKey} msgFlags agentMsg =
     msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
     liftClient SMP (clientServer smp) $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
 
-agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
+agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
   withClient c (0, ntfServer, Nothing) "TNEW" $ \ntf -> ntfRegisterToken ntf ntfPrivKey (NewNtfTkn deviceToken ntfPubKey pubDhKey)
 
@@ -1217,7 +1220,7 @@ agentNtfEnableCron :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> W
 agentNtfEnableCron c tknId NtfToken {ntfServer, ntfPrivKey} interval =
   withNtfClient c ntfServer tknId "TCRN" $ \ntf -> ntfEnableCron ntf ntfPrivKey tknId interval
 
-agentNtfCreateSubscription :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> SMPQueueNtf -> SMP.NtfPrivateSignKey -> m NtfSubscriptionId
+agentNtfCreateSubscription :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> SMPQueueNtf -> SMP.NtfPrivateAuthKey -> m NtfSubscriptionId
 agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =
   withNtfClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
 
@@ -1237,7 +1240,7 @@ agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {se
 agentXFTPNewChunk :: AgentMonad m => AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> m NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) = do
   rKeys <- xftpRcvKeys n
-  (sndKey, replicaKey) <- atomically . C.generateSignatureKeyPair C.SEd25519 =<< asks random
+  (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest = chunkDigest}
   logServer "-->" c srv "" "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
@@ -1249,7 +1252,7 @@ agentXFTPUploadChunk :: AgentMonad m => AgentClient -> UserId -> FileDigest -> S
 agentXFTPUploadChunk c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =
   withXFTPClient c (userId, server, chunkDigest) "FPUT" $ \xftp -> X.uploadXFTPChunk xftp replicaKey fId chunkSpec
 
-agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateSignKey))
+agentXFTPAddRecipients :: AgentMonad m => AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> Int -> m (NonEmpty (ChunkReplicaId, C.APrivateAuthKey))
 agentXFTPAddRecipients c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} n = do
   rKeys <- xftpRcvKeys n
   rIds <- withXFTPClient c (userId, server, chunkDigest) "FADD" $ \xftp -> X.addXFTPRecipients xftp replicaKey fId (L.map fst rKeys)
@@ -1259,14 +1262,14 @@ agentXFTPDeleteChunk :: AgentMonad m => AgentClient -> UserId -> DeletedSndChunk
 agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey, chunkDigest = FileDigest chunkDigest} =
   withXFTPClient c (userId, server, chunkDigest) "FDEL" $ \xftp -> X.deleteXFTPChunk xftp replicaKey fId
 
-xftpRcvKeys :: AgentMonad m => Int -> m (NonEmpty C.ASignatureKeyPair)
+xftpRcvKeys :: AgentMonad m => Int -> m (NonEmpty C.AAuthKeyPair)
 xftpRcvKeys n = do
-  rKeys <- atomically . replicateM n . C.generateSignatureKeyPair C.SEd25519 =<< asks random
+  rKeys <- atomically . replicateM n . C.generateAuthKeyPair C.SEd25519 =<< asks random
   case L.nonEmpty rKeys of
     Just rKeys' -> pure rKeys'
     _ -> throwError $ INTERNAL "non-positive number of recipients"
 
-xftpRcvIdsKeys :: NonEmpty ByteString -> NonEmpty C.ASignatureKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateSignKey)
+xftpRcvIdsKeys :: NonEmpty ByteString -> NonEmpty C.AAuthKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateAuthKey)
 xftpRcvIdsKeys rIds rKeys = L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString

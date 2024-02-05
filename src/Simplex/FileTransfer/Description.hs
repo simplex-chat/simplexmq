@@ -118,7 +118,7 @@ data FileChunk = FileChunk
 data FileChunkReplica = FileChunkReplica
   { server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey
+    replicaKey :: C.APrivateAuthKey
   }
   deriving (Eq, Show)
 
@@ -161,7 +161,7 @@ data FileServerReplica = FileServerReplica
   { chunkNo :: Int,
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
+    replicaKey :: C.APrivateAuthKey,
     digest :: Maybe FileDigest,
     chunkSize :: Maybe (FileSize Word32)
   }

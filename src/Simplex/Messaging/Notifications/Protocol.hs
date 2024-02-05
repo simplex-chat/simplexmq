@@ -18,7 +18,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind
-import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -124,8 +123,8 @@ instance ToJSON NtfRegCode where
   toEncoding = strToJEncoding
 
 data NewNtfEntity (e :: NtfEntity) where
-  NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
-  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateSignKey -> NewNtfEntity 'Subscription
+  NewNtfTkn :: DeviceToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateAuthKey -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
 
@@ -206,20 +205,20 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
   fromProtocolError = fromProtocolError @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (sig, _, entityId, _) cmd = case cmd of
+  checkCredentials (auth, _, entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
     PING
-      | isNothing sig && B.null entityId -> Right cmd
+      | isAuthNone auth && B.null entityId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and entity ID
     _
-      | isNothing sig || B.null entityId -> Left $ CMD NO_AUTH
+      | isAuthNone auth || B.null entityId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     where
       sigNoEntity
-        | isNothing sig = Left $ CMD NO_AUTH
+        | isAuthNone auth = Left $ CMD NO_AUTH
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 

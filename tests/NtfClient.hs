@@ -72,8 +72,10 @@ ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
-    liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedNTFServerVRange) >>= \case
+  runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h -> do
+    g <- liftIO C.newRandom
+    ks <- atomically $ C.generateKeyPair g
+    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedNTFServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -135,18 +137,18 @@ ntfServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c ->
-  (Maybe C.ASignature, ByteString, ByteString, smp) ->
-  IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
+  (TransmissionAuth, ByteString, ByteString, smp) ->
+  IO (TransmissionAuth, ByteString, ByteString, BrokerMsg)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandle c -> (TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId, corrId, queueId, smp)
-      [Right ()] <- tPut h [(sig, t')]
+      [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
-      pure (Nothing, corrId, qId, cmd)
+      [(TAuthNone, _, (CorrId corrId, qId, Right cmd))] <- tGet h
+      pure (TAuthNone, corrId, qId, cmd)
 
 ntfTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()

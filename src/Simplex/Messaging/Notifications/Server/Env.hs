@@ -89,7 +89,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   logInfo "restoring subscriptions..."
   storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
   logInfo "restored subscriptions"
-  subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
+  subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg random
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
@@ -102,11 +102,11 @@ data NtfSubscriber = NtfSubscriber
     smpAgent :: SMPClientAgent
   }
 
-newNtfSubscriber :: Natural -> SMPClientAgentConfig -> STM NtfSubscriber
-newNtfSubscriber qSize smpAgentCfg = do
+newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> STM NtfSubscriber
+newNtfSubscriber qSize smpAgentCfg random = do
   smpSubscribers <- TM.empty
   newSubQ <- newTBQueue qSize
-  smpAgent <- newSMPClientAgent smpAgentCfg
+  smpAgent <- newSMPClientAgent smpAgentCfg random
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
 data SMPSubscriber = SMPSubscriber

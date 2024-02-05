@@ -19,7 +19,7 @@ import qualified Data.Set as S
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (NtfPrivateSignKey, SMPServer)
+import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
@@ -46,7 +46,7 @@ data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
     token :: DeviceToken,
     tknStatus :: TVar NtfTknStatus,
-    tknVerifyKey :: C.APublicVerifyKey,
+    tknVerifyKey :: NtfPublicAuthKey,
     tknDhKeys :: C.KeyPair 'C.X25519,
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
@@ -62,7 +62,7 @@ mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tkn
 data NtfSubData = NtfSubData
   { ntfSubId :: NtfSubscriptionId,
     smpQueue :: SMPQueueNtf,
-    notifierKey :: NtfPrivateSignKey,
+    notifierKey :: NtfPrivateAuthKey,
     tokenId :: NtfTokenId,
     subStatus :: TVar NtfSubStatus
   }

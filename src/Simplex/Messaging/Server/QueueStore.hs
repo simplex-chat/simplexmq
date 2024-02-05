@@ -10,10 +10,10 @@ import Simplex.Messaging.Protocol
 
 data QueueRec = QueueRec
   { recipientId :: !RecipientId,
-    recipientKey :: !RcvPublicVerifyKey,
+    recipientKey :: !RcvPublicAuthKey,
     rcvDhSecret :: !RcvDhSecret,
     senderId :: !SenderId,
-    senderKey :: !(Maybe SndPublicVerifyKey),
+    senderKey :: !(Maybe SndPublicAuthKey),
     notifier :: !(Maybe NtfCreds),
     status :: !ServerQueueStatus
   }
@@ -21,7 +21,7 @@ data QueueRec = QueueRec
 
 data NtfCreds = NtfCreds
   { notifierId :: !NotifierId,
-    notifierKey :: !NtfPublicVerifyKey,
+    notifierKey :: !NtfPublicAuthKey,
     rcvNtfDhSecret :: !RcvNtfDhSecret
   }
   deriving (Eq, Show)

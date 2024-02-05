@@ -43,7 +43,7 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, TransmissionAuth (..), encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
@@ -369,7 +369,7 @@ receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
 send :: Transport c => THandle c -> NtfServerClient -> IO ()
 send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h [(Nothing, encodeTransmission v sessionId t)]
+  void . liftIO $ tPut h [Right (TAuthNone, encodeTransmission v sessionId t)]
   atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where
@@ -378,13 +378,13 @@ send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
 verifyNtfTransmission :: SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
-verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
+verifyNtfTransmission (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
       r_ <- atomically $ getNtfTokenRegistration st tkn
       pure $
-        if verifyCmdSignature sig_ signed k
+        if verifyCmdSignature tAuth authorized k
           then case r_ of
             Just t@NtfTknData {tknVerifyKey}
               | k == tknVerifyKey -> verifiedTknCmd t c
@@ -405,7 +405,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
             then do
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
-            else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+            else pure $ dummyVerifyCmd authorized tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
@@ -413,7 +413,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
         Just s@NtfSubData {tokenId = subTknId} -> do
           t_ <- atomically $ getActiveNtfToken st subTknId
           verifyToken' t_ $ verifiedSubCmd s c
-        _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+        _ -> pure $ dummyVerifyCmd authorized tAuth `seq` VRFailed
   where
     verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
     verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
@@ -421,10 +421,10 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
     verifyToken t_ positiveVerificationResult =
       pure $ case t_ of
         Just t@NtfTknData {tknVerifyKey} ->
-          if verifyCmdSignature sig_ signed tknVerifyKey
+          if verifyCmdSignature tAuth authorized tknVerifyKey
             then positiveVerificationResult t
             else VRFailed
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+        _ -> dummyVerifyCmd authorized tAuth `seq` VRFailed
     verifyToken' :: Maybe NtfTknData -> VerificationResult -> M VerificationResult
     verifyToken' t_ = verifyToken t_ . const
 

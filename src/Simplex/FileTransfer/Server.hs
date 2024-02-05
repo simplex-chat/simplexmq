@@ -47,7 +47,7 @@ import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicVerifyKey, RecipientId)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, RecipientId, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
@@ -250,10 +250,10 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
-verifyXFTPTransmission :: Maybe C.ASignature -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
-verifyXFTPTransmission sig_ signed fId cmd =
+verifyXFTPTransmission :: TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission tAuth authorized fId cmd =
   case cmd of
-    FileCmd SFSender (FNEW file rcps auth) -> pure $ XFTPReqNew file rcps auth `verifyWith` sndKey file
+    FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
     FileCmd party _ -> verifyCmd party
   where
@@ -264,8 +264,8 @@ verifyXFTPTransmission sig_ signed fId cmd =
       where
         verify = \case
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
-          _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
+          _ -> dummyVerifyCmd authorized tAuth `seq` VRFailed
+    req `verifyWith` k = if verifyCmdSignature tAuth authorized k then VRVerified req else VRFailed
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
@@ -286,7 +286,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> M FileResponse
     createFile file rks = do
       st <- asks store
       r <- runExceptT $ do
@@ -310,7 +310,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       retryAdd n $ \sId -> runExceptT $ do
         ExceptT $ addFile st sId file ts
         pure sId
-    addRecipientRetry :: FileStore -> Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
+    addRecipientRetry :: FileStore -> Int -> XFTPFileId -> RcvPublicAuthKey -> M (Either XFTPErrorType FileRecipient)
     addRecipientRetry st n sId rpk =
       retryAdd n $ \rId -> runExceptT $ do
         let rcp = FileRecipient rId rpk
@@ -323,7 +323,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       atomically (add fId) >>= \case
         Left DUPLICATE_ -> retryAdd (n - 1) add
         r -> pure r
-    addRecipients :: XFTPFileId -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    addRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M FileResponse
     addRecipients sId rks = do
       st <- asks store
       r <- runExceptT $ do

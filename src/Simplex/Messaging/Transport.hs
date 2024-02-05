@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -27,6 +28,10 @@
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     supportedSMPServerVRange,
+    currentSMPServerVersion,
+    basicAuthSMPVersion,
+    subModeSMPVersion,
+    authEncryptCmdsSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -47,6 +52,7 @@ module Simplex.Messaging.Transport
 
     -- * SMP transport
     THandle (..),
+    THandleAuth (..),
     TransportError (..),
     HandshakeError (..),
     smpServerHandshake,
@@ -72,6 +78,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Maybe (fromMaybe)
 import Data.Version (showVersion)
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
@@ -93,8 +100,34 @@ import UnliftIO.STM
 smpBlockSize :: Int
 smpBlockSize = 16384
 
+-- SMP protocol version history:
+-- 1 - binary protocol encoding (1/1/2022)
+-- 2 - message flags (used to control notifications, 6/6/2022)
+-- 3 - encrypt message timestamp and flags together with the body when delivered to the recipient (7/5/2022)
+-- 4 - support command batching (7/17/2022)
+-- 5 - basic auth for SMP servers (11/12/2022)
+-- 6 - allow creating queues without subscribing (9/10/2023)
+-- 7 - use authenticated encryption instead of signature to verify commands (2/3/2024)
+
+batchCmdsSMPVersion :: Version
+batchCmdsSMPVersion = 4
+
+basicAuthSMPVersion :: Version
+basicAuthSMPVersion = 5
+
+subModeSMPVersion :: Version
+subModeSMPVersion = 6
+
+authEncryptCmdsSMPVersion :: Version
+authEncryptCmdsSMPVersion = 7
+
+currentSMPServerVersion :: Version
+currentSMPServerVersion = 7
+
+-- minimal supported protocol version is 4
+-- TODO remove code that supports sending commands without batching
 supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange 1 6
+supportedSMPServerVRange = mkVersionRange batchCmdsSMPVersion (currentSMPServerVersion - 1)
 
 simplexMQVersion :: String
 simplexMQVersion = showVersion SMQ.version
@@ -230,16 +263,23 @@ instance Transport TLS where
 
 -- * SMP transport
 
--- | The handle for SMP encrypted transport connection over Transport .
+-- | The handle for SMP encrypted transport connection over Transport.
 data THandle c = THandle
   { connection :: c,
     sessionId :: SessionId,
     blockSize :: Int,
     -- | agreed server protocol version
     thVersion :: Version,
+    -- | peer public key for command authorization and shared secrets for entity ID encryption
+    thAuth :: Maybe THandleAuth,
     -- | send multiple transmissions in a single block
     -- based on protocol and protocol version
     batch :: Bool
+  }
+
+data THandleAuth = THandleAuth
+  { peerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
+    dhSecret :: C.DhSecretX25519 -- used by both parties to encrypt entity IDs in for version >= 7 
   }
 
 -- | TLS-unique channel binding
@@ -247,28 +287,40 @@ type SessionId = ByteString
 
 data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRange,
-    sessionId :: SessionId
+    sessionId :: SessionId,
+    -- pub key to agree shared secrets for command authorization and entity ID encryption.
+    authPubKey :: Maybe C.PublicKeyX25519
   }
 
 data ClientHandshake = ClientHandshake
   { -- | agreed SMP server protocol version
     smpVersion :: Version,
     -- | server identity - CA certificate fingerprint
-    keyHash :: C.KeyHash
+    keyHash :: C.KeyHash,
+    -- pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
+    authPubKey :: Maybe C.PublicKeyX25519
   }
 
 instance Encoding ClientHandshake where
-  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
+  smpEncode ClientHandshake {smpVersion, keyHash, authPubKey} =
+    smpEncode (smpVersion, keyHash, fromMaybe "" authPubKey)
   smpP = do
     (smpVersion, keyHash) <- smpP
-    pure ClientHandshake {smpVersion, keyHash}
+    -- TODO drop SMP v6: remove special parser and make key non-optional
+    authPubKey <- authPubKeyP smpVersion
+    pure ClientHandshake {smpVersion, keyHash, authPubKey}
 
 instance Encoding ServerHandshake where
-  smpEncode ServerHandshake {smpVersionRange, sessionId} =
-    smpEncode (smpVersionRange, sessionId)
+  smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey} =
+    smpEncode (smpVersionRange, sessionId, fromMaybe "" authPubKey)
   smpP = do
     (smpVersionRange, sessionId) <- smpP
-    pure ServerHandshake {smpVersionRange, sessionId}
+    -- TODO drop SMP v6: remove special parser and make key non-optional
+    authPubKey <- authPubKeyP $ maxVersion smpVersionRange
+    pure ServerHandshake {smpVersionRange, sessionId, authPubKey}
+      
+authPubKeyP :: Version -> Parser (Maybe C.PublicKeyX25519)
+authPubKeyP v = if v >= authEncryptCmdsSMPVersion then Just <$> smpP else pure Nothing
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -278,6 +330,9 @@ data TransportError
     TELargeMsg
   | -- | incorrect session ID
     TEBadSession
+  | -- | absent server key for v7 entity
+    -- This error happens when the server did not provide a DH key to authorize commands for the queue that should be authorized with a DH key.
+    TENoServerAuth
   | -- | transport handshake error
     TEHandshake {handshakeErr :: HandshakeError}
   deriving (Eq, Read, Show, Exception)
@@ -298,6 +353,7 @@ transportErrorP =
   "BLOCK" $> TEBadBlock
     <|> "LARGE_MSG" $> TELargeMsg
     <|> "SESSION" $> TEBadSession
+    <|> "NO_AUTH" $> TENoServerAuth
     <|> "HANDSHAKE " *> (TEHandshake <$> parseRead1)
 
 -- | Serialize SMP encrypted transport error.
@@ -306,6 +362,7 @@ serializeTransportError = \case
   TEBadBlock -> "BLOCK"
   TELargeMsg -> "LARGE_MSG"
   TEBadSession -> "SESSION"
+  TENoServerAuth -> "NO_AUTH"
   TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
@@ -325,44 +382,49 @@ tGetBlock THandle {connection = c, blockSize} = do
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpServerHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-smpServerHandshake c kh smpVRange = do
+smpServerHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpServerHandshake c (k, pk) kh smpVRange = do
   let th@THandle {sessionId} = smpTHandle c
-  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange}
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange, authPubKey = Just k}
   getHandshake th >>= \case
-    ClientHandshake {smpVersion, keyHash}
+    ClientHandshake {smpVersion = v, keyHash, authPubKey = k'}
       | keyHash /= kh ->
           throwE $ TEHandshake IDENTITY
-      | smpVersion `isCompatible` smpVRange -> do
-          pure $ smpThHandle th smpVersion
+      | v `isCompatible` smpVRange ->
+          pure $ smpThHandle th v pk k'
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-smpClientHandshake c keyHash smpVRange = do
+smpClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpClientHandshake c (k, pk) keyHash smpVRange = do
   let th@THandle {sessionId} = smpTHandle c
-  ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
+  ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey = k'} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` smpVRange of
-      Just (Compatible smpVersion) -> do
-        sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure $ smpThHandle th smpVersion
+      Just (Compatible v) -> do
+        sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
+        pure $ smpThHandle th v pk k'
       Nothing -> throwE $ TEHandshake VERSION
 
-smpThHandle :: forall c. THandle c -> Version -> THandle c
-smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
+smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
+smpThHandle th v pk k_ = 
+  -- TODO drop SMP v6: make thAuth non-optional
+  let thAuth = (\k -> THandleAuth {peerPubKey = k, dhSecret = C.dh' k pk}) <$> k_
+   in (th :: THandle c) {thVersion = v, thAuth, batch = v >= batchCmdsSMPVersion}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
+-- The parser in getHandshake ignores all bytes that follow the handshake, allowing to extend it.
+-- This version extends server handshake with the SMP relay DH public key for command authorization.
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
 smpTHandle :: Transport c => c -> THandle c
-smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, batch = False}
+smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, batch = False}
 
 $(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
 

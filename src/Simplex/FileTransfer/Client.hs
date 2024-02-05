@@ -131,7 +131,7 @@ xftpClientError = \case
   HCNetworkError -> PCENetworkError
   HCIOError e -> PCEIOError e
 
-sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateSignKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
+sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPCommand c@XFTPClient {http2Client = HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
@@ -163,9 +163,9 @@ sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessio
 
 createXFTPChunk ::
   XFTPClient ->
-  C.APrivateSignKey ->
+  C.APrivateAuthKey ->
   FileInfo ->
-  NonEmpty C.APublicVerifyKey ->
+  NonEmpty C.APublicAuthKey ->
   Maybe BasicAuth ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rcps auth_ =
@@ -173,17 +173,17 @@ createXFTPChunk c spKey file rcps auth_ =
     (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-addXFTPRecipients :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> NonEmpty C.APublicVerifyKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)
+addXFTPRecipients :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> NonEmpty C.APublicAuthKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)
 addXFTPRecipients c spKey fId rcps =
   sendXFTPCommand c spKey fId (FADD rcps) Nothing >>= \case
     (FRRcvIds rIds, body) -> noFile body rIds
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
-uploadXFTPChunk :: XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
+uploadXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 uploadXFTPChunk c spKey fId chunkSpec =
   sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
 
-downloadXFTPChunk :: TVar ChaChaDRG -> XFTPClient -> C.APrivateSignKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk :: TVar ChaChaDRG -> XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
 downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath, chunkSize} = do
   (rDhKey, rpDhKey) <- atomically $ C.generateKeyPair g
   sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
@@ -205,10 +205,10 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
 chunkTimeout :: XFTPClientConfig -> Word32 -> Int
 chunkTimeout config chunkSize = fromIntegral $ (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
 
-deleteXFTPChunk :: XFTPClient -> C.APrivateSignKey -> SenderId -> ExceptT XFTPClientError IO ()
+deleteXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> SenderId -> ExceptT XFTPClientError IO ()
 deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse
 
-ackXFTPChunk :: XFTPClient -> C.APrivateSignKey -> RecipientId -> ExceptT XFTPClientError IO ()
+ackXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> RecipientId -> ExceptT XFTPClientError IO ()
 ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing >>= okResponse
 
 pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()

@@ -161,7 +161,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicVerifyKey, SubscriptionMode (..), UserProtocol, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
@@ -1031,7 +1031,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
           ack srv rId srvMsgId = do
             rq <- withStore c $ \db -> getRcvQueue db connId srv rId
             ackQueueMessage c rq srvMsgId
-          secure :: RcvQueue -> SMP.SndPublicVerifyKey -> m ()
+          secure :: RcvQueue -> SMP.SndPublicAuthKey -> m ()
           secure rq senderKey = do
             secureQueue c rq senderKey
             withStore' c $ \db -> setRcvQueueStatus db rq Secured
@@ -1635,10 +1635,10 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
     createToken =
       getNtfServer c >>= \case
         Just ntfServer ->
-          asks (cmdSignAlg . config) >>= \case
-            C.SignAlg a -> do
+          asks (cmdAuthAlg . config) >>= \case
+            C.AuthAlg a -> do
               g <- asks random
-              tknKeys <- atomically $ C.generateSignatureKeyPair a g
+              tknKeys <- atomically $ C.generateAuthKeyPair a g
               dhKeys <- atomically $ C.generateKeyPair g
               let tkn = newNtfToken suppliedDeviceToken ntfServer tknKeys dhKeys suppliedNtfMode
               withStore' c (`createNtfToken` tkn)
@@ -2100,7 +2100,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
           parseMessage :: Encoding a => ByteString -> m a
           parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
 
-          smpConfirmation :: SMP.MsgId -> Connection c -> C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> Version -> Version -> m ()
+          smpConfirmation :: SMP.MsgId -> Connection c -> C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> Version -> Version -> m ()
           smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
             logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret srvMsgId
             AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
@@ -2246,7 +2246,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
               _ -> throwError $ AGENT A_VERSION
 
           -- processed by queue recipient
-          qKeyMsg :: SMP.MsgId -> NonEmpty (SMPQueueInfo, SndPublicVerifyKey) -> Connection 'CDuplex -> m ()
+          qKeyMsg :: SMP.MsgId -> NonEmpty (SMPQueueInfo, SndPublicAuthKey) -> Connection 'CDuplex -> m ()
           qKeyMsg srvMsgId ((qInfo, senderKey) :| _) conn'@(DuplexConnection cData' rqs _) = do
             when (ratchetSyncSendProhibited cData') $ throwError $ AGENT (A_QUEUE "ratchet is not synchronized")
             clientVRange <- asks $ smpClientVRange . config
@@ -2500,9 +2500,9 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => UserId -> ConnId -> Compatible SMPQueueInfo -> m NewSndQueue
 newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
-  C.SignAlg a <- asks $ cmdSignAlg . config
+  C.AuthAlg a <- asks $ cmdAuthAlg . config
   g <- asks random
-  (sndPublicKey, sndPrivateKey) <- atomically $ C.generateSignatureKeyPair a g
+  (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   pure
     SndQueue

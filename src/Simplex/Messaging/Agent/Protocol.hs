@@ -196,7 +196,7 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
-    SndPublicVerifyKey,
+    SndPublicAuthKey,
     SrvLoc (..),
     SubscriptionMode,
     legacyEncodeServer,
@@ -776,7 +776,7 @@ instance StrEncoding MsgMeta where
 
 data SMPConfirmation = SMPConfirmation
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
-    senderKey :: SndPublicVerifyKey,
+    senderKey :: SndPublicAuthKey,
     -- | sender's DH public key for simple per-queue e2e encryption
     e2ePubKey :: C.PublicKeyX25519,
     -- | sender's information to be associated with the connection, e.g. sender's profile information
@@ -1010,7 +1010,7 @@ data AMessage
   | -- add queue to connection (sent by recipient), with optional address of the replaced queue
     QADD (NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
-    QKEY (NonEmpty (SMPQueueInfo, SndPublicVerifyKey))
+    QKEY (NonEmpty (SMPQueueInfo, SndPublicAuthKey))
   | -- inform that the queues are ready to use (sent by recipient)
     QUSE (NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching

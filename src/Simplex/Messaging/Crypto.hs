@@ -36,7 +36,7 @@ module Simplex.Messaging.Crypto
     Algorithm (..),
     SAlgorithm (..),
     Alg (..),
-    SignAlg (..),
+    AuthAlg (..),
     DhAlg (..),
     DhAlgorithm,
     PrivateKey (..),
@@ -53,9 +53,13 @@ module Simplex.Messaging.Crypto
     APublicVerifyKey (..),
     APrivateDhKey (..),
     APublicDhKey (..),
+    APrivateAuthKey (..),
+    APublicAuthKey (..),
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
+    AAuthKeyPair,
     KeyPair,
+    KeyPairX25519,
     ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
@@ -65,6 +69,7 @@ module Simplex.Messaging.Crypto
     generateAKeyPair,
     generateKeyPair,
     generateSignatureKeyPair,
+    generateAuthKeyPair,
     generateDhKeyPair,
     privateToX509,
     publicKey,
@@ -84,6 +89,7 @@ module Simplex.Messaging.Crypto
     CryptoSignature (..),
     SignatureSize (..),
     SignatureAlgorithm,
+    AuthAlgorithm,
     AlgorithmI (..),
     sign,
     sign',
@@ -115,6 +121,7 @@ module Simplex.Messaging.Crypto
     CbNonce (unCbNonce),
     pattern CbNonce,
     cbEncrypt,
+    cbEncryptNoPad,
     cbEncryptMaxLenBS,
     cbDecrypt,
     sbDecrypt_,
@@ -226,10 +233,10 @@ deriving instance Show (SAlgorithm a)
 
 data Alg = forall a. AlgorithmI a => Alg (SAlgorithm a)
 
-data SignAlg
+data AuthAlg
   = forall a.
-    (AlgorithmI a, SignatureAlgorithm a) =>
-    SignAlg (SAlgorithm a)
+    (AlgorithmI a, AuthAlgorithm a) =>
+    AuthAlg (SAlgorithm a)
 
 data DhAlg
   = forall a.
@@ -278,6 +285,12 @@ instance Eq APublicKey where
   APublicKey a k == APublicKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
+
+instance Encoding APublicKey where
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
 
 deriving instance Show APublicKey
 
@@ -425,6 +438,57 @@ dhAlgorithm = \case
   SX448 -> Just Dict
   _ -> Nothing
 
+data APrivateAuthKey
+  = forall a.
+    (AlgorithmI a, AuthAlgorithm a) =>
+    APrivateAuthKey (SAlgorithm a) (PrivateKey a)
+
+instance Eq APrivateAuthKey where
+  APrivateAuthKey a k == APrivateAuthKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APrivateAuthKey
+
+instance Encoding APrivateAuthKey where
+  smpEncode = smpEncode . encodePrivKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePrivKey
+  {-# INLINE smpDecode #-}
+
+instance StrEncoding APrivateAuthKey where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
+
+data APublicAuthKey
+  = forall a.
+    (AlgorithmI a, AuthAlgorithm a) =>
+    APublicAuthKey (SAlgorithm a) (PublicKey a)
+
+instance Eq APublicAuthKey where
+  APublicAuthKey a k == APublicAuthKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APublicAuthKey
+
+-- either X25519 or Ed algorithm that can be used to authorize commands to SMP server
+type family AuthAlgorithm (a :: Algorithm) :: Constraint where
+  AuthAlgorithm Ed25519 = ()
+  AuthAlgorithm Ed448 = ()
+  AuthAlgorithm X25519 = ()
+  AuthAlgorithm a =
+    (Int ~ Bool, TypeError (Text "Algorithm " :<>: ShowType a :<>: Text " cannot be used for authorization"))
+
+authAlgorithm :: SAlgorithm a -> Maybe (Dict (AuthAlgorithm a))
+authAlgorithm = \case
+  SEd25519 -> Just Dict
+  SEd448 -> Just Dict
+  SX25519 -> Just Dict
+  _ -> Nothing
+
 dhBytes' :: DhSecret a -> ByteString
 dhBytes' = \case
   DhSecretX25519 s -> BA.convert s
@@ -464,6 +528,12 @@ instance CryptoPublicKey APublicVerifyKey where
     Just Dict -> Right $ APublicVerifyKey a k
     _ -> Left "key does not support signature algorithms"
 
+instance CryptoPublicKey APublicAuthKey where
+  toPubKey f (APublicAuthKey _ k) = f k
+  pubKey (APublicKey a k) = case authAlgorithm a of
+    Just Dict -> Right $ APublicAuthKey a k
+    _ -> Left "key does not support auth algorithms"
+
 instance CryptoPublicKey APublicDhKey where
   toPubKey f (APublicDhKey _ k) = f k
   pubKey (APublicKey a k) = case dhAlgorithm a of
@@ -475,6 +545,12 @@ instance AlgorithmI a => CryptoPublicKey (PublicKey a) where
   pubKey (APublicKey _ k) = checkAlgorithm k
 
 instance Encoding APublicVerifyKey where
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
+
+instance Encoding APublicAuthKey where
   smpEncode = smpEncode . encodePubKey
   {-# INLINE smpEncode #-}
   smpDecode = decodePubKey
@@ -493,6 +569,12 @@ instance AlgorithmI a => Encoding (PublicKey a) where
   {-# INLINE smpDecode #-}
 
 instance StrEncoding APublicVerifyKey where
+  strEncode = strEncode . encodePubKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePubKey
+  {-# INLINE strDecode #-}
+
+instance StrEncoding APublicAuthKey where
   strEncode = strEncode . encodePubKey
   {-# INLINE strEncode #-}
   strDecode = decodePubKey
@@ -545,6 +627,13 @@ instance CryptoPrivateKey APrivateSignKey where
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
 
+instance CryptoPrivateKey APrivateAuthKey where
+  type PublicKeyType APrivateAuthKey = APublicAuthKey
+  toPrivKey f (APrivateAuthKey _ k) = f k
+  privKey (APrivateKey a k) = case authAlgorithm a of
+    Just Dict -> Right $ APrivateAuthKey a k
+    _ -> Left "key does not support auth algorithms"
+
 instance CryptoPrivateKey APrivateDhKey where
   type PublicKeyType APrivateDhKey = APublicDhKey
   toPrivKey f (APrivateDhKey _ k) = f k
@@ -588,11 +677,16 @@ type KeyPairType pk = (PublicKeyType pk, pk)
 
 type KeyPair a = KeyPairType (PrivateKey a)
 
+type KeyPairX25519 = KeyPair X25519
+
+-- TODO narrow key pair types to have the same algorithm in both keys
 type AKeyPair = KeyPairType APrivateKey
 
 type ASignatureKeyPair = KeyPairType APrivateSignKey
 
 type ADhKeyPair = KeyPairType APrivateDhKey
+
+type AAuthKeyPair = KeyPairType APrivateAuthKey
 
 newRandom :: IO (TVar ChaChaDRG)
 newRandom = newTVarIO =<< drgNew
@@ -602,6 +696,9 @@ generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair 
 
 generateSignatureKeyPair :: (AlgorithmI a, SignatureAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ASignatureKeyPair
 generateSignatureKeyPair a g = bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair g
+
+generateAuthKeyPair :: (AlgorithmI a, AuthAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM AAuthKeyPair
+generateAuthKeyPair a g = bimap (APublicAuthKey a) (APrivateAuthKey a) <$> generateKeyPair g
 
 generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ADhKeyPair
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
@@ -632,6 +729,10 @@ instance ToField APrivateSignKey where toField = toField . encodePrivKey
 
 instance ToField APublicVerifyKey where toField = toField . encodePubKey
 
+instance ToField APrivateAuthKey where toField = toField . encodePrivKey
+
+instance ToField APublicAuthKey where toField = toField . encodePubKey
+
 instance ToField APrivateDhKey where toField = toField . encodePrivKey
 
 instance ToField APublicDhKey where toField = toField . encodePubKey
@@ -646,6 +747,10 @@ instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePriv
 
 instance FromField APublicVerifyKey where fromField = blobFieldDecoder decodePubKey
 
+instance FromField APrivateAuthKey where fromField = blobFieldDecoder decodePrivKey
+
+instance FromField APublicAuthKey where fromField = blobFieldDecoder decodePubKey
+
 instance FromField APrivateDhKey where fromField = blobFieldDecoder decodePrivKey
 
 instance FromField APublicDhKey where fromField = blobFieldDecoder decodePubKey
@@ -656,7 +761,7 @@ instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField =
 
 instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldDecoder strDecode
 
-instance IsString (Maybe ASignature) where
+instance IsString ASignature where
   fromString = parseString $ decode >=> decodeSignature
 
 data Signature (a :: Algorithm) where
@@ -1073,9 +1178,13 @@ dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
 dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk _) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
--- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+-- | NaCl @crypto_box@ encrypt with padding with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
+
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+cbEncryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> ByteString
+cbEncryptNoPad (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce
 
 -- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
 sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString

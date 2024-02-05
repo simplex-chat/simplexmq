@@ -253,9 +253,9 @@ runNtfSMPWorker c srv Worker {doWork} = do
             getNtfToken >>= \case
               Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
                 rq <- withStore c (`getPrimaryRcvQueue` connId)
-                C.SignAlg a <- asks (cmdSignAlg . config)
+                C.AuthAlg a <- asks (cmdAuthAlg . config)
                 g <- asks random
-                (ntfPublicKey, ntfPrivateKey) <- atomically $ C.generateSignatureKeyPair a g
+                (ntfPublicKey, ntfPrivateKey) <- atomically $ C.generateAuthKeyPair a g
                 (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
                 (notifierId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPublicKey rcvNtfPubDhKey
                 let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey

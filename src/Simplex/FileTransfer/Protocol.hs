@@ -21,9 +21,9 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
+import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -38,13 +38,14 @@ import Simplex.Messaging.Protocol
     ProtocolMsgTag (..),
     ProtocolType (..),
     RcvPublicDhKey,
-    RcvPublicVerifyKey,
+    RcvPublicAuthKey,
     RecipientId,
     SenderId,
     SentRawTransmission,
     SignedTransmission,
-    SndPublicVerifyKey,
+    SndPublicAuthKey,
     Transmission,
+    isAuthNone,
     encodeTransmission,
     messageTagP,
     tDecodeParseValidate,
@@ -148,8 +149,8 @@ instance Protocol XFTPErrorType FileResponse where
     _ -> Nothing
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicVerifyKey -> Maybe BasicAuth -> FileCommand FSender
-  FADD :: NonEmpty RcvPublicVerifyKey -> FileCommand FSender
+  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
+  FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
   FPUT :: FileCommand FSender
   FDEL :: FileCommand FSender
   FGET :: RcvPublicDhKey -> FileCommand FRecipient
@@ -163,7 +164,7 @@ data FileCmd = forall p. FilePartyI p => FileCmd (SFileParty p) (FileCommand p)
 deriving instance Show FileCmd
 
 data FileInfo = FileInfo
-  { sndKey :: SndPublicVerifyKey,
+  { sndKey :: SndPublicAuthKey,
     size :: Word32,
     digest :: ByteString
   }
@@ -190,18 +191,18 @@ instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
   fromProtocolError = fromProtocolError @XFTPErrorType @FileResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (sig, _, fileId, _) cmd = case cmd of
+  checkCredentials (auth, _, fileId, _) cmd = case cmd of
     -- FNEW must not have signature and chunk ID
     FNEW {}
-      | isNothing sig -> Left $ CMD NO_AUTH
+      | isAuthNone auth -> Left $ CMD NO_AUTH
       | not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
-      | isNothing sig && B.null fileId -> Right cmd
+      | isAuthNone auth && B.null fileId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
     _
-      | isNothing sig || B.null fileId -> Left $ CMD NO_AUTH
+      | isAuthNone auth || B.null fileId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
 instance ProtocolEncoding XFTPErrorType FileCmd where
@@ -393,13 +394,10 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateSignKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
   let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
-  xftpEncodeBatch1 $ signTransmission t
-  where
-    signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
+  xftpEncodeBatch1 =<< authTransmission Nothing pKey corrId t
 
 -- this function uses batch syntax but puts only one transmission in the batch
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString

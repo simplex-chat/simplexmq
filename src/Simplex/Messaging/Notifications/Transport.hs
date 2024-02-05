@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -56,8 +57,8 @@ ntfServerHandshake c kh ntfVRange = do
       | otherwise -> throwError $ TEHandshake VERSION
 
 -- | Notifcations server client transport handshake.
-ntfClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-ntfClientHandshake c keyHash ntfVRange = do
+ntfClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+ntfClientHandshake c _ keyHash ntfVRange = do
   let th@THandle {sessionId} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange} <- getHandshake th
   if sessionId /= sessId
@@ -69,4 +70,4 @@ ntfClientHandshake c keyHash ntfVRange = do
       Nothing -> throwError $ TEHandshake VERSION
 
 ntfTHandle :: Transport c => c -> THandle c
-ntfTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, batch = False}
+ntfTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thAuth = Nothing, batch = False}

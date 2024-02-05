@@ -82,7 +82,7 @@ data InitialAgentServers = InitialAgentServers
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
-    cmdSignAlg :: C.SignAlg,
+    cmdAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
     smpCfg :: ProtocolClientConfig,
@@ -147,7 +147,7 @@ defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      cmdSignAlg = C.SignAlg C.SEd448,
+      cmdAuthAlg = C.AuthAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
