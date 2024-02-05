@@ -87,7 +87,7 @@ import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
+import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
@@ -423,10 +423,9 @@ smpThHandle th v pk k_ =
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
--- The parser in getHandshake ignores all bytes that follow the handshake, allowing to extend it.
--- This version extends server handshake with the SMP relay DH public key for command authorization.
+-- ignores tail bytes to allow future extensions
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
-getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
+getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
 
 smpTHandle :: Transport c => c -> THandle c
 smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, batch = False}
