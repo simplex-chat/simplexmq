@@ -71,6 +71,7 @@ import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
@@ -78,7 +79,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
-import Data.Maybe (fromMaybe)
 import Data.Version (showVersion)
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
@@ -303,7 +303,7 @@ data ClientHandshake = ClientHandshake
 
 instance Encoding ClientHandshake where
   smpEncode ClientHandshake {smpVersion, keyHash, authPubKey} =
-    smpEncode (smpVersion, keyHash, fromMaybe "" authPubKey)
+    smpEncode (smpVersion, keyHash) <> encodeAuthPubKey smpVersion authPubKey
   smpP = do
     (smpVersion, keyHash) <- smpP
     -- TODO drop SMP v6: remove special parser and make key non-optional
@@ -312,7 +312,7 @@ instance Encoding ClientHandshake where
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey} =
-    smpEncode (smpVersionRange, sessionId, fromMaybe "" authPubKey)
+    smpEncode (smpVersionRange, sessionId) <> encodeAuthPubKey (maxVersion smpVersionRange) authPubKey
   smpP = do
     (smpVersionRange, sessionId) <- smpP
     -- TODO drop SMP v6: remove special parser and make key non-optional
@@ -321,6 +321,11 @@ instance Encoding ServerHandshake where
       
 authPubKeyP :: Version -> Parser (Maybe C.PublicKeyX25519)
 authPubKeyP v = if v >= authEncryptCmdsSMPVersion then Just <$> smpP else pure Nothing
+
+encodeAuthPubKey :: Version -> Maybe C.PublicKeyX25519 -> ByteString
+encodeAuthPubKey v k
+  | v >= authEncryptCmdsSMPVersion = maybe "" smpEncode k
+  | otherwise = ""
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError

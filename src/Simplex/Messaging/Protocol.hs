@@ -270,17 +270,17 @@ isAuthNone = \case
   _ -> False
 
 -- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TAuthorization
-instance Encoding TransmissionAuth where
-  smpEncode = \case
-    TAuthNone -> "0" -- same as Nothing
-    TAuthSignature s -> smpEncode ('1', C.signatureBytes s) -- same as Just
-    TAuthEncHash s -> smpEncode ('2', s)
-  smpP =
-    A.anyChar >>= \case
-      '0' -> pure TAuthNone
-      '1' -> fmap TAuthSignature . C.decodeSignature <$?> smpP
-      '2' -> TAuthEncHash <$> smpP
-      _ -> fail "bad TransmissionAuth tag"
+tAuthBytes :: TransmissionAuth -> ByteString
+tAuthBytes = \case
+  TAuthNone -> ""
+  TAuthSignature s -> C.signatureBytes s
+  TAuthEncHash s -> s
+
+decodeTAuthBytes :: ByteString -> Either String TransmissionAuth
+decodeTAuthBytes s
+  | B.null s = Right TAuthNone
+  | B.length s == 64 + 16 = Right $ TAuthEncHash s
+  | otherwise = TAuthSignature <$> C.decodeSignature s
 
 instance IsString TransmissionAuth where
   fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . maybe TAuthNone TAuthSignature
@@ -1375,7 +1375,7 @@ batchTransmissions' batch bSize
         b = B.concat $ B.singleton (lenEncode n) : ss
 
 tEncode :: SentRawTransmission -> ByteString
-tEncode (auth, t) = smpEncode auth <> t
+tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
 {-# INLINE tEncode #-}
 
 tEncodeForBatch :: SentRawTransmission -> ByteString
@@ -1415,7 +1415,7 @@ tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => SessionId ->
 tDecodeParseValidate sessionId v = \case
   Right RawTransmission {authorization, authorized, sessId, corrId, entityId, command}
     | sessId == sessionId ->
-        let decodedTransmission = (,corrId,entityId,command) <$> smpDecode authorization
+        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authorization
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
     | otherwise -> (TAuthNone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
   Left _ -> tError ""
