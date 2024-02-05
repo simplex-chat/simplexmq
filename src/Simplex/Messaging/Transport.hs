@@ -65,6 +65,7 @@ import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
@@ -80,7 +81,7 @@ import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
+import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
@@ -258,14 +259,14 @@ data ClientHandshake = ClientHandshake
   }
 
 instance Encoding ClientHandshake where
-  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
+  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash) <> "1234"
   smpP = do
     (smpVersion, keyHash) <- smpP
     pure ClientHandshake {smpVersion, keyHash}
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId} =
-    smpEncode (smpVersionRange, sessionId)
+    smpEncode (smpVersionRange, sessionId) <> "1234"
   smpP = do
     (smpVersionRange, sessionId) <- smpP
     pure ServerHandshake {smpVersionRange, sessionId}
@@ -358,8 +359,9 @@ smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
+-- ignores tail bytes to allow future extensions
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
-getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
+getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
 
 smpTHandle :: Transport c => c -> THandle c
 smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, batch = False}
