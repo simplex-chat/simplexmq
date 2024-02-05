@@ -259,14 +259,14 @@ data ClientHandshake = ClientHandshake
   }
 
 instance Encoding ClientHandshake where
-  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash) <> "1234"
+  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
   smpP = do
     (smpVersion, keyHash) <- smpP
     pure ClientHandshake {smpVersion, keyHash}
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId} =
-    smpEncode (smpVersionRange, sessionId) <> "1234"
+    smpEncode (smpVersionRange, sessionId)
   smpP = do
     (smpVersionRange, sessionId) <- smpP
     pure ServerHandshake {smpVersionRange, sessionId}
