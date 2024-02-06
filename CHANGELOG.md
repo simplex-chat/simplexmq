@@ -1,3 +1,16 @@
+# 5.5.1
+
+SMP servers:
+- do not keep stats file open
+- additional stats about currently stored messages
+
+Agent:
+- support multiple notification servers (only one can be used at a time).
+- expire messages after "quota exceeded" error after 7 days (instead of 21 days previously).
+- stabilize message delivery, remove unnecessary subscription retries and traffic.
+- improve database performance for message delivery.
+- fix sockets/memory leak - a very old bug "activated" by improvements in v5.5.0.
+
 # 5.5.0
 
 Code:
