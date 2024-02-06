@@ -20,7 +20,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
-import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionURI (..), ValidFileDescription, mb, pattern ValidFileDescription)
+import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionURI (..), ValidFileDescription, mb, pattern ValidFileDescription, fileDescriptionURI)
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
@@ -32,7 +32,6 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
@@ -167,16 +166,16 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
   case fdRedirect of
     FileDescription {redirect = Just _} -> pure ()
     _ -> error "missing RedirectFileInfo"
-  let uri = strEncode $ FileDescriptionURI SSSimplex vfdRedirect
+  let uri = strEncode $ fileDescriptionURI vfdRedirect
   case strDecode uri of
     Left err -> fail err
-    Right ok -> ok `shouldBe` FileDescriptionURI SSSimplex vfdRedirect
+    Right ok -> ok `shouldBe` fileDescriptionURI vfdRedirect
   disconnectAgentClient sndr
   --- recipient
   rcp <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  FileDescriptionURI _ss vfd <- either fail pure $ strDecode uri
+  FileDescriptionURI {description} <- either fail pure $ strDecode uri
 
-  rcvFileId <- runRight $ xftpReceiveFile rcp 1 vfd Nothing
+  rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing
   rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 fileSize)
   rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 fileSize)
   rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 8388608 fileSize)
