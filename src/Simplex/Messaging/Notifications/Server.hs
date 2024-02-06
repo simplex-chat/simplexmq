@@ -48,7 +48,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
@@ -352,7 +352,7 @@ clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: Transport c => THandle c -> NtfServerClient -> M ()
-receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
+receive th@THandle {thAuth} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
@@ -360,7 +360,7 @@ receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
     case cmdOrError of
       Left e -> write sndQ (corrId, entId, NRErr e)
       Right cmd ->
-        verifyNtfTransmission t cmd >>= \case
+        verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd >>= \case
           VRVerified req -> write rcvQ req
           VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
   where
@@ -377,14 +377,14 @@ send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = 
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
-verifyNtfTransmission :: SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
-verifyNtfTransmission (tAuth, authorized, (corrId, entId, _)) cmd = do
+verifyNtfTransmission :: Maybe (THandleAuth, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
+verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
       r_ <- atomically $ getNtfTokenRegistration st tkn
       pure $
-        if verifyCmdSignature tAuth authorized k
+        if verifyCmdSignature auth_ tAuth authorized k
           then case r_ of
             Just t@NtfTknData {tknVerifyKey}
               | k == tknVerifyKey -> verifiedTknCmd t c
@@ -405,7 +405,7 @@ verifyNtfTransmission (tAuth, authorized, (corrId, entId, _)) cmd = do
             then do
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
-            else pure $ dummyVerifyCmd authorized tAuth `seq` VRFailed
+            else pure $ dummyVerifyCmd auth_ authorized tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
@@ -413,7 +413,7 @@ verifyNtfTransmission (tAuth, authorized, (corrId, entId, _)) cmd = do
         Just s@NtfSubData {tokenId = subTknId} -> do
           t_ <- atomically $ getActiveNtfToken st subTknId
           verifyToken' t_ $ verifiedSubCmd s c
-        _ -> pure $ dummyVerifyCmd authorized tAuth `seq` VRFailed
+        _ -> pure $ dummyVerifyCmd auth_ authorized tAuth `seq` VRFailed
   where
     verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
     verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
@@ -421,10 +421,10 @@ verifyNtfTransmission (tAuth, authorized, (corrId, entId, _)) cmd = do
     verifyToken t_ positiveVerificationResult =
       pure $ case t_ of
         Just t@NtfTknData {tknVerifyKey} ->
-          if verifyCmdSignature tAuth authorized tknVerifyKey
+          if verifyCmdSignature auth_ tAuth authorized tknVerifyKey
             then positiveVerificationResult t
             else VRFailed
-        _ -> dummyVerifyCmd authorized tAuth `seq` VRFailed
+        _ -> dummyVerifyCmd auth_ authorized tAuth `seq` VRFailed
     verifyToken' :: Maybe NtfTknData -> VerificationResult -> M VerificationResult
     verifyToken' t_ = verifyToken t_ . const
 

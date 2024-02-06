@@ -124,6 +124,7 @@ module Simplex.Messaging.Crypto
     cbEncryptNoPad,
     cbEncryptMaxLenBS,
     cbDecrypt,
+    cbDecryptNoPad,
     sbDecrypt_,
     sbEncrypt_,
     cbNonce,
@@ -1182,7 +1183,7 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
 
--- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce (without padding).
 cbEncryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> ByteString
 cbEncryptNoPad (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce
 
@@ -1207,15 +1208,23 @@ cryptoBox secret nonce s = BA.convert tag <> c
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
 cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
 
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
+cbDecryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
+cbDecryptNoPad (DhSecretX25519 secret) = sbDecryptNoPad_ secret
+
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
 sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
 sbDecrypt (SbKey key) = sbDecrypt_ key
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
-sbDecrypt_ secret (CbNonce nonce) packet
+sbDecrypt_ secret nonce = unPad <=< sbDecryptNoPad_ secret nonce
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
+sbDecryptNoPad_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecryptNoPad_ secret (CbNonce nonce) packet
   | B.length packet < 16 = Left CBDecryptError
-  | BA.constEq tag' tag = unPad msg
+  | BA.constEq tag' tag = Right msg
   | otherwise = Left CBDecryptError
   where
     (tag', c) = B.splitAt 16 packet

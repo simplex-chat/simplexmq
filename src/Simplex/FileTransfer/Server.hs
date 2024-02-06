@@ -264,8 +264,9 @@ verifyXFTPTransmission tAuth authorized fId cmd =
       where
         verify = \case
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
-          _ -> dummyVerifyCmd authorized tAuth `seq` VRFailed
-    req `verifyWith` k = if verifyCmdSignature tAuth authorized k then VRVerified req else VRFailed
+          _ -> dummyVerifyCmd Nothing authorized tAuth `seq` VRFailed
+    -- TODO verify with DH authorization
+    req `verifyWith` k = if verifyCmdSignature Nothing tAuth authorized k then VRVerified req else VRFailed
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case

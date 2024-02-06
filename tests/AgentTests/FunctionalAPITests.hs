@@ -49,7 +49,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
@@ -63,7 +63,7 @@ import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolS
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ATransport (..))
+import Simplex.Messaging.Transport (ATransport (..), authEncryptCmdsSMPVersion)
 import Simplex.Messaging.Version
 import System.Directory (copyFile, renameFile)
 import Test.Hspec
@@ -129,6 +129,9 @@ smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCf
 smpCfgV4 :: ProtocolClientConfig
 smpCfgV4 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 4}
 
+smpCfgV7 :: ProtocolClientConfig
+smpCfgV7 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}
+
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
@@ -136,6 +139,13 @@ agentCfgVPrev =
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
       e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
       smpCfg = smpCfgVPrev
+    }
+
+agentCfgV7 :: AgentConfig
+agentCfgV7 = 
+  agentCfg
+    { cmdAuthAlg = C.AuthAlg C.SX25519,
+      smpCfg = smpCfgV7
     }
 
 agentCfgV1 :: AgentConfig
@@ -363,6 +373,9 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
+  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 runTest
+  it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 runTest
+  it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest

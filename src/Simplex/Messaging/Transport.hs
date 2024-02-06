@@ -279,6 +279,7 @@ data THandle c = THandle
 
 data THandleAuth = THandleAuth
   { peerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
+    privKey :: C.PrivateKeyX25519, -- used to combine with peer's per-queue key (currently only in the server)
     dhSecret :: C.DhSecretX25519 -- used by both parties to encrypt entity IDs in for version >= 7 
   }
 
@@ -415,9 +416,9 @@ smpClientHandshake c (k, pk) keyHash smpVRange = do
       Nothing -> throwE $ TEHandshake VERSION
 
 smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
-smpThHandle th v pk k_ = 
+smpThHandle th v pk k_ =
   -- TODO drop SMP v6: make thAuth non-optional
-  let thAuth = (\k -> THandleAuth {peerPubKey = k, dhSecret = C.dh' k pk}) <$> k_
+  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}) <$> k_
    in (th :: THandle c) {thVersion = v, thAuth, batch = v >= batchCmdsSMPVersion}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()

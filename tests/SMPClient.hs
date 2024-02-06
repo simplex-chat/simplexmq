@@ -26,6 +26,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -104,6 +105,9 @@ cfg =
       controlPort = Nothing
     }
 
+cfgV7 :: ServerConfig
+cfgV7 = cfg {smpServerVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}
+
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
@@ -137,6 +141,9 @@ withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 
 withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
+
+withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandle c -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
