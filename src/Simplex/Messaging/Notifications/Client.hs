@@ -10,12 +10,16 @@ import Data.Word (Word16)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Transport (supportedNTFServerVRange)
 import Simplex.Messaging.Protocol (ErrorType)
 import Simplex.Messaging.Util (bshow)
 
 type NtfClient = ProtocolClient ErrorType NtfResponse
 
 type NtfClientError = ProtocolClientError ErrorType
+
+defaultNTFClientConfig :: ProtocolClientConfig
+defaultNTFClientConfig = defaultClientConfig supportedNTFServerVRange
 
 ntfRegisterToken :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Token -> ExceptT NtfClientError IO (NtfTokenId, C.PublicKeyX25519)
 ntfRegisterToken c pKey newTkn =

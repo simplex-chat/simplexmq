@@ -35,7 +35,8 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultSMPClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
 import Simplex.Messaging.Transport
@@ -204,8 +205,8 @@ agentCfg =
     { tcpPort = agentTestPort,
       tbqSize = 4,
       -- database = testDB,
-      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
-      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
+      smpCfg = defaultSMPClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
+      ntfCfg = defaultNTFClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
       reconnectInterval = fastRetryInterval,
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,

@@ -43,8 +43,7 @@ serverTests :: ATransport -> Spec
 serverTests t@(ATransport t') = do
   describe "SMP syntax" $ syntaxTests t
   describe "SMP queues" $ do
-    describe "NEW and KEY commands, SEND messages (v2)" $ testCreateSecureV2 t'
-    describe "NEW and KEY commands, SEND messages (v3)" $ testCreateSecure t
+    describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
     describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
     describe "Stress test" $ stressTest t
     describe "allowNewQueues setting" $ testAllowNewQueues t'
@@ -56,9 +55,7 @@ serverTests t@(ATransport t') = do
     describe "Exceeding queue quota" $ testExceedQueueQuota t'
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
-  describe "Restore messages (old / v2)" $ do
-    testRestoreMessagesV2 t
-    testRestoreExpireMessages t
+  describe "Restore messages (old / v2)" $ testRestoreExpireMessages t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -120,71 +117,6 @@ decryptMsgV3 dhShared nonce body =
     Right ClientRcvMsgBody {msgBody} -> Right msgBody
     Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
     Left e -> Left e
-
-testCreateSecureV2 :: forall c. Transport c => TProxy c -> Spec
-testCreateSecureV2 _ =
-  it "should create (NEW) and secure (KEY) queue" $
-    withSmpServerConfigOn (transport @c) cfgV2 testPort $ \_ -> testSMPClient @c $ \h -> do
-      g <- C.newRandom
-      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
-      let dec = decryptMsgV2 $ C.dh' srvDh dhPriv
-      (rId1, "") #== "creates queue"
-
-      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, _SEND "hello")
-      (ok1, OK) #== "accepts unsigned SEND"
-      (sId1, sId) #== "same queue ID in response 1"
-
-      Resp "" _ (Msg mId1 msg1) <- tGet1 h
-      (dec mId1 msg1, Right "hello") #== "delivers message"
-
-      Resp "cdab" _ ok4 <- signSendRecv h rKey ("cdab", rId, ACK mId1)
-      (ok4, OK) #== "replies OK when message acknowledged if no more messages"
-
-      Resp "dabc" _ err6 <- signSendRecv h rKey ("dabc", rId, ACK mId1)
-      (err6, ERR NO_MSG) #== "replies ERR when message acknowledged without messages"
-
-      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
-      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, _SEND "hello")
-      (err1, ERR AUTH) #== "rejects signed SEND"
-      (sId2, sId) #== "same queue ID in response 2"
-
-      Resp "bcda" _ err2 <- sendRecv h (sampleSig, "bcda", rId, KEY sPub)
-      (err2, ERR AUTH) #== "rejects KEY with wrong signature"
-
-      Resp "cdab" _ err3 <- signSendRecv h rKey ("cdab", sId, KEY sPub)
-      (err3, ERR AUTH) #== "rejects KEY with sender's ID"
-
-      Resp "dabc" rId2 ok2 <- signSendRecv h rKey ("dabc", rId, KEY sPub)
-      (ok2, OK) #== "secures queue"
-      (rId2, rId) #== "same queue ID in response 3"
-
-      Resp "abcd" _ OK <- signSendRecv h rKey ("abcd", rId, KEY sPub)
-      (sPub', _) <- atomically $ C.generateAuthKeyPair C.SEd448 g
-      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, KEY sPub')
-      (err4, ERR AUTH) #== "rejects if secured with different key"
-
-      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, _SEND "hello again")
-      (ok3, OK) #== "accepts signed SEND"
-
-      Resp "" _ (Msg mId2 msg2) <- tGet1 h
-      (dec mId2 msg2, Right "hello again") #== "delivers message 2"
-
-      Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, ACK mId2)
-      (ok5, OK) #== "replies OK when message acknowledged 2"
-
-      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, _SEND "hello")
-      (err5, ERR AUTH) #== "rejects unsigned SEND"
-
-      let maxAllowedMessage = B.replicate maxMessageLength '-'
-      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
-      Resp "" _ (Msg mId3 msg3) <- tGet1 h
-      (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
-
-      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
-      Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv h sKey ("bcda", sId, _SEND biggerMessage)
-      pure ()
 
 testCreateSecure :: ATransport -> Spec
 testCreateSecure (ATransport t) =
@@ -734,76 +666,6 @@ checkStats s qs sent received = do
   S.toList _week `shouldBe` qs
   S.toList _month `shouldBe` qs
 
-testRestoreMessagesV2 :: ATransport -> Spec
-testRestoreMessagesV2 at@(ATransport t) =
-  it "should store messages on exit and restore on start" $ do
-    g <- C.newRandom
-    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    recipientId <- newTVarIO ""
-    recipientKey <- newTVarIO Nothing
-    dhShared <- newTVarIO Nothing
-    senderId <- newTVarIO ""
-
-    withSmpServerStoreMsgLogOnV2 at testPort . runTest t $ \h -> do
-      runClient t $ \h1 -> do
-        (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
-        atomically $ do
-          writeTVar recipientId rId
-          writeTVar recipientKey $ Just rKey
-          writeTVar dhShared $ Just dh
-          writeTVar senderId sId
-        Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
-        Resp "" _ (Msg mId1 msg1) <- tGet1 h1
-        Resp "1a" _ OK <- signSendRecv h1 rKey ("1a", rId, ACK mId1)
-        (decryptMsgV2 dh mId1 msg1, Right "hello") #== "message delivered"
-      -- messages below are delivered after server restart
-      sId <- readTVarIO senderId
-      Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
-      Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
-      Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
-      pure ()
-
-    logSize testStoreLogFile `shouldReturn` 2
-    logSize testStoreMsgsFile `shouldReturn` 3
-
-    withSmpServerStoreMsgLogOnV2 at testPort . runTest t $ \h -> do
-      rId <- readTVarIO recipientId
-      Just rKey <- readTVarIO recipientKey
-      Just dh <- readTVarIO dhShared
-      let dec = decryptMsgV2 dh
-      Resp "2" _ (Msg mId2 msg2) <- signSendRecv h rKey ("2", rId, SUB)
-      (dec mId2 msg2, Right "hello 2") #== "restored message delivered"
-      Resp "3" _ (Msg mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
-      (dec mId3 msg3, Right "hello 3") #== "restored message delivered"
-      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
-      (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
-
-    logSize testStoreLogFile `shouldReturn` 1
-    -- the last message is not removed because it was not ACK'd
-    logSize testStoreMsgsFile `shouldReturn` 1
-
-    withSmpServerStoreMsgLogOnV2 at testPort . runTest t $ \h -> do
-      rId <- readTVarIO recipientId
-      Just rKey <- readTVarIO recipientKey
-      Just dh <- readTVarIO dhShared
-      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
-      Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId4)
-      (decryptMsgV2 dh mId4 msg4, Right "hello 4") #== "restored message delivered"
-
-    logSize testStoreLogFile `shouldReturn` 1
-    logSize testStoreMsgsFile `shouldReturn` 0
-
-    removeFile testStoreLogFile
-    removeFile testStoreMsgsFile
-  where
-    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
-    runTest _ test' server = do
-      testSMPClient test' `shouldReturn` ()
-      killThread server
-
-    runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
-    runClient _ test' = testSMPClient test' `shouldReturn` ()
-
 testRestoreExpireMessages :: ATransport -> Spec
 testRestoreExpireMessages at@(ATransport t) =
   it "should store messages on exit and restore on start" $ do
@@ -814,7 +676,7 @@ testRestoreExpireMessages at@(ATransport t) =
     dhShared <- newTVarIO Nothing
     senderId <- newTVarIO ""
 
-    withSmpServerStoreMsgLogOnV2 at testPort . runTest t $ \h -> do
+    withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
       runClient t $ \h1 -> do
         (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
         atomically $ do
@@ -835,7 +697,7 @@ testRestoreExpireMessages at@(ATransport t) =
     length (B.lines msgs) `shouldBe` 4
 
     let expCfg1 = Just ExpirationConfig {ttl = 86400, checkInterval = 43200}
-        cfg1 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
+        cfg1 = cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -843,7 +705,7 @@ testRestoreExpireMessages at@(ATransport t) =
     msgs' `shouldBe` msgs
 
     let expCfg2 = Just ExpirationConfig {ttl = 2, checkInterval = 43200}
-        cfg2 = cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
+        cfg2 = cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg2 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1

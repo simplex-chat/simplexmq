@@ -26,7 +26,6 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -77,9 +76,6 @@ testSMPClient client = do
       Right th -> client th
       Left e -> error $ show e
 
-cfgV2 :: ServerConfig
-cfgV2 = cfg {smpServerVRange = mkVersionRange 1 2}
-
 cfg :: ServerConfig
 cfg =
   ServerConfig
@@ -107,9 +103,6 @@ cfg =
       transportConfig = defaultTransportServerConfig,
       controlPort = Nothing
     }
-
-withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}

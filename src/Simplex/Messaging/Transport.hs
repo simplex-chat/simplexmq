@@ -122,12 +122,12 @@ authEncryptCmdsSMPVersion :: Version
 authEncryptCmdsSMPVersion = 7
 
 currentSMPServerVersion :: Version
-currentSMPServerVersion = 7
+currentSMPServerVersion = 6
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
 supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange batchCmdsSMPVersion (currentSMPServerVersion - 1)
+supportedSMPServerVRange = mkVersionRange batchCmdsSMPVersion currentSMPServerVersion
 
 simplexMQVersion :: String
 simplexMQVersion = showVersion SMQ.version

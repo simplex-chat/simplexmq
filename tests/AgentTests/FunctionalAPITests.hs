@@ -56,7 +56,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers
 import Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
@@ -126,8 +126,8 @@ pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMs
 smpCfgVPrev :: ProtocolClientConfig
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-smpCfgV1 :: ProtocolClientConfig
-smpCfgV1 = (smpCfg agentCfg) {serverVRange = v1Range}
+smpCfgV4 :: ProtocolClientConfig
+smpCfgV4 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 4}
 
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
@@ -144,7 +144,7 @@ agentCfgV1 =
     { smpAgentVRange = v1Range,
       smpClientVRange = v1Range,
       e2eEncryptVRange = v1Range,
-      smpCfg = smpCfgV1
+      smpCfg = smpCfgV4
     }
 
 agentCfgRatchetVPrev :: AgentConfig
@@ -2019,7 +2019,7 @@ testCreateQueueAuth clnt1 clnt2 = do
   where
     getClient clientId (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
-          smpCfg = (defaultClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
+          smpCfg = (defaultSMPClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
        in getSMPAgentClient' clientId agentCfg {smpCfg} servers db
 
 testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)

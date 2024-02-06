@@ -63,6 +63,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     TransportSessionMode (..),
     defaultClientConfig,
+    defaultSMPClientConfig,
     defaultNetworkConfig,
     transportClientConfig,
     chooseTransportHost,
@@ -256,15 +257,18 @@ data ProtocolClientConfig = ProtocolClientConfig
   }
 
 -- | Default protocol client configuration.
-defaultClientConfig :: ProtocolClientConfig
-defaultClientConfig =
+defaultClientConfig :: VersionRange -> ProtocolClientConfig
+defaultClientConfig serverVRange =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
-      serverVRange = supportedSMPServerVRange,
+      serverVRange,
       batchDelay = Nothing
     }
+
+defaultSMPClientConfig :: ProtocolClientConfig
+defaultSMPClientConfig = defaultClientConfig supportedSMPServerVRange
 
 data Request err msg = Request
   { entityId :: EntityId,

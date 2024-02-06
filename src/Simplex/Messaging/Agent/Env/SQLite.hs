@@ -57,6 +57,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
+import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
@@ -150,8 +151,8 @@ defaultAgentConfig =
       cmdAuthAlg = C.AuthAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
-      smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
-      ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
+      smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
+      ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
