@@ -20,7 +20,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
-import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionURI (..), ValidFileDescription, mb, pattern ValidFileDescription, fileDescriptionURI)
+import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Agent (AgentClient, disconnectAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
@@ -45,7 +45,8 @@ xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive file" testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
-  it "should send and receive file with a public link" testXFTPAgentSendReceivePublic
+  it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
+  it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
@@ -139,19 +140,20 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
         xftpDeleteRcvFile rcp rfId
       disconnectAgentClient rcp
 
-testXFTPAgentSendReceivePublic :: HasCallStack => IO ()
-testXFTPAgentSendReceivePublic = withXFTPServer $ do
+testXFTPAgentSendReceiveRedirect :: HasCallStack => IO ()
+testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
   --- sender
   filePathIn <- createRandomFile
-  let fileSize = 18874368
+  let fileSize = mb 17
+      totalSize = fileSize + mb 1
   sndr <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   directFileId <- runRight $ xftpSendFile sndr 1 (CryptoFile filePathIn Nothing) 1
-  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 4194304 fileSize)
-  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 8388608 fileSize)
-  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 12582912 fileSize)
-  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 16777216 fileSize)
-  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 17825792 fileSize)
-  sfGet sndr `shouldReturn` ("", directFileId, SFPROG fileSize fileSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 4194304 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 8388608 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 12582912 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 16777216 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 17825792 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG totalSize totalSize)
   vfdDirect <-
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
@@ -176,13 +178,54 @@ testXFTPAgentSendReceivePublic = withXFTPServer $ do
   FileDescriptionURI {description} <- either fail pure $ strDecode uri
 
   rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 fileSize)
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 fileSize)
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 8388608 fileSize)
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 12582912 fileSize)
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 16777216 fileSize)
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 17825792 fileSize)
-  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG fileSize fileSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 totalSize) -- extra RFPROG before switching to real file
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 8388608 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 12582912 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 16777216 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 17825792 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG totalSize totalSize)
+  out <-
+    rfGet rcp >>= \case
+      (_, _, RFDONE out) -> pure out
+      r -> error $ "Expected RFDONE, got " <> show r
+  disconnectAgentClient rcp
+
+  inBytes <- B.readFile filePathIn
+  B.readFile out `shouldReturn` inBytes
+
+testXFTPAgentSendReceiveNoRedirect :: HasCallStack => IO ()
+testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
+  --- sender
+  let fileSize = mb 5
+  filePathIn <- createRandomFile_ fileSize "testfile"
+  sndr <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  directFileId <- runRight $ xftpSendFile sndr 1 (CryptoFile filePathIn Nothing) 1
+  let totalSize = fileSize + mb 1
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 4194304 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG 5242880 totalSize)
+  sfGet sndr `shouldReturn` ("", directFileId, SFPROG totalSize totalSize)
+  vfdDirect <-
+    sfGet sndr >>= \case
+      (_, _, SFDONE _snd (vfd : _)) -> pure vfd
+      r -> error $ "Expected SFDONE, got " <> show r
+  B.putStrLn $ strEncode vfdDirect
+  let uri = strEncode $ fileDescriptionURI vfdDirect
+  B.length uri `shouldSatisfy` (< qrSizeLimit)
+  case strDecode uri of
+    Left err -> fail err
+    Right ok -> ok `shouldBe` fileDescriptionURI vfdDirect
+  disconnectAgentClient sndr
+  --- recipient
+  rcp <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  FileDescriptionURI {description} <- either fail pure $ strDecode uri
+  let ValidFileDescription FileDescription {redirect} = description
+  redirect `shouldBe` Nothing
+  rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing
+  -- NO extra "RFPROG 65k 65k" before switching to real file
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 5242880 totalSize)
+  rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG totalSize totalSize)
   out <-
     rfGet rcp >>= \case
       (_, _, RFDONE out) -> pure out
@@ -196,10 +239,13 @@ createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = createRandomFile' "testfile"
 
 createRandomFile' :: HasCallStack => FilePath -> IO FilePath
-createRandomFile' fileName = do
+createRandomFile' = createRandomFile_ (mb 17 :: Integer)
+
+createRandomFile_ :: (HasCallStack, Integral s, Show s) => s -> FilePath -> IO FilePath
+createRandomFile_ size fileName = do
   let filePath = senderFiles </> fileName
-  xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
-  getFileSize filePath `shouldReturn` mb 17
+  xftpCLI ["rand", filePath, show size] `shouldReturn` ["File created: " <> filePath]
+  getFileSize filePath `shouldReturn` toInteger size
   pure filePath
 
 testSend :: HasCallStack => AgentClient -> FilePath -> ExceptT AgentErrorType IO (SndFileId, ValidFileDescription 'FSender, ValidFileDescription 'FRecipient, ValidFileDescription 'FRecipient)
