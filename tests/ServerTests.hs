@@ -85,9 +85,9 @@ signSendRecv h@THandle {thVersion, sessionId} (C.APrivateAuthKey a pk) (corrId, 
   tGet1 h
   where
     authorize t = case a of
-      C.SEd25519 -> TAuthSignature . C.ASignature C.SEd25519 $ C.sign' pk t
-      C.SEd448 -> TAuthSignature . C.ASignature C.SEd448 $ C.sign' pk t
-      _ -> TAuthNone
+      C.SEd25519 -> TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
+      C.SEd448 -> TASignature . C.ASignature C.SEd448 $ C.sign' pk t
+      _ -> TANone
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
@@ -898,7 +898,7 @@ sampleDhPubKey :: C.PublicKey 'C.X25519
 sampleDhPubKey = "MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
 
 sampleSig :: TransmissionAuth
-sampleSig = TAuthSignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
+sampleSig = TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
 
 noAuth :: (Char, Maybe BasicAuth)
 noAuth = ('A', Nothing)

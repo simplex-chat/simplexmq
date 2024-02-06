@@ -32,7 +32,7 @@ module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
     disconnectTransport,
-    verifyCmdSignature,
+    verifyCmdAuthorization,
     dummyVerifyCmd,
     randomId,
   )
@@ -443,7 +443,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
     -- TODO we can authorize responses as well
-    void . liftIO . tPut h $ L.map (\t -> Right (TAuthNone, encodeTransmission v sessionId t)) ts
+    void . liftIO . tPut h $ L.map (\t -> Right (TANone, encodeTransmission v sessionId t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
@@ -470,8 +470,8 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe (THandleAuth, C.CbNonce) -> TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdSignature auth_ tAuth authorized k
-    Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature auth_ tAuth authorized . recipientKey
+    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdAuthorization auth_ tAuth authorized k
+    Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdAuthorization auth_ tAuth authorized . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
@@ -484,39 +484,36 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
         Right q -> Just q `verified` f q
         _ -> dummyVerifyCmd auth_ authorized tAuth `seq` VRFailed
     verifyMaybe :: Maybe C.APublicAuthKey -> Bool
-    verifyMaybe = maybe (isAuthNone tAuth) $ verifyCmdSignature auth_ tAuth authorized
+    verifyMaybe = maybe (isAuthNone tAuth) $ verifyCmdAuthorization auth_ tAuth authorized
     verified q cond = if cond then VRVerified q else VRFailed
 
-verifyCmdSignature :: Maybe (THandleAuth, C.CbNonce) -> TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
-verifyCmdSignature auth_ tAuth authorized key = case tAuth of
-  TAuthNone -> False
-  TAuthSignature sig -> verify key sig
-  TAuthEncHash s -> authorize key s
+verifyCmdAuthorization :: Maybe (THandleAuth, C.CbNonce) -> TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
+verifyCmdAuthorization auth_ tAuth authorized key = case tAuth of
+  TANone -> False
+  TASignature sig -> verifySig key sig
+  TAAuthenticator s -> verifyAuth key s
   where
-    verify :: C.APublicAuthKey -> C.ASignature -> Bool
-    verify (C.APublicAuthKey a k) sig@(C.ASignature a' s) =
+    verifySig :: C.APublicAuthKey -> C.ASignature -> Bool
+    verifySig (C.APublicAuthKey a k) sig@(C.ASignature a' s) =
       case testEquality a a' of
         Just Refl | C.signatureSize k == C.signatureSize s -> C.verify' k s authorized
-        _ -> dummyVerifyCmd auth_ authorized (TAuthSignature sig) `seq` False
-    authorize :: C.APublicAuthKey -> ByteString -> Bool
-    authorize (C.APublicAuthKey a k) s =
+        _ -> dummyVerifyCmd auth_ authorized (TASignature sig) `seq` False
+    verifyAuth :: C.APublicAuthKey -> C.CbAuthenticator -> Bool
+    verifyAuth (C.APublicAuthKey a k) s =
       case a of
-        C.SX25519 -> authorizeCmd auth_ k s authorized
-        _ -> dummyVerifyCmd auth_ authorized (TAuthEncHash s) `seq` False
+        C.SX25519 -> verifyCmdAuth auth_ k s authorized
+        _ -> dummyVerifyCmd auth_ authorized (TAAuthenticator s) `seq` False
 
-authorizeCmd :: Maybe (THandleAuth, C.CbNonce) -> C.PublicKeyX25519 -> ByteString -> ByteString -> Bool
-authorizeCmd auth_ k s authorized = case auth_ of
-  Just (THandleAuth {privKey}, nonce) -> cbAuthorize k privKey nonce s authorized
+verifyCmdAuth :: Maybe (THandleAuth, C.CbNonce) -> C.PublicKeyX25519 -> C.CbAuthenticator -> ByteString -> Bool
+verifyCmdAuth auth_ k authenticator authorized = case auth_ of
+  Just (THandleAuth {privKey}, nonce) -> C.cbVerify k privKey nonce authenticator authorized
   Nothing -> False
-
-cbAuthorize :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> ByteString -> ByteString -> Bool
-cbAuthorize k pk nonce s authorized = C.cbDecryptNoPad (C.dh' k pk) nonce s == Right (C.sha512Hash authorized)
 
 dummyVerifyCmd :: Maybe (THandleAuth, C.CbNonce) -> ByteString -> TransmissionAuth -> Bool
 dummyVerifyCmd auth_ authorized = \case
-  TAuthNone -> False
-  TAuthSignature (C.ASignature a s) -> C.verify' (dummyPublicKey a) s authorized
-  TAuthEncHash s -> authorizeCmd auth_ dummyKeyX25519 s authorized
+  TANone -> False
+  TASignature (C.ASignature a s) -> C.verify' (dummyPublicKey a) s authorized
+  TAAuthenticator s -> verifyCmdAuth auth_ dummyKeyX25519 s authorized
 
 -- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
 -- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes

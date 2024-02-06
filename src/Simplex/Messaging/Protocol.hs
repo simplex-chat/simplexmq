@@ -249,7 +249,7 @@ type Signed = ByteString
 
 -- | unparsed SMP transmission with signature.
 data RawTransmission = RawTransmission
-  { authorization :: ByteString, -- signature or encrypted transmission hash
+  { authenticator :: ByteString, -- signature or encrypted transmission hash
     authorized :: ByteString, -- authorized transmission
     sessId :: SessionId,
     corrId :: ByteString,
@@ -259,31 +259,31 @@ data RawTransmission = RawTransmission
   deriving (Show)
 
 data TransmissionAuth
-  = TAuthNone
-  | TAuthSignature C.ASignature
-  | TAuthEncHash ByteString
+  = TANone
+  | TASignature C.ASignature
+  | TAAuthenticator C.CbAuthenticator
   deriving (Eq, Show)
 
 isAuthNone :: TransmissionAuth -> Bool
 isAuthNone = \case
-  TAuthNone -> True
+  TANone -> True
   _ -> False
 
 -- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TAuthorization
 tAuthBytes :: TransmissionAuth -> ByteString
 tAuthBytes = \case
-  TAuthNone -> ""
-  TAuthSignature s -> C.signatureBytes s
-  TAuthEncHash s -> s
+  TANone -> ""
+  TASignature s -> C.signatureBytes s
+  TAAuthenticator (C.CbAuthenticator s) -> s
 
 decodeTAuthBytes :: ByteString -> Either String TransmissionAuth
 decodeTAuthBytes s
-  | B.null s = Right TAuthNone
-  | B.length s == 64 + 16 = Right $ TAuthEncHash s
-  | otherwise = TAuthSignature <$> C.decodeSignature s
+  | B.null s = Right TANone
+  | B.length s == C.cbAuthenticatorSize = Right $ TAAuthenticator $ C.CbAuthenticator s
+  | otherwise = TASignature <$> C.decodeSignature s
 
 instance IsString TransmissionAuth where
-  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . maybe TAuthNone TAuthSignature
+  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . maybe TANone TASignature
 
 -- | unparsed sent SMP transmission with signature, without session ID.
 type SignedRawTransmission = (TransmissionAuth, SessionId, ByteString, ByteString)
@@ -1075,16 +1075,16 @@ data CommandError
 -- | SMP transmission parser.
 transmissionP :: Parser RawTransmission
 transmissionP = do
-  authorization <- smpP
+  authenticator <- smpP
   authorized <- A.takeByteString
-  either fail pure $ parseAll (trn authorization authorized) authorized
+  either fail pure $ parseAll (trn authenticator authorized) authorized
   where
-    trn authorization authorized = do
+    trn authenticator authorized = do
       sessId <- smpP
       corrId <- smpP
       entityId <- smpP
       command <- A.takeByteString
-      pure RawTransmission {authorization, authorized, sessId, corrId, entityId, command}
+      pure RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
 
 class (ProtocolEncoding err msg, ProtocolEncoding err (ProtoCommand msg), Show err, Show msg) => Protocol err msg | msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
@@ -1413,15 +1413,15 @@ tGet th@THandle {sessionId, thVersion = v} = L.map (tDecodeParseValidate session
 
 tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => SessionId -> Version -> Either TransportError RawTransmission -> SignedTransmission err cmd
 tDecodeParseValidate sessionId v = \case
-  Right RawTransmission {authorization, authorized, sessId, corrId, entityId, command}
+  Right RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
     | sessId == sessionId ->
-        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authorization
+        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
-    | otherwise -> (TAuthNone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
+    | otherwise -> (TANone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
   Left _ -> tError ""
   where
     tError :: ByteString -> SignedTransmission err cmd
-    tError corrId = (TAuthNone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PEBlock))
+    tError corrId = (TANone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PEBlock))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission err cmd
     tParseValidate signed t@(sig, corrId, entityId, command) =

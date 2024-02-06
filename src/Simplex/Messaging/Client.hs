@@ -720,18 +720,18 @@ mkTransmission ProtocolClient {sessionId, thVersion = v, thAuth, client_ = PClie
 
 authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError SentRawTransmission
 authTransmission thAuth pKey_ (CorrId corrId) t = case pKey_ of
-  Nothing -> Right (TAuthNone, t)
-  Just pKey -> (,t) <$> authorize pKey
+  Nothing -> Right (TANone, t)
+  Just pKey -> (,t) <$> authenticate pKey
   where
-    authorize :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
-    authorize (C.APrivateAuthKey a pk) = case a of
+    authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
+    authenticate (C.APrivateAuthKey a pk) = case a of
       C.SX25519 -> case thAuth of
-        Just THandleAuth {peerPubKey} -> Right $ TAuthEncHash $ C.cbEncryptNoPad (C.dh' peerPubKey pk) (C.cbNonce corrId) (C.sha512Hash t)
+        Just THandleAuth {peerPubKey} -> Right $ TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
-    sign pk = Right $ TAuthSignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
+    sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 

@@ -48,7 +48,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, RecipientId, TransmissionAuth)
-import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
+import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Transport.Buffer (trimCR)
@@ -266,7 +266,7 @@ verifyXFTPTransmission tAuth authorized fId cmd =
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
           _ -> dummyVerifyCmd Nothing authorized tAuth `seq` VRFailed
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdSignature Nothing tAuth authorized k then VRVerified req else VRFailed
+    req `verifyWith` k = if verifyCmdAuthorization Nothing tAuth authorized k then VRVerified req else VRFailed
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case

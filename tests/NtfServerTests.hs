@@ -80,9 +80,9 @@ signSendRecvNtf h@THandle {thVersion, sessionId} (C.APrivateAuthKey a pk) (corrI
   tGet1 h
   where
     authorize t = case a of
-      C.SEd25519 -> TAuthSignature . C.ASignature C.SEd25519 $ C.sign' pk t
-      C.SEd448 -> TAuthSignature . C.ASignature C.SEd448 $ C.sign' pk t
-      _ -> TAuthNone
+      C.SEd25519 -> TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
+      C.SEd448 -> TASignature . C.ASignature C.SEd448 $ C.sign' pk t
+      _ -> TANone
 
 (.->) :: J.Value -> J.Key -> Either String ByteString
 v .-> key =

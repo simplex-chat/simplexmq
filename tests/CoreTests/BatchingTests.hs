@@ -142,7 +142,7 @@ randomSUB sessId = do
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, rId, Cmd SRecipient SUB)
-  pure $ Right (TAuthSignature $ C.sign rpKey s, s)
+  pure $ Right (TASignature $ C.sign rpKey s, s)
 
 randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd c = do
@@ -159,7 +159,7 @@ randomSEND sessId len = do
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   msg <- atomically $ C.randomBytes len g
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
-  pure $ Right (TAuthSignature $ C.sign rpKey s, s)
+  pure $ Right (TASignature $ C.sign rpKey s, s)
 
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd c len = do

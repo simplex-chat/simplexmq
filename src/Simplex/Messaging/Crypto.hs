@@ -97,6 +97,12 @@ module Simplex.Messaging.Crypto
     verify',
     validSignatureSize,
 
+    -- * crypto_box authenticator, as discussed in https://groups.google.com/g/sci.crypt/c/73yb5a9pz2Y/m/LNgRO7IYXOwJ
+    CbAuthenticator (..),
+    cbAuthenticatorSize,
+    cbAuthenticate,
+    cbVerify,
+
     -- * DH derivation
     dh',
     dhBytes',
@@ -181,7 +187,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), SHA512, hash)
+import Crypto.Hash (Digest, SHA256 (..), SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -1230,6 +1236,20 @@ sbDecryptNoPad_ secret (CbNonce nonce) packet
     (tag', c) = B.splitAt 16 packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
+
+-- type for authentication scheme using NaCl @crypto_box@ over the sha512 digest of the message.
+newtype CbAuthenticator = CbAuthenticator ByteString deriving (Eq, Show)
+
+cbAuthenticatorSize :: Int
+cbAuthenticatorSize = hashDigestSize SHA512 + authTagSize -- 64 + 16 = 80 bytes
+
+-- create crypto_box authenticator for a message.
+cbAuthenticate :: PublicKeyX25519 -> PrivateKeyX25519 -> CbNonce -> ByteString -> CbAuthenticator
+cbAuthenticate k pk nonce msg = CbAuthenticator $ cbEncryptNoPad (dh' k pk) nonce (sha512Hash msg)
+
+-- verify crypto_box authenticator for a message.
+cbVerify :: PublicKeyX25519 -> PrivateKeyX25519 -> CbNonce -> CbAuthenticator -> ByteString -> Bool
+cbVerify k pk nonce (CbAuthenticator s) authorized = cbDecryptNoPad (dh' k pk) nonce s == Right (sha512Hash authorized)
 
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)

@@ -369,7 +369,7 @@ receive th@THandle {thAuth} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever 
 send :: Transport c => THandle c -> NtfServerClient -> IO ()
 send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h [Right (TAuthNone, encodeTransmission v sessionId t)]
+  void . liftIO $ tPut h [Right (TANone, encodeTransmission v sessionId t)]
   atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where
@@ -384,7 +384,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
       r_ <- atomically $ getNtfTokenRegistration st tkn
       pure $
-        if verifyCmdSignature auth_ tAuth authorized k
+        if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
             Just t@NtfTknData {tknVerifyKey}
               | k == tknVerifyKey -> verifiedTknCmd t c
@@ -421,7 +421,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
     verifyToken t_ positiveVerificationResult =
       pure $ case t_ of
         Just t@NtfTknData {tknVerifyKey} ->
-          if verifyCmdSignature auth_ tAuth authorized tknVerifyKey
+          if verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey
             then positiveVerificationResult t
             else VRFailed
         _ -> dummyVerifyCmd auth_ authorized tAuth `seq` VRFailed
