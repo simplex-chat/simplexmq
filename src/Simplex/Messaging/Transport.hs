@@ -44,6 +44,7 @@ module Simplex.Messaging.Transport
     TProxy (..),
     ATransport (..),
     TransportPeer (..),
+    getOnlinePubKey,
 
     -- * TLS Transport
     TLS (..),
@@ -71,6 +72,7 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (unless)
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
@@ -82,6 +84,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
+import Data.Foldable (forM_)
 import Data.Functor (($>))
 import Data.Version (showVersion)
 import qualified Data.X509 as X
@@ -196,6 +199,17 @@ data TransportPeer = TClient | TServer
 data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
+
+getOnlinePubKey :: Transport c => c -> Either String C.APublicVerifyKey
+getOnlinePubKey c =
+  case getCertificateChain c of
+    Just (X.CertificateChain (server : _)) -> fromX509 . X.certPubKey . X.signedObject $ X.getSigned server
+    _ -> Left "no certificate chain"
+  where
+    fromX509 = \case
+      X.PubKeyEd448 k -> Right $ C.APublicVerifyKey C.SEd448 (C.PublicKeyEd448 k)
+      X.PubKeyEd25519 k -> Right $ C.APublicVerifyKey C.SEd25519 (C.PublicKeyEd25519 k)
+      x -> Left $ "unexpected key: " <> show x
 
 -- * TLS Transport
 
@@ -437,6 +451,10 @@ smpClientHandshake c (k, pk) keyHash smpVRange = do
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible v) -> do
+        forM_ k' $ \signMe -> do
+          serverKey <- either error pure $ getOnlinePubKey c
+          ExceptT $ Right <$> print (serverKey, signMe)
+          unless (C.verify serverKey (error "TODO: signature") (C.pubKeyBytes signMe)) $ error "bad authPubKey signature"
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
         pure $ smpThHandle th v pk k'
       Nothing -> throwE $ TEHandshake VERSION
