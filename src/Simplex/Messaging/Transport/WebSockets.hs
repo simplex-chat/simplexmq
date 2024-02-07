@@ -8,6 +8,7 @@ import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.X509 as X
 import qualified Network.TLS as T
 import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
@@ -50,11 +51,14 @@ instance Transport WS where
   transportConfig :: WS -> TransportConfig
   transportConfig = wsTransportConfig
 
-  getServerConnection :: TransportConfig -> T.Context -> IO WS
+  getServerConnection :: TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO WS
   getServerConnection = getWS TServer
 
-  getClientConnection :: TransportConfig -> T.Context -> IO WS
+  getClientConnection :: TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO WS
   getClientConnection = getWS TClient
+
+  getCertificateChain :: WS -> Maybe X.CertificateChain
+  getCertificateChain WS {} = Nothing -- TODO: store and read
 
   tlsUnique :: WS -> ByteString
   tlsUnique = tlsUniq
@@ -79,8 +83,8 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-getWS :: TransportPeer -> TransportConfig -> T.Context -> IO WS
-getWS wsPeer cfg cxt = withTlsUnique wsPeer cxt connectWS
+getWS :: TransportPeer -> TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO WS
+getWS wsPeer cfg _certs cxt = withTlsUnique wsPeer cxt connectWS
   where
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt

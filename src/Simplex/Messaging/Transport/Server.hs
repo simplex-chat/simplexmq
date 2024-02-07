@@ -95,7 +95,7 @@ runTransportServerSocketState ss started getSocket threadLabel serverParams cfg 
     setup conn = timeout (tlsSetupTimeout cfg) $ do
       labelMyThread $ threadLabel <> "/setup"
       tls <- connectTLS Nothing tCfg serverParams conn
-      getServerConnection tCfg tls
+      getServerConnection tCfg Nothing tls
 
 -- | Run TCP server without TLS
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()

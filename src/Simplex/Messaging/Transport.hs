@@ -84,6 +84,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
+import qualified Data.X509 as X
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import qualified Network.TLS as T
@@ -163,10 +164,12 @@ class Transport c where
   transportConfig :: c -> TransportConfig
 
   -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: TransportConfig -> T.Context -> IO c
+  getServerConnection :: TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO c
 
   -- | Upgrade client TLS context to connection (used in the client)
-  getClientConnection :: TransportConfig -> T.Context -> IO c
+  getClientConnection :: TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO c
+
+  getCertificateChain :: c -> Maybe X.CertificateChain
 
   -- | tls-unique channel binding per RFC5929
   tlsUnique :: c -> SessionId
@@ -201,6 +204,7 @@ data TLS = TLS
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
+    tlsCertChain :: Maybe X.CertificateChain,
     tlsTransportConfig :: TransportConfig
   }
 
@@ -213,12 +217,12 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: TransportPeer -> TransportConfig -> T.Context -> IO TLS
-getTLS tlsPeer cfg cxt = withTlsUnique tlsPeer cxt newTLS
+getTLS :: TransportPeer -> TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO TLS
+getTLS tlsPeer cfg certs_ cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
-      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsPeer, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsCertChain = certs_, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -253,6 +257,7 @@ instance Transport TLS where
   transportConfig = tlsTransportConfig
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
+  getCertificateChain = tlsCertChain
   tlsUnique = tlsUniq
   closeConnection tls = closeTLS $ tlsContext tls
 
