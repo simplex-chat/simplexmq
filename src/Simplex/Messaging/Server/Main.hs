@@ -41,6 +41,10 @@ smpServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
+    GenOnline keyOpts ->
+      doesFileExist iniFile >>= \case
+        True -> readIniFile iniFile >>= either exitError (genOnline keyOpts)
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError runServer
@@ -56,8 +60,8 @@ smpServerCLI cfgPath logPath =
     defaultServerPort = "5223"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
-    initializeServer opts
-      | scripted opts = initialize opts
+    initializeServer opts@InitOptions {ip, fqdn, scripted}
+      | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
           void $ withPrompt "SMP server will be initialized (press Enter)" getLine
@@ -65,9 +69,9 @@ smpServerCLI cfgPath logPath =
           logStats <- onOffPrompt "Enable logging daily statistics" False
           putStrLn "Require a password to create new messaging queues?"
           password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
-          let host = fromMaybe (ip opts) (fqdn opts)
+          let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn opts else Just host', password}
+          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password}
       where
         serverPassword =
           getLine >>= \case
@@ -136,6 +140,10 @@ smpServerCLI cfgPath logPath =
                    \disconnect: off\n"
                 <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
+    genOnline KeyOptions {signAlgorithm, ip, fqdn} ini = do
+      let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
+      createServerX509_ False cfgPath x509cfg
+      warnCAPrivateKeyFile cfgPath x509cfg
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -210,6 +218,7 @@ smpServerCLI cfgPath logPath =
 
 data CliCommand
   = Init InitOptions
+  | GenOnline KeyOptions
   | Start
   | Delete
 
@@ -227,10 +236,18 @@ data InitOptions = InitOptions
 data ServerPassword = ServerPassword BasicAuth | SPRandom
   deriving (Show)
 
+data KeyOptions = KeyOptions
+  { signAlgorithm :: SignAlgorithm,
+    ip :: HostName,
+    fqdn :: Maybe HostName
+  }
+  deriving (Show)
+
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+        <> command "gen-online" (info (GenOnline <$> keyP) (progDesc $ "Regenerate TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
@@ -293,5 +310,35 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Non-interactive initialization using command-line options"
           )
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
+    keyP :: Parser KeyOptions
+    keyP = do
+      signAlgorithm <-
+        option
+          (maybeReader readMaybe)
+          ( long "sign-algorithm"
+              <> short 'a'
+              <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
+              <> value ED448
+              <> showDefault
+              <> metavar "ALG"
+          )
+      ip <-
+        strOption
+          ( long "ip"
+              <> help
+                "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
+              <> value "127.0.0.1"
+              <> showDefault
+              <> metavar "IP"
+          )
+      fqdn <-
+        (optional . strOption)
+          ( long "fqdn"
+              <> short 'n'
+              <> help "Server FQDN used as Common Name for TLS online certificate"
+              <> showDefault
+              <> metavar "FQDN"
+          )
+      pure KeyOptions {signAlgorithm, ip, fqdn}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack

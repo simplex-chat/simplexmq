@@ -84,14 +84,18 @@ getCliCommand' cmdP version =
     versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
 
 createServerX509 :: FilePath -> X509Config -> IO ByteString
-createServerX509 cfgPath x509cfg = do
-  createOpensslCaConf
-  createOpensslServerConf
+createServerX509 = createServerX509_ True
+
+createServerX509_ :: Bool -> FilePath -> X509Config -> IO ByteString
+createServerX509_ createCA cfgPath x509cfg = do
   let alg = show $ signAlgorithm (x509cfg :: X509Config)
   -- CA certificate (identity/offline)
-  run $ "openssl genpkey -algorithm " <> alg <> " -out " <> c caKeyFile
-  run $ "openssl req -new -x509 -days 999999 -config " <> c opensslCaConfFile <> " -extensions v3 -key " <> c caKeyFile <> " -out " <> c caCrtFile
+  when createCA $ do
+    createOpensslCaConf
+    run $ "openssl genpkey -algorithm " <> alg <> " -out " <> c caKeyFile
+    run $ "openssl req -new -x509 -days 999999 -config " <> c opensslCaConfFile <> " -extensions v3 -key " <> c caKeyFile <> " -out " <> c caCrtFile
   -- server certificate (online)
+  createOpensslServerConf
   run $ "openssl genpkey -algorithm " <> alg <> " -out " <> c serverKeyFile
   run $ "openssl req -new -config " <> c opensslServerConfFile <> " -reqexts v3 -key " <> c serverKeyFile <> " -out " <> c serverCsrFile
   run $ "openssl x509 -req -days 999999 -extfile " <> c opensslServerConfFile <> " -extensions v3 -in " <> c serverCsrFile <> " -CA " <> c caCrtFile <> " -CAkey " <> c caKeyFile <> " -CAcreateserial -out " <> c serverCrtFile
