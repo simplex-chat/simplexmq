@@ -47,6 +47,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -254,7 +255,7 @@ instance StrEncoding FileDescriptionURI where
   strEncode FileDescriptionURI {scheme, description, extras} = mconcat [strEncode scheme, "/file", "#/?", queryStr]
     where
       queryStr = strEncode $ QSP QEscape $ ("d", strEncode description) : extras_
-      extras_ = [("_", B.toStrict $ J.encode extras) | not (M.null extras)]
+      extras_ = [("_", LB.toStrict $ J.encode extras) | not (M.null extras)]
   strP = do
     scheme <- strP
     _ <- "/file" <* optional (A.char '/') <* "#/?"
