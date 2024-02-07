@@ -144,12 +144,14 @@ smpServerCLI cfgPath logPath =
                 <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
     genOnline CertOptions {signAlgorithm_, commonName_} = do
-      -- XXX: not needed when signAlgothim and commonName are both specified
-      old' <- XF.readSignedObject certPath :: IO [X.SignedExact X.Certificate]
-      (signAlgorithm, commonName) <- case old' of
-        [found] -> either exitError pure . fromX509 . X.signedObject $ X.getSigned found
-        [] -> exitError $ "No certificate found at " <> certPath
-        _ -> exitError $ "Too many certificates at " <> certPath
+      (signAlgorithm, commonName) <-
+        case (signAlgorithm_, commonName_) of
+          (Just alg, Just cn) -> pure (alg, cn)
+          _ ->
+            XF.readSignedObject certPath >>= \case
+              [old] -> either exitError pure . fromX509 . X.signedObject $ X.getSigned old
+              [] -> exitError $ "No certificate found at " <> certPath
+              _ -> exitError $ "Too many certificates at " <> certPath
       let x509cfg = defaultX509Config {signAlgorithm, commonName}
       createServerX509_ False cfgPath x509cfg
       putStrLn "Generated new server credentials"
