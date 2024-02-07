@@ -67,6 +67,8 @@ smpServerTest storeLog basicAuth = do
   r `shouldContain` ["Listening on port 5223 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
   r `shouldContain` (if basicAuth then ["creating new queues requires password"] else ["creating new queues allowed"])
+  r <- lines <$> capture_ (withArgs ["gen-online"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
+  r `shouldContain` ["Generated new server credentials"]
   capture_ (withStdin "Y" . withArgs ["delete"] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False

@@ -32,7 +32,7 @@ import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, hGetLine, stdout, withFile)
 import System.Process (readCreateProcess, shell)
 
-exitError :: String -> IO ()
+exitError :: String -> IO a
 exitError msg = putStrLn msg >> exitFailure
 
 confirmOrExit :: String -> IO ()
