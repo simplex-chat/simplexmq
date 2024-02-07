@@ -159,18 +159,18 @@ smpServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c ->
-  (TransmissionAuth, ByteString, ByteString, smp) ->
-  IO (TransmissionAuth, ByteString, ByteString, BrokerMsg)
+  (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
+  IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [(TANone, _, (CorrId corrId, qId, Right cmd))] <- tGet h
-      pure (TANone, corrId, qId, cmd)
+      [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
+      pure (Nothing, corrId, qId, cmd)
 
 smpTest :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> IO ()) -> Expectation
 smpTest _ test' = runSmpTest test' `shouldReturn` ()

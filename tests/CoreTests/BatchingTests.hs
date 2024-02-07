@@ -135,14 +135,14 @@ testClientBatchWithLargeMessage = do
   (length rs1', length rs2') `shouldBe` (70, 90)
   all lenOk [s1', s2'] `shouldBe` True
 
-randomSUB :: ByteString -> IO (Either TransportError (TransmissionAuth, ByteString))
+randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB sessId = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, rId, Cmd SRecipient SUB)
-  pure $ Right (TASignature $ C.sign rpKey s, s)
+  pure $ Right (Just . TASignature $ C.sign rpKey s, s)
 
 randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd c = do
@@ -151,7 +151,7 @@ randomSUBCmd c = do
   (_, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
   mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
 
-randomSEND :: ByteString -> Int -> IO (Either TransportError (TransmissionAuth, ByteString))
+randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND sessId len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g
@@ -159,7 +159,7 @@ randomSEND sessId len = do
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   msg <- atomically $ C.randomBytes len g
   let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
-  pure $ Right (TASignature $ C.sign rpKey s, s)
+  pure $ Right (Just . TASignature $ C.sign rpKey s, s)
 
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd c len = do

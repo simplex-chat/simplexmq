@@ -18,6 +18,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind
+import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -210,15 +211,15 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
     PING
-      | isAuthNone auth && B.null entityId -> Right cmd
+      | isNothing auth && B.null entityId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and entity ID
     _
-      | isAuthNone auth || B.null entityId -> Left $ CMD NO_AUTH
+      | isNothing auth || B.null entityId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     where
       sigNoEntity
-        | isAuthNone auth = Left $ CMD NO_AUTH
+        | isNothing auth = Left $ CMD NO_AUTH
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 

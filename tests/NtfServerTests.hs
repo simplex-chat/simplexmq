@@ -59,15 +59,15 @@ ntfSyntaxTests (ATransport t) = do
   where
     (>#>) ::
       Encoding smp =>
-      (TransmissionAuth, ByteString, ByteString, smp) ->
-      (TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
+      (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
+      (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> SignedTransmission ErrorType NtfResponse
 pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> (TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 sendRecvNtf h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, t)
@@ -80,9 +80,9 @@ signSendRecvNtf h@THandle {thVersion, sessionId} (C.APrivateAuthKey a pk) (corrI
   tGet1 h
   where
     authorize t = case a of
-      C.SEd25519 -> TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
-      C.SEd448 -> TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      _ -> TANone
+      C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
+      C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
+      _ -> Nothing
 
 (.->) :: J.Value -> J.Key -> Either String ByteString
 v .-> key =

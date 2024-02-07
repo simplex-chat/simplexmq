@@ -21,6 +21,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
 import Simplex.Messaging.Client (authTransmission)
@@ -45,7 +46,6 @@ import Simplex.Messaging.Protocol
     SignedTransmission,
     SndPublicAuthKey,
     Transmission,
-    isAuthNone,
     encodeTransmission,
     messageTagP,
     tDecodeParseValidate,
@@ -194,15 +194,15 @@ instance FilePartyI p => ProtocolEncoding XFTPErrorType (FileCommand p) where
   checkCredentials (auth, _, fileId, _) cmd = case cmd of
     -- FNEW must not have signature and chunk ID
     FNEW {}
-      | isAuthNone auth -> Left $ CMD NO_AUTH
+      | isNothing auth -> Left $ CMD NO_AUTH
       | not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
-      | isAuthNone auth && B.null fileId -> Right cmd
+      | isNothing auth && B.null fileId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
     _
-      | isAuthNone auth || B.null fileId -> Left $ CMD NO_AUTH
+      | isNothing auth || B.null fileId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
 instance ProtocolEncoding XFTPErrorType FileCmd where

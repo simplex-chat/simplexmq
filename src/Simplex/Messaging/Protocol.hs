@@ -121,7 +121,6 @@ module Simplex.Messaging.Protocol
     noMsgFlags,
     messageId,
     messageTs,
-    isAuthNone,
 
     -- * Parse and serialize
     ProtocolMsgTag (..),
@@ -172,7 +171,7 @@ import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
@@ -243,7 +242,7 @@ deriving instance Show Cmd
 type Transmission c = (CorrId, EntityId, c)
 
 -- | signed parsed transmission, with original raw bytes and parsing error.
-type SignedTransmission e c = (TransmissionAuth, Signed, Transmission (Either e c))
+type SignedTransmission e c = (Maybe TransmissionAuth, Signed, Transmission (Either e c))
 
 type Signed = ByteString
 
@@ -259,37 +258,31 @@ data RawTransmission = RawTransmission
   deriving (Show)
 
 data TransmissionAuth
-  = TANone
-  | TASignature C.ASignature
+  = TASignature C.ASignature
   | TAAuthenticator C.CbAuthenticator
   deriving (Eq, Show)
 
-isAuthNone :: TransmissionAuth -> Bool
-isAuthNone = \case
-  TANone -> True
-  _ -> False
-
 -- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TAuthorization
-tAuthBytes :: TransmissionAuth -> ByteString
+tAuthBytes :: Maybe TransmissionAuth -> ByteString
 tAuthBytes = \case
-  TANone -> ""
-  TASignature s -> C.signatureBytes s
-  TAAuthenticator (C.CbAuthenticator s) -> s
+  Nothing -> ""
+  Just (TASignature s) -> C.signatureBytes s
+  Just (TAAuthenticator (C.CbAuthenticator s)) -> s
 
-decodeTAuthBytes :: ByteString -> Either String TransmissionAuth
+decodeTAuthBytes :: ByteString -> Either String (Maybe TransmissionAuth)
 decodeTAuthBytes s
-  | B.null s = Right TANone
-  | B.length s == C.cbAuthenticatorSize = Right $ TAAuthenticator $ C.CbAuthenticator s
-  | otherwise = TASignature <$> C.decodeSignature s
+  | B.null s = Right Nothing
+  | B.length s == C.cbAuthenticatorSize = Right . Just . TAAuthenticator $ C.CbAuthenticator s
+  | otherwise = Just . TASignature <$> C.decodeSignature s
 
-instance IsString TransmissionAuth where
-  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . maybe TANone TASignature
+instance IsString (Maybe TransmissionAuth) where
+  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap TASignature
 
 -- | unparsed sent SMP transmission with signature, without session ID.
-type SignedRawTransmission = (TransmissionAuth, SessionId, ByteString, ByteString)
+type SignedRawTransmission = (Maybe TransmissionAuth, SessionId, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
-type SentRawTransmission = (TransmissionAuth, ByteString)
+type SentRawTransmission = (Maybe TransmissionAuth, ByteString)
 
 -- | SMP queue ID for the recipient.
 type RecipientId = QueueId
@@ -1148,7 +1141,7 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
   checkCredentials (auth, _, queueId, _) cmd = case cmd of
     -- NEW must have signature but NOT queue ID
     NEW {}
-      | isAuthNone auth -> Left $ CMD NO_AUTH
+      | isNothing auth -> Left $ CMD NO_AUTH
       | not (B.null queueId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
@@ -1157,11 +1150,11 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
       | otherwise -> Right cmd
     -- PING must not have queue ID or signature
     PING
-      | isAuthNone auth && B.null queueId -> Right cmd
+      | isNothing auth && B.null queueId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
     _
-      | isAuthNone auth || B.null queueId -> Left $ CMD NO_AUTH
+      | isNothing auth || B.null queueId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
 instance ProtocolEncoding ErrorType Cmd where
@@ -1417,11 +1410,11 @@ tDecodeParseValidate sessionId v = \case
     | sessId == sessionId ->
         let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
-    | otherwise -> (TANone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
+    | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
   Left _ -> tError ""
   where
     tError :: ByteString -> SignedTransmission err cmd
-    tError corrId = (TANone, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PEBlock))
+    tError corrId = (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PEBlock))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission err cmd
     tParseValidate signed t@(sig, corrId, entityId, command) =

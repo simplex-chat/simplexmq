@@ -250,7 +250,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
-verifyXFTPTransmission :: TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission :: Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission tAuth authorized fId cmd =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
@@ -264,7 +264,7 @@ verifyXFTPTransmission tAuth authorized fId cmd =
       where
         verify = \case
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
-          _ -> dummyVerifyCmd Nothing authorized tAuth `seq` VRFailed
+          _ -> maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed
     -- TODO verify with DH authorization
     req `verifyWith` k = if verifyCmdAuthorization Nothing tAuth authorized k then VRVerified req else VRFailed
 

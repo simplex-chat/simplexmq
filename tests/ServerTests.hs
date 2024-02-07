@@ -72,7 +72,7 @@ pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (TransmissionAuth, ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, t)
@@ -85,9 +85,9 @@ signSendRecv h@THandle {thVersion, sessionId} (C.APrivateAuthKey a pk) (corrId, 
   tGet1 h
   where
     authorize t = case a of
-      C.SEd25519 -> TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
-      C.SEd448 -> TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      _ -> TANone
+      C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
+      C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
+      _ -> Nothing
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
@@ -897,8 +897,8 @@ samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ
 sampleDhPubKey :: C.PublicKey 'C.X25519
 sampleDhPubKey = "MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
 
-sampleSig :: TransmissionAuth
-sampleSig = TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
+sampleSig :: Maybe TransmissionAuth
+sampleSig = Just $ TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
 
 noAuth :: (Char, Maybe BasicAuth)
 noAuth = ('A', Nothing)
@@ -942,7 +942,7 @@ syntaxTests (ATransport t) = do
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
       Encoding smp =>
-      (TransmissionAuth, ByteString, ByteString, smp) ->
-      (TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
+      (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
+      (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response

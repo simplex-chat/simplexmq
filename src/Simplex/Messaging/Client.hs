@@ -719,9 +719,7 @@ mkTransmission ProtocolClient {sessionId, thVersion = v, thAuth, client_ = PClie
       pure r
 
 authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError SentRawTransmission
-authTransmission thAuth pKey_ (CorrId corrId) t = case pKey_ of
-  Nothing -> Right (TANone, t)
-  Just pKey -> (,t) <$> authenticate pKey
+authTransmission thAuth pKey_ (CorrId corrId) t = (,t) <$> traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of
