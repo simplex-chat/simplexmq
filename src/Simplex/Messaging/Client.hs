@@ -143,8 +143,8 @@ data PClient err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
-clientStub :: ByteString -> STM (ProtocolClient err msg)
-clientStub sessionId = do
+clientStub :: ByteString -> Version -> Maybe THandleAuth -> STM (ProtocolClient err msg)
+clientStub sessionId thVersion thAuth = do
   connected <- newTVar False
   clientCorrId <- newTVar 0
   sentCommands <- TM.empty
@@ -155,8 +155,8 @@ clientStub sessionId = do
       { action = Nothing,
         sessionId,
         sessionTs = undefined,
-        thVersion = currentClientSMPRelayVersion,
-        thAuth = Nothing,
+        thVersion,
+        thAuth,
         timeoutPerBlock = undefined,
         blockSize = smpBlockSize,
         batch = undefined,
