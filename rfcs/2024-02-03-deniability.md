@@ -48,5 +48,4 @@ As this new scheme breaks backward compatibility, as the new scheme requires add
 2. Add support for handshake and version negotiation to XFTP - 5.5.4 or 5.6.
 3. Upgrade clients to drop support of SMP earlier than v4 (batching) and also drop support of old double ratchet protocol and old handshake - 5.6.
 4. Upgrade servers to offer SMP v7 with support for new authorization - by the time 5.6 is released.
-5. Upgrade clients to use SMP v7 / new authorization - 5.6.2 or 5.7.
-6. Upgrade clients to require support for new authorization scheme - 5.7
+5. Upgrade clients to require server support for SMP v7 / new authorization scheme and start using it - 5.7 or 5.8. At this point the old version of the servers will not be supported, as maintaining this backward compatibility would substantially increase the complexity and logic of the client - at the point of generating the key we do not even know which server version will be used.

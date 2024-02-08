@@ -26,10 +26,10 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer2)
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
+import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (withStore')
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, InitialAgentServers)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
@@ -73,12 +73,10 @@ notificationTests t = do
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
   describe "Managing notification subscriptions" $ do
-    fdescribe "should create notification subscription for existing connection" $
+    describe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
-    it "should create notification subscription for new connection" $
-      withSmpServer t $
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testNotificationSubscriptionNewConnection apns
+    describe "should create notification subscription for new connection" $
+      testNtfMatrix t testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
       withSmpServer t $
         withAPNSMockServer $ \apns ->
@@ -117,11 +115,17 @@ notificationTests t = do
 
 testNtfMatrix :: ATransport -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> Spec
 testNtfMatrix t runTest = do
-  -- it "v7 clients, v7 smp, v2 ntf server" $ runNtfTest cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
-  it "v6 clients, v6 smp, v1 ntf server" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
-  -- it "v7 clients, v6 smp, v1 ntf server" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
-  -- it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 runTest
-  -- it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
+  it "new servers: SMP v7, NTF v2; new clients: v7/v2" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfgV7 agentCfgV7 runTest
+  it "new servers: SMP v7, NTF v2; old clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfg runTest
+  it "old servers: SMP v6, NTF v1; old clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
+  -- this case will cannot be supported - see RFC
+  xit "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
+  -- servers can be migrated in any order
+  it "servers: new SMP v7, old NTF v1; old clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfg agentCfg agentCfg runTest
+  it "servers: old SMP v6, new NTF v2; old clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfgV2 agentCfg agentCfg runTest
+  -- clients can be partially migrated
+  it "servers: new SMP v7, old NTF v2; clients: new/old" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfgV7 agentCfg runTest
+  it "servers: new SMP v7, old NTF v2; clients: old/new" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfgV7 runTest
 
 runNtfTestCfg :: ATransport -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> IO ()
 runNtfTestCfg t smpCfg ntfCfg aCfg bCfg runTest =
@@ -309,7 +313,7 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
       checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentClient -> AgentClient -> IO ()
-testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice bob = do
+testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@AgentClient {agentEnv = Env {config = aliceCfg}} bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
@@ -341,7 +345,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice bob 
   Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce message
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
-  aliceNtf <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
+  aliceNtf <- getSMPAgentClient' 3 aliceCfg initAgentServers testDB
   runRight_ $ do
     (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce message
     pure ()
@@ -362,10 +366,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice bob 
     baseId = 3
     msgId = subtract baseId
 
-testNotificationSubscriptionNewConnection :: APNSMockServer -> IO ()
-testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
-  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+testNotificationSubscriptionNewConnection :: APNSMockServer -> AgentClient -> AgentClient -> IO ()
+testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} alice bob =
   runRight_ $ do
     -- alice registers notification token
     DeviceToken {} <- registerTestToken alice "abcd" NMInstant apnsQ
@@ -401,8 +403,6 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     ackMessage bob aliceId (baseId + 2) Nothing
     -- no unexpected notifications should follow
     noNotification apnsQ
-  disconnectAgentClient alice
-  disconnectAgentClient bob
   where
     baseId = 3
     msgId = subtract baseId

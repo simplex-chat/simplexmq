@@ -88,7 +88,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     runClient _ h = do
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
-      liftIO (runExceptT $ ntfServerHandshake h ks kh supportedNTFServerVRange) >>= \case
+      NtfServerConfig {ntfServerVRange} <- asks config
+      liftIO (runExceptT $ ntfServerHandshake h ks kh ntfServerVRange) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 

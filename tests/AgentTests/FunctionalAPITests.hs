@@ -61,6 +61,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Notifications.Transport (authEncryptCmdsNTFVersion)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
@@ -134,6 +135,9 @@ smpCfgV4 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 4}
 smpCfgV7 :: ProtocolClientConfig
 smpCfgV7 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}
 
+ntfCfgV2 :: ProtocolClientConfig
+ntfCfgV2 = (smpCfg agentCfg) {serverVRange = mkVersionRange 1 authEncryptCmdsNTFVersion}
+
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
@@ -147,7 +151,8 @@ agentCfgV7 :: AgentConfig
 agentCfgV7 = 
   agentCfg
     { cmdAuthAlg = C.AuthAlg C.SX25519,
-      smpCfg = smpCfgV7
+      smpCfg = smpCfgV7,
+      ntfCfg = ntfCfgV2
     }
 
 agentCfgV1 :: AgentConfig

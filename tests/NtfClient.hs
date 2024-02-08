@@ -30,8 +30,8 @@ import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import SMPClient (serverBracket)
-import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
-import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
@@ -45,6 +45,7 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -106,7 +107,15 @@ ntfServerCfg =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      ntfServerVRange = supportedNTFServerVRange,
       transportConfig = defaultTransportServerConfig
+    }
+
+ntfServerCfgV2 :: NtfServerConfig
+ntfServerCfgV2 =
+  ntfServerCfg
+    { ntfServerVRange = mkVersionRange 1 authEncryptCmdsNTFVersion,
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}}
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
