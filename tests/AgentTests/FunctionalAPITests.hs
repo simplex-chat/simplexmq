@@ -15,6 +15,7 @@
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
     testServerMatrix2,
+    withAgentClientsCfg2,
     getSMPAgentClient',
     makeConnection,
     exchangeGreetingsMsgId,
@@ -29,6 +30,7 @@ module AgentTests.FunctionalAPITests
     (##>),
     (=##>),
     pattern Msg,
+    agentCfgV7,
   )
 where
 

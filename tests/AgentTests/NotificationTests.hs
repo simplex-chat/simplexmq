@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -6,11 +7,12 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
-import AgentTests.FunctionalAPITests (exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, (##>), (=##>), pattern Msg)
+import AgentTests.FunctionalAPITests (agentCfgV7, exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, withAgentClientsCfg2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
@@ -24,14 +26,15 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer2)
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, xit')
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (withStore')
-import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfToken (..))
@@ -49,72 +52,83 @@ removeFileIfExists filePath = do
   when fileExists $ removeFile filePath
 
 notificationTests :: ATransport -> Spec
-notificationTests t =
-  after_ (removeFileIfExists testDB >> removeFileIfExists testDB2) $ do
-    describe "Managing notification tokens" $ do
-      it "should register and verify notification token" $
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testNotificationToken apns
-      it "should allow repeated registration with the same credentials" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testNtfTokenRepeatRegistration apns
-      it "should allow the second registration with different credentials and delete the first after verification" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testNtfTokenSecondRegistration apns
-      it "should re-register token when notification server is restarted" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          testNtfTokenServerRestart t apns
-      it "should work with multiple configured servers" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          testNtfTokenMultipleServers t apns
-      it "should keep working with active token until replaced" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          testNtfTokenChangeServers t apns
-    describe "Managing notification subscriptions" $ do
-      -- fails on Ubuntu CI?
-      xit' "should create notification subscription for existing connection" $ \_ -> do
-        withSmpServer t $
-          withAPNSMockServer $ \apns ->
-            withNtfServer t $ testNotificationSubscriptionExistingConnection apns
-      it "should create notification subscription for new connection" $ \_ ->
-        withSmpServer t $
-          withAPNSMockServer $ \apns ->
-            withNtfServer t $ testNotificationSubscriptionNewConnection apns
-      it "should change notifications mode" $ \_ ->
-        withSmpServer t $
-          withAPNSMockServer $ \apns ->
-            withNtfServer t $ testChangeNotificationsMode apns
-      it "should change token" $ \_ ->
-        withSmpServer t $
-          withAPNSMockServer $ \apns ->
-            withNtfServer t $ testChangeToken apns
-    describe "Notifications server store log" $
-      it "should save and restore tokens and subscriptions" $ \_ ->
-        withSmpServer t $
-          withAPNSMockServer $ \apns ->
-            testNotificationsStoreLog t apns
-    describe "Notifications after SMP server restart" $
-      it "should resume subscriptions after SMP server is restarted" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testNotificationsSMPRestart t apns
-    describe "Notifications after SMP server restart" $
-      it "should resume batched subscriptions after SMP server is restarted" $ \_ ->
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
-    describe "should switch notifications to the new queue" $
-      testServerMatrix2 t $ \servers ->
-        withAPNSMockServer $ \apns ->
-          withNtfServer t $ testSwitchNotifications servers apns
-    it "should keep sending notifications for old token" $
+notificationTests t = do
+  describe "Managing notification tokens" $ do
+    it "should register and verify notification token" $
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testNotificationToken apns
+    it "should allow repeated registration with the same credentials" $
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testNtfTokenRepeatRegistration apns
+    it "should allow the second registration with different credentials and delete the first after verification" $
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testNtfTokenSecondRegistration apns
+    it "should re-register token when notification server is restarted" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenServerRestart t apns
+    it "should work with multiple configured servers" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenMultipleServers t apns
+    it "should keep working with active token until replaced" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenChangeServers t apns
+  describe "Managing notification subscriptions" $ do
+    fdescribe "should create notification subscription for existing connection" $
+      testNtfMatrix t testNotificationSubscriptionExistingConnection
+    it "should create notification subscription for new connection" $
       withSmpServer t $
         withAPNSMockServer $ \apns ->
-          withNtfServerOn t ntfTestPort $
-            testNotificationsOldToken apns
-    it "should update server from new token" $
+          withNtfServer t $ testNotificationSubscriptionNewConnection apns
+    it "should change notifications mode" $
       withSmpServer t $
         withAPNSMockServer $ \apns ->
-          withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
-            testNotificationsNewToken apns ntf
+          withNtfServer t $ testChangeNotificationsMode apns
+    it "should change token" $
+      withSmpServer t $
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testChangeToken apns
+  describe "Notifications server store log" $
+    it "should save and restore tokens and subscriptions" $
+      withSmpServer t $
+        withAPNSMockServer $ \apns ->
+          testNotificationsStoreLog t apns
+  describe "Notifications after SMP server restart" $
+    it "should resume subscriptions after SMP server is restarted" $
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testNotificationsSMPRestart t apns
+  describe "Notifications after SMP server restart" $
+    it "should resume batched subscriptions after SMP server is restarted" $
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
+  describe "should switch notifications to the new queue" $
+    testServerMatrix2 t $ \servers ->
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testSwitchNotifications servers apns
+  it "should keep sending notifications for old token" $
+    withSmpServer t $
+      withAPNSMockServer $ \apns ->
+        withNtfServerOn t ntfTestPort $
+          testNotificationsOldToken apns
+  it "should update server from new token" $
+    withSmpServer t $
+      withAPNSMockServer $ \apns ->
+        withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
+          testNotificationsNewToken apns ntf
+
+testNtfMatrix :: ATransport -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> Spec
+testNtfMatrix t runTest = do
+  -- it "v7 clients, v7 smp, v2 ntf server" $ runNtfTest cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
+  it "v6 clients, v6 smp, v1 ntf server" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
+  -- it "v7 clients, v6 smp, v1 ntf server" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
+  -- it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 runTest
+  -- it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
+
+runNtfTestCfg :: ATransport -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> IO ()
+runNtfTestCfg t smpCfg ntfCfg aCfg bCfg runTest =
+  withSmpServerConfigOn t smpCfg testPort $ \_ ->
+    withAPNSMockServer $ \apns ->
+      withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t)]} $ \_ ->
+        withAgentClientsCfg2 aCfg bCfg $ runTest apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -294,10 +308,8 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
       tkn <- registerTestToken a "qwer" NMInstant apnsQ
       checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
-testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
-testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
-  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentClient -> AgentClient -> IO ()
+testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
@@ -346,8 +358,6 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     -- no notifications should follow
     noNotification apnsQ
-  disconnectAgentClient alice
-  disconnectAgentClient bob
   where
     baseId = 3
     msgId = subtract baseId
@@ -625,7 +635,7 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t (cfg :: ServerConfig) {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res
