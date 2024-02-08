@@ -21,11 +21,17 @@ ntfBlockSize = 512
 authEncryptCmdsNTFVersion :: Version
 authEncryptCmdsNTFVersion = 2
 
-currentNTFServerVersion :: Version
-currentNTFServerVersion = 1
+currentClientNTFVersion :: Version
+currentClientNTFVersion = 1
 
-supportedNTFServerVRange :: VersionRange
-supportedNTFServerVRange = mkVersionRange 1 currentNTFServerVersion
+currentServerNTFVersion :: Version
+currentServerNTFVersion = 1
+
+supportedClientNTFVRange :: VersionRange
+supportedClientNTFVRange = mkVersionRange 1 currentClientNTFVersion
+
+supportedServerNTFVRange :: VersionRange
+supportedServerNTFVRange = mkVersionRange 1 currentServerNTFVersion
 
 data NtfServerHandshake = NtfServerHandshake
   { ntfVersionRange :: VersionRange,

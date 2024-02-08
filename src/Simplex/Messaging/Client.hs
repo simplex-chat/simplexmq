@@ -155,7 +155,7 @@ clientStub sessionId = do
       { action = Nothing,
         sessionId,
         sessionTs = undefined,
-        thVersion = currentSMPServerVersion,
+        thVersion = currentClientSMPRelayVersion,
         thAuth = Nothing,
         timeoutPerBlock = undefined,
         blockSize = smpBlockSize,
@@ -268,7 +268,7 @@ defaultClientConfig serverVRange =
     }
 
 defaultSMPClientConfig :: ProtocolClientConfig
-defaultSMPClientConfig = defaultClientConfig supportedSMPServerVRange
+defaultSMPClientConfig = defaultClientConfig supportedClientSMPRelayVRange
 
 data Request err msg = Request
   { entityId :: EntityId,

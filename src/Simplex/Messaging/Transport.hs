@@ -27,8 +27,10 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
-    supportedSMPServerVRange,
-    currentSMPServerVersion,
+    supportedClientSMPRelayVRange,
+    supportedServerSMPRelayVRange,
+    currentClientSMPRelayVersion,
+    currentServerSMPRelayVersion,
     basicAuthSMPVersion,
     subModeSMPVersion,
     authEncryptCmdsSMPVersion,
@@ -121,13 +123,19 @@ subModeSMPVersion = 6
 authEncryptCmdsSMPVersion :: Version
 authEncryptCmdsSMPVersion = 7
 
-currentSMPServerVersion :: Version
-currentSMPServerVersion = 6
+currentClientSMPRelayVersion :: Version
+currentClientSMPRelayVersion = 6
+
+currentServerSMPRelayVersion :: Version
+currentServerSMPRelayVersion = 6
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
-supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange batchCmdsSMPVersion currentSMPServerVersion
+supportedClientSMPRelayVRange :: VersionRange
+supportedClientSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentClientSMPRelayVersion
+
+supportedServerSMPRelayVRange :: VersionRange
+supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
 
 simplexMQVersion :: String
 simplexMQVersion = showVersion SMQ.version

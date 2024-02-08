@@ -11,7 +11,6 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Version (VersionRange (..))
 import Test.Hspec
 
 batchingTests :: Spec
@@ -141,7 +140,7 @@ randomSUB sessId = do
   rId <- atomically $ C.randomBytes 24 g
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
-  let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, rId, Cmd SRecipient SUB)
+  let s = encodeTransmission currentClientSMPRelayVersion sessId (corrId, rId, Cmd SRecipient SUB)
   pure $ Right (Just . TASignature $ C.sign rpKey s, s)
 
 randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
@@ -158,7 +157,7 @@ randomSEND sessId len = do
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (_, rpKey) <- atomically $ C.generateSignatureKeyPair C.SEd448 g
   msg <- atomically $ C.randomBytes len g
-  let s = encodeTransmission (maxVersion supportedSMPServerVRange) sessId (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
+  let s = encodeTransmission currentClientSMPRelayVersion sessId (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ Right (Just . TASignature $ C.sign rpKey s, s)
 
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)

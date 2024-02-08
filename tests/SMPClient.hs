@@ -73,7 +73,7 @@ testSMPClient client = do
   runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h -> do
     g <- liftIO C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash supportedSMPServerVRange) >>= \case
+    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash supportedClientSMPRelayVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -100,7 +100,7 @@ cfg =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
-      smpServerVRange = supportedSMPServerVRange,
+      smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
       controlPort = Nothing
     }

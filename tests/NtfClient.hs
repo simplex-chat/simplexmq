@@ -76,7 +76,7 @@ testNtfClient client = do
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h -> do
     g <- liftIO C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedNTFServerVRange) >>= \case
+    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -107,7 +107,7 @@ ntfServerCfg =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      ntfServerVRange = supportedNTFServerVRange,
+      ntfServerVRange = supportedServerNTFVRange,
       transportConfig = defaultTransportServerConfig
     }
 
