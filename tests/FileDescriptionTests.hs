@@ -7,9 +7,7 @@
 module FileDescriptionTests where
 
 import Control.Exception (bracket_)
-import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
-import qualified Data.Map.Strict as M
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
@@ -174,9 +172,7 @@ testFileDescriptionURI = do
 testFileDescriptionURIExtras :: IO ()
 testFileDescriptionURIExtras = do
   vfd <- either fail pure $ validateFileDescription fileDesc
-  let descr =
-        FileDescriptionURI SSSimplex vfd $
-          M.fromList [("something", J.String "extra"), ("more", J.Bool True)]
+  let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
 
 withRemoveTmpFile :: IO () -> IO ()

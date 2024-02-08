@@ -32,6 +32,7 @@ module Simplex.FileTransfer.Description
     mb,
     gb,
     FileDescriptionURI (..),
+    FileClientData,
     fileDescriptionURI,
     qrSizeLimit,
   )
@@ -47,7 +48,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -57,6 +57,7 @@ import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.String
 import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -69,7 +70,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
   { party :: SFileParty p,
@@ -244,25 +245,27 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
 data FileDescriptionURI = FileDescriptionURI
   { scheme :: ServiceScheme,
     description :: ValidFileDescription 'FRecipient,
-    extras :: Map Text J.Value -- JSON-encoded extensions to pass in a link
+    clientData :: Maybe FileClientData -- JSON-encoded extensions to pass in a link
   }
   deriving (Eq, Show)
+
+type FileClientData = Text
 
 fileDescriptionURI :: ValidFileDescription 'FRecipient -> FileDescriptionURI
 fileDescriptionURI vfd = FileDescriptionURI SSSimplex vfd mempty
 
 instance StrEncoding FileDescriptionURI where
-  strEncode FileDescriptionURI {scheme, description, extras} = mconcat [strEncode scheme, "/file", "#/?", queryStr]
+  strEncode FileDescriptionURI {scheme, description, clientData} = mconcat [strEncode scheme, "/file", "#/?", queryStr]
     where
-      queryStr = strEncode $ QSP QEscape $ ("d", strEncode description) : extras_
-      extras_ = [("_", LB.toStrict $ J.encode extras) | not (M.null extras)]
+      queryStr = strEncode $ QSP QEscape qs
+      qs = ("desc", strEncode description) : maybe [] (\cd -> [("data", encodeUtf8 cd)]) clientData
   strP = do
     scheme <- strP
     _ <- "/file" <* optional (A.char '/') <* "#/?"
     query <- strP
-    description <- queryParam "d" query
-    extras <- maybe (pure mempty) (either fail pure . J.eitherDecodeStrict) $ queryParamStr "_" query
-    pure FileDescriptionURI {scheme, description, extras}
+    description <- queryParam "desc" query
+    let clientData = safeDecodeUtf8 <$> queryParamStr "data" query
+    pure FileDescriptionURI {scheme, description, clientData}
 
 -- | URL length in QR code before jumping up to a next size.
 qrSizeLimit :: Int
