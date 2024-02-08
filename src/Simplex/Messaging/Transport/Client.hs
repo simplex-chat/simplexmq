@@ -22,6 +22,7 @@ where
 
 import Control.Applicative (optional)
 import Control.Logger.Simple (logError)
+import Control.Monad (when)
 import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -141,8 +142,8 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
     connectTLS (Just hostName) tCfg clientParams sock >>= \tls -> do
-      chain <- atomically $ takeTMVar serverCert
-      getClientConnection tCfg (Just chain) tls
+      chain <- maybe (error "GTFO: onServerCertificate didn't fire") pure =<< atomically (tryTakeTMVar serverCert)
+      getClientConnection tCfg chain tls
   client c `E.finally` liftIO (closeConnection c)
   where
     hostAddr = \case
@@ -217,13 +218,18 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ serverCerts =
     { T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
       T.clientHooks =
         def
-          { T.onServerCertificate = maybe def (\cafp _ _ _ c -> atomically (putTMVar serverCerts c) >> validateCertificateChain cafp host p c) cafp_,
+          { T.onServerCertificate = maybe def (\cafp _ _ _ -> onServerCert cafp) cafp_,
             T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_
           },
       T.clientSupported = supported
     }
   where
     p = B.pack port
+    onServerCert :: C.KeyHash -> X.CertificateChain -> IO [XV.FailedReason]
+    onServerCert caFP c = do
+      errs <- validateCertificateChain caFP host p c
+      when (null errs) $ atomically (putTMVar serverCerts c)
+      pure errs
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]

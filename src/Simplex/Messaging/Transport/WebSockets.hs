@@ -30,7 +30,8 @@ data WS = WS
     tlsUniq :: ByteString,
     wsStream :: Stream,
     wsConnection :: Connection,
-    wsTransportConfig :: TransportConfig
+    wsTransportConfig :: TransportConfig,
+    wsServerCerts :: X.CertificateChain
   }
 
 websocketsOpts :: ConnectionOptions
@@ -51,14 +52,14 @@ instance Transport WS where
   transportConfig :: WS -> TransportConfig
   transportConfig = wsTransportConfig
 
-  getServerConnection :: TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO WS
+  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO WS
   getServerConnection = getWS TServer
 
-  getClientConnection :: TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO WS
+  getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO WS
   getClientConnection = getWS TClient
 
-  getCertificateChain :: WS -> Maybe X.CertificateChain
-  getCertificateChain WS {} = Nothing -- TODO: store and read
+  getServerCerts :: WS -> X.CertificateChain
+  getServerCerts = wsServerCerts
 
   tlsUnique :: WS -> ByteString
   tlsUnique = tlsUniq
@@ -83,13 +84,13 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-getWS :: TransportPeer -> TransportConfig -> Maybe X.CertificateChain -> T.Context -> IO WS
-getWS wsPeer cfg _certs cxt = withTlsUnique wsPeer cxt connectWS
+getWS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO WS
+getWS wsPeer cfg wsServerCerts cxt = withTlsUnique wsPeer cxt connectWS
   where
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer wsPeer s
-      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection, wsTransportConfig = cfg}
+      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection, wsTransportConfig = cfg, wsServerCerts}
     connectPeer :: TransportPeer -> Stream -> IO Connection
     connectPeer TServer = acceptClientRequest
     connectPeer TClient = sendClientRequest

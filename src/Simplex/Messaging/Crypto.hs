@@ -8,6 +8,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -72,9 +73,13 @@ module Simplex.Messaging.Crypto
     generateAuthKeyPair,
     generateDhKeyPair,
     privateToX509,
+    x509ToPublic,
+    x509ToPrivateSign,
     publicKey,
     signatureKeyPair,
     publicToX509,
+    decodeASNObj,
+    encodeASNObj,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -161,6 +166,7 @@ module Simplex.Messaging.Crypto
     Certificate,
     signCertificate,
     signX509,
+    verifyX509,
     certificateFingerprint,
     signedFingerprint,
     SignatureAlgorithmX509 (..),
@@ -1133,6 +1139,18 @@ signX509 key = fst . objectToSignedExact f
         signatureAlgorithmX509 key,
         ()
       )
+{-# INLINE signX509 #-}
+
+verifyX509 :: (ASN1Object o, Eq o, Show o) => APublicVerifyKey -> SignedExact o -> Either String o
+verifyX509 key exact = do
+  signature <- case signedAlg of
+    SignatureALG_IntrinsicHash PubKeyALG_Ed25519 -> ASignature SEd25519 <$> decodeSignature signedSignature
+    SignatureALG_IntrinsicHash PubKeyALG_Ed448 -> ASignature SEd448 <$> decodeSignature signedSignature
+    _ -> Left "unknown x509 signature algorithm"
+  if verify key signature $ getSignedData exact then Right signedObject else Left "bad signature"
+  where
+    Signed {signedObject, signedAlg, signedSignature} = getSigned exact
+{-# INLINE verifyX509 #-}
 
 certificateFingerprint :: SignedCertificate -> KeyHash
 certificateFingerprint = signedFingerprint
@@ -1161,13 +1179,17 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
   signatureAlgorithmX509 = signatureAlgorithmX509 . snd
 
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
-newtype SignedObject a = SignedObject (SignedExact a)
+newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
   toField (SignedObject s) = toField $ encodeSignedObject s
+
+instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
+  smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact
+  smpP = smpP >>= either fail (pure . SignedObject) . decodeSignedObject . unLarge
 
 -- | Signature verification.
 --
@@ -1353,6 +1375,13 @@ privateToX509 = \case
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
+decodeASNObj :: ASN1Object a => ByteString -> Either String a
+decodeASNObj = checkFull <=< fromASN1 <=< first show . decodeASN1 DER . fromStrict
+  where
+    checkFull = \case
+      (o, []) -> Right o
+      _ -> Left "not a full parse"
+
 -- Decoding of binary X509 'CryptoPublicKey'.
 decodePubKey :: CryptoPublicKey k => ByteString -> Either String k
 decodePubKey = decodeKey >=> x509ToPublic >=> pubKey
@@ -1384,3 +1413,9 @@ keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"
+
+x509ToPrivateSign :: PrivKey -> Either String APrivateSignKey
+x509ToPrivateSign = \case
+  PrivKeyEd25519 k -> Right . APrivateSignKey SEd25519 $ PrivateKeyEd25519 k $ Ed25519.toPublic k
+  PrivKeyEd448 k -> Right . APrivateSignKey SEd448 $ PrivateKeyEd448 k $ Ed448.toPublic k
+  _ -> Left "not a signing key"
