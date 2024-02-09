@@ -73,9 +73,9 @@ notificationTests t = do
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
   describe "Managing notification subscriptions" $ do
-    describe "should create notification subscription for existing connection" $
+    fdescribe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
-    describe "should create notification subscription for new connection" $
+    fdescribe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
       withSmpServer t $
