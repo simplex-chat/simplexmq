@@ -44,7 +44,7 @@ module Simplex.Messaging.Transport
     TProxy (..),
     ATransport (..),
     TransportPeer (..),
-    getOnlinePubKey,
+    getServerVerifyKey,
 
     -- * TLS Transport
     TLS (..),
@@ -201,8 +201,8 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
-getOnlinePubKey :: Transport c => c -> Either String C.APublicVerifyKey
-getOnlinePubKey c =
+getServerVerifyKey :: Transport c => c -> Either String C.APublicVerifyKey
+getServerVerifyKey c =
   case getServerCerts c of
     X.CertificateChain (server : _ca) -> fromX509 . X.certPubKey . X.signedObject $ X.getSigned server
     _ -> Left "no certificate chain"
@@ -477,10 +477,10 @@ smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
         forM_ certChain $ \(X.CertificateChain cs) -> case cs of
           [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
           _ -> throwError $ TEHandshake BAD_AUTH
-        k_ <- forM sk' $ \exact -> do
-          serverKey <- either error pure $ getOnlinePubKey c
-          pubKey <- liftEitherWith (const $ TEHandshake BAD_AUTH) $ C.verifyX509 serverKey exact
-          liftEitherWith (const $ TEHandshake BAD_AUTH) $ C.x509ToPublic (pubKey, []) >>= C.pubKey
+        k_ <- forM sk' $ \exact -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+          serverKey <- getServerVerifyKey c
+          pubKey <- C.verifyX509 serverKey exact
+          C.x509ToPublic (pubKey, []) >>= C.pubKey
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
         pure $ smpThHandle th v certChain pk k_
       Nothing -> throwE $ TEHandshake VERSION

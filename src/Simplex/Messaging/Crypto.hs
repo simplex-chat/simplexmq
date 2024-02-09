@@ -78,7 +78,6 @@ module Simplex.Messaging.Crypto
     publicKey,
     signatureKeyPair,
     publicToX509,
-    decodeASNObj,
     encodeASNObj,
 
     -- * key encoding/decoding
@@ -1374,13 +1373,6 @@ privateToX509 = \case
 
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
-
-decodeASNObj :: ASN1Object a => ByteString -> Either String a
-decodeASNObj = checkFull <=< fromASN1 <=< first show . decodeASN1 DER . fromStrict
-  where
-    checkFull = \case
-      (o, []) -> Right o
-      _ -> Left "not a full parse"
 
 -- Decoding of binary X509 'CryptoPublicKey'.
 decodePubKey :: CryptoPublicKey k => ByteString -> Either String k

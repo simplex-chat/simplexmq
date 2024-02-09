@@ -142,7 +142,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
     connectTLS (Just hostName) tCfg clientParams sock >>= \tls -> do
-      chain <- maybe (error "GTFO: onServerCertificate didn't fire") pure =<< atomically (tryTakeTMVar serverCert)
+      chain <- atomically (tryTakeTMVar serverCert) >>= maybe (closeTLS tls >> error "onServerCertificate didn't fire") pure
       getClientConnection tCfg chain tls
   client c `E.finally` liftIO (closeConnection c)
   where
