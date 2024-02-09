@@ -213,6 +213,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (THandleParams (..))
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1117,7 +1118,7 @@ getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMet
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
   atomically createTakeGetLock
   (v, msg_) <- withSMPClient c rq "GET" $ \smp ->
-    (thVersion smp,) <$> getSMPMessage smp rcvPrivateKey rcvId
+    (thVersion $ thParams smp,) <$> getSMPMessage smp rcvPrivateKey rcvId
   mapM (decryptMeta v) msg_
   where
     decryptMeta v msg@SMP.RcvMessage {msgId} = SMP.rcvMessageMeta msgId <$> decryptSMPMessage v rq msg

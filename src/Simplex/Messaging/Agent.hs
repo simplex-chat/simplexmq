@@ -163,6 +163,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Transport (THandleParams (sessionId))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -2061,7 +2062,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), v, s
             where
               processEND = \case
                 Just (Right clnt)
-                  | sessId == sessionId clnt -> do
+                  | sessId == sessionId (thParams clnt) -> do
                       removeSubscription c connId
                       notify' END
                       pure "END"

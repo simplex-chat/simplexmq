@@ -45,7 +45,7 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (supportedParameters)
+import Simplex.Messaging.Transport (THandleParams (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -57,6 +57,7 @@ import UnliftIO.Directory
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
     transportSession :: TransportSession FileResponse,
+    thParams :: THandleParams,
     config :: XFTPClientConfig
   }
 
@@ -98,7 +99,9 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkC
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
   http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
-  let c = XFTPClient {http2Client, transportSession, config}
+  let HTTP2Client {sessionId} = http2Client
+      thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, encrypt = False, batch = True}
+      c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c
   pure c
 
@@ -132,20 +135,20 @@ xftpClientError = \case
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand c@XFTPClient {http2Client = HTTP2Client {sessionId}} pKey fId cmd chunkSpec_ = do
+sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission sessionId (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
+      xftpEncodeTransmission thParams (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
   sendXFTPTransmission c t chunkSpec_
 
 sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPTransmission XFTPClient {config, http2Client = http2@HTTP2Client {sessionId}} t chunkSpec_ = do
+sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = do
   let req = H.requestStreaming N.methodPost "/" [] streamBody
       reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2 req reqTimeout
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2Client req reqTimeout
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
-  (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission sessionId bodyHead
+  (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission thParams bodyHead
   case respOrErr of
     Right r -> case protocolError r of
       Just e -> throwError $ PCEProtocolError e
@@ -212,10 +215,10 @@ ackXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> RecipientId -> ExceptT XFTPCl
 ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing >>= okResponse
 
 pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
-pingXFTP c@XFTPClient {http2Client = HTTP2Client {sessionId}} = do
+pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission sessionId Nothing ("", "", FileCmd SFRecipient PING)
+      xftpEncodeTransmission thParams Nothing ("", "", FileCmd SFRecipient PING)
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()

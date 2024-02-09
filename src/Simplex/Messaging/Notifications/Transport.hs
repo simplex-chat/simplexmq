@@ -18,14 +18,17 @@ import Simplex.Messaging.Version
 ntfBlockSize :: Int
 ntfBlockSize = 512
 
+encryptTransmissionNTFVersion :: Version
+encryptTransmissionNTFVersion = 2
+
 authEncryptCmdsNTFVersion :: Version
-authEncryptCmdsNTFVersion = 2
+authEncryptCmdsNTFVersion = 3
 
 currentClientNTFVersion :: Version
-currentClientNTFVersion = 1
+currentClientNTFVersion = 2
 
 currentServerNTFVersion :: Version
-currentServerNTFVersion = 1
+currentServerNTFVersion = 2
 
 supportedClientNTFVRange :: VersionRange
 supportedClientNTFVRange = mkVersionRange 1 currentClientNTFVersion
@@ -78,7 +81,7 @@ encodeNtfAuthPubKey v k
 -- | Notifcations server transport handshake.
 ntfServerHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
 ntfServerHandshake c (k, pk) kh ntfVRange = do
-  let th@THandle {sessionId} = ntfTHandle c
+  let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   sendHandshake th $ NtfServerHandshake {sessionId, ntfVersionRange = ntfVRange, authPubKey = Just k}
   getHandshake th >>= \case
     NtfClientHandshake {ntfVersion = v, keyHash, authPubKey = k'}
@@ -91,7 +94,7 @@ ntfServerHandshake c (k, pk) kh ntfVRange = do
 -- | Notifcations server client transport handshake.
 ntfClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
 ntfClientHandshake c (k, pk) keyHash ntfVRange = do
-  let th@THandle {sessionId} = ntfTHandle c
+  let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = k'} <- getHandshake th
   if sessionId /= sessId
     then throwError TEBadSession
@@ -102,10 +105,13 @@ ntfClientHandshake c (k, pk) keyHash ntfVRange = do
       Nothing -> throwError $ TEHandshake VERSION
 
 ntfThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
-ntfThHandle th v pk k_ =
+ntfThHandle th@THandle {params} v pk k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}) <$> k_
-   in (th :: THandle c) {thVersion = v, thAuth}
+      params' = params {thVersion = v, thAuth, encrypt = v >= encryptTransmissionNTFVersion}
+   in (th :: THandle c) {params = params'}
 
 ntfTHandle :: Transport c => c -> THandle c
-ntfTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thAuth = Nothing, batch = False}
+ntfTHandle c = THandle {connection = c, params}
+  where
+    params = THandleParams {sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thAuth = Nothing, encrypt = False, batch = False}

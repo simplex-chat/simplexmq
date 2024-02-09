@@ -28,7 +28,7 @@
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
-    ProtocolClient (thVersion, sessionId, sessionTs),
+    ProtocolClient (thParams, sessionTs),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -119,13 +119,9 @@ import System.Timeout (timeout)
 -- Use 'getSMPClient' to connect to an SMP server and create a client handle.
 data ProtocolClient err msg = ProtocolClient
   { action :: Maybe (Async ()),
-    sessionId :: SessionId,
+    thParams :: THandleParams,
     sessionTs :: UTCTime,
-    thVersion :: Version,
-    thAuth :: Maybe THandleAuth,
     timeoutPerBlock :: Int,
-    blockSize :: Int,
-    batch :: Bool,
     client_ :: PClient err msg
   }
 
@@ -153,13 +149,17 @@ clientStub sessionId thVersion thAuth = do
   return
     ProtocolClient
       { action = Nothing,
-        sessionId,
+        thParams =
+          THandleParams
+            { sessionId,
+              thVersion,
+              thAuth,
+              blockSize = smpBlockSize,
+              encrypt = thVersion >= encryptTransmissionSMPVersion,
+              batch = True
+            },
         sessionTs = undefined,
-        thVersion,
-        thAuth,
         timeoutPerBlock = undefined,
-        blockSize = smpBlockSize,
-        batch = undefined,
         client_ =
           PClient
             { connected,
@@ -373,10 +373,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       ks <- atomically $ C.generateKeyPair g
       runExceptT (protocolClientHandshake @err @msg h ks (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
-        Right th@THandle {sessionId, thVersion, thAuth, blockSize, batch} -> do
+        Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
-          let timeoutPerBlock = (blockSize * tcpTimeoutPerKb) `div` 1024
-              c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, thAuth, sessionTs, timeoutPerBlock, blockSize, batch}
+          let timeoutPerBlock = (blockSize params * tcpTimeoutPerKb) `div` 1024
+              c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs, timeoutPerBlock}
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
@@ -521,7 +521,7 @@ writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
 writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ $ client_ c)
 
 serverTransmission :: ProtocolClient err msg -> RecipientId -> msg -> ServerTransmission msg
-serverTransmission ProtocolClient {thVersion, sessionId, client_ = PClient {transportSession}} entityId message =
+serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} entityId message =
   (transportSession, thVersion, sessionId, entityId, message)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
@@ -639,7 +639,7 @@ type PCTransmission err msg = (Either TransportError SentRawTransmission, Reques
 
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
-sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
+sendProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
   validate . concat =<< mapM (sendBatch c) bs
   where
@@ -656,7 +656,7 @@ sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
         diff = L.length cs - length rs
 
 streamProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
-streamProtocolCommands c@ProtocolClient {batch, blockSize} cs cb = do
+streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs cb = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
   mapM_ (cb <=< sendBatch c) bs
 
@@ -677,7 +677,7 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
 
 -- | Send Protocol command
 sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize} pKey entId cmd =
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission c (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
@@ -702,11 +702,12 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Requ
   pure Response {entityId, response}
 
 mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission ProtocolClient {sessionId, thVersion = v, thAuth, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entId, cmd) = do
+mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entId, cmd) = do
   corrId <- atomically getNextCorrId
-  let t = authTransmission thAuth pKey_ corrId $ encodeTransmission v sessionId (corrId, entId, cmd)
+  let ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, entId, cmd)
+      auth = authTransmission (thAuth thParams) pKey_ corrId tForAuth
   r <- atomically $ mkRequest corrId
-  pure (t, r)
+  pure ((,tToSend) <$> auth, r)
   where
     getNextCorrId :: STM CorrId
     getNextCorrId = do
@@ -718,8 +719,8 @@ mkTransmission ProtocolClient {sessionId, thVersion = v, thAuth, client_ = PClie
       TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError SentRawTransmission
-authTransmission thAuth pKey_ (CorrId corrId) t = (,t) <$> traverse authenticate pKey_
+authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of

@@ -371,7 +371,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPSkip -> pure ()
 
 runClientTransport :: Transport c => THandle c -> M ()
-runClientTransport th@THandle {thVersion, sessionId} = do
+runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   active <- asks clients
@@ -416,7 +416,7 @@ cancelSub sub =
     _ -> return ()
 
 receive :: Transport c => THandle c -> Client -> M ()
-receive th@THandle {thAuth} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
+receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet th)
@@ -437,12 +437,12 @@ receive th@THandle {thAuth} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandle c -> Client -> IO ()
-send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
+send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
     -- TODO we can authorize responses as well
-    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission v sessionId t)) ts
+    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeSrvTransmission params t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
@@ -452,7 +452,7 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
       _ -> 1
 
 disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
-disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
+disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where

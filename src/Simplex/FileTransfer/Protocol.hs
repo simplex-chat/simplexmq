@@ -7,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
@@ -46,13 +47,14 @@ import Simplex.Messaging.Protocol
     SignedTransmission,
     SndPublicAuthKey,
     Transmission,
-    encodeTransmission,
+    ClntTransmission (..),
+    encodeClntTransmission,
     messageTagP,
     tDecodeParseValidate,
     tEncodeBatch1,
     tParse,
   )
-import Simplex.Messaging.Transport (SessionId, TransportError (..))
+import Simplex.Messaging.Transport (THandleParams (..), TransportError (..))
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 
@@ -394,20 +396,20 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding e c => SessionId -> Maybe C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeTransmission sessionId pKey (corrId, fId, msg) = do
-  let t = encodeTransmission currentXFTPVersion sessionId (corrId, fId, msg)
-  xftpEncodeBatch1 =<< authTransmission Nothing pKey corrId t
+xftpEncodeTransmission :: ProtocolEncoding e c => THandleParams -> Maybe C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission thParams pKey (corrId, fId, msg) = do
+  let ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, fId, msg)
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission Nothing pKey corrId tForAuth
 
 -- this function uses batch syntax but puts only one transmission in the batch
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
 xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 t) xftpBlockSize
 
-xftpDecodeTransmission :: ProtocolEncoding e c => SessionId -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
-xftpDecodeTransmission sessionId t = do
+xftpDecodeTransmission :: ProtocolEncoding e c => THandleParams -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
+xftpDecodeTransmission thParams t = do
   t' <- first (const BLOCK) $ C.unPad t
-  case tParse True t' of
-    t'' :| [] -> Right $ tDecodeParseValidate sessionId currentXFTPVersion t''
+  case tParse thParams t' of
+    t'' :| [] -> Right $ tDecodeParseValidate thParams t''
     _ -> Left BLOCK
 
 $(J.deriveJSON (enumJSON $ dropPrefix "F") ''FileParty)

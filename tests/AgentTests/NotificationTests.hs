@@ -12,7 +12,7 @@
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
-import AgentTests.FunctionalAPITests (agentCfgV7, exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, withAgentClientsCfg2, (##>), (=##>), pattern Msg)
+import AgentTests.FunctionalAPITests (agentCfgV8, exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, withAgentClientsCfg2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
@@ -26,7 +26,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer2)
-import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
+import SMPClient (cfg, cfgV8, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -115,17 +115,31 @@ notificationTests t = do
 
 testNtfMatrix :: ATransport -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> Spec
 testNtfMatrix t runTest = do
-  it "new servers: SMP v7, NTF v2; new clients: v7/v2" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfgV7 agentCfgV7 runTest
-  it "new servers: SMP v7, NTF v2; old clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfg runTest
-  it "old servers: SMP v6, NTF v1; old clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
-  -- this case will cannot be supported - see RFC
-  xit "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
-  -- servers can be migrated in any order
-  it "servers: new SMP v7, old NTF v1; old clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfg agentCfg agentCfg runTest
-  it "servers: old SMP v6, new NTF v2; old clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfgV2 agentCfg agentCfg runTest
-  -- clients can be partially migrated
-  it "servers: new SMP v7, old NTF v2; clients: new/old" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfgV7 agentCfg runTest
-  it "servers: new SMP v7, old NTF v2; clients: old/new" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfgV7 runTest
+  describe "next and current" $ do
+    it "next servers: SMP v8, NTF v3; next clients: v8/v3" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfgV8 agentCfgV8 runTest
+    it "next servers: SMP v8, NTF v3; curr clients: v7/v2" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfg agentCfg runTest
+    it "curr servers: SMP v7, NTF v2; curr clients: v7/v2" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
+    -- this case will cannot be supported - see RFC
+    xit "servers: SMP v7, NTF v2; clients: v8/v3 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV8 agentCfgV8 runTest
+    -- servers can be migrated in any order
+    it "servers: next SMP v8, curr NTF v2; curr clients: v7/v2" $ runNtfTestCfg t cfgV8 ntfServerCfg agentCfg agentCfg runTest
+    it "servers: curr SMP v7, next NTF v3; curr clients: v7/v2" $ runNtfTestCfg t cfg ntfServerCfgV3 agentCfg agentCfg runTest
+    -- clients can be partially migrated
+    it "servers: next SMP v8, curr NTF v3; clients: next/curr" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfgV8 agentCfg runTest
+    it "servers: next SMP v8, curr NTF v3; clients: curr/new" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfg agentCfgV8 runTest
+  describe "current and previous" $ do
+    it "curr servers: SMP v7, NTF v2; curr clients: v7/v2" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfgV8 agentCfgV8 runTest
+    it "curr servers: SMP v7, NTF v2; prev clients: v6/v1" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfg agentCfg runTest
+    it "prev servers: SMP v6, NTF v1; prev clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
+    -- this case will cannot be supported - see RFC
+    xit "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV8 agentCfgV8 runTest
+    -- servers can be migrated in any order
+    it "servers: curr SMP v7, prev NTF v1; prev clients: v6/v1" $ runNtfTestCfg t cfgV8 ntfServerCfg agentCfg agentCfg runTest
+    it "servers: prev SMP v6, curr NTF v2; prev clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfgV3 agentCfg agentCfg runTest
+    -- clients can be partially migrated
+    it "servers: curr SMP v7, prev NTF v2; clients: curr/prev" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfgV8 agentCfg runTest
+    it "servers: curr SMP v7, prev NTF v2; clients: prev/new" $ runNtfTestCfg t cfgV8 ntfServerCfgV3 agentCfg agentCfgV8 runTest
+
 
 runNtfTestCfg :: ATransport -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> IO ()
 runNtfTestCfg t smpCfg ntfCfg aCfg bCfg runTest =

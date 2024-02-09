@@ -105,8 +105,8 @@ cfg =
       controlPort = Nothing
     }
 
-cfgV7 :: ServerConfig
-cfgV7 = cfg {smpServerVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}
+cfgV8 :: ServerConfig
+cfgV8 = cfg {smpServerVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -142,8 +142,8 @@ withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
-withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
-withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
+withSmpServerV8 :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServerV8 t = withSmpServerConfigOn t cfgV8 testPort . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandle c -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
@@ -164,8 +164,8 @@ smpServerTest ::
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
-    tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId, corrId, queueId, smp)
+    tPut' h (sig, corrId, queueId, smp) = do
+      let t' = smpEncode (corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do

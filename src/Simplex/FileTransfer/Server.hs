@@ -51,6 +51,7 @@ import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, Rec
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Transport (THandleParams (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
@@ -65,6 +66,14 @@ import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
 import qualified UnliftIO.Exception as E
 
 type M a = ReaderT XFTPEnv IO a
+
+data XFTPTransportRequest =
+  XFTPTransportRequest
+    { thParams :: THandleParams,
+      reqBody :: HTTP2Body,
+      request :: H.Request,
+      sendResponse :: H.Response -> IO ()
+    }
 
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
@@ -86,7 +95,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       liftIO $
         runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration $ \sessionId r sendResponse -> do
           reqBody <- getHTTP2Body r xftpBlockSize
-          processRequest HTTP2Request {sessionId, request = r, reqBody, sendResponse} `runReaderT` env
+          let thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, encrypt = False, batch = True}
+          processRequest XFTPTransportRequest {thParams, request = r, reqBody, sendResponse} `runReaderT` env
 
     stopServer :: M ()
     stopServer = do
@@ -215,11 +225,11 @@ data ServerFile = ServerFile
     sbState :: LC.SbState
   }
 
-processRequest :: HTTP2Request -> M ()
-processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
+processRequest :: XFTPTransportRequest -> M ()
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
   | otherwise = do
-      case xftpDecodeTransmission sessionId bodyHead of
+      case xftpDecodeTransmission thParams bodyHead of
         Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
           case cmdOrErr of
             Right cmd -> do
@@ -233,7 +243,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      let t_ = xftpEncodeTransmission sessionId Nothing (corrId, fId, resp)
+      let t_ = xftpEncodeTransmission thParams Nothing (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do

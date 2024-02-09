@@ -125,7 +125,9 @@ module Simplex.Messaging.Protocol
     -- * Parse and serialize
     ProtocolMsgTag (..),
     messageTagP,
-    encodeTransmission,
+    ClntTransmission (..),
+    encodeClntTransmission,
+    encodeSrvTransmission,
     transmissionP,
     _smpP,
     encodeRcvMsgBody,
@@ -1066,18 +1068,19 @@ data CommandError
   deriving (Eq, Read, Show)
 
 -- | SMP transmission parser.
-transmissionP :: Parser RawTransmission
-transmissionP = do
+transmissionP :: THandleParams -> Parser RawTransmission
+transmissionP THandleParams {sessionId, encrypt} = do
   authenticator <- smpP
   authorized <- A.takeByteString
   either fail pure $ parseAll (trn authenticator authorized) authorized
   where
     trn authenticator authorized = do
-      sessId <- smpP
+      sessId <- if encrypt then pure "" else smpP
+      let authorized' = if encrypt then smpEncode sessionId <> authorized else authorized
       corrId <- smpP
       entityId <- smpP
       command <- A.takeByteString
-      pure RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
+      pure RawTransmission {authenticator, authorized = authorized', sessId, corrId, entityId, command}
 
 class (ProtocolEncoding err msg, ProtocolEncoding err (ProtoCommand msg), Show err, Show msg) => Protocol err msg | msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
@@ -1312,7 +1315,7 @@ instance Encoding CommandError where
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle c -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
-tPut th = fmap concat . mapM tPutBatch . batchTransmissions (batch th) (blockSize th)
+tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (batch params) (blockSize params)
   where
     tPutBatch :: TransportBatch () -> IO [Either TransportError ()]
     tPutBatch = \case
@@ -1379,22 +1382,40 @@ tEncodeBatch1 :: SentRawTransmission -> ByteString
 tEncodeBatch1 t = lenEncode 1 `B.cons` tEncodeForBatch t
 {-# INLINE tEncodeBatch1 #-}
 
-encodeTransmission :: ProtocolEncoding e c => Version -> ByteString -> Transmission c -> ByteString
-encodeTransmission v sessionId (CorrId corrId, queueId, command) =
-  smpEncode (sessionId, corrId, queueId) <> encodeProtocol v command
-{-# INLINE encodeTransmission #-}
+-- tForAuth is lazy to avoid computing it when there is no key to sign
+data ClntTransmission = ClntTransmission {tForAuth :: ~ByteString, tToSend :: ByteString}
+
+encodeClntTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ClntTransmission
+encodeClntTransmission THandleParams {thVersion = v, sessionId, encrypt} t =
+  ClntTransmission {tForAuth, tToSend = if encrypt then t' else tForAuth}
+  where
+    tForAuth = smpEncode sessionId <> t'
+    t' = encodeTransmission_ v t
+{-# INLINE encodeClntTransmission #-}
+
+encodeSrvTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ByteString
+encodeSrvTransmission THandleParams {thVersion = v, sessionId, encrypt} t =
+  if encrypt then t' else smpEncode sessionId <> t'
+  where
+    t' = encodeTransmission_ v t
+{-# INLINE encodeSrvTransmission #-}
+
+encodeTransmission_ :: ProtocolEncoding e c => Version -> Transmission c -> ByteString
+encodeTransmission_ v (CorrId corrId, queueId, command) =
+  smpEncode (corrId, queueId) <> encodeProtocol v command
+{-# INLINE encodeTransmission_ #-}
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (NonEmpty (Either TransportError RawTransmission))
-tGetParse th = eitherList (tParse $ batch th) <$> tGetBlock th
+tGetParse th@THandle {params} = eitherList (tParse params) <$> tGetBlock th
 {-# INLINE tGetParse #-}
 
-tParse :: Bool -> ByteString -> NonEmpty (Either TransportError RawTransmission)
-tParse batch s
+tParse :: THandleParams -> ByteString -> NonEmpty (Either TransportError RawTransmission)
+tParse thParams@THandleParams {batch} s
   | batch = eitherList (L.map (\(Large t) -> tParse1 t)) ts
   | otherwise = [tParse1 s]
   where
-    tParse1 = parse transmissionP TEBadBlock
+    tParse1 = parse (transmissionP thParams) TEBadBlock
     ts = parse smpP TEBadBlock s
 
 eitherList :: (a -> NonEmpty (Either e b)) -> Either e a -> NonEmpty (Either e b)
@@ -1402,12 +1423,12 @@ eitherList = either (\e -> [Left e])
 
 -- | Receive client and server transmissions (determined by `cmd` type).
 tGet :: forall err cmd c. (ProtocolEncoding err cmd, Transport c) => THandle c -> IO (NonEmpty (SignedTransmission err cmd))
-tGet th@THandle {sessionId, thVersion = v} = L.map (tDecodeParseValidate sessionId v) <$> tGetParse th
+tGet th@THandle {params} = L.map (tDecodeParseValidate params) <$> tGetParse th
 
-tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => SessionId -> Version -> Either TransportError RawTransmission -> SignedTransmission err cmd
-tDecodeParseValidate sessionId v = \case
+tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => THandleParams -> Either TransportError RawTransmission -> SignedTransmission err cmd
+tDecodeParseValidate THandleParams {sessionId, thVersion = v, encrypt} = \case
   Right RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
-    | sessId == sessionId ->
+    | encrypt || sessId == sessionId ->
         let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
     | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))

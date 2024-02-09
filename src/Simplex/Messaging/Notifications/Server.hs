@@ -43,12 +43,12 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeSrvTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
@@ -337,10 +337,10 @@ updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
 runNtfClientTransport :: Transport c => THandle c -> M ()
-runNtfClientTransport th@THandle {sessionId} = do
+runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newNtfServerClient qSize sessionId ts
+  c <- atomically $ newNtfServerClient qSize params ts
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
@@ -354,7 +354,7 @@ clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: Transport c => THandle c -> NtfServerClient -> M ()
-receive th@THandle {thAuth} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
+receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
@@ -369,9 +369,9 @@ receive th@THandle {thAuth} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever 
     write q t = atomically $ writeTBQueue q t
 
 send :: Transport c => THandle c -> NtfServerClient -> IO ()
-send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = forever $ do
+send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h [Right (Nothing, encodeTransmission v sessionId t)]
+  void . liftIO $ tPut h [Right (Nothing, encodeSrvTransmission params t)]
   atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where
