@@ -26,7 +26,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version (mkVersionRange)
+import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -68,12 +68,15 @@ xit'' d t = do
   (if ci == Just "true" then xit else it) d t
 
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
-testSMPClient client = do
+testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
+
+testSMPClientVR :: (Transport c, MonadUnliftIO m, MonadFail m) => VersionRange -> (THandle c -> m a) -> m a
+testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h -> do
     g <- liftIO C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash supportedClientSMPRelayVRange) >>= \case
+    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -149,11 +152,14 @@ runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandl
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
 runSmpTestN :: forall c a. (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
-runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
+runSmpTestN = runSmpTestNCfg cfg supportedClientSMPRelayVRange
+
+runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => ServerConfig -> VersionRange -> Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
+runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c) srvCfg testPort $ \_ -> run nClients []
   where
     run :: Int -> [THandle c] -> IO a
     run 0 hs = test hs
-    run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
+    run n hs = testSMPClientVR clntVR $ \h -> run (n - 1) (h : hs)
 
 smpServerTest ::
   forall c smp.
@@ -179,7 +185,10 @@ smpTestN :: (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
 smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
-smpTest2 _ test' = smpTestN 2 _test
+smpTest2 = smpTest2Cfg cfg supportedClientSMPRelayVRange
+
+smpTest2Cfg :: forall c. (HasCallStack, Transport c) => ServerConfig -> VersionRange -> TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `shouldReturn` ()
   where
     _test :: HasCallStack => [THandle c] -> IO ()
     _test [h1, h2] = test' h1 h2

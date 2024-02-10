@@ -33,6 +33,7 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (removeFile)
 import System.TimeIt (timeItT)
 import System.Timeout
@@ -56,7 +57,7 @@ serverTests t@(ATransport t') = do
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
   describe "Restore messages (old / v2)" $ testRestoreExpireMessages t
-  describe "Timing of AUTH error" $ testTiming t
+  fdescribe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
     testMsgExpireOnSend t'
@@ -87,7 +88,7 @@ signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
     authorize t = case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      _ -> Nothing
+      C.SX25519 -> (\THandleAuth {peerPubKey} -> TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t) <$> thAuth params
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
@@ -737,32 +738,38 @@ createAndSecureQueue h sPub = do
 
 testTiming :: ATransport -> Spec
 testTiming (ATransport t) =
-  it "should have similar time for auth error, whether queue exists or not, for all key sizes" $
-    smpTest2 t $ \rh sh ->
-      mapM_ (testSameTiming rh sh) timingTests
+  describe "should have similar time for auth error, whether queue exists or not, for all key sizes" $
+    forM_ timingTests $ \tst -> it (testName tst) $
+      smpTest2Cfg cfgV8 (mkVersionRange 4 authEncryptCmdsSMPVersion) t $ \rh sh ->
+        testSameTiming rh sh tst
   where
-    timingTests :: [(Int, Int, Int)]
+    testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, ", used key:", show badKeyAlg]
+    timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
     timingTests =
-      [ (32, 32, 300),
-        (32, 57, 150),
-        (57, 32, 300),
-        (57, 57, 150)
+      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 300),
+        (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 300),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150)
       ]
+      -- [ (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 300)
+      -- ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25
-    testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
-    testSameTiming rh sh (goodKeySize, badKeySize, n) = do
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.05
+    testSameTiming :: Transport c => THandle c -> THandle c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
+    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
+      threadDelay 500000
       g <- C.newRandom
-      (rPub, rKey) <- generateKeys g goodKeySize
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
-      (_, badKey) <- generateKeys g badKeySize
+      (_, badKey) <- atomically $ C.generateAuthKeyPair badKeyAlg g
       -- runTimingTest rh badKey rId "SUB"
 
-      (sPub, sKey) <- generateKeys g goodKeySize
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
 
       Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, _SEND "hello")
@@ -771,10 +778,6 @@ testTiming (ATransport t) =
 
       runTimingTest sh badKey sId $ _SEND "hello"
       where
-        generateKeys g = \case
-          32 -> atomically $ C.generateAuthKeyPair C.SEd25519 g
-          57 -> atomically $ C.generateAuthKeyPair C.SEd448 g
-          _ -> error "unsupported key size"
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
           timeWrongKey <- timeRepeat n $ do
@@ -785,14 +788,13 @@ testTiming (ATransport t) =
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey
-          unless ok $
-            (putStrLn . unwords . map show)
-              [ fromIntegral goodKeySize,
-                fromIntegral badKeySize,
-                timeWrongKey,
-                timeNoQueue,
-                abs (timeWrongKey / timeNoQueue - 1)
-              ]
+          unless ok . putStrLn . unwords $
+            [ show goodKeyAlg,
+              show badKeyAlg,
+              show timeWrongKey,
+              show timeNoQueue,
+              show $ timeWrongKey / timeNoQueue - 1
+            ]
           ok `shouldBe` True
 
 testMessageNotifications :: ATransport -> Spec
