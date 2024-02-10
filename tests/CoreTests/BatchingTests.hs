@@ -138,7 +138,7 @@ testBatchWithLargeMessageV8 = do
 testClientBatchSubscriptions :: IO ()
 testClientBatchSubscriptions = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  client <- atomically $ clientStub sessId currentClientSMPRelayVersion Nothing
+  client <- atomically $ clientStub sessId currentClientSMPRelayVersion Nothing Nothing
   subs <- replicateM 250 $ randomSUBCmd client
   let batches1 = batchTransmissions' False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
@@ -165,7 +165,7 @@ testClientBatchSubscriptionsV8 = do
 testClientBatchWithMessage :: IO ()
 testClientBatchWithMessage = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  client <- atomically $ clientStub sessId currentClientSMPRelayVersion Nothing
+  client <- atomically $ clientStub sessId currentClientSMPRelayVersion Nothing Nothing
   subs1 <- replicateM 60 $ randomSUBCmd client
   send <- randomSENDCmd client 8000
   subs2 <- replicateM 40 $ randomSUBCmd client
@@ -200,7 +200,7 @@ testClientBatchWithMessageV8 = do
 testClientBatchWithLargeMessage :: IO ()
 testClientBatchWithLargeMessage = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  client <- atomically $ clientStub sessId currentClientSMPRelayVersion Nothing
+  client <- atomically $ clientStub sessId currentClientSMPRelayVersion Nothing Nothing
   subs1 <- replicateM 60 $ randomSUBCmd client
   send <- randomSENDCmd client 17000
   subs2 <- replicateM 120 $ randomSUBCmd client
@@ -261,8 +261,9 @@ clientStubV8 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+  thServerCerts_ <- error "TODO: load server chain"
   thAuth_ <- testTHandleAuth authEncryptCmdsSMPVersion g rKey
-  atomically $ clientStub sessId authEncryptCmdsSMPVersion thAuth_
+  atomically $ clientStub sessId authEncryptCmdsSMPVersion thServerCerts_ thAuth_
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB = randomSUB_ C.SEd448 currentClientSMPRelayVersion

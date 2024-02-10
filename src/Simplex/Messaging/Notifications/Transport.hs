@@ -114,4 +114,4 @@ ntfThHandle th@THandle {params} v pk k_ =
 ntfTHandle :: Transport c => c -> THandle c
 ntfTHandle c = THandle {connection = c, params}
   where
-    params = THandleParams {sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thAuth = Nothing, encrypt = False, batch = False}
+    params = THandleParams {sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thServerCerts = Nothing, thAuth = Nothing, encrypt = False, batch = False}
