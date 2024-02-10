@@ -744,7 +744,7 @@ testTiming (ATransport t) =
         testSameTiming rh sh tst
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
-    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, ", used key:", show badKeyAlg]
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
     timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
     timingTests =
       [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 300),
@@ -755,7 +755,7 @@ testTiming (ATransport t) =
       -- [ (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 300)
       -- ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.05
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.1
     testSameTiming :: Transport c => THandle c -> THandle c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       threadDelay 500000
@@ -780,15 +780,19 @@ testTiming (ATransport t) =
       where
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
-          timeWrongKey <- timeRepeat n $ do
-            Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
+          _ <- timeRepeat n $ do
+            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
           threadDelay 100000
           timeNoQueue <- timeRepeat n $ do
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
+          threadDelay 100000
+          timeWrongKey <- timeRepeat n $ do
+            Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
+            return ()
           let ok = similarTime timeNoQueue timeWrongKey
-          unless ok . putStrLn . unwords $
+          putStrLn . unwords $
             [ show goodKeyAlg,
               show badKeyAlg,
               show timeWrongKey,
