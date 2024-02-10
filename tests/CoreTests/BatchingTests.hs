@@ -319,7 +319,7 @@ testTHandleParams v sessionId =
       blockSize = smpBlockSize,
       thVersion = v,
       thAuth = Nothing,
-      encrypt = v >= encryptTransmissionSMPVersion,
+      encrypt = v >= dontSendSessionIdSMPVersion,
       batch = True
     }
 

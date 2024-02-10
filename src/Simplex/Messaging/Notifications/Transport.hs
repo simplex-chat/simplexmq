@@ -18,8 +18,8 @@ import Simplex.Messaging.Version
 ntfBlockSize :: Int
 ntfBlockSize = 512
 
-encryptTransmissionNTFVersion :: Version
-encryptTransmissionNTFVersion = 2
+dontSendSessionIdNTFVersion :: Version
+dontSendSessionIdNTFVersion = 2
 
 authEncryptCmdsNTFVersion :: Version
 authEncryptCmdsNTFVersion = 3
@@ -108,7 +108,7 @@ ntfThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.P
 ntfThHandle th@THandle {params} v pk k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}) <$> k_
-      params' = params {thVersion = v, thAuth, encrypt = v >= encryptTransmissionNTFVersion}
+      params' = params {thVersion = v, thAuth, encrypt = v >= dontSendSessionIdNTFVersion}
    in (th :: THandle c) {params = params'}
 
 ntfTHandle :: Transport c => c -> THandle c
