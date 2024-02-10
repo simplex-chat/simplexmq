@@ -157,7 +157,7 @@ clientStub sessionId thVersion thServerCerts thAuth = do
               thServerCerts,
               thAuth,
               blockSize = smpBlockSize,
-              encrypt = thVersion >= encryptTransmissionSMPVersion,
+              encrypt = thVersion >= dontSendSessionIdSMPVersion,
               batch = True
             },
         sessionTs = undefined,

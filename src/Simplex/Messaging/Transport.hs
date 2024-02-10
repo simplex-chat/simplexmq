@@ -33,7 +33,7 @@ module Simplex.Messaging.Transport
     currentServerSMPRelayVersion,
     basicAuthSMPVersion,
     subModeSMPVersion,
-    encryptTransmissionSMPVersion,
+    dontSendSessionIdSMPVersion,
     authEncryptCmdsSMPVersion,
     simplexMQVersion,
     smpBlockSize,
@@ -127,8 +127,8 @@ basicAuthSMPVersion = 5
 subModeSMPVersion :: Version
 subModeSMPVersion = 6
 
-encryptTransmissionSMPVersion :: Version
-encryptTransmissionSMPVersion = 7
+dontSendSessionIdSMPVersion :: Version
+dontSendSessionIdSMPVersion = 7
 
 authEncryptCmdsSMPVersion :: Version
 authEncryptCmdsSMPVersion = 8
@@ -489,7 +489,7 @@ smpThHandle :: forall c. THandle c -> Version -> Maybe X.CertificateChain -> C.P
 smpThHandle th@THandle {params} v thServerCerts pk k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}) <$> k_
-      params' = params {thVersion = v, thServerCerts, thAuth, encrypt = v >= encryptTransmissionSMPVersion, batch = v >= batchCmdsSMPVersion}
+      params' = params {thVersion = v, thServerCerts, thAuth, encrypt = v >= dontSendSessionIdSMPVersion, batch = v >= batchCmdsSMPVersion}
    in (th :: THandle c) {params = params'}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()

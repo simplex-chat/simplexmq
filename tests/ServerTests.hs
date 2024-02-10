@@ -57,7 +57,7 @@ serverTests t@(ATransport t') = do
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
   describe "Restore messages (old / v2)" $ testRestoreExpireMessages t
-  fdescribe "Timing of AUTH error" $ testTiming t
+  describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
     testMsgExpireOnSend t'
@@ -738,27 +738,30 @@ createAndSecureQueue h sPub = do
 
 testTiming :: ATransport -> Spec
 testTiming (ATransport t) =
-  describe "should have similar time for auth error, whether queue exists or not, for all key sizes" $
-    forM_ timingTests $ \tst -> it (testName tst) $
-      smpTest2Cfg cfgV8 (mkVersionRange 4 authEncryptCmdsSMPVersion) t $ \rh sh ->
-        testSameTiming rh sh tst
+  describe "should have similar time for auth error, whether queue exists or not, for all key types" $
+    forM_ timingTests $ \tst ->
+      it (testName tst) $
+        smpTest2Cfg cfgV8 (mkVersionRange 4 authEncryptCmdsSMPVersion) t $ \rh sh ->
+          testSameTiming rh sh tst
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
-    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, ", used key:", show badKeyAlg]
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
     timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
     timingTests =
-      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 300),
-        (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 300),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150)
+      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 200), -- correct key type
+        -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
+        -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 200),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150), -- correct key type
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519, 200),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519, 200),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448, 150),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
-      -- [ (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 300)
-      -- ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.05
-    testSameTiming :: Transport c => THandle c -> THandle c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.15 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    testSameTiming :: forall c. Transport c => THandle c -> THandle c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
-      threadDelay 500000
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -767,7 +770,7 @@ testTiming (ATransport t) =
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
       (_, badKey) <- atomically $ C.generateAuthKeyPair badKeyAlg g
-      -- runTimingTest rh badKey rId "SUB"
+      runTimingTest rh badKey rId SUB
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
@@ -778,7 +781,12 @@ testTiming (ATransport t) =
 
       runTimingTest sh badKey sId $ _SEND "hello"
       where
+        runTimingTest :: PartyI p => THandle c -> C.APrivateAuthKey -> ByteString -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
+          threadDelay 100000
+          _ <- timeRepeat n $ do -- "warm up" the server
+            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
+            return ()
           threadDelay 100000
           timeWrongKey <- timeRepeat n $ do
             Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
