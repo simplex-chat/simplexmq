@@ -466,13 +466,21 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 
+-- This function verifies queue command authorization, with the objective to have constant time between the three AUTH error scenarios:
+-- - the queue and party key exist, and the provided authorization has type matching queue key, but it is made with the different key.
+-- - the queue and party key exist, but the provided authorization has incorrect type.
+-- - the queue or party key do not exist.
+-- In all cases, the time of the verification should depend only on the provided authorization type,
+-- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
 verifyTransmission :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
+    -- SEND will be accepted without authorization before the queue is secured with KEY command
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
+    -- NSUB will not be accepted without authorization
     Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (Just q `verifiedWith`) (notifierKey <$> notifier q)) <$> get SNotifier
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
@@ -529,7 +537,7 @@ dummyKeyEd448 :: C.PublicKey 'C.Ed448
 dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/XopbOSaq9qyLhrgJWKOLyNrQPNVvpMA"
 
 dummyKeyX25519 :: C.PublicKey 'C.X25519
-dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas_jHeBwfcM7jLwNYJNOAhi2_g4RXg="
+dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
