@@ -1188,7 +1188,7 @@ instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
 
 instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
   smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact
-  smpP = smpP >>= either fail (pure . SignedObject) . decodeSignedObject . unLarge
+  smpP = fmap SignedObject . decodeSignedObject . unLarge <$?> smpP
 
 -- | Signature verification.
 --
