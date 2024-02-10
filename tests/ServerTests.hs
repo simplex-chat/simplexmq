@@ -756,9 +756,8 @@ testTiming (ATransport t) =
       -- ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2 = abs (t2 / t1 - 1) < 0.1
-    testSameTiming :: Transport c => THandle c -> THandle c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
+    testSameTiming :: forall c. Transport c => THandle c -> THandle c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
-      threadDelay 500000
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -767,7 +766,7 @@ testTiming (ATransport t) =
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
       (_, badKey) <- atomically $ C.generateAuthKeyPair badKeyAlg g
-      -- runTimingTest rh badKey rId "SUB"
+      runTimingTest rh badKey rId SUB
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
@@ -778,18 +777,19 @@ testTiming (ATransport t) =
 
       runTimingTest sh badKey sId $ _SEND "hello"
       where
+        runTimingTest :: PartyI p => THandle c -> C.APrivateAuthKey -> ByteString -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
           _ <- timeRepeat n $ do
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
           threadDelay 100000
-          timeNoQueue <- timeRepeat n $ do
-            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
-            return ()
-          threadDelay 100000
           timeWrongKey <- timeRepeat n $ do
             Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
+            return ()
+          threadDelay 100000
+          timeNoQueue <- timeRepeat n $ do
+            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey
           putStrLn . unwords $
