@@ -13,12 +13,14 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
+import Simplex.Messaging.Agent.Env.SQLite (Worker)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -31,7 +33,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, SessionId)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
 import Simplex.Messaging.Version
 import System.IO (IOMode (..))
@@ -75,7 +77,8 @@ data ServerConfig = ServerConfig
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
-    controlPort :: Maybe ServiceName
+    controlPort :: Maybe ServiceName,
+    allowSMPProxy :: Bool -- auth is the same with `newQueueBasicAuth`
   }
 
 defMsgExpirationDays :: Int64
@@ -106,8 +109,9 @@ data Env = Env
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
-    clientSeq :: TVar Int,
-    clients :: TMap Int Client
+    clientSeq :: TVar ClientId,
+    clients :: TMap ClientId Client,
+    proxyServer :: SMPProxyServer -- senders served on this proxy
   }
 
 data Server = Server
@@ -118,8 +122,22 @@ data Server = Server
     savingLock :: Lock
   }
 
+data SMPProxyServer = SMPProxyServer
+  { relaySessions :: TMap SessionId SMPProxiedRelay,
+    relayServers :: TMap Text SessionId -- speed up client lookups by server URI
+  }
+
+data SMPProxiedRelay = SMPProxiedRelay
+  { worker :: Worker,
+    proxyKey :: C.DhSecretX25519,
+    fwdQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
+    -- can be used for QUOTA retries until the session is gone
+  }
+
+type ClientId = Int
+
 data Client = Client
-  { clientId :: Int,
+  { clientId :: ClientId,
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
@@ -129,7 +147,8 @@ data Client = Client
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
-    sndActiveAt :: TVar SystemTime
+    sndActiveAt :: TVar SystemTime,
+    proxyClient_ :: TVar (Maybe C.DhSecretX25519) -- this client is actually an SMP proxy
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
@@ -158,7 +177,8 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  proxyClient_ <- newTVar Nothing
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, proxyClient_}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -179,7 +199,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- atomically TM.empty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  proxyServer <- newSMPProxyServer
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyServer}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -195,3 +216,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier q = case notifier q of
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
+
+newSMPProxyServer :: MonadIO m => m SMPProxyServer
+newSMPProxyServer = do
+  relayServers <- atomically TM.empty
+  relaySessions <- atomically TM.empty
+  pure SMPProxyServer {relayServers, relaySessions}

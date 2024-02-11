@@ -70,7 +70,11 @@ xit'' d t = do
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testSMPClient client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
+  testSMPClient_ useHost testPort client
+
+testSMPClient_ :: (Transport c, MonadUnliftIO m) => TransportHost -> ServiceName -> (THandle c -> m a) -> m a
+testSMPClient_ host port client = do
+  runTransportClient defaultTransportClientConfig Nothing host port (Just testKeyHash) $ \h ->
     liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -103,8 +107,12 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange,
       transportConfig = defaultTransportServerConfig,
-      controlPort = Nothing
+      controlPort = Nothing,
+      allowSMPProxy = False
     }
+
+proxyCfg :: ServerConfig
+proxyCfg = cfg { allowSMPProxy = True }
 
 withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}

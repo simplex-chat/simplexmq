@@ -1,0 +1,23 @@
+common:
+  corrId - random BS, used as CbNonce
+  entityId - p2r tlsUniq
+
+# setup
+s->p: "proxy", uri, auth?
+  # unless connected
+  p->r: "p_handshake"
+  p<-r: "r_key", tls-signed dh pub
+s<-r: "r_key", tls-signed dh pub # reply entityId contains tlsUniq
+
+# working
+s ; generate random dh priv, make shared secret
+s->p: s2r("forward", random dh pub, SEND command blob)
+  p->r: p2r("forward", random dh pub, s2r("forward", ...)))
+    r->c@ "msg", ...
+  p<-r: p2r("r_res", s2r("ok" / "error", error))
+s<-p@ s2r("ok" / "error", error)
+
+# expired
+  p<-r@ p2r("error", "key expired")
+s<-p@ "error", "key expired"
+s ; reconnect
