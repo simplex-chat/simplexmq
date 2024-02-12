@@ -49,7 +49,7 @@ import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..))
-import Simplex.Messaging.Transport.Server (runTransportServer)
+import Simplex.Messaging.Transport.Server (runTransportServer, tlsServerCredentials)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
@@ -82,14 +82,16 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams tCfg (runClient t)
+      serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
+      runTransportServer started tcpPort serverParams tCfg (runClient serverSignKey t)
+    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
-    runClient :: Transport c => TProxy c -> c -> M ()
-    runClient _ h = do
+    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
+    runClient signKey _ h = do
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
       NtfServerConfig {ntfServerVRange} <- asks config
-      liftIO (runExceptT $ ntfServerHandshake h ks kh ntfServerVRange) >>= \case
+      liftIO (runExceptT $ ntfServerHandshake signKey h ks kh ntfServerVRange) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 

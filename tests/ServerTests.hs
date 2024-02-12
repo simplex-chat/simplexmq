@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -89,6 +90,9 @@ signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
       C.SX25519 -> (\THandleAuth {peerPubKey} -> TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t) <$> thAuth params
+#if !MIN_VERSION_base(4,18,0)
+      _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
+#endif
 
 tPut1 :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do

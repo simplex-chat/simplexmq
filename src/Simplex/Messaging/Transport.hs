@@ -85,7 +85,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
-import qualified Data.List.NonEmpty as L
 import Data.Version (showVersion)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -204,13 +203,8 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 getServerVerifyKey :: Transport c => c -> Either String C.APublicVerifyKey
 getServerVerifyKey c =
   case getServerCerts c of
-    X.CertificateChain (server : _ca) -> fromX509 . X.certPubKey . X.signedObject $ X.getSigned server
+    X.CertificateChain (server : _ca) -> C.x509ToPublic (X.certPubKey . X.signedObject $ X.getSigned server, []) >>= C.pubKey
     _ -> Left "no certificate chain"
-  where
-    fromX509 = \case
-      X.PubKeyEd448 k -> Right $ C.APublicVerifyKey C.SEd448 (C.PublicKeyEd448 k)
-      X.PubKeyEd25519 k -> Right $ C.APublicVerifyKey C.SEd25519 (C.PublicKeyEd25519 k)
-      x -> Left $ "unexpected key: " <> show x
 
 -- * TLS Transport
 
@@ -300,7 +294,7 @@ instance Transport TLS where
 data THandle c = THandle
   { connection :: c,
     params :: THandleParams
-    }
+  }
 
 data THandleParams = THandleParams
   { sessionId :: SessionId,
@@ -332,9 +326,9 @@ type SessionId = ByteString
 data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRange,
     sessionId :: SessionId,
+    certChain :: Maybe X.CertificateChain,
     -- pub key to agree shared secrets for command authorization and entity ID encryption.
-    authPubKey :: Maybe (X.SignedExact X.PubKey), -- .PublicKeyX25519),
-    certChain :: Maybe X.CertificateChain
+    authPubKey :: Maybe (X.SignedExact X.PubKey)
   }
 
 data ClientHandshake = ClientHandshake
@@ -356,28 +350,19 @@ instance Encoding ClientHandshake where
     pure ClientHandshake {smpVersion, keyHash, authPubKey}
 
 instance Encoding ServerHandshake where
-  smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey, certChain} =
+  smpEncode ServerHandshake {smpVersionRange, sessionId, certChain, authPubKey} =
     B.concat
       [ smpEncode (smpVersionRange, sessionId),
-        encodeAuthEncryptCmds maxV $ encodeChain <$> certChain,
-        encodeAuthEncryptCmds maxV $ C.SignedObject <$> authPubKey
+        encodeAuthEncryptCmds (maxVersion smpVersionRange) $
+          (,)
+            <$> fmap C.encodeCertChain certChain
+            <*> fmap C.SignedObject authPubKey
       ]
-    where
-      maxV = maxVersion smpVersionRange
-      encodeChain cc = L.fromList $ map Large blobs
-        where
-          X.CertificateChainRaw blobs = X.encodeCertificateChain cc
   smpP = do
     (smpVersionRange, sessionId) <- smpP
-    let maxV = maxVersion smpVersionRange
     -- TODO drop SMP v6: remove special parser and make key non-optional
-    certChain <- authEncryptCmdsP maxV $ decodeChain
-    authPubKey <- authEncryptCmdsP maxV $ C.getSignedExact <$> smpP
-    pure ServerHandshake {smpVersionRange, sessionId, authPubKey, certChain}
-    where
-      decodeChain = do
-        raw <- X.CertificateChainRaw . map unLarge . L.toList <$> smpP
-        either (fail . show) pure $ X.decodeCertificateChain raw
+    ae_ <- authEncryptCmdsP (maxVersion smpVersionRange) $ (,) <$> C.certChainP <*> fmap C.getSignedExact smpP
+    pure ServerHandshake {smpVersionRange, sessionId, certChain = fst <$> ae_, authPubKey = snd <$> ae_}
 
 encodeAuthEncryptCmds :: Encoding a => Version -> Maybe a -> ByteString
 encodeAuthEncryptCmds v k
@@ -477,12 +462,12 @@ smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
         forM_ certChain $ \(X.CertificateChain cs) -> case cs of
           [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
           _ -> throwError $ TEHandshake BAD_AUTH
-        k_ <- forM sk' $ \exact -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+        sk_ <- forM sk' $ \exact -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
           serverKey <- getServerVerifyKey c
           pubKey <- C.verifyX509 serverKey exact
           C.x509ToPublic (pubKey, []) >>= C.pubKey
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
-        pure $ smpThHandle th v certChain pk k_
+        pure $ smpThHandle th v certChain pk sk_
       Nothing -> throwE $ TEHandshake VERSION
 
 smpThHandle :: forall c. THandle c -> Version -> Maybe X.CertificateChain -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c

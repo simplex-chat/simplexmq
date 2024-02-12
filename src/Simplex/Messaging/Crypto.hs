@@ -74,7 +74,7 @@ module Simplex.Messaging.Crypto
     generateDhKeyPair,
     privateToX509,
     x509ToPublic,
-    x509ToPrivateSign,
+    x509ToPrivate,
     publicKey,
     signatureKeyPair,
     publicToX509,
@@ -170,6 +170,8 @@ module Simplex.Messaging.Crypto
     signedFingerprint,
     SignatureAlgorithmX509 (..),
     SignedObject (..),
+    encodeCertChain,
+    certChainP,
 
     -- * Cryptography error type
     CryptoError (..),
@@ -214,6 +216,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
+import qualified Data.List.NonEmpty as L
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
@@ -1190,6 +1193,16 @@ instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
   smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact
   smpP = fmap SignedObject . decodeSignedObject . unLarge <$?> smpP
 
+encodeCertChain :: CertificateChain -> L.NonEmpty Large
+encodeCertChain cc = L.fromList $ map Large blobs
+  where
+    CertificateChainRaw blobs = encodeCertificateChain cc
+
+certChainP :: A.Parser CertificateChain
+certChainP = do
+  rawChain <- CertificateChainRaw . map unLarge . L.toList <$> smpP
+  either (fail . show) pure $ decodeCertificateChain rawChain
+
 -- | Signature verification.
 --
 -- Used by SMP servers to authorize SMP commands and by SMP agents to verify messages.
@@ -1405,9 +1418,3 @@ keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"
-
-x509ToPrivateSign :: PrivKey -> Either String APrivateSignKey
-x509ToPrivateSign = \case
-  PrivKeyEd25519 k -> Right . APrivateSignKey SEd25519 $ PrivateKeyEd25519 k $ Ed25519.toPublic k
-  PrivKeyEd448 k -> Right . APrivateSignKey SEd448 $ PrivateKeyEd448 k $ Ed448.toPublic k
-  _ -> Left "not a signing key"

@@ -133,8 +133,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       ss <- asks sockets
-      serverSignKey <- either fail pure $ C.x509ToPrivateSign . snd $ tlsServerCredentials serverParams
+      serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
       runTransportServerState ss started tcpPort serverParams tCfg (runClient serverSignKey t)
+    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats

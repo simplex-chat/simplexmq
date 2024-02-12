@@ -7,13 +7,17 @@
 
 module Simplex.Messaging.Notifications.Transport where
 
+import Control.Monad (forM)
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import qualified Data.X509 as X
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version
+import Simplex.Messaging.Util (liftEitherWith)
 
 ntfBlockSize :: Int
 ntfBlockSize = 512
@@ -40,7 +44,7 @@ data NtfServerHandshake = NtfServerHandshake
   { ntfVersionRange :: VersionRange,
     sessionId :: SessionId,
     -- pub key to agree shared secrets for command authorization and entity ID encryption.
-    authPubKey :: Maybe C.PublicKeyX25519
+    authPubKey :: Maybe (X.SignedExact X.PubKey)
   }
 
 data NtfClientHandshake = NtfClientHandshake
@@ -54,12 +58,24 @@ data NtfClientHandshake = NtfClientHandshake
 
 instance Encoding NtfServerHandshake where
   smpEncode NtfServerHandshake {ntfVersionRange, sessionId, authPubKey} =
-    smpEncode (ntfVersionRange, sessionId) <> encodeNtfAuthPubKey (maxVersion ntfVersionRange) authPubKey
+    B.concat
+      [ smpEncode (ntfVersionRange, sessionId),
+        encodeAuthEncryptCmds (maxVersion ntfVersionRange) $ C.SignedObject <$> authPubKey
+      ]
+
   smpP = do
     (ntfVersionRange, sessionId) <- smpP
     -- TODO drop SMP v6: remove special parser and make key non-optional
-    authPubKey <- ntfAuthPubKeyP $ maxVersion ntfVersionRange
+    authPubKey <- authEncryptCmdsP (maxVersion ntfVersionRange) $ C.getSignedExact <$> smpP
     pure NtfServerHandshake {ntfVersionRange, sessionId, authPubKey}
+
+encodeAuthEncryptCmds :: Encoding a => Version -> Maybe a -> ByteString
+encodeAuthEncryptCmds v k
+  | v >= authEncryptCmdsNTFVersion = maybe "" smpEncode k
+  | otherwise = ""
+
+authEncryptCmdsP :: Version -> Parser a -> Parser (Maybe a)
+authEncryptCmdsP v p = if v >= authEncryptCmdsNTFVersion then Just <$> p else pure Nothing
 
 instance Encoding NtfClientHandshake where
   smpEncode NtfClientHandshake {ntfVersion, keyHash, authPubKey} =
@@ -79,10 +95,11 @@ encodeNtfAuthPubKey v k
   | otherwise = ""
 
 -- | Notifcations server transport handshake.
-ntfServerHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-ntfServerHandshake c (k, pk) kh ntfVRange = do
+ntfServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
-  sendHandshake th $ NtfServerHandshake {sessionId, ntfVersionRange = ntfVRange, authPubKey = Just k}
+  let sk = C.signX509 serverSignKey $ C.publicToX509 k
+  sendHandshake th $ NtfServerHandshake {sessionId, ntfVersionRange = ntfVRange, authPubKey = Just sk}
   getHandshake th >>= \case
     NtfClientHandshake {ntfVersion = v, keyHash, authPubKey = k'}
       | keyHash /= kh ->
@@ -95,13 +112,17 @@ ntfServerHandshake c (k, pk) kh ntfVRange = do
 ntfClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
 ntfClientHandshake c (k, pk) keyHash ntfVRange = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
-  NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = k'} <- getHandshake th
+  NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = sk'} <- getHandshake th
   if sessionId /= sessId
     then throwError TEBadSession
     else case ntfVersionRange `compatibleVersion` ntfVRange of
       Just (Compatible v) -> do
+        sk_ <- forM sk' $ \exact -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+          serverKey <- getServerVerifyKey c
+          pubKey <- C.verifyX509 serverKey exact
+          C.x509ToPublic (pubKey, []) >>= C.pubKey
         sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash, authPubKey = Just k}
-        pure $ ntfThHandle th v pk k'
+        pure $ ntfThHandle th v pk sk_
       Nothing -> throwError $ TEHandshake VERSION
 
 ntfThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
