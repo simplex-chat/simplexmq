@@ -132,17 +132,17 @@ data PClient err msg = PClient
     tcpTimeout :: Int,
     batchDelay :: Maybe Int,
     pingErrorCount :: TVar Int,
-    clientCorrId :: TVar Natural,
+    clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
-clientStub :: ByteString -> Version -> Maybe THandleAuth -> STM (ProtocolClient err msg)
-clientStub sessionId thVersion thAuth = do
+clientStub :: TVar ChaChaDRG -> ByteString -> Version -> Maybe THandleAuth -> STM (ProtocolClient err msg)
+clientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
-  clientCorrId <- newTVar 0
+  clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
   sndQ <- newTBQueue 100
   rcvQ <- newTBQueue 100
@@ -328,7 +328,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     mkProtocolClient transportHost = do
       connected <- newTVar False
       pingErrorCount <- newTVar 0
-      clientCorrId <- newTVar 0
+      clientCorrId <- C.newRandomDRG g
       sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
       rcvQ <- newTBQueue qSize
@@ -710,9 +710,7 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
   pure ((,tToSend) <$> auth, r)
   where
     getNextCorrId :: STM CorrId
-    getNextCorrId = do
-      i <- stateTVar clientCorrId $ \i -> (i, i + 2)
-      pure . CorrId $ bshow i
+    getNextCorrId = CorrId <$> C.randomBytes 24 clientCorrId -- also used as nonce
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
       r <- Request entId <$> newEmptyTMVar

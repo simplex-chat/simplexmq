@@ -864,14 +864,15 @@ data ProtocolTestFailure = ProtocolTestFailure
 runSMPServerTest :: AgentMonad m => AgentClient -> UserId -> SMPServerWithAuth -> m (Maybe ProtocolTestFailure)
 runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
-  C.AuthAlg a <- asks $ cmdAuthAlg . config
+  C.AuthAlg ra <- asks $ rcvAuthAlg . config
+  C.AuthAlg sa <- asks $ sndAuthAlg . config
   g <- asks random
   liftIO $ do
     let tSess = (userId, srv, Nothing)
     getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right smp -> do
-        rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair a g
-        (sKey, _) <- atomically $ C.generateAuthKeyPair a g
+        rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
+        (sKey, _) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
           SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe
@@ -952,7 +953,7 @@ getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
 
 newRcvQueue :: AgentMonad m => AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRange -> SubscriptionMode -> m (NewRcvQueue, SMPQueueUri)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
-  C.AuthAlg a <- asks (cmdAuthAlg . config)
+  C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (dhKey, privDhKey) <- atomically $ C.generateKeyPair g

@@ -1636,7 +1636,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
     createToken =
       getNtfServer c >>= \case
         Just ntfServer ->
-          asks (cmdAuthAlg . config) >>= \case
+          asks (rcvAuthAlg . config) >>= \case
             C.AuthAlg a -> do
               g <- asks random
               tknKeys <- atomically $ C.generateAuthKeyPair a g
@@ -2501,7 +2501,7 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => UserId -> ConnId -> Compatible SMPQueueInfo -> m NewSndQueue
 newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
-  C.AuthAlg a <- asks $ cmdAuthAlg . config
+  C.AuthAlg a <- asks $ sndAuthAlg . config
   g <- asks random
   (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair g

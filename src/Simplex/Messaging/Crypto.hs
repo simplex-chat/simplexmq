@@ -66,6 +66,7 @@ module Simplex.Messaging.Crypto
     ADhSecret (..),
     KeyHash (..),
     newRandom,
+    newRandomDRG,
     generateAKeyPair,
     generateKeyPair,
     generateSignatureKeyPair,
@@ -697,6 +698,9 @@ type AAuthKeyPair = KeyPairType APrivateAuthKey
 
 newRandom :: IO (TVar ChaChaDRG)
 newRandom = newTVarIO =<< drgNew
+
+newRandomDRG :: TVar ChaChaDRG -> STM (TVar ChaChaDRG)
+newRandomDRG g = newTVar =<< stateTVar g (`withDRG` drgNew)
 
 generateAKeyPair :: AlgorithmI a => SAlgorithm a -> TVar ChaChaDRG -> STM AKeyPair
 generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair g
