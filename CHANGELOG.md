@@ -1,3 +1,7 @@
+# 5.5.2
+
+Extensible handshake for clients and SMP/NTF servers (ignore extra data).
+
 # 5.5.1
 
 SMP servers:
