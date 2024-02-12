@@ -253,7 +253,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
             getNtfToken >>= \case
               Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
                 rq <- withStore c (`getPrimaryRcvQueue` connId)
-                C.AuthAlg a <- asks (cmdAuthAlg . config)
+                C.AuthAlg a <- asks (rcvAuthAlg . config)
                 g <- asks random
                 (ntfPublicKey, ntfPrivateKey) <- atomically $ C.generateAuthKeyPair a g
                 (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g

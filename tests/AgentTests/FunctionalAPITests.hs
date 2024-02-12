@@ -150,7 +150,7 @@ agentCfgVPrev =
 agentCfgV8 :: AgentConfig
 agentCfgV8 = 
   agentCfg
-    { cmdAuthAlg = C.AuthAlg C.SX25519,
+    { sndAuthAlg = C.AuthAlg C.SX25519,
       smpCfg = smpCfgV7,
       ntfCfg = ntfCfgV2
     }

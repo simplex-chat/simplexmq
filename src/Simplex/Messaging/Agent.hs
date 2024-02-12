@@ -376,7 +376,7 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 
-getNtfToken :: AgentErrorMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
+getNtfToken :: AgentErrorMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken c = withAgentEnv c $ getNtfToken' c
 
 getNtfTokenData :: AgentErrorMonad m => AgentClient -> m NtfToken
@@ -1636,7 +1636,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
     createToken =
       getNtfServer c >>= \case
         Just ntfServer ->
-          asks (cmdAuthAlg . config) >>= \case
+          asks (rcvAuthAlg . config) >>= \case
             C.AuthAlg a -> do
               g <- asks random
               tknKeys <- atomically $ C.generateAuthKeyPair a g
@@ -1686,10 +1686,10 @@ deleteNtfToken' c deviceToken =
       deleteNtfSubs c NSCSmpDelete
     _ -> throwError $ CMD PROHIBITED
 
-getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
+getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken' c =
   withStore' c getSavedNtfToken >>= \case
-    Just NtfToken {deviceToken, ntfTknStatus, ntfMode} -> pure (deviceToken, ntfTknStatus, ntfMode)
+    Just NtfToken {deviceToken, ntfTknStatus, ntfMode, ntfServer} -> pure (deviceToken, ntfTknStatus, ntfMode, ntfServer)
     _ -> throwError $ CMD PROHIBITED
 
 getNtfTokenData' :: AgentMonad m => AgentClient -> m NtfToken
@@ -2501,7 +2501,7 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => UserId -> ConnId -> Compatible SMPQueueInfo -> m NewSndQueue
 newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
-  C.AuthAlg a <- asks $ cmdAuthAlg . config
+  C.AuthAlg a <- asks $ sndAuthAlg . config
   g <- asks random
   (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
