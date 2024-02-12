@@ -44,7 +44,7 @@ smpServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
-    OnlineKey certOpts ->
+    OnlineCert certOpts ->
       doesFileExist iniFile >>= \case
         True -> genOnline certOpts
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
@@ -241,7 +241,7 @@ smpServerCLI cfgPath logPath =
 
 data CliCommand
   = Init InitOptions
-  | OnlineKey CertOptions
+  | OnlineCert CertOptions
   | Start
   | Delete
 
@@ -269,7 +269,7 @@ cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
-        <> command "key" (info (OnlineKey <$> certP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
+        <> command "cert" (info (OnlineCert <$> certP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )

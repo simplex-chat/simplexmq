@@ -73,18 +73,18 @@ smpServerTest storeLog basicAuth = do
   r `shouldContain` ["Listening on port 5223 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
   r `shouldContain` (if basicAuth then ["creating new queues requires password"] else ["creating new queues allowed"])
-  -- key
+  -- cert
   let certPath = cfgPath </> "server.crt"
   oldCrt@X.Certificate {} <-
     XF.readSignedObject certPath >>= \case
       [cert] -> pure . X.signedObject $ X.getSigned cert
       _ -> error "bad crt format"
-  r' <- lines <$> capture_ (withArgs ["key"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
+  r' <- lines <$> capture_ (withArgs ["cert"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
   r' `shouldContain` ["Generated new server credentials"]
   newCrt <-
     XF.readSignedObject certPath >>= \case
       [cert] -> pure . X.signedObject $ X.getSigned cert
-      _ -> error "bad crt format after key"
+      _ -> error "bad crt format after cert"
   X.certSignatureAlg oldCrt `shouldBe` X.certSignatureAlg newCrt
   X.certSubjectDN oldCrt `shouldBe` X.certSubjectDN newCrt
   X.certSerial oldCrt `shouldNotBe` X.certSerial newCrt
