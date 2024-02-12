@@ -8,9 +8,11 @@ module CoreTests.BatchingTests (batchingTests) where
 import Control.Concurrent.STM
 import Control.Monad
 import Crypto.Random (ChaChaDRG)
-import Data.ByteString.Char8 (ByteString)
+import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as L
+import qualified Data.X509 as X
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -261,7 +263,9 @@ clientStubV8 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  thServerCerts_ <- error "TODO: load server chain"
+  caCrt <- SX.readSignedObject "tests/fixtures/ca.crt"
+  serverCrt <- SX.readSignedObject "tests/fixtures/server.crt"
+  let thServerCerts_ = Just $ X.CertificateChain (serverCrt <> caCrt)
   thAuth_ <- testTHandleAuth authEncryptCmdsSMPVersion g rKey
   atomically $ clientStub sessId authEncryptCmdsSMPVersion thServerCerts_ thAuth_
 
