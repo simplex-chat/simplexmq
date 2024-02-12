@@ -10,12 +10,15 @@ module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
 import Control.Monad (void)
+import Data.ASN1.Types.String (asn1CharacterToString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Data.X509 as X
+import qualified Data.X509.File as XF
 import Network.Socket (HostName)
 import Options.Applicative
 import qualified Simplex.Messaging.Crypto as C
@@ -41,6 +44,10 @@ smpServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
+    OnlineCert certOpts ->
+      doesFileExist iniFile >>= \case
+        True -> genOnline certOpts
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError runServer
@@ -56,8 +63,8 @@ smpServerCLI cfgPath logPath =
     defaultServerPort = "5223"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
-    initializeServer opts
-      | scripted opts = initialize opts
+    initializeServer opts@InitOptions {ip, fqdn, scripted}
+      | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
           void $ withPrompt "SMP server will be initialized (press Enter)" getLine
@@ -65,9 +72,9 @@ smpServerCLI cfgPath logPath =
           logStats <- onOffPrompt "Enable logging daily statistics" False
           putStrLn "Require a password to create new messaging queues?"
           password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
-          let host = fromMaybe (ip opts) (fqdn opts)
+          let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn opts else Just host', password}
+          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password}
       where
         serverPassword =
           getLine >>= \case
@@ -78,7 +85,7 @@ smpServerCLI cfgPath logPath =
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
-        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password} = do
+        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password} = do
           clearDirIfExists cfgPath
           clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
@@ -136,6 +143,30 @@ smpServerCLI cfgPath logPath =
                    \disconnect: off\n"
                 <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
+    genOnline CertOptions {signAlgorithm_, commonName_} = do
+      (signAlgorithm, commonName) <-
+        case (signAlgorithm_, commonName_) of
+          (Just alg, Just cn) -> pure (alg, cn)
+          _ ->
+            XF.readSignedObject certPath >>= \case
+              [old] -> either exitError pure . fromX509 . X.signedObject $ X.getSigned old
+              [] -> exitError $ "No certificate found at " <> certPath
+              _ -> exitError $ "Too many certificates at " <> certPath
+      let x509cfg = defaultX509Config {signAlgorithm, commonName}
+      createServerX509_ False cfgPath x509cfg
+      putStrLn "Generated new server credentials"
+      warnCAPrivateKeyFile cfgPath x509cfg
+      where
+        certPath = combine cfgPath $ serverCrtFile defaultX509Config
+        fromX509 X.Certificate {certSignatureAlg, certSubjectDN} = (,) <$> maybe oldAlg Right signAlgorithm_ <*> maybe oldCN Right commonName_
+          where
+            oldAlg = case certSignatureAlg of
+              X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448 -> Right ED448
+              X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed25519 -> Right ED25519
+              alg -> Left $ "Unexpected signature algorithm " <> show alg
+            oldCN = case X.getDnElement X.DnCommonName certSubjectDN of
+              Nothing -> Left "Certificate subject has no CN element"
+              Just cn -> maybe (Left "Certificate subject CN decoding failed") Right $ asn1CharacterToString cn
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -210,6 +241,7 @@ smpServerCLI cfgPath logPath =
 
 data CliCommand
   = Init InitOptions
+  | OnlineCert CertOptions
   | Start
   | Delete
 
@@ -227,10 +259,17 @@ data InitOptions = InitOptions
 data ServerPassword = ServerPassword BasicAuth | SPRandom
   deriving (Show)
 
+data CertOptions = CertOptions
+  { signAlgorithm_ :: Maybe SignAlgorithm,
+    commonName_ :: Maybe HostName
+  }
+  deriving (Show)
+
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+        <> command "cert" (info (OnlineCert <$> certP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
@@ -255,7 +294,7 @@ cliCommandP cfgPath logPath iniFile =
           ( long "sign-algorithm"
               <> short 'a'
               <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
-              <> value ED448
+              <> value ED25519
               <> showDefault
               <> metavar "ALG"
           )
@@ -293,5 +332,27 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Non-interactive initialization using command-line options"
           )
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
+    certP :: Parser CertOptions
+    certP = do
+      signAlgorithm_ <-
+        optional $
+          option
+            (maybeReader readMaybe)
+            ( long "sign-algorithm"
+                <> short 'a'
+                <> help "Set new signature algorithm used for TLS certificates: ED25519, ED448"
+                <> showDefault
+                <> metavar "ALG"
+            )
+      commonName_ <-
+        optional $
+          strOption
+            ( long "cn"
+                <> help
+                  "Set new Common Name for TLS online certificate"
+                <> showDefault
+                <> metavar "FQDN"
+            )
+      pure CertOptions {signAlgorithm_, commonName_}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
