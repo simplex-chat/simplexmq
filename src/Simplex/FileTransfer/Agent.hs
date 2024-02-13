@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -19,6 +20,7 @@ module Simplex.FileTransfer.Agent
     xftpDeleteRcvFile',
     -- Sending files
     xftpSendFile',
+    xftpSendDescription',
     deleteSndFileInternal,
     deleteSndFileRemote,
   )
@@ -44,6 +46,7 @@ import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
+import qualified Simplex.FileTransfer.Protocol as XFTP
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
@@ -57,6 +60,7 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
 import Simplex.Messaging.Util (liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
@@ -97,7 +101,7 @@ closeXFTPAgent a = do
     stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 xftpReceiveFile' :: AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> m RcvFileId
-xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfArgs = do
+xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect}) cfArgs = do
   g <- asks random
   prefixPath <- getPrefixPath "rcv.xftp"
   createDirectory prefixPath
@@ -107,14 +111,25 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks}) cfA
   createDirectory =<< toFSFilePath relTmpPath
   createEmptyFile =<< toFSFilePath relSavePath
   let saveFile = CryptoFile relSavePath cfArgs
-  fId <- withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile
-  forM_ chunks downloadChunk
+  fId <- case redirect of
+    Nothing -> withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile
+    Just _ -> do
+      -- prepare description paths
+      let relTmpPathRedirect = relPrefixPath </> "xftp.redirect-encrypted"
+          relSavePathRedirect = relPrefixPath </> "xftp.redirect-decrypted"
+      createDirectory =<< toFSFilePath relTmpPathRedirect
+      createEmptyFile =<< toFSFilePath relSavePathRedirect
+      cfArgsRedirect <- atomically $ CF.randomArgs g
+      let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
+      -- create download tasks
+      withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile
+  forM_ chunks (downloadChunk c)
   pure fId
-  where
-    downloadChunk :: AgentMonad m => FileChunk -> m ()
-    downloadChunk FileChunk {replicas = (FileChunkReplica {server} : _)} = do
-      void $ getXFTPRcvWorker True c (Just server)
-    downloadChunk _ = throwError $ INTERNAL "no replicas"
+
+downloadChunk :: AgentMonad m => AgentClient -> FileChunk -> m ()
+downloadChunk c FileChunk {replicas = (FileChunkReplica {server} : _)} = do
+  void $ getXFTPRcvWorker True c (Just server)
+downloadChunk _ _ = throwError $ INTERNAL "no replicas"
 
 getPrefixPath :: AgentMonad m => String -> m FilePath
 getPrefixPath suffix = do
@@ -172,14 +187,17 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
       atomically $ waitUntilForeground c
-      (complete, progress) <- withStore c $ \db -> runExceptT $ do
+      (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
-        RcvFile {size = FileSize total, chunks} <- ExceptT $ getRcvFile db rcvFileId
+        RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
         let rcvd = receivedSize chunks
             complete = all chunkReceived chunks
+            (entityId, total) = case redirect of
+              Nothing -> (rcvFileEntityId, currentSize)
+              Just RcvFileRedirect {redirectFileInfo = RedirectFileInfo {size = FileSize finalSize}, redirectEntityId} -> (redirectEntityId, finalSize)
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
-        pure (complete, RFPROG rcvd total)
-      notify c rcvFileEntityId progress
+        pure (entityId, complete, RFPROG rcvd total)
+      notify c entityId progress
       when complete . void $
         getXFTPRcvWorker True c Nothing
       where
@@ -223,7 +241,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
           decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
     decryptFile :: RcvFile -> m ()
-    decryptFile RcvFile {rcvFileId, rcvFileEntityId, key, nonce, tmpPath, saveFile, status, chunks} = do
+    decryptFile RcvFile {rcvFileId, rcvFileEntityId, size, digest, key, nonce, tmpPath, saveFile, status, chunks, redirect} = do
       let CryptoFile savePath cfArgs = saveFile
       fsSavePath <- toFSFilePath savePath
       when (status == RFSDecrypting) $
@@ -231,12 +249,33 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
+      when (FileSize encSize /= size) $ throwError $ XFTP XFTP.SIZE
+      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
+      when (FileDigest encDigest /= digest) $ throwError $ XFTP XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
-      notify c rcvFileEntityId $ RFDONE fsSavePath
-      forM_ tmpPath (removePath <=< toFSFilePath)
-      atomically $ waitUntilForeground c
-      withStore' c (`updateRcvFileComplete` rcvFileId)
+      case redirect of
+        Nothing -> do
+          notify c rcvFileEntityId $ RFDONE fsSavePath
+          forM_ tmpPath (removePath <=< toFSFilePath)
+          atomically $ waitUntilForeground c
+          withStore' c (`updateRcvFileComplete` rcvFileId)
+        Just RcvFileRedirect {redirectFileInfo, redirectDbId} -> do
+          let RedirectFileInfo {size = redirectSize, digest = redirectDigest} = redirectFileInfo
+          forM_ tmpPath (removePath <=< toFSFilePath)
+          atomically $ waitUntilForeground c
+          withStore' c (`updateRcvFileComplete` rcvFileId)
+          -- proceed with redirect
+          yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `finally` (toFSFilePath fsSavePath >>= removePath)
+          next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
+            Left _ -> throwError . XFTP $ XFTP.REDIRECT "decode error"
+            Right (ValidFileDescription fd@FileDescription {size = dstSize, digest = dstDigest})
+              | dstSize /= redirectSize -> throwError . XFTP $ XFTP.REDIRECT "size mismatch"
+              | dstDigest /= redirectDigest -> throwError . XFTP $ XFTP.REDIRECT "digest mismatch"
+              | otherwise -> pure fd
+          -- register and download chunks from the actual file
+          withStore c $ \db -> updateRcvFileRedirect db redirectDbId next
+          forM_ nextChunks (downloadChunk c)
       where
         getChunkPaths :: [RcvFileChunk] -> m [FilePath]
         getChunkPaths [] = pure []
@@ -268,7 +307,23 @@ xftpSendFile' c userId file numRecipients = do
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing
+  void $ getXFTPSndWorker True c Nothing
+  pure fId
+
+xftpSendDescription' :: forall m. AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m SndFileId
+xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) = do
+  g <- asks random
+  prefixPath <- getPrefixPath "snd.xftp"
+  createDirectory prefixPath
+  let relPrefixPath = takeFileName prefixPath
+  let directYaml = prefixPath </> "direct.yaml"
+  cfArgs <- atomically $ CF.randomArgs g
+  let file = CryptoFile directYaml (Just cfArgs)
+  liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
+  key <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
+  fId <- withStore c $ \db -> createSndFile db g userId file 1 relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
   void $ getXFTPSndWorker True c Nothing
   pure fId
 
@@ -423,15 +478,15 @@ runXFTPSndWorker c srv Worker {doWork} = do
         sndFileToDescrs :: SndFile -> m (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
         sndFileToDescrs SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"
         sndFileToDescrs SndFile {chunks = []} = throwError $ INTERNAL "snd file has no chunks"
-        sndFileToDescrs SndFile {digest = Just digest, key, nonce, chunks = chunks@(fstChunk : _)} = do
+        sndFileToDescrs SndFile {digest = Just digest, key, nonce, chunks = chunks@(fstChunk : _), redirect} = do
           let chunkSize = FileSize $ sndChunkSize fstChunk
               size = FileSize $ sum $ map (fromIntegral . sndChunkSize) chunks
           -- snd description
           sndDescrChunks <- mapM toSndDescrChunk chunks
-          let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks}
+          let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks, redirect = Nothing}
           validFdSnd <- either (throwError . INTERNAL) pure $ validateFileDescription fdSnd
           -- rcv descriptions
-          let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = []}
+          let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = [], redirect}
               fdRcvs = createRcvFileDescriptions fdRcv chunks
           validFdRcvs <- either (throwError . INTERNAL) pure $ mapM validateFileDescription fdRcvs
           pure (validFdSnd, validFdRcvs)

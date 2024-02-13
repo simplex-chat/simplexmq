@@ -102,6 +102,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -142,6 +143,7 @@ library
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.Stats
       Simplex.Messaging.Server.StoreLog
+      Simplex.Messaging.ServiceScheme
       Simplex.Messaging.TMap
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Buffer
