@@ -266,7 +266,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
           -- proceed with redirect
-          yaml <- liftError (INTERNAL . show) $ CF.readFile $ CryptoFile fsSavePath cfArgs
+          yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `finally` (toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
             Left _ -> throwError . XFTP $ XFTP.REDIRECT "decode error"
             Right (ValidFileDescription fd@FileDescription {size = dstSize, digest = dstDigest})
