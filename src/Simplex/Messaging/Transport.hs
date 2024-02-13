@@ -33,7 +33,6 @@ module Simplex.Messaging.Transport
     currentServerSMPRelayVersion,
     basicAuthSMPVersion,
     subModeSMPVersion,
-    dontSendSessionIdSMPVersion,
     authEncryptCmdsSMPVersion,
     simplexMQVersion,
     smpBlockSize,
@@ -126,17 +125,14 @@ basicAuthSMPVersion = 5
 subModeSMPVersion :: Version
 subModeSMPVersion = 6
 
-dontSendSessionIdSMPVersion :: Version
-dontSendSessionIdSMPVersion = 7
-
 authEncryptCmdsSMPVersion :: Version
-authEncryptCmdsSMPVersion = 8
+authEncryptCmdsSMPVersion = 7
 
 currentClientSMPRelayVersion :: Version
-currentClientSMPRelayVersion = 7
+currentClientSMPRelayVersion = 6
 
 currentServerSMPRelayVersion :: Version
-currentServerSMPRelayVersion = 7
+currentServerSMPRelayVersion = 6
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
@@ -474,7 +470,7 @@ smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.P
 smpThHandle th@THandle {params} v privKey k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
-      params' = params {thVersion = v, thAuth, encrypt = v >= dontSendSessionIdSMPVersion, batch = v >= batchCmdsSMPVersion}
+      params' = params {thVersion = v, thAuth, encrypt = v >= authEncryptCmdsSMPVersion, batch = v >= batchCmdsSMPVersion}
    in (th :: THandle c) {params = params'}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()

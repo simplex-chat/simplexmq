@@ -111,8 +111,8 @@ ntfServerCfg =
       transportConfig = defaultTransportServerConfig
     }
 
-ntfServerCfgV3 :: NtfServerConfig
-ntfServerCfgV3 =
+ntfServerCfgV2 :: NtfServerConfig
+ntfServerCfgV2 =
   ntfServerCfg
     { ntfServerVRange = mkVersionRange 1 authEncryptCmdsNTFVersion,
       smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}}
@@ -151,8 +151,8 @@ ntfServerTest ::
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
-    tPut' h (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (corrId, queueId, smp)
+    tPut' h@THandle {params = THandleParams {sessionId}} (sig, corrId, queueId, smp) = do
+      let t' = smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do

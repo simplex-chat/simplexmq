@@ -30,7 +30,7 @@ module AgentTests.FunctionalAPITests
     (##>),
     (=##>),
     pattern Msg,
-    agentCfgV8,
+    agentCfgV7,
   )
 where
 
@@ -51,7 +51,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV8, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
@@ -147,8 +147,8 @@ agentCfgVPrev =
       smpCfg = smpCfgVPrev
     }
 
-agentCfgV8 :: AgentConfig
-agentCfgV8 = 
+agentCfgV7 :: AgentConfig
+agentCfgV7 = 
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SX25519,
       smpCfg = smpCfgV7,
@@ -380,10 +380,10 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  it "v8" $ withSmpServerV8 t $ runTestCfg2 agentCfgV8 agentCfgV8 3 runTest
-  it "v8 to current" $ withSmpServerV8 t $ runTestCfg2 agentCfgV8 agentCfg 3 runTest
-  it "current to v8" $ withSmpServerV8 t $ runTestCfg2 agentCfg agentCfgV8 3 runTest
-  it "current with v8 server" $ withSmpServerV8 t $ runTestCfg2 agentCfg agentCfg 3 runTest
+  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 runTest
+  it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 runTest
+  it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
+  it "current with v7 server" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest

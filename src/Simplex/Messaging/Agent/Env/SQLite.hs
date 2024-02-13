@@ -149,10 +149,10 @@ defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      -- while the current client version supports X25519, it can only be enabled once support for SMP v7 is dropped,
-      -- and all servers are required to support v8 to be compatible.
+      -- while the current client version supports X25519, it can only be enabled once support for SMP v6 is dropped,
+      -- and all servers are required to support v7 to be compatible.
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
-      sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v8
+      sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
       tbqSize = 64,
       smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},

@@ -21,41 +21,41 @@ import Test.Hspec
 batchingTests :: Spec
 batchingTests = do
   describe "batchTransmissions" $ do
-    describe "SMP v7 (current)" $ do
-      it "should batch with 109 subscriptions per batch" testBatchSubscriptions
+    describe "SMP v6 (current)" $ do
+      it "should batch with 107 subscriptions per batch" testBatchSubscriptions
       it "should break on message that does not fit" testBatchWithMessage
       it "should break on large message" testBatchWithLargeMessage
-    describe "v8 (next)" $ do
-      it "should batch with 142 subscriptions per batch" testBatchSubscriptionsV8
-      it "should break on message that does not fit" testBatchWithMessageV8
-      it "should break on large message" testBatchWithLargeMessageV8
+    describe "v7 (next)" $ do
+      it "should batch with 136 subscriptions per batch" testBatchSubscriptionsV7
+      it "should break on message that does not fit" testBatchWithMessageV7
+      it "should break on large message" testBatchWithLargeMessageV7
   describe "batchTransmissions'" $ do
-    describe "SMP v7 (current)" $ do
-      it "should batch with 109 subscriptions per batch" testClientBatchSubscriptions
+    describe "SMP v6 (current)" $ do
+      it "should batch with 107 subscriptions per batch" testClientBatchSubscriptions
       it "should break on message that does not fit" testClientBatchWithMessage
       it "should break on large message" testClientBatchWithLargeMessage
-    describe "v8 (next)" $ do
-      it "should batch with 142 subscriptions per batch" testClientBatchSubscriptionsV8
-      it "should break on message that does not fit" testClientBatchWithMessageV8
-      it "should break on large message" testClientBatchWithLargeMessageV8
+    describe "v7 (next)" $ do
+      it "should batch with 136 subscriptions per batch" testClientBatchSubscriptionsV7
+      it "should break on message that does not fit" testClientBatchWithMessageV7
+      it "should break on large message" testClientBatchWithLargeMessageV7
 
 testBatchSubscriptions :: IO ()
 testBatchSubscriptions = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  subs <- replicateM 300 $ randomSUB sessId
+  subs <- replicateM 250 $ randomSUB sessId
   let batches1 = batchTransmissions False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
-  length batches1 `shouldBe` 300
+  length batches1 `shouldBe` 250
   let batches = batchTransmissions True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 _, TBTransmissions s2 n2 _, TBTransmissions s3 n3 _] <- pure batches
-  (n1, n2, n3) `shouldBe` (28, 136, 136)
+  (n1, n2, n3) `shouldBe` (36, 107, 107)
   all lenOk [s1, s2, s3] `shouldBe` True
 
-testBatchSubscriptionsV8 :: IO ()
-testBatchSubscriptionsV8 = do
+testBatchSubscriptionsV7 :: IO ()
+testBatchSubscriptionsV7 = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  subs <- replicateM 300 $ randomSUBv8 sessId
+  subs <- replicateM 300 $ randomSUBv7 sessId
   let batches1 = batchTransmissions False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
   length batches1 `shouldBe` 300
@@ -78,15 +78,15 @@ testBatchWithMessage = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 2
   [TBTransmissions s1 n1 _, TBTransmissions s2 n2 _] <- pure batches
-  (n1, n2) `shouldBe` (32, 69)
+  (n1, n2) `shouldBe` (47, 54)
   all lenOk [s1, s2] `shouldBe` True
 
-testBatchWithMessageV8 :: IO ()
-testBatchWithMessageV8 = do
+testBatchWithMessageV7 :: IO ()
+testBatchWithMessageV7 = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  subs1 <- replicateM 60 $ randomSUBv8 sessId
-  send <- randomSENDv8 sessId 8000
-  subs2 <- replicateM 40 $ randomSUBv8 sessId
+  subs1 <- replicateM 60 $ randomSUBv7 sessId
+  send <- randomSENDv7 sessId 8000
+  subs2 <- replicateM 40 $ randomSUBv7 sessId
   let cmds = subs1 <> [send] <> subs2
       batches1 = batchTransmissions False smpBlockSize $ L.fromList cmds
   all lenOk1 batches1 `shouldBe` True
@@ -113,15 +113,15 @@ testBatchWithLargeMessage = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions s1 n1 _, TBError TELargeMsg _, TBTransmissions s2 n2 _, TBTransmissions s3 n3 _] <- pure batches
-  (n1, n2, n3) `shouldBe` (50, 14, 136)
+  (n1, n2, n3) `shouldBe` (50, 43, 107)
   all lenOk [s1, s2, s3] `shouldBe` True
 
-testBatchWithLargeMessageV8 :: IO ()
-testBatchWithLargeMessageV8 = do
+testBatchWithLargeMessageV7 :: IO ()
+testBatchWithLargeMessageV7 = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
-  subs1 <- replicateM 60 $ randomSUBv8 sessId
-  send <- randomSENDv8 sessId 17000
-  subs2 <- replicateM 150 $ randomSUBv8 sessId
+  subs1 <- replicateM 60 $ randomSUBv7 sessId
+  send <- randomSENDv7 sessId 17000
+  subs2 <- replicateM 150 $ randomSUBv7 sessId
   let cmds = subs1 <> [send] <> subs2
       batches1 = batchTransmissions False smpBlockSize $ L.fromList cmds
   all lenOk1 batches1 `shouldBe` False
@@ -138,20 +138,20 @@ testBatchWithLargeMessageV8 = do
 testClientBatchSubscriptions :: IO ()
 testClientBatchSubscriptions = do
   client <- testClientStub
-  subs <- replicateM 300 $ randomSUBCmd client
+  subs <- replicateM 250 $ randomSUBCmd client
   let batches1 = batchTransmissions' False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
   let batches = batchTransmissions' True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
-  (n1, n2, n3) `shouldBe` (28, 136, 136)
-  (length rs1, length rs2, length rs3) `shouldBe` (28, 136, 136)
+  (n1, n2, n3) `shouldBe` (36, 107, 107)
+  (length rs1, length rs2, length rs3) `shouldBe` (36, 107, 107)
   all lenOk [s1, s2, s3] `shouldBe` True
 
-testClientBatchSubscriptionsV8 :: IO ()
-testClientBatchSubscriptionsV8 = do
-  client <- clientStubV8
-  subs <- replicateM 300 $ randomSUBCmdV8 client
+testClientBatchSubscriptionsV7 :: IO ()
+testClientBatchSubscriptionsV7 = do
+  client <- clientStubV7
+  subs <- replicateM 300 $ randomSUBCmdV7 client
   let batches1 = batchTransmissions' False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
   let batches = batchTransmissions' True smpBlockSize $ L.fromList subs
@@ -174,16 +174,16 @@ testClientBatchWithMessage = do
   let batches = batchTransmissions' True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 2
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2] <- pure batches
-  (n1, n2) `shouldBe` (32, 69)
-  (length rs1, length rs2) `shouldBe` (32, 69)
+  (n1, n2) `shouldBe` (47, 54)
+  (length rs1, length rs2) `shouldBe` (47, 54)
   all lenOk [s1, s2] `shouldBe` True
 
-testClientBatchWithMessageV8 :: IO ()
-testClientBatchWithMessageV8 = do
-  client <- clientStubV8
-  subs1 <- replicateM 60 $ randomSUBCmdV8 client
-  send <- randomSENDCmdV8 client 8000
-  subs2 <- replicateM 40 $ randomSUBCmdV8 client
+testClientBatchWithMessageV7 :: IO ()
+testClientBatchWithMessageV7 = do
+  client <- clientStubV7
+  subs1 <- replicateM 60 $ randomSUBCmdV7 client
+  send <- randomSENDCmdV7 client 8000
+  subs2 <- replicateM 40 $ randomSUBCmdV7 client
   let cmds = subs1 <> [send] <> subs2
       batches1 = batchTransmissions' False smpBlockSize $ L.fromList cmds
   all lenOk1 batches1 `shouldBe` True
@@ -212,24 +212,24 @@ testClientBatchWithLargeMessage = do
   let batches = batchTransmissions' True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions s1 n1 rs1, TBError TELargeMsg _, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
-  (n1, n2, n3) `shouldBe` (50, 14, 136)
-  (length rs1, length rs2, length rs3) `shouldBe` (50, 14, 136)
+  (n1, n2, n3) `shouldBe` (50, 43, 107)
+  (length rs1, length rs2, length rs3) `shouldBe` (50, 43, 107)
   all lenOk [s1, s2, s3] `shouldBe` True
   --
   let cmds' = [send] <> subs1 <> subs2
   let batches' = batchTransmissions' True smpBlockSize $ L.fromList cmds'
   length batches' `shouldBe` 3
   [TBError TELargeMsg _, TBTransmissions s1' n1' rs1', TBTransmissions s2' n2' rs2'] <- pure batches'
-  (n1', n2') `shouldBe` (64, 136)
-  (length rs1', length rs2') `shouldBe` (64, 136)
+  (n1', n2') `shouldBe` (93, 107)
+  (length rs1', length rs2') `shouldBe` (93, 107)
   all lenOk [s1', s2'] `shouldBe` True
 
-testClientBatchWithLargeMessageV8 :: IO ()
-testClientBatchWithLargeMessageV8 = do
-  client <- clientStubV8
-  subs1 <- replicateM 60 $ randomSUBCmdV8 client
-  send <- randomSENDCmdV8 client 17000
-  subs2 <- replicateM 150 $ randomSUBCmdV8 client
+testClientBatchWithLargeMessageV7 :: IO ()
+testClientBatchWithLargeMessageV7 = do
+  client <- clientStubV7
+  subs1 <- replicateM 60 $ randomSUBCmdV7 client
+  send <- randomSENDCmdV7 client 17000
+  subs2 <- replicateM 150 $ randomSUBCmdV7 client
   let cmds = subs1 <> [send] <> subs2
       batches1 = batchTransmissions' False smpBlockSize $ L.fromList cmds
   all lenOk1 batches1 `shouldBe` False
@@ -259,8 +259,8 @@ testClientStub = do
   sessId <- atomically $ C.randomBytes 32 g
   atomically $ clientStub g sessId currentClientSMPRelayVersion Nothing
 
-clientStubV8 :: IO (ProtocolClient ErrorType BrokerMsg)
-clientStubV8 = do
+clientStubV7 :: IO (ProtocolClient ErrorType BrokerMsg)
+clientStubV7 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
@@ -270,8 +270,8 @@ clientStubV8 = do
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
 
-randomSUBv8 :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSUBv8 = randomSUB_ C.SEd25519 authEncryptCmdsSMPVersion
+randomSUBv7 :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSUBv7 = randomSUB_ C.SEd25519 authEncryptCmdsSMPVersion
 
 randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> Version -> ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB_ a v sessId = do
@@ -287,8 +287,8 @@ randomSUB_ a v sessId = do
 randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd = randomSUBCmd_ C.SEd25519
 
-randomSUBCmdV8 :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
-randomSUBCmdV8 = randomSUBCmd_ C.SEd25519 -- same as v7
+randomSUBCmdV7 :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
+randomSUBCmdV7 = randomSUBCmd_ C.SEd25519 -- same as v6
 
 randomSUBCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd_ a c = do
@@ -300,8 +300,8 @@ randomSUBCmd_ a c = do
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND = randomSEND_ C.SEd25519 currentClientSMPRelayVersion
 
-randomSENDv8 :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSENDv8 = randomSEND_ C.SX25519 authEncryptCmdsSMPVersion
+randomSENDv7 :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSENDv7 = randomSEND_ C.SX25519 authEncryptCmdsSMPVersion
 
 randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> Version -> ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND_ a v sessId len = do
@@ -322,7 +322,7 @@ testTHandleParams v sessionId =
       blockSize = smpBlockSize,
       thVersion = v,
       thAuth = Nothing,
-      encrypt = v >= dontSendSessionIdSMPVersion,
+      encrypt = v >= authEncryptCmdsSMPVersion,
       batch = True
     }
 
@@ -336,8 +336,8 @@ testTHandleAuth v g (C.APublicAuthKey a k) = case a of
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd = randomSENDCmd_ C.SEd25519
 
-randomSENDCmdV8 :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
-randomSENDCmdV8 = randomSENDCmd_ C.SX25519
+randomSENDCmdV7 :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
+randomSENDCmdV7 = randomSENDCmd_ C.SX25519
 
 randomSENDCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd_ a c len = do
