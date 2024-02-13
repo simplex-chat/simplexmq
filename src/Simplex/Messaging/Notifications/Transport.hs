@@ -126,9 +126,9 @@ ntfClientHandshake c (k, pk) keyHash ntfVRange = do
       Nothing -> throwError $ TEHandshake VERSION
 
 ntfThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
-ntfThHandle th@THandle {params} v pk k_ =
+ntfThHandle th@THandle {params} v privKey k_ =
   -- TODO drop SMP v6: make thAuth non-optional
-  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}) <$> k_
+  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
       params' = params {thVersion = v, thAuth, encrypt = v >= dontSendSessionIdNTFVersion}
    in (th :: THandle c) {params = params'}
 

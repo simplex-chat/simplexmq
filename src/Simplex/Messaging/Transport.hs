@@ -314,8 +314,7 @@ data THandleParams = THandleParams
 
 data THandleAuth = THandleAuth
   { peerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
-    privKey :: C.PrivateKeyX25519, -- used to combine with peer's per-queue key (currently only in the server)
-    dhSecret :: C.DhSecretX25519 -- used by both parties to encrypt entity IDs in for version >= 7
+    privKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
   }
 
 -- | TLS-unique channel binding
@@ -472,9 +471,9 @@ smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
       Nothing -> throwE $ TEHandshake VERSION
 
 smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
-smpThHandle th@THandle {params} v pk k_ =
+smpThHandle th@THandle {params} v privKey k_ =
   -- TODO drop SMP v6: make thAuth non-optional
-  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}) <$> k_
+  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
       params' = params {thVersion = v, thAuth, encrypt = v >= dontSendSessionIdSMPVersion, batch = v >= batchCmdsSMPVersion}
    in (th :: THandle c) {params = params'}
 

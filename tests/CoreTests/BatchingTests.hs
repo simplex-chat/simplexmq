@@ -329,8 +329,8 @@ testTHandleParams v sessionId =
 testTHandleAuth :: Version -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe THandleAuth)
 testTHandleAuth v g (C.APublicAuthKey a k) = case a of
   C.SX25519 | v >= authEncryptCmdsSMPVersion -> do
-    (_, pk) <- atomically $ C.generateKeyPair g
-    pure $ Just THandleAuth {peerPubKey = k, privKey = pk, dhSecret = C.dh' k pk}
+    (_, privKey) <- atomically $ C.generateKeyPair g
+    pure $ Just THandleAuth {peerPubKey = k, privKey}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
