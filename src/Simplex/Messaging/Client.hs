@@ -98,7 +98,6 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
-import Data.X509 (CertificateChain)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -140,8 +139,8 @@ data PClient err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
-clientStub :: TVar ChaChaDRG -> ByteString -> Version -> Maybe CertificateChain -> Maybe THandleAuth -> STM (ProtocolClient err msg)
-clientStub g sessionId thVersion thServerCerts thAuth = do
+clientStub :: TVar ChaChaDRG -> ByteString -> Version -> Maybe THandleAuth -> STM (ProtocolClient err msg)
+clientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
   clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
@@ -154,7 +153,6 @@ clientStub g sessionId thVersion thServerCerts thAuth = do
           THandleParams
             { sessionId,
               thVersion,
-              thServerCerts,
               thAuth,
               blockSize = smpBlockSize,
               encrypt = thVersion >= dontSendSessionIdSMPVersion,

@@ -8,11 +8,9 @@ module CoreTests.BatchingTests (batchingTests) where
 import Control.Concurrent.STM
 import Control.Monad
 import Crypto.Random (ChaChaDRG)
-import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as L
-import qualified Data.X509 as X
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -259,18 +257,15 @@ testClientStub :: IO (ProtocolClient ErrorType BrokerMsg)
 testClientStub = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
-  atomically $ clientStub g sessId currentClientSMPRelayVersion Nothing Nothing
+  atomically $ clientStub g sessId currentClientSMPRelayVersion Nothing
 
 clientStubV8 :: IO (ProtocolClient ErrorType BrokerMsg)
 clientStubV8 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  caCrt <- SX.readSignedObject "tests/fixtures/ca.crt"
-  serverCrt <- SX.readSignedObject "tests/fixtures/server.crt"
-  let thServerCerts_ = Just $ X.CertificateChain (serverCrt <> caCrt)
   thAuth_ <- testTHandleAuth authEncryptCmdsSMPVersion g rKey
-  atomically $ clientStub g sessId authEncryptCmdsSMPVersion thServerCerts_ thAuth_
+  atomically $ clientStub g sessId authEncryptCmdsSMPVersion thAuth_
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
@@ -326,7 +321,6 @@ testTHandleParams v sessionId =
     { sessionId,
       blockSize = smpBlockSize,
       thVersion = v,
-      thServerCerts = Nothing,
       thAuth = Nothing,
       encrypt = v >= dontSendSessionIdSMPVersion,
       batch = True

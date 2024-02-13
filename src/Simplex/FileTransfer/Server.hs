@@ -95,7 +95,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       liftIO $
         runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration $ \sessionId r sendResponse -> do
           reqBody <- getHTTP2Body r xftpBlockSize
-          let thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thServerCerts = Nothing, thAuth = Nothing, encrypt = False, batch = True}
+          let thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, encrypt = False, batch = True}
           processRequest XFTPTransportRequest {thParams, request = r, reqBody, sendResponse} `runReaderT` env
 
     stopServer :: M ()
