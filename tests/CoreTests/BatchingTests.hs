@@ -8,8 +8,8 @@ module CoreTests.BatchingTests (batchingTests) where
 import Control.Concurrent.STM
 import Control.Monad
 import Crypto.Random (ChaChaDRG)
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString as B
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C

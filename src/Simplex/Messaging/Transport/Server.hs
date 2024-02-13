@@ -19,6 +19,7 @@ module Simplex.Messaging.Transport.Server
     loadTLSServerParams,
     loadFingerprint,
     smpServerHandshake,
+    tlsServerCredentials
   )
 where
 
@@ -78,13 +79,13 @@ runTransportServerState :: forall c m. (Transport c, MonadUnliftIO m) => SocketS
 runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started port) (transportName (TProxy :: TProxy c))
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocket :: (MonadUnliftIO m, T.TLSParams p, Transport a) => TMVar Bool -> IO Socket -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
+runTransportServerSocket :: (MonadUnliftIO m, Transport a) => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> m ()) -> m ()
 runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
   ss <- atomically newSocketState
   runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState :: (MonadUnliftIO m, T.TLSParams p, Transport a) => SocketState -> TMVar Bool -> IO Socket -> String -> p -> TransportServerConfig -> (a -> m ()) -> m ()
+runTransportServerSocketState :: (MonadUnliftIO m, Transport a) => SocketState -> TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> m ()) -> m ()
 runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server = do
   u <- askUnliftIO
   labelMyThread $ "transport server for " <> threadLabel
@@ -95,7 +96,12 @@ runTransportServerSocketState ss started getSocket threadLabel serverParams cfg 
     setup conn = timeout (tlsSetupTimeout cfg) $ do
       labelMyThread $ threadLabel <> "/setup"
       tls <- connectTLS Nothing tCfg serverParams conn
-      getServerConnection tCfg tls
+      getServerConnection tCfg (fst $ tlsServerCredentials serverParams) tls
+
+tlsServerCredentials :: T.ServerParams -> (X.CertificateChain, X.PrivKey)
+tlsServerCredentials serverParams = case T.sharedCredentials $ T.serverShared serverParams of
+  T.Credentials [creds] -> creds
+  _ -> error "server has more than one key"
 
 -- | Run TCP server without TLS
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()

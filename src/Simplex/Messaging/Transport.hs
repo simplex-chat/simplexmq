@@ -44,6 +44,7 @@ module Simplex.Messaging.Transport
     TProxy (..),
     ATransport (..),
     TransportPeer (..),
+    getServerVerifyKey,
 
     -- * TLS Transport
     TLS (..),
@@ -71,12 +72,13 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (forM)
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -84,6 +86,8 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import qualified Network.TLS as T
@@ -93,7 +97,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
 import Simplex.Messaging.Version
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
@@ -163,10 +167,12 @@ class Transport c where
   transportConfig :: c -> TransportConfig
 
   -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: TransportConfig -> T.Context -> IO c
+  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
 
   -- | Upgrade client TLS context to connection (used in the client)
-  getClientConnection :: TransportConfig -> T.Context -> IO c
+  getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
+
+  getServerCerts :: c -> X.CertificateChain
 
   -- | tls-unique channel binding per RFC5929
   tlsUnique :: c -> SessionId
@@ -194,6 +200,12 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
+getServerVerifyKey :: Transport c => c -> Either String C.APublicVerifyKey
+getServerVerifyKey c =
+  case getServerCerts c of
+    X.CertificateChain (server : _ca) -> C.x509ToPublic (X.certPubKey . X.signedObject $ X.getSigned server, []) >>= C.pubKey
+    _ -> Left "no certificate chain"
+
 -- * TLS Transport
 
 data TLS = TLS
@@ -201,6 +213,7 @@ data TLS = TLS
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
+    tlsServerCerts :: X.CertificateChain,
     tlsTransportConfig :: TransportConfig
   }
 
@@ -213,12 +226,12 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: TransportPeer -> TransportConfig -> T.Context -> IO TLS
-getTLS tlsPeer cfg cxt = withTlsUnique tlsPeer cxt newTLS
+getTLS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO TLS
+getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
-      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsPeer, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -253,6 +266,7 @@ instance Transport TLS where
   transportConfig = tlsTransportConfig
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
+  getServerCerts = tlsServerCerts
   tlsUnique = tlsUniq
   closeConnection tls = closeTLS $ tlsContext tls
 
@@ -280,7 +294,7 @@ instance Transport TLS where
 data THandle c = THandle
   { connection :: c,
     params :: THandleParams
-    }
+  }
 
 data THandleParams = THandleParams
   { sessionId :: SessionId,
@@ -301,7 +315,7 @@ data THandleParams = THandleParams
 data THandleAuth = THandleAuth
   { peerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
     privKey :: C.PrivateKeyX25519, -- used to combine with peer's per-queue key (currently only in the server)
-    dhSecret :: C.DhSecretX25519 -- used by both parties to encrypt entity IDs in for version >= 7 
+    dhSecret :: C.DhSecretX25519 -- used by both parties to encrypt entity IDs in for version >= 7
   }
 
 -- | TLS-unique channel binding
@@ -311,7 +325,7 @@ data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRange,
     sessionId :: SessionId,
     -- pub key to agree shared secrets for command authorization and entity ID encryption.
-    authPubKey :: Maybe C.PublicKeyX25519
+    authPubKey :: Maybe (X.CertificateChain, X.SignedExact X.PubKey)
   }
 
 data ClientHandshake = ClientHandshake
@@ -325,29 +339,38 @@ data ClientHandshake = ClientHandshake
 
 instance Encoding ClientHandshake where
   smpEncode ClientHandshake {smpVersion, keyHash, authPubKey} =
-    smpEncode (smpVersion, keyHash) <> encodeAuthPubKey smpVersion authPubKey
+    smpEncode (smpVersion, keyHash) <> encodeAuthEncryptCmds smpVersion authPubKey
   smpP = do
     (smpVersion, keyHash) <- smpP
     -- TODO drop SMP v6: remove special parser and make key non-optional
-    authPubKey <- authPubKeyP smpVersion
+    authPubKey <- authEncryptCmdsP smpVersion smpP
     pure ClientHandshake {smpVersion, keyHash, authPubKey}
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey} =
-    smpEncode (smpVersionRange, sessionId) <> encodeAuthPubKey (maxVersion smpVersionRange) authPubKey
+    smpEncode (smpVersionRange, sessionId) <> auth
+    where
+      auth =
+        encodeAuthEncryptCmds (maxVersion smpVersionRange) $
+          bimap C.encodeCertChain C.SignedObject <$> authPubKey
   smpP = do
     (smpVersionRange, sessionId) <- smpP
     -- TODO drop SMP v6: remove special parser and make key non-optional
-    authPubKey <- authPubKeyP $ maxVersion smpVersionRange
+    authPubKey <- authEncryptCmdsP (maxVersion smpVersionRange) authP
     pure ServerHandshake {smpVersionRange, sessionId, authPubKey}
-      
-authPubKeyP :: Version -> Parser (Maybe C.PublicKeyX25519)
-authPubKeyP v = if v >= authEncryptCmdsSMPVersion then Just <$> smpP else pure Nothing
+    where
+      authP = do
+        cert <- C.certChainP
+        C.SignedObject key <- smpP
+        pure (cert, key)
 
-encodeAuthPubKey :: Version -> Maybe C.PublicKeyX25519 -> ByteString
-encodeAuthPubKey v k
+encodeAuthEncryptCmds :: Encoding a => Version -> Maybe a -> ByteString
+encodeAuthEncryptCmds v k
   | v >= authEncryptCmdsSMPVersion = maybe "" smpEncode k
   | otherwise = ""
+
+authEncryptCmdsP :: Version -> Parser a -> Parser (Maybe a)
+authEncryptCmdsP v p = if v >= authEncryptCmdsSMPVersion then Just <$> p else pure Nothing
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -372,6 +395,8 @@ data HandshakeError
     VERSION
   | -- | incorrect server identity
     IDENTITY
+  | -- | v7 authentication failed
+    BAD_AUTH
   deriving (Eq, Read, Show, Exception)
 
 -- | SMP encrypted transport error parser.
@@ -409,10 +434,12 @@ tGetBlock THandle {connection = c, params = THandleParams {blockSize}} = do
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpServerHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-smpServerHandshake c (k, pk) kh smpVRange = do
+smpServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
-  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange, authPubKey = Just k}
+      sk = C.signX509 serverSignKey $ C.publicToX509 k
+      certChain = getServerCerts c
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange, authPubKey = Just (certChain, sk)}
   getHandshake th >>= \case
     ClientHandshake {smpVersion = v, keyHash, authPubKey = k'}
       | keyHash /= kh ->
@@ -425,15 +452,23 @@ smpServerHandshake c (k, pk) kh smpVRange = do
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 smpClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-smpClientHandshake c (k, pk) keyHash smpVRange = do
+smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
-  ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey = k'} <- getHandshake th
+  ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible v) -> do
+        sk_ <- forM authPubKey $ \(X.CertificateChain cert, exact) ->
+          liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+            case cert of
+              [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
+              _ -> throwError "bad certificate"
+            serverKey <- getServerVerifyKey c
+            pubKey <- C.verifyX509 serverKey exact
+            C.x509ToPublic (pubKey, []) >>= C.pubKey
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
-        pure $ smpThHandle th v pk k'
+        pure $ smpThHandle th v pk sk_
       Nothing -> throwE $ TEHandshake VERSION
 
 smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c

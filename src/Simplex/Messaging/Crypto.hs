@@ -8,6 +8,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -73,9 +74,12 @@ module Simplex.Messaging.Crypto
     generateAuthKeyPair,
     generateDhKeyPair,
     privateToX509,
+    x509ToPublic,
+    x509ToPrivate,
     publicKey,
     signatureKeyPair,
     publicToX509,
+    encodeASNObj,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -162,10 +166,13 @@ module Simplex.Messaging.Crypto
     Certificate,
     signCertificate,
     signX509,
+    verifyX509,
     certificateFingerprint,
     signedFingerprint,
     SignatureAlgorithmX509 (..),
     SignedObject (..),
+    encodeCertChain,
+    certChainP,
 
     -- * Cryptography error type
     CryptoError (..),
@@ -210,6 +217,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
+import qualified Data.List.NonEmpty as L
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
@@ -1137,6 +1145,18 @@ signX509 key = fst . objectToSignedExact f
         signatureAlgorithmX509 key,
         ()
       )
+{-# INLINE signX509 #-}
+
+verifyX509 :: (ASN1Object o, Eq o, Show o) => APublicVerifyKey -> SignedExact o -> Either String o
+verifyX509 key exact = do
+  signature <- case signedAlg of
+    SignatureALG_IntrinsicHash PubKeyALG_Ed25519 -> ASignature SEd25519 <$> decodeSignature signedSignature
+    SignatureALG_IntrinsicHash PubKeyALG_Ed448 -> ASignature SEd448 <$> decodeSignature signedSignature
+    _ -> Left "unknown x509 signature algorithm"
+  if verify key signature $ getSignedData exact then Right signedObject else Left "bad signature"
+  where
+    Signed {signedObject, signedAlg, signedSignature} = getSigned exact
+{-# INLINE verifyX509 #-}
 
 certificateFingerprint :: SignedCertificate -> KeyHash
 certificateFingerprint = signedFingerprint
@@ -1165,13 +1185,27 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
   signatureAlgorithmX509 = signatureAlgorithmX509 . snd
 
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
-newtype SignedObject a = SignedObject (SignedExact a)
+newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
   toField (SignedObject s) = toField $ encodeSignedObject s
+
+instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
+  smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact
+  smpP = fmap SignedObject . decodeSignedObject . unLarge <$?> smpP
+
+encodeCertChain :: CertificateChain -> L.NonEmpty Large
+encodeCertChain cc = L.fromList $ map Large blobs
+  where
+    CertificateChainRaw blobs = encodeCertificateChain cc
+
+certChainP :: A.Parser CertificateChain
+certChainP = do
+  rawChain <- CertificateChainRaw . map unLarge . L.toList <$> smpP
+  either (fail . show) pure $ decodeCertificateChain rawChain
 
 -- | Signature verification.
 --

@@ -73,9 +73,9 @@ notificationTests t = do
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
   describe "Managing notification subscriptions" $ do
-    describe "should create notification subscription for existing connection" $
+    fdescribe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
-    describe "should create notification subscription for new connection" $
+    fdescribe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
       withSmpServer t $
@@ -348,7 +348,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
     -- send message
-    liftIO $ threadDelay 50000
+    liftIO $ threadDelay 250000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification

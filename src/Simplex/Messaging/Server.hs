@@ -133,7 +133,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       ss <- asks sockets
-      runTransportServerState ss started tcpPort serverParams tCfg (runClient t)
+      serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
+      runTransportServerState ss started tcpPort serverParams tCfg (runClient serverSignKey t)
+    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
@@ -244,13 +246,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               ]
         liftIO $ threadDelay' interval
 
-    runClient :: Transport c => TProxy c -> c -> M ()
-    runClient tp h = do
+    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
+    runClient signKey tp h = do
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake h ks kh smpServerVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake signKey h ks kh smpServerVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 
