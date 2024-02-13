@@ -377,7 +377,7 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 
-getNtfToken :: AgentErrorMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
+getNtfToken :: AgentErrorMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken c = withAgentEnv c $ getNtfToken' c
 
 getNtfTokenData :: AgentErrorMonad m => AgentClient -> m NtfToken
@@ -1691,10 +1691,10 @@ deleteNtfToken' c deviceToken =
       deleteNtfSubs c NSCSmpDelete
     _ -> throwError $ CMD PROHIBITED
 
-getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
+getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken' c =
   withStore' c getSavedNtfToken >>= \case
-    Just NtfToken {deviceToken, ntfTknStatus, ntfMode} -> pure (deviceToken, ntfTknStatus, ntfMode)
+    Just NtfToken {deviceToken, ntfTknStatus, ntfMode, ntfServer} -> pure (deviceToken, ntfTknStatus, ntfMode, ntfServer)
     _ -> throwError $ CMD PROHIBITED
 
 getNtfTokenData' :: AgentMonad m => AgentClient -> m NtfToken
