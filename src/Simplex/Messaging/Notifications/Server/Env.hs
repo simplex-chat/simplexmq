@@ -32,7 +32,7 @@ import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, THandleParams)
+import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
 import Simplex.Messaging.Version (VersionRange)
 import System.IO (IOMode (..))
@@ -159,13 +159,13 @@ data NtfRequest
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue NtfRequest,
     sndQ :: TBQueue (Transmission NtfResponse),
-    ntfThParams :: THandleParams,
+    ntfThParams :: THandleParams 'TServer,
     connected :: TVar Bool,
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime
   }
 
-newNtfServerClient :: Natural -> THandleParams -> SystemTime -> STM NtfServerClient
+newNtfServerClient :: Natural -> THandleParams 'TServer -> SystemTime -> STM NtfServerClient
 newNtfServerClient qSize ntfThParams ts = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize

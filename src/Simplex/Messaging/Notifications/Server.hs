@@ -48,7 +48,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..))
 import Simplex.Messaging.Transport.Server (runTransportServer, tlsServerCredentials)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
@@ -338,7 +338,7 @@ updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
   old <- atomically $ stateTVar tknStatus (,status)
   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
-runNtfClientTransport :: Transport c => THandle c -> M ()
+runNtfClientTransport :: Transport c => THandle c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
@@ -355,7 +355,7 @@ runNtfClientTransport th@THandle {params} = do
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
-receive :: Transport c => THandle c -> NtfServerClient -> M ()
+receive :: Transport c => THandle c 'TServer -> NtfServerClient -> M ()
 receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
@@ -370,7 +370,7 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
   where
     write q t = atomically $ writeTBQueue q t
 
-send :: Transport c => THandle c -> NtfServerClient -> IO ()
+send :: Transport c => THandle c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h [Right (Nothing, encodeSrvTransmission params t)]
@@ -381,7 +381,7 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
-verifyNtfTransmission :: Maybe (THandleAuth, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
+verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of

@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -7,7 +8,6 @@ module CoreTests.BatchingTests (batchingTests) where
 
 import Control.Concurrent.STM
 import Control.Monad
-import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as L
@@ -264,7 +264,7 @@ clientStubV7 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  thAuth_ <- testTHandleAuth authEncryptCmdsSMPVersion g rKey
+  thAuth_ <- testTHandleAuth authEncryptCmdsSMPVersion rKey
   atomically $ clientStub g sessId authEncryptCmdsSMPVersion thAuth_
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
@@ -279,7 +279,7 @@ randomSUB_ a v sessId = do
   rId <- atomically $ C.randomBytes 24 g
   corrId <- atomically $ CorrId <$> C.randomBytes 24 g
   (rKey, rpKey) <- atomically $ C.generateAuthKeyPair a g
-  thAuth_ <- testTHandleAuth v g rKey
+  thAuth_ <- testTHandleAuth v rKey
   let thParams = testTHandleParams v sessId
       ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, rId, Cmd SRecipient SUB)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) corrId tForAuth
@@ -309,13 +309,13 @@ randomSEND_ a v sessId len = do
   sId <- atomically $ C.randomBytes 24 g
   corrId <- atomically $ CorrId <$> C.randomBytes 3 g
   (sKey, spKey) <- atomically $ C.generateAuthKeyPair a g
-  thAuth_ <- testTHandleAuth v g sKey
+  thAuth_ <- testTHandleAuth v sKey
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
       ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) corrId tForAuth
 
-testTHandleParams :: Version -> ByteString -> THandleParams
+testTHandleParams :: Version -> ByteString -> THandleParams 'TClient
 testTHandleParams v sessionId =
   THandleParams
     { sessionId,
@@ -326,11 +326,10 @@ testTHandleParams v sessionId =
       batch = True
     }
 
-testTHandleAuth :: Version -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe THandleAuth)
-testTHandleAuth v g (C.APublicAuthKey a k) = case a of
-  C.SX25519 | v >= authEncryptCmdsSMPVersion -> do
-    (_, privKey) <- atomically $ C.generateKeyPair g
-    pure $ Just THandleAuth {peerPubKey = k, privKey}
+testTHandleAuth :: Version -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))
+testTHandleAuth v (C.APublicAuthKey a k) = case a of
+  C.SX25519 | v >= authEncryptCmdsSMPVersion ->
+    pure $ Just THClientAuth {srvPubKey = k}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)

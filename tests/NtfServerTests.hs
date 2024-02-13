@@ -67,13 +67,13 @@ ntfSyntaxTests (ATransport t) = do
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> SignedTransmission ErrorType NtfResponse
 pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => TClientHandle c -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
   let ClntTransmission {tToSend} = encodeClntTransmission params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateAuthKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => TClientHandle c -> C.APrivateAuthKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   let ClntTransmission {tForAuth, tToSend} = encodeClntTransmission params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)

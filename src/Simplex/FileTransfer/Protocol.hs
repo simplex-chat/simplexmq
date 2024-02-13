@@ -49,12 +49,13 @@ import Simplex.Messaging.Protocol
     Transmission,
     ClntTransmission (..),
     encodeClntTransmission,
+    encodeSrvTransmission,
     messageTagP,
     tDecodeParseValidate,
     tEncodeBatch1,
     tParse,
   )
-import Simplex.Messaging.Transport (THandleParams (..), TransportError (..))
+import Simplex.Messaging.Transport (THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 
@@ -396,16 +397,21 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding e c => THandleParams -> Maybe C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeTransmission thParams pKey (corrId, fId, msg) = do
+xftpEncodeClntTransmission :: ProtocolEncoding e c => THandleParams 'TClient -> Maybe C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeClntTransmission thParams pKey (corrId, fId, msg) = do
   let ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, fId, msg)
   xftpEncodeBatch1 . (,tToSend) =<< authTransmission Nothing pKey corrId tForAuth
+
+xftpEncodeSrvTransmission :: ProtocolEncoding e c => THandleParams 'TServer -> Transmission c -> Either TransportError ByteString
+xftpEncodeSrvTransmission thParams (corrId, fId, msg) = do
+  let t = encodeSrvTransmission thParams (corrId, fId, msg)
+  xftpEncodeBatch1 (Nothing, t)
 
 -- this function uses batch syntax but puts only one transmission in the batch
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
 xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 t) xftpBlockSize
 
-xftpDecodeTransmission :: ProtocolEncoding e c => THandleParams -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
+xftpDecodeTransmission :: ProtocolEncoding e c => THandleParams p -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission thParams t = do
   t' <- first (const BLOCK) $ C.unPad t
   case tParse thParams t' of

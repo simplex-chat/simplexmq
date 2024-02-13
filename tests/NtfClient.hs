@@ -70,13 +70,12 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 
-testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
+testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (TClientHandle c -> m a) -> m a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h -> do
     g <- liftIO C.newRandom
-    ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
+    liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedClientNTFVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -139,7 +138,7 @@ withNtfServerOn t port' = withNtfServerThreadOn t port' . const
 withNtfServer :: ATransport -> IO a -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort
 
-runNtfTest :: forall c a. Transport c => (THandle c -> IO a) -> IO a
+runNtfTest :: forall c a. Transport c => (TClientHandle c -> IO a) -> IO a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 
 ntfServerTest ::
@@ -150,7 +149,7 @@ ntfServerTest ::
   IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: TClientHandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId}} (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
@@ -159,7 +158,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-ntfTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+ntfTest :: Transport c => TProxy c -> (TClientHandle c -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()
 
 data APNSMockRequest = APNSMockRequest
