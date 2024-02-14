@@ -92,7 +92,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     acceptConfirmation,
     getAcceptedConfirmation,
     removeConfirmations,
-    setHandshakeVersion,
     -- Invitations - sent via Contact connections
     createInvitation,
     getInvitation,
@@ -543,11 +542,11 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId} -> Right . (connId,) <$> create connId
 
 createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
-createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} cMode = do
+createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs} cMode = do
   fst <$$> createConn_ gVar cData create
   where
     create connId =
-      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, 1 :: Int)
 
 updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 updateNewConnRcv db connId rq =
@@ -570,19 +569,19 @@ updateNewConnSnd db connId sq =
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
-createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
+createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, 1 :: Int)
     insertRcvQueue_ db connId q serverKeyHash_
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
-createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
+createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs} q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
     createConn_ gVar cData $ \connId -> do
       serverKeyHash_ <- createServer_ db server
-      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, 1 :: Int)
       insertSndQueue_ db connId q serverKeyHash_
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
@@ -868,10 +867,6 @@ removeConfirmations db connId =
       WHERE conn_id = :conn_id;
     |]
     [":conn_id" := connId]
-
-setHandshakeVersion :: DB.Connection -> ConnId -> Version -> Bool -> IO ()
-setHandshakeVersion db connId aVersion duplexHS =
-  DB.execute db "UPDATE connections SET smp_agent_version = ?, duplex_handshake = ? WHERE conn_id = ?" (aVersion, duplexHS, connId)
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
 createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
@@ -1920,15 +1915,15 @@ getConnData db connId' =
       db
       [sql|
         SELECT
-          user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake,
+          user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
           last_external_snd_msg_id, deleted, ratchet_sync_state
         FROM connections
         WHERE conn_id = ?
       |]
       (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetSyncState) =
-      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake, lastExternalSndId, deleted, ratchetSyncState}, cMode)
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, deleted, ratchetSyncState) =
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, lastExternalSndId, deleted, ratchetSyncState}, cMode)
 
 setConnDeleted :: DB.Connection -> ConnId -> IO ()
 setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)

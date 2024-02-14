@@ -209,7 +209,6 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
       r -> error $ "Expected SFDONE, got " <> show r
-  B.putStrLn $ strEncode vfdDirect
   let uri = strEncode $ fileDescriptionURI vfdDirect
   B.length uri `shouldSatisfy` (< qrSizeLimit)
   case strDecode uri of

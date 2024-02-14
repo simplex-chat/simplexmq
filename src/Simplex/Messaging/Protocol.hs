@@ -189,6 +189,13 @@ import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
 
+-- SMP client protocol version history:
+-- 1 - binary protocol encoding (1/1/2022)
+-- 2 - multiple server hostnames and versioned queue addresses (8/12/2022)
+
+srvHostnamesSMPClientVersion :: Version
+srvHostnamesSMPClientVersion = 2
+
 currentSMPClientVersion :: Version
 currentSMPClientVersion = 2
 
@@ -370,8 +377,6 @@ data BrokerMsg where
 
 data RcvMessage = RcvMessage
   { msgId :: MsgId,
-    msgTs :: SystemTime,
-    msgFlags :: MsgFlags,
     msgBody :: EncRcvMsgBody -- e2e encrypted, with extra encryption for recipient
   }
   deriving (Eq, Show)
@@ -398,21 +403,6 @@ messageTs :: Message -> SystemTime
 messageTs = \case
   Message {msgTs} -> msgTs
   MessageQuota {msgTs} -> msgTs
-
-instance StrEncoding RcvMessage where
-  strEncode RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} =
-    B.unwords
-      [ strEncode msgId,
-        strEncode msgTs,
-        "flags=" <> strEncode msgFlags,
-        strEncode body
-      ]
-  strP = do
-    msgId <- strP_
-    msgTs <- strP_
-    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
-    msgBody <- EncRcvMsgBody <$> strP
-    pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
 
 newtype EncRcvMsgBody = EncRcvMsgBody ByteString
   deriving (Eq, Show)
@@ -1113,14 +1103,10 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
     NDEL -> e NDEL_
     GET -> e GET_
-    ACK msgId
-      | v == 1 -> e ACK_
-      | otherwise -> e (ACK_, ' ', msgId)
+    ACK msgId -> e (ACK_, ' ', msgId)
     OFF -> e OFF_
     DEL -> e DEL_
-    SEND flags msg
-      | v == 1 -> e (SEND_, ' ', Tail msg)
-      | otherwise -> e (SEND_, ' ', flags, ' ', Tail msg)
+    SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
     where
@@ -1170,16 +1156,12 @@ instance ProtocolEncoding ErrorType Cmd where
         NKEY_ -> NKEY <$> _smpP <*> smpP
         NDEL_ -> pure NDEL
         GET_ -> pure GET
-        ACK_
-          | v == 1 -> pure $ ACK ""
-          | otherwise -> ACK <$> _smpP
+        ACK_ -> ACK <$> _smpP
         OFF_ -> pure OFF
         DEL_ -> pure DEL
     CT SSender tag ->
       Cmd SSender <$> case tag of
-        SEND_
-          | v == 1 -> SEND noMsgFlags <$> (unTail <$> _smpP)
-          | otherwise -> SEND <$> _smpP <*> (unTail <$> _smpP)
+        SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
@@ -1190,12 +1172,10 @@ instance ProtocolEncoding ErrorType Cmd where
 
 instance ProtocolEncoding ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
-  encodeProtocol v = \case
+  encodeProtocol _v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
-    MSG RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body}
-      | v == 1 -> e (MSG_, ' ', msgId, msgTs, Tail body)
-      | v == 2 -> e (MSG_, ' ', msgId, msgTs, msgFlags, ' ', Tail body)
-      | otherwise -> e (MSG_, ' ', msgId, Tail body)
+    MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
+      e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
@@ -1206,13 +1186,10 @@ instance ProtocolEncoding ErrorType BrokerMsg where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP v = \case
+  protocolP _v = \case
     MSG_ -> do
       msgId <- _smpP
-      MSG <$> case v of
-        1 -> RcvMessage msgId <$> smpP <*> pure noMsgFlags <*> bodyP
-        2 -> RcvMessage msgId <$> smpP <*> smpP <*> (A.space *> bodyP)
-        _ -> RcvMessage msgId (MkSystemTime 0 0) noMsgFlags <$> bodyP
+      MSG . RcvMessage msgId <$> bodyP
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)

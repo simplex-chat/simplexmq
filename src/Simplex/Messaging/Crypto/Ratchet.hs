@@ -42,11 +42,18 @@ import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE'
 import Simplex.Messaging.Version
 import UnliftIO.STM
 
+-- e2e encryption headers version history:
+-- 1 - binary protocol encoding (1/1/2022)
+-- 2 - use KDF in x3dh (10/20/2022)
+
+kdfX3DHE2EEncryptVersion :: Version
+kdfX3DHE2EEncryptVersion = 2
+
 currentE2EEncryptVersion :: Version
 currentE2EEncryptVersion = 2
 
 supportedE2EEncryptVRange :: VersionRange
-supportedE2EEncryptVRange = mkVersionRange 1 currentE2EEncryptVersion
+supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
 
 data E2ERatchetParams (a :: Algorithm)
   = E2ERatchetParams Version (PublicKey a) (PublicKey a)
@@ -110,14 +117,9 @@ x3dh v (sk1, rk1) dh1 dh2 dh3 =
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
-    (hk, nhk, sk)
-      -- for backwards compatibility with clients using agent version before 3.4.0
-      | v == 1 =
-          let (hk', rest) = B.splitAt 32 dhs
-           in uncurry (hk',,) $ B.splitAt 32 rest
-      | otherwise =
-          let salt = B.replicate 64 '\0'
-           in hkdf3 salt dhs "SimpleXX3DH"
+    (hk, nhk, sk) =
+      let salt = B.replicate 64 '\0'
+        in hkdf3 salt dhs "SimpleXX3DH"
 
 type RatchetX448 = Ratchet 'X448
 

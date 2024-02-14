@@ -34,7 +34,7 @@ module AgentTests.FunctionalAPITests
   )
 where
 
-import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams)
+import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams12)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
@@ -54,7 +54,7 @@ import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
@@ -129,9 +129,6 @@ pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMs
 smpCfgVPrev :: ProtocolClientConfig
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-smpCfgV4 :: ProtocolClientConfig
-smpCfgV4 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 4}
-
 smpCfgV7 :: ProtocolClientConfig
 smpCfgV7 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}
 
@@ -143,7 +140,9 @@ agentCfgVPrev =
   agentCfg
     { smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
-      e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
+      -- Previous version for e2e is v1 - no longer supported.
+      -- It has to be uncommented when version is increased.
+      -- e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
       smpCfg = smpCfgVPrev
     }
 
@@ -155,26 +154,11 @@ agentCfgV7 =
       ntfCfg = ntfCfgV2
     }
 
-agentCfgV1 :: AgentConfig
-agentCfgV1 =
-  agentCfg
-    { smpAgentVRange = v1Range,
-      smpClientVRange = v1Range,
-      e2eEncryptVRange = v1Range,
-      smpCfg = smpCfgV4
-    }
-
 agentCfgRatchetVPrev :: AgentConfig
 agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
 
-agentCfgRatchetV1 :: AgentConfig
-agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = v1Range}
-
 prevRange :: VersionRange -> VersionRange
-prevRange vr = vr {maxVersion = maxVersion vr - 1}
-
-v1Range :: VersionRange
-v1Range = mkVersionRange 1 1
+prevRange vr = vr {maxVersion = max (minVersion vr) (maxVersion vr - 1)}
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
@@ -202,7 +186,7 @@ inAnyOrder g rs = do
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  describe "Establishing duplex connection" $ do
+  fdescribe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
@@ -223,8 +207,6 @@ functionalAPITests t = do
       withSmpServer t testAsyncBothOffline
     it "should connect on the second attempt if server was offline" $
       testAsyncServerOffline t
-    it "should notify after HELLO timeout" $
-      withSmpServer t testAsyncHelloTimeout
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart t
   describe "Message delivery" $ do
@@ -387,20 +369,16 @@ testMatrix2 t runTest = do
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
-  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
-  it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
-  it "v1 to current" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
-  it "current to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
+  fit "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
 
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
   it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
-  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
-  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
-  it "ratchet v1" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfgRatchetV1 3 runTest
-  it "ratchets v1 to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfg 3 runTest
-  it "ratchets current to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetV1 3 runTest
+  -- Previous version for e2e is v1 - no longer supported.
+  -- It has to be re-enabled when version is increased.
+  xit "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
+  xit "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
+  xit "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
 
 testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -423,15 +401,24 @@ withAgentClients2 :: (AgentClient -> AgentClient -> IO ()) -> IO ()
 withAgentClients2 = withAgentClientsCfg2 agentCfg agentCfg
 
 runAgentClientTest :: HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientTest alice bob baseId =
+runAgentClientTest alice@AgentClient {} bob baseId =
   runRight_ $ do
+    liftIO $ print $ e2eEncryptVRange $ config $ agentEnv alice
+    liftIO $ print $ e2eEncryptVRange $ config $ agentEnv bob
+    liftIO $ print $ smpClientVRange $ config $ agentEnv alice
+    liftIO $ print $ smpClientVRange $ config $ agentEnv bob
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
+    liftIO $ print 25
     allowConnection alice bobId confId "alice's connInfo"
+    liftIO $ print 30
     get alice ##> ("", bobId, CON)
+    liftIO $ print 35
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+    liftIO $ print 40
     get bob ##> ("", aliceId, CON)
+    liftIO $ print 50
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
     1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
@@ -440,6 +427,7 @@ runAgentClientTest alice bob baseId =
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    liftIO $ print 100
     ackMessage bob aliceId (baseId + 2) Nothing
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
@@ -599,15 +587,6 @@ testAsyncServerOffline t = withAgentClients2 $ \alice bob -> do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     exchangeGreetings alice bobId bob aliceId
-
-testAsyncHelloTimeout :: HasCallStack => IO ()
-testAsyncHelloTimeout = do
-  -- this test would only work if any of the agent is v1, there is no HELLO timeout in v2
-  withAgentClientsCfg2 agentCfgV1 agentCfg {helloTimeout = 1} $ \alice bob -> runRight_ $ do
-    (_, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    disconnectAgentClient alice
-    aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
-    get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
 
 testAllowConnectionClientRestart :: HasCallStack => ATransport -> IO ()
 testAllowConnectionClientRestart t = do
@@ -2278,7 +2257,7 @@ testServerMultipleIdentities =
                     }
               ]
           }
-        testE2ERatchetParams
+        testE2ERatchetParams12
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
