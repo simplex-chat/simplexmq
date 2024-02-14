@@ -470,7 +470,7 @@ smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.P
 smpThHandle th@THandle {params} v privKey k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
-      params' = params {thVersion = v, thAuth, encrypt = v >= authEncryptCmdsSMPVersion, batch = v >= batchCmdsSMPVersion}
+      params' = params {thVersion = v, thAuth, encrypt = v >= authEncryptCmdsSMPVersion}
    in (th :: THandle c) {params = params'}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
@@ -483,7 +483,7 @@ getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP 
 smpTHandle :: Transport c => c -> THandle c
 smpTHandle c = THandle {connection = c, params}
   where
-    params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, encrypt = False, batch = False}
+    params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, encrypt = False, batch = True}
 
 $(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
 

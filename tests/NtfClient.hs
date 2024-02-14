@@ -114,7 +114,7 @@ ntfServerCfg =
 ntfServerCfgV2 :: NtfServerConfig
 ntfServerCfgV2 =
   ntfServerCfg
-    { ntfServerVRange = mkVersionRange 1 authEncryptCmdsNTFVersion,
+    { ntfServerVRange = mkVersionRange 1 authEncryptBatchCmdsNTFVersion,
       smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}}
     }
 
