@@ -51,7 +51,7 @@ import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, Rec
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Transport (THandleParams (..), TransportPeer (..))
+import Simplex.Messaging.Transport (THandleParams (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
@@ -69,7 +69,7 @@ type M a = ReaderT XFTPEnv IO a
 
 data XFTPTransportRequest =
   XFTPTransportRequest
-    { thParams :: THandleParams 'TServer,
+    { thParams :: THandleParams,
       reqBody :: HTTP2Body,
       request :: H.Request,
       sendResponse :: H.Response -> IO ()
@@ -243,7 +243,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      let t_ = xftpEncodeSrvTransmission thParams (corrId, fId, resp)
+      let t_ = xftpEncodeTransmission thParams Nothing (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do

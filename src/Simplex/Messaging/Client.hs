@@ -119,7 +119,7 @@ import System.Timeout (timeout)
 -- Use 'getSMPClient' to connect to an SMP server and create a client handle.
 data ProtocolClient err msg = ProtocolClient
   { action :: Maybe (Async ()),
-    thParams :: THandleParams 'TClient,
+    thParams :: THandleParams,
     sessionTs :: UTCTime,
     timeoutPerBlock :: Int,
     client_ :: PClient err msg
@@ -139,7 +139,7 @@ data PClient err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
-clientStub :: TVar ChaChaDRG -> ByteString -> Version -> Maybe (THandleAuth 'TClient) -> STM (ProtocolClient err msg)
+clientStub :: TVar ChaChaDRG -> ByteString -> Version -> Maybe THandleAuth -> STM (ProtocolClient err msg)
 clientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
   clientCorrId <- C.newRandomDRG g
@@ -369,8 +369,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       p -> (p, transport @TLS)
 
     client :: forall c. Transport c => TProxy c -> PClient err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient err msg)) -> c -> IO ()
-    client _ c cVar h =
-      runExceptT (protocolClientHandshake @err @msg h (keyHash srv) serverVRange) >>= \case
+    client _ c cVar h = do
+      ks <- atomically $ C.generateKeyPair g
+      runExceptT (protocolClientHandshake @err @msg h ks (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
@@ -382,10 +383,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           raceAny_ ([send c' th, process c', receive c' th] <> [ping c' | smpPingInterval > 0])
             `finally` disconnected c'
 
-    send :: Transport c => ProtocolClient err msg -> THandle c 'TClient -> IO ()
+    send :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPutLog h
 
-    receive :: Transport c => ProtocolClient err msg -> THandle c 'TClient -> IO ()
+    receive :: Transport c => ProtocolClient err msg -> THandle c -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
 
     ping :: ProtocolClient err msg -> IO ()
@@ -716,13 +717,13 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
       TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
 authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of
       C.SX25519 -> case thAuth of
-        Just THClientAuth {srvPubKey} -> Right $ TAAuthenticator $ C.cbAuthenticate srvPubKey pk (C.cbNonce corrId) t
+        Just THandleAuth {peerPubKey} -> Right $ TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
