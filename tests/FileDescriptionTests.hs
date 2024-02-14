@@ -13,16 +13,20 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import System.Directory (removeFile)
 import Test.Hspec
 
 fileDescriptionTests :: Spec
-fileDescriptionTests =
+fileDescriptionTests = do
   describe "file description parsing / serializing" $ do
     it "parse YAML file description" testParseYAMLFileDescription
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
     it "serialize file description" testSerializeFileDescription
+    describe "file description URIs" $ do
+      it "round trip file description URI" testFileDescriptionURI
+      it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
 
 fileDescPath :: FilePath
 fileDescPath = "tests/fixtures/file_description.yaml"
@@ -82,7 +86,8 @@ fileDesc =
                   FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
                 ]
             }
-        ]
+        ],
+      redirect = Nothing
     }
   where
     defaultChunkSize = FileSize $ mb 8
@@ -128,7 +133,8 @@ yamlFileDesc =
                   "3:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
                 ]
             }
-        ]
+        ],
+      redirect = Nothing
     }
 
 testParseYAMLFileDescription :: IO ()
@@ -156,6 +162,18 @@ testSerializeFileDescription = withRemoveTmpFile $ do
   fdSer <- B.readFile tmpFileDescPath
   fdExp <- B.readFile fileDescPath
   fdSer `shouldBe` fdExp
+
+testFileDescriptionURI :: IO ()
+testFileDescriptionURI = do
+  vfd <- either fail pure $ validateFileDescription fileDesc
+  let descr = FileDescriptionURI SSSimplex vfd mempty
+  strDecode (strEncode descr) `shouldBe` Right descr
+
+testFileDescriptionURIExtras :: IO ()
+testFileDescriptionURIExtras = do
+  vfd <- either fail pure $ validateFileDescription fileDesc
+  let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
+  strDecode (strEncode descr) `shouldBe` Right descr
 
 withRemoveTmpFile :: IO () -> IO ()
 withRemoveTmpFile =

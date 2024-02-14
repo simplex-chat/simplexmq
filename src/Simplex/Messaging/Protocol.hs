@@ -178,11 +178,12 @@ import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
-import Network.Socket (HostName, ServiceName)
+import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
+import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
@@ -944,16 +945,6 @@ serverStrP = do
     AProtocolType s -> (AProtocolServer s $ ProtocolServer {scheme = s, host, port, keyHash}, auth_)
   where
     portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
-
-data SrvLoc = SrvLoc HostName ServiceName
-  deriving (Eq, Ord, Show)
-
-instance StrEncoding SrvLoc where
-  strEncode (SrvLoc host port) = B.pack $ host <> if null port then "" else ':' : port
-  strP = SrvLoc <$> host <*> (port <|> pure "")
-    where
-      host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
-      port = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
 -- | Transmission correlation ID.
 newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)

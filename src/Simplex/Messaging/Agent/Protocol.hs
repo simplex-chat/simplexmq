@@ -97,7 +97,7 @@ module Simplex.Messaging.Agent.Protocol
     AConnectionRequestUri (..),
     ConnReqUriData (..),
     CRClientData,
-    ConnReqScheme (..),
+    ServiceScheme,
     simplexChat,
     AgentErrorType (..),
     CommandErrorType (..),
@@ -197,7 +197,6 @@ import Simplex.Messaging.Protocol
     SMPServer,
     SMPServerWithAuth,
     SndPublicAuthKey,
-    SrvLoc (..),
     SubscriptionMode,
     legacyEncodeServer,
     legacyServerP,
@@ -208,6 +207,7 @@ import Simplex.Messaging.Protocol
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
@@ -1123,13 +1123,13 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
 instance StrEncoding AConnectionRequestUri where
   strEncode (ACR _ cr) = strEncode cr
   strP = do
-    _crScheme :: ConnReqScheme <- strP
+    _crScheme :: ServiceScheme <- strP
     crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
     let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-    let crData = ConnReqUriData {crScheme = CRSSimplex, crAgentVRange, crSmpQueues, crClientData}
+    let crData = ConnReqUriData {crScheme = SSSimplex, crAgentVRange, crSmpQueues, crClientData}
     case crMode of
       CMInvitation -> do
         crE2eParams <- queryParam "e2e" query
@@ -1328,7 +1328,7 @@ instance Eq AConnectionRequestUri where
 deriving instance Show AConnectionRequestUri
 
 data ConnReqUriData = ConnReqUriData
-  { crScheme :: ConnReqScheme,
+  { crScheme :: ServiceScheme,
     crAgentVRange :: VersionRange,
     crSmpQueues :: NonEmpty SMPQueueUri,
     crClientData :: Maybe CRClientData
@@ -1336,20 +1336,6 @@ data ConnReqUriData = ConnReqUriData
   deriving (Eq, Show)
 
 type CRClientData = Text
-
-data ConnReqScheme = CRSSimplex | CRSAppServer SrvLoc
-  deriving (Eq, Show)
-
-instance StrEncoding ConnReqScheme where
-  strEncode = \case
-    CRSSimplex -> "simplex:"
-    CRSAppServer srv -> "https://" <> strEncode srv
-  strP =
-    "simplex:" $> CRSSimplex
-      <|> "https://" *> (CRSAppServer <$> strP)
-
-simplexChat :: ConnReqScheme
-simplexChat = CRSAppServer $ SrvLoc "simplex.chat" ""
 
 -- | SMP queue status.
 data QueueStatus

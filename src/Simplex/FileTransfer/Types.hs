@@ -47,6 +47,7 @@ data RcvFile = RcvFile
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
+    redirect :: Maybe RcvFileRedirect,
     chunks :: [RcvFileChunk],
     prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
@@ -108,6 +109,13 @@ data RcvFileChunkReplica = RcvFileChunkReplica
   }
   deriving (Eq, Show)
 
+data RcvFileRedirect = RcvFileRedirect
+  { redirectDbId :: DBRcvFileId,
+    redirectEntityId :: RcvFileId,
+    redirectFileInfo :: RedirectFileInfo
+  }
+  deriving (Eq, Show)
+
 -- Sending files
 
 type DBSndFileId = Int64
@@ -124,7 +132,8 @@ data SndFile = SndFile
     srcFile :: CryptoFile,
     prefixPath :: Maybe FilePath,
     status :: SndFileStatus,
-    deleted :: Bool
+    deleted :: Bool,
+    redirect :: Maybe RedirectFileInfo
   }
   deriving (Eq, Show)
 
