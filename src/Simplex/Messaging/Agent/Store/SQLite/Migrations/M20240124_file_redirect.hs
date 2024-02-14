@@ -15,11 +15,15 @@ ALTER TABLE rcv_files ADD COLUMN redirect_id INTEGER REFERENCES rcv_files ON DEL
 ALTER TABLE rcv_files ADD COLUMN redirect_entity_id BLOB;
 ALTER TABLE rcv_files ADD COLUMN redirect_size INTEGER;
 ALTER TABLE rcv_files ADD COLUMN redirect_digest BLOB;
+
+CREATE INDEX idx_rcv_files_redirect_id on rcv_files(redirect_id);
 |]
 
 down_m20240124_file_redirect :: Query
 down_m20240124_file_redirect =
     [sql|
+DROP INDEX idx_rcv_files_redirect_id;
+
 ALTER TABLE snd_files DROP COLUMN redirect_size;
 ALTER TABLE snd_files DROP COLUMN redirect_digest;
 
