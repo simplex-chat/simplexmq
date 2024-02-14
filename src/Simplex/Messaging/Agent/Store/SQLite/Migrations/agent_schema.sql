@@ -514,3 +514,4 @@ CREATE INDEX idx_snd_message_deliveries_expired ON snd_message_deliveries(
   failed,
   internal_id
 );
+CREATE INDEX idx_rcv_files_redirect_id on rcv_files(redirect_id);
