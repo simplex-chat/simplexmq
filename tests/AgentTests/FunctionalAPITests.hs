@@ -54,7 +54,7 @@ import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
@@ -140,9 +140,7 @@ agentCfgVPrev =
   agentCfg
     { smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
-      -- Previous version for e2e is v1 - no longer supported.
-      -- It has to be uncommented when version is increased.
-      -- e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
+      e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
       smpCfg = smpCfgVPrev
     }
 
@@ -186,7 +184,7 @@ inAnyOrder g rs = do
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  fdescribe "Establishing duplex connection" $ do
+  describe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
@@ -369,7 +367,7 @@ testMatrix2 t runTest = do
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
-  fit "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
+  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
 
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
@@ -403,22 +401,13 @@ withAgentClients2 = withAgentClientsCfg2 agentCfg agentCfg
 runAgentClientTest :: HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientTest alice@AgentClient {} bob baseId =
   runRight_ $ do
-    liftIO $ print $ e2eEncryptVRange $ config $ agentEnv alice
-    liftIO $ print $ e2eEncryptVRange $ config $ agentEnv bob
-    liftIO $ print $ smpClientVRange $ config $ agentEnv alice
-    liftIO $ print $ smpClientVRange $ config $ agentEnv bob
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
-    liftIO $ print 25
     allowConnection alice bobId confId "alice's connInfo"
-    liftIO $ print 30
     get alice ##> ("", bobId, CON)
-    liftIO $ print 35
     get bob ##> ("", aliceId, INFO "alice's connInfo")
-    liftIO $ print 40
     get bob ##> ("", aliceId, CON)
-    liftIO $ print 50
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
     1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
@@ -427,7 +416,6 @@ runAgentClientTest alice@AgentClient {} bob baseId =
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
-    liftIO $ print 100
     ackMessage bob aliceId (baseId + 2) Nothing
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)

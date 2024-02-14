@@ -325,14 +325,8 @@ data ConnData = ConnData
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
-ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
-  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
-
-ratchetSyncSupported' :: ConnData -> Bool
-ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= ratchetSyncSMPAgentVersion
-
-messageRcptsSupported :: ConnData -> Bool
-messageRcptsSupported ConnData {connAgentVersion} = connAgentVersion >= deliveryRcptsSMPAgentVersion
+ratchetSyncAllowed ConnData {ratchetSyncState, connAgentVersion} =
+  connAgentVersion >= ratchetSyncSMPAgentVersion && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
 
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool

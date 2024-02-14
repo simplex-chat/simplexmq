@@ -94,7 +94,7 @@ connectionRequestClientData =
 
 connectionRequestTests :: Spec
 connectionRequestTests =
-  fdescribe "connection request parsing / serializing" $ do
+  describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
       strEncode (queue :: SMPQueueUri) {queueAddress = queueAddrNoPort}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri

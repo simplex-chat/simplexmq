@@ -685,18 +685,15 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
 joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> m ConnId
 joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
-    (aVersion, cData@ConnData {connAgentVersion}, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
+    (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv
     g <- asks random
     (connId', sq) <- withStore c $ \db -> runExceptT $ do
       r@(connId', _) <- ExceptT $ createSndConn db g cData q
       liftIO $ createRatchet db connId' rc
       pure r
     let cData' = (cData :: ConnData) {connId = connId'}
-        duplexHS = connAgentVersion /= 1
     tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
-      Right _ -> do
-        unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
-        pure connId'
+      Right _ -> pure connId'
       Left e -> do
         -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
         withStore' c (`deleteConn` connId')
@@ -1314,12 +1311,12 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
     del :: m ()
     del = withStoreCtx' "ackMessage': deleteMsg" c $ \db -> deleteMsg db connId $ InternalId msgId
     sendRcpt :: Connection 'CDuplex -> m ()
-    sendRcpt (DuplexConnection cData _ sqs) = do
+    sendRcpt (DuplexConnection cData@ConnData {connAgentVersion} _ sqs) = do
       msg@RcvMsg {msgType, msgReceipt} <- withStoreCtx "ackMessage': getRcvMsg" c $ \db -> getRcvMsg db connId $ InternalId msgId
       case rcptInfo_ of
         Just rcptInfo -> do
           unless (msgType == AM_A_MSG_) $ throwError (CMD PROHIBITED)
-          when (messageRcptsSupported cData) $ do
+          when (connAgentVersion >= deliveryRcptsSMPAgentVersion) $ do
             let RcvMsg {msgMeta = MsgMeta {sndMsgId}, internalHash} = msg
                 rcpt = A_RCVD [AMessageReceipt {agentMsgId = sndMsgId, msgHash = internalHash, rcptInfo}]
             void $ enqueueMessages c cData sqs SMP.MsgFlags {notification = False} rcpt
@@ -1548,13 +1545,13 @@ connectionStats = \case
   NewConnection cData ->
     stats cData
   where
-    stats cData@ConnData {connAgentVersion, ratchetSyncState} =
+    stats ConnData {connAgentVersion, ratchetSyncState} =
       ConnectionStats
         { connAgentVersion,
           rcvQueuesInfo = [],
           sndQueuesInfo = [],
           ratchetSyncState,
-          ratchetSyncSupported = ratchetSyncSupported' cData
+          ratchetSyncSupported = connAgentVersion >= ratchetSyncSMPAgentVersion
         }
 
 -- | Change servers to be used for creating new queues, in Reader monad
@@ -2112,7 +2109,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                       where
                         processConf connInfo senderConf = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
-                          confId <- withStore c $ \db ->
+                          confId <- withStore c $ \db -> do
+                            setConnectionVersion db connId agentVersion
                             createConfirmation db g newConfirmation
                           let srvs = map qServer $ smpReplyQueues senderConf
                           notify $ CONF confId srvs connInfo
