@@ -31,6 +31,7 @@ import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (eitherToMaybe, whenM)
 import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, hGetLine, stdout, withFile)
@@ -297,3 +298,6 @@ printServiceInfo serverVersion srv@(ProtoServerWithAuth ProtocolServer {keyHash}
 
 clearDirIfExists :: FilePath -> IO ()
 clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>= mapM_ (removePathForcibly . combine path)
+
+getEnvPath :: String -> FilePath -> IO FilePath
+getEnvPath name def = maybe def (\case "" -> def; f -> f) <$> lookupEnv name
