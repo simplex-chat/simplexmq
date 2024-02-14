@@ -19,7 +19,7 @@ newtype KEMHybridSecret = KEMHybridSecret ScrubbedBytes
 
 -- | NaCl @crypto_box@ decrypt with a shared hybrid DH + KEM secret and 192-bit nonce.
 kcbDecrypt :: KEMHybridSecret -> CbNonce -> ByteString -> Either CryptoError ByteString
-kcbDecrypt (KEMHybridSecret k) nonce = sbDecrypt_ k nonce
+kcbDecrypt (KEMHybridSecret k) = sbDecrypt_ k
 
 -- | NaCl @crypto_box@ encrypt with a shared hybrid DH + KEM secret and 192-bit nonce.
 kcbEncrypt :: KEMHybridSecret -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
