@@ -33,7 +33,7 @@ module Simplex.Messaging.Transport
     currentServerSMPRelayVersion,
     basicAuthSMPVersion,
     subModeSMPVersion,
-    authEncryptCmdsSMPVersion,
+    authCmdsSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -114,7 +114,7 @@ smpBlockSize = 16384
 -- 4 - support command batching (7/17/2022)
 -- 5 - basic auth for SMP servers (11/12/2022)
 -- 6 - allow creating queues without subscribing (9/10/2023)
--- 7 - use authenticated encryption instead of signature to verify commands (2/3/2024)
+-- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (2/3/2024)
 
 batchCmdsSMPVersion :: Version
 batchCmdsSMPVersion = 4
@@ -125,8 +125,8 @@ basicAuthSMPVersion = 5
 subModeSMPVersion :: Version
 subModeSMPVersion = 6
 
-authEncryptCmdsSMPVersion :: Version
-authEncryptCmdsSMPVersion = 7
+authCmdsSMPVersion :: Version
+authCmdsSMPVersion = 7
 
 currentClientSMPRelayVersion :: Version
 currentClientSMPRelayVersion = 6
@@ -299,10 +299,9 @@ data THandleParams = THandleParams
     thVersion :: Version,
     -- | peer public key for command authorization and shared secrets for entity ID encryption
     thAuth :: Maybe THandleAuth,
-    -- | additionally encrypt transmission inside transport protocol
-    -- to protect transmission from sending proxies
+    -- | do NOT send session ID in transmission, but include it into signed message
     -- based on protocol version
-    encrypt :: Bool,
+    implySessId :: Bool,
     -- | send multiple transmissions in a single block
     -- based on protocol version
     batch :: Bool
@@ -361,11 +360,11 @@ instance Encoding ServerHandshake where
 
 encodeAuthEncryptCmds :: Encoding a => Version -> Maybe a -> ByteString
 encodeAuthEncryptCmds v k
-  | v >= authEncryptCmdsSMPVersion = maybe "" smpEncode k
+  | v >= authCmdsSMPVersion = maybe "" smpEncode k
   | otherwise = ""
 
 authEncryptCmdsP :: Version -> Parser a -> Parser (Maybe a)
-authEncryptCmdsP v p = if v >= authEncryptCmdsSMPVersion then Just <$> p else pure Nothing
+authEncryptCmdsP v p = if v >= authCmdsSMPVersion then Just <$> p else pure Nothing
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -470,7 +469,7 @@ smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.P
 smpThHandle th@THandle {params} v privKey k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
-      params' = params {thVersion = v, thAuth, encrypt = v >= authEncryptCmdsSMPVersion}
+      params' = params {thVersion = v, thAuth, implySessId = v >= authCmdsSMPVersion}
    in (th :: THandle c) {params = params'}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
@@ -483,7 +482,7 @@ getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP 
 smpTHandle :: Transport c => c -> THandle c
 smpTHandle c = THandle {connection = c, params}
   where
-    params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, encrypt = False, batch = True}
+    params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, implySessId = False, batch = True}
 
 $(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
 

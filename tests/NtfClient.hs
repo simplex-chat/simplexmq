@@ -114,8 +114,8 @@ ntfServerCfg =
 ntfServerCfgV2 :: NtfServerConfig
 ntfServerCfgV2 =
   ntfServerCfg
-    { ntfServerVRange = mkVersionRange 1 authEncryptBatchCmdsNTFVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}}
+    { ntfServerVRange = mkVersionRange 1 authBatchCmdsNTFVersion,
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}}
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a

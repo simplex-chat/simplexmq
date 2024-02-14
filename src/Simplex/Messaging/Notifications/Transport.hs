@@ -22,8 +22,8 @@ import Simplex.Messaging.Util (liftEitherWith)
 ntfBlockSize :: Int
 ntfBlockSize = 512
 
-authEncryptBatchCmdsNTFVersion :: Version
-authEncryptBatchCmdsNTFVersion = 2
+authBatchCmdsNTFVersion :: Version
+authBatchCmdsNTFVersion = 2
 
 currentClientNTFVersion :: Version
 currentClientNTFVersion = 1
@@ -68,11 +68,11 @@ instance Encoding NtfServerHandshake where
 
 encodeAuthEncryptCmds :: Encoding a => Version -> Maybe a -> ByteString
 encodeAuthEncryptCmds v k
-  | v >= authEncryptBatchCmdsNTFVersion = maybe "" smpEncode k
+  | v >= authBatchCmdsNTFVersion = maybe "" smpEncode k
   | otherwise = ""
 
 authEncryptCmdsP :: Version -> Parser a -> Parser (Maybe a)
-authEncryptCmdsP v p = if v >= authEncryptBatchCmdsNTFVersion then Just <$> p else pure Nothing
+authEncryptCmdsP v p = if v >= authBatchCmdsNTFVersion then Just <$> p else pure Nothing
 
 instance Encoding NtfClientHandshake where
   smpEncode NtfClientHandshake {ntfVersion, keyHash, authPubKey} =
@@ -84,11 +84,11 @@ instance Encoding NtfClientHandshake where
     pure NtfClientHandshake {ntfVersion, keyHash, authPubKey}
 
 ntfAuthPubKeyP :: Version -> Parser (Maybe C.PublicKeyX25519)
-ntfAuthPubKeyP v = if v >= authEncryptBatchCmdsNTFVersion then Just <$> smpP else pure Nothing
+ntfAuthPubKeyP v = if v >= authBatchCmdsNTFVersion then Just <$> smpP else pure Nothing
 
 encodeNtfAuthPubKey :: Version -> Maybe C.PublicKeyX25519 -> ByteString
 encodeNtfAuthPubKey v k
-  | v >= authEncryptBatchCmdsNTFVersion = maybe "" smpEncode k
+  | v >= authBatchCmdsNTFVersion = maybe "" smpEncode k
   | otherwise = ""
 
 -- | Notifcations server transport handshake.
@@ -126,11 +126,11 @@ ntfThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.P
 ntfThHandle th@THandle {params} v privKey k_ =
   -- TODO drop SMP v6: make thAuth non-optional
   let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
-      encBatch = v >= authEncryptBatchCmdsNTFVersion
-      params' = params {thVersion = v, thAuth, encrypt = encBatch, batch = encBatch}
+      v3 = v >= authBatchCmdsNTFVersion
+      params' = params {thVersion = v, thAuth, implySessId = v3, batch = v3}
    in (th :: THandle c) {params = params'}
 
 ntfTHandle :: Transport c => c -> THandle c
 ntfTHandle c = THandle {connection = c, params}
   where
-    params = THandleParams {sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thAuth = Nothing, encrypt = False, batch = False}
+    params = THandleParams {sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, thAuth = Nothing, implySessId = False, batch = False}

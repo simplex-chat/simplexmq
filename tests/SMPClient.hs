@@ -109,7 +109,7 @@ cfg =
     }
 
 cfgV7 :: ServerConfig
-cfgV7 = cfg {smpServerVRange = mkVersionRange 4 authEncryptCmdsSMPVersion}
+cfgV7 = cfg {smpServerVRange = mkVersionRange 4 authCmdsSMPVersion}
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}

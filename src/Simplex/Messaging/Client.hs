@@ -155,7 +155,7 @@ clientStub g sessionId thVersion thAuth = do
               thVersion,
               thAuth,
               blockSize = smpBlockSize,
-              encrypt = thVersion >= authEncryptCmdsSMPVersion,
+              implySessId = thVersion >= authCmdsSMPVersion,
               batch = True
             },
         sessionTs = undefined,

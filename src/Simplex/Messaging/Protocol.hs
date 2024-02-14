@@ -1060,14 +1060,14 @@ data CommandError
 
 -- | SMP transmission parser.
 transmissionP :: THandleParams -> Parser RawTransmission
-transmissionP THandleParams {sessionId, encrypt} = do
+transmissionP THandleParams {sessionId, implySessId} = do
   authenticator <- smpP
   authorized <- A.takeByteString
   either fail pure $ parseAll (trn authenticator authorized) authorized
   where
     trn authenticator authorized = do
-      sessId <- if encrypt then pure "" else smpP
-      let authorized' = if encrypt then smpEncode sessionId <> authorized else authorized
+      sessId <- if implySessId then pure "" else smpP
+      let authorized' = if implySessId then smpEncode sessionId <> authorized else authorized
       corrId <- smpP
       entityId <- smpP
       command <- A.takeByteString
@@ -1377,16 +1377,16 @@ tEncodeBatch1 t = lenEncode 1 `B.cons` tEncodeForBatch t
 data TransmissionForAuth = TransmissionForAuth {tForAuth :: ~ByteString, tToSend :: ByteString}
 
 encodeTransmissionForAuth :: ProtocolEncoding e c => THandleParams -> Transmission c -> TransmissionForAuth
-encodeTransmissionForAuth THandleParams {thVersion = v, sessionId, encrypt} t =
-  TransmissionForAuth {tForAuth, tToSend = if encrypt then t' else tForAuth}
+encodeTransmissionForAuth THandleParams {thVersion = v, sessionId, implySessId} t =
+  TransmissionForAuth {tForAuth, tToSend = if implySessId then t' else tForAuth}
   where
     tForAuth = smpEncode sessionId <> t'
     t' = encodeTransmission_ v t
 {-# INLINE encodeTransmissionForAuth #-}
 
 encodeTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ByteString
-encodeTransmission THandleParams {thVersion = v, sessionId, encrypt} t =
-  if encrypt then t' else smpEncode sessionId <> t'
+encodeTransmission THandleParams {thVersion = v, sessionId, implySessId} t =
+  if implySessId then t' else smpEncode sessionId <> t'
   where
     t' = encodeTransmission_ v t
 {-# INLINE encodeTransmission #-}
@@ -1417,9 +1417,9 @@ tGet :: forall err cmd c. (ProtocolEncoding err cmd, Transport c) => THandle c -
 tGet th@THandle {params} = L.map (tDecodeParseValidate params) <$> tGetParse th
 
 tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => THandleParams -> Either TransportError RawTransmission -> SignedTransmission err cmd
-tDecodeParseValidate THandleParams {sessionId, thVersion = v, encrypt} = \case
+tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \case
   Right RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
-    | encrypt || sessId == sessionId ->
+    | implySessId || sessId == sessionId ->
         let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
     | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))

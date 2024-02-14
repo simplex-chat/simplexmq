@@ -745,7 +745,7 @@ testTiming (ATransport t) =
   describe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
       it (testName tst) $
-        smpTest2Cfg cfgV7 (mkVersionRange 4 authEncryptCmdsSMPVersion) t $ \rh sh ->
+        smpTest2Cfg cfgV7 (mkVersionRange 4 authCmdsSMPVersion) t $ \rh sh ->
           testSameTiming rh sh tst
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String

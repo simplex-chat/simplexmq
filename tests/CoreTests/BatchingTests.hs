@@ -264,14 +264,14 @@ clientStubV7 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  thAuth_ <- testTHandleAuth authEncryptCmdsSMPVersion g rKey
-  atomically $ clientStub g sessId authEncryptCmdsSMPVersion thAuth_
+  thAuth_ <- testTHandleAuth authCmdsSMPVersion g rKey
+  atomically $ clientStub g sessId authCmdsSMPVersion thAuth_
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
 
 randomSUBv7 :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSUBv7 = randomSUB_ C.SEd25519 authEncryptCmdsSMPVersion
+randomSUBv7 = randomSUB_ C.SEd25519 authCmdsSMPVersion
 
 randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> Version -> ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB_ a v sessId = do
@@ -301,7 +301,7 @@ randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe Transmission
 randomSEND = randomSEND_ C.SEd25519 currentClientSMPRelayVersion
 
 randomSENDv7 :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSENDv7 = randomSEND_ C.SX25519 authEncryptCmdsSMPVersion
+randomSENDv7 = randomSEND_ C.SX25519 authCmdsSMPVersion
 
 randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> Version -> ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND_ a v sessId len = do
@@ -322,13 +322,13 @@ testTHandleParams v sessionId =
       blockSize = smpBlockSize,
       thVersion = v,
       thAuth = Nothing,
-      encrypt = v >= authEncryptCmdsSMPVersion,
+      implySessId = v >= authCmdsSMPVersion,
       batch = True
     }
 
 testTHandleAuth :: Version -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe THandleAuth)
 testTHandleAuth v g (C.APublicAuthKey a k) = case a of
-  C.SX25519 | v >= authEncryptCmdsSMPVersion -> do
+  C.SX25519 | v >= authCmdsSMPVersion -> do
     (_, privKey) <- atomically $ C.generateKeyPair g
     pure $ Just THandleAuth {peerPubKey = k, privKey}
   _ -> pure Nothing
