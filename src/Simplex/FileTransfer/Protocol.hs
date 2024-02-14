@@ -47,8 +47,9 @@ import Simplex.Messaging.Protocol
     SignedTransmission,
     SndPublicAuthKey,
     Transmission,
-    ClntTransmission (..),
-    encodeClntTransmission,
+    TransmissionForAuth (..),
+    encodeTransmissionForAuth,
+    encodeTransmission,
     messageTagP,
     tDecodeParseValidate,
     tEncodeBatch1,
@@ -396,10 +397,15 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeTransmission :: ProtocolEncoding e c => THandleParams -> Maybe C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeTransmission thParams pKey (corrId, fId, msg) = do
-  let ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, fId, msg)
-  xftpEncodeBatch1 . (,tToSend) =<< authTransmission Nothing pKey corrId tForAuth
+xftpEncodeAuthTransmission :: ProtocolEncoding e c => THandleParams -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeAuthTransmission thParams pKey (corrId, fId, msg) = do
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, fId, msg)
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission Nothing (Just pKey) corrId tForAuth
+
+xftpEncodeTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission thParams (corrId, fId, msg) = do
+  let t = encodeTransmission thParams (corrId, fId, msg)
+  xftpEncodeBatch1 (Nothing, t)
 
 -- this function uses batch syntax but puts only one transmission in the batch
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString

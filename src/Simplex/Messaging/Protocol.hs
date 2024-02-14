@@ -125,9 +125,9 @@ module Simplex.Messaging.Protocol
     -- * Parse and serialize
     ProtocolMsgTag (..),
     messageTagP,
-    ClntTransmission (..),
-    encodeClntTransmission,
-    encodeSrvTransmission,
+    TransmissionForAuth (..),
+    encodeTransmissionForAuth,
+    encodeTransmission,
     transmissionP,
     _smpP,
     encodeRcvMsgBody,
@@ -1383,22 +1383,22 @@ tEncodeBatch1 t = lenEncode 1 `B.cons` tEncodeForBatch t
 {-# INLINE tEncodeBatch1 #-}
 
 -- tForAuth is lazy to avoid computing it when there is no key to sign
-data ClntTransmission = ClntTransmission {tForAuth :: ~ByteString, tToSend :: ByteString}
+data TransmissionForAuth = TransmissionForAuth {tForAuth :: ~ByteString, tToSend :: ByteString}
 
-encodeClntTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ClntTransmission
-encodeClntTransmission THandleParams {thVersion = v, sessionId, encrypt} t =
-  ClntTransmission {tForAuth, tToSend = if encrypt then t' else tForAuth}
+encodeTransmissionForAuth :: ProtocolEncoding e c => THandleParams -> Transmission c -> TransmissionForAuth
+encodeTransmissionForAuth THandleParams {thVersion = v, sessionId, encrypt} t =
+  TransmissionForAuth {tForAuth, tToSend = if encrypt then t' else tForAuth}
   where
     tForAuth = smpEncode sessionId <> t'
     t' = encodeTransmission_ v t
-{-# INLINE encodeClntTransmission #-}
+{-# INLINE encodeTransmissionForAuth #-}
 
-encodeSrvTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ByteString
-encodeSrvTransmission THandleParams {thVersion = v, sessionId, encrypt} t =
+encodeTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ByteString
+encodeTransmission THandleParams {thVersion = v, sessionId, encrypt} t =
   if encrypt then t' else smpEncode sessionId <> t'
   where
     t' = encodeTransmission_ v t
-{-# INLINE encodeSrvTransmission #-}
+{-# INLINE encodeTransmission #-}
 
 encodeTransmission_ :: ProtocolEncoding e c => Version -> Transmission c -> ByteString
 encodeTransmission_ v (CorrId corrId, queueId, command) =

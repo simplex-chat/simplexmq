@@ -444,7 +444,7 @@ send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
     -- TODO we can authorize responses as well
-    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeSrvTransmission params t)) ts
+    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int

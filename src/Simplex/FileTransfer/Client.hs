@@ -138,7 +138,7 @@ sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> 
 sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission thParams (Just pKey) ("", fId, FileCmd (sFileParty @p) cmd)
+      xftpEncodeAuthTransmission thParams pKey ("", fId, FileCmd (sFileParty @p) cmd)
   sendXFTPTransmission c t chunkSpec_
 
 sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
@@ -218,7 +218,7 @@ pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
 pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission thParams Nothing ("", "", FileCmd SFRecipient PING)
+      xftpEncodeTransmission thParams ("", "", FileCmd SFRecipient PING)
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()

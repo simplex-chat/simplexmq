@@ -281,7 +281,7 @@ randomSUB_ a v sessId = do
   (rKey, rpKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
-      ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, rId, Cmd SRecipient SUB)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, rId, Cmd SRecipient SUB)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) corrId tForAuth
 
 randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
@@ -312,7 +312,7 @@ randomSEND_ a v sessId len = do
   thAuth_ <- testTHandleAuth v g sKey
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
-      ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) corrId tForAuth
 
 testTHandleParams :: Version -> ByteString -> THandleParams

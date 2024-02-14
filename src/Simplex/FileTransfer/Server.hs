@@ -243,7 +243,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      let t_ = xftpEncodeTransmission thParams Nothing (corrId, fId, resp)
+      let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do

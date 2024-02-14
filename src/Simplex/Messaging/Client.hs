@@ -704,7 +704,7 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Requ
 mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entId, cmd) = do
   corrId <- atomically getNextCorrId
-  let ClntTransmission {tForAuth, tToSend} = encodeClntTransmission thParams (corrId, entId, cmd)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, entId, cmd)
       auth = authTransmission (thAuth thParams) pKey_ corrId tForAuth
   r <- atomically $ mkRequest corrId
   pure ((,tToSend) <$> auth, r)
