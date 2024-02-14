@@ -861,9 +861,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
           MessageQuota {} -> RcvMsgQuota msgTs'
           where
             encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
-            encrypt body =
-              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
-               in RcvMessage msgId' encBody
+            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
             msgId' = messageId msg
             msgTs' = messageTs msg
 
