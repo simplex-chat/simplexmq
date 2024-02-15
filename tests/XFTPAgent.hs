@@ -158,7 +158,7 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
       r -> error $ "Expected SFDONE, got " <> show r
-  redirectFileId <- runRight $ xftpSendDescription sndr 1 vfdDirect
+  redirectFileId <- runRight $ xftpSendDescription sndr 1 vfdDirect 1
   logInfo $ "File sent, sending redirect: " <> tshow redirectFileId
   sfGet sndr `shouldReturn` ("", redirectFileId, SFPROG 65536 65536)
   vfdRedirect@(ValidFileDescription fdRedirect) <-
