@@ -22,6 +22,7 @@ import qualified Data.X509.Validation as XV
 import qualified SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import qualified Simplex.Messaging.Crypto.NaCl.Bindings as NaCl
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
@@ -100,6 +101,8 @@ cryptoTests = do
     it "should validate certificates" testValidateX509
   describe "sntrup761" $
     it "should enc/dec key" testSNTRUP761
+  fdescribe "NaCl" $
+    it "cryptobox is compatible" testNaCl
 
 instance Eq C.APublicKey where
   C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
@@ -270,3 +273,27 @@ testSNTRUP761 = do
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk
   k' `shouldBe` k
+
+testNaCl :: IO ()
+testNaCl = do
+  drg <- C.newRandom
+  (aPub :: C.PublicKeyX25519, aPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair drg
+  (bPub :: C.PublicKeyX25519, bPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair drg
+  let abShared = C.dh' aPub bPriv
+  let baShared = C.dh' bPub aPriv
+  abShared `shouldBe` baShared
+
+  naclShared <- either (fail . show) pure $ NaCl.dh aPub bPriv
+  naclShared `shouldBe` abShared
+
+  let msg = "hello long-enough world"
+  nonce <- atomically $ C.randomCbNonce drg
+  naclCiphertext <- either (fail . mappend "cryptoBox: " . show) pure $ NaCl.cryptoBox aPub bPriv nonce msg
+  let ourCiphertext = C.cbEncryptNoPad abShared nonce msg
+  (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length ourCiphertext, ourCiphertext)
+
+  ourMsg <- either (fail . show) pure $ C.cbDecryptNoPad baShared nonce naclCiphertext
+  ourMsg `shouldBe` msg
+
+  naclMsg <- either (fail . mappend "cryptoBoxOpen: " . show) pure $ NaCl.cryptoBoxOpen bPub aPriv nonce ourCiphertext
+  naclMsg `shouldBe` msg
