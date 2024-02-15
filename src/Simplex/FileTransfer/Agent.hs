@@ -311,8 +311,8 @@ xftpSendFile' c userId file numRecipients = do
   void $ getXFTPSndWorker True c Nothing
   pure fId
 
-xftpSendDescription' :: forall m. AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m SndFileId
-xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) = do
+xftpSendDescription' :: forall m. AgentMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> m SndFileId
+xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) numRecipients = do
   g <- asks random
   prefixPath <- getPrefixPath "snd.xftp"
   createDirectory prefixPath
@@ -323,7 +323,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  fId <- withStore c $ \db -> createSndFile db g userId file 1 relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
   void $ getXFTPSndWorker True c Nothing
   pure fId
 

@@ -403,8 +403,8 @@ xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> CryptoFile -> Int 
 xftpSendFile c = withAgentEnv c .:. xftpSendFile' c
 
 -- | Send XFTP file
-xftpSendDescription :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> m SndFileId
-xftpSendDescription c = withAgentEnv c .: xftpSendDescription' c
+xftpSendDescription :: AgentErrorMonad m => AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> m SndFileId
+xftpSendDescription c = withAgentEnv c .:. xftpSendDescription' c
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
 xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> SndFileId -> m ()
