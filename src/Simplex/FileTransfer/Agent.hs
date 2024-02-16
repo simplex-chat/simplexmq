@@ -288,12 +288,16 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
 
 xftpDeleteRcvFile' :: AgentMonad m => AgentClient -> RcvFileId -> m ()
 xftpDeleteRcvFile' c rcvFileEntityId = do
-  RcvFile {rcvFileId, prefixPath, status} <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
-  if status == RFSComplete || status == RFSError
-    then do
-      removePath prefixPath
-      withStore' c (`deleteRcvFile'` rcvFileId)
-    else withStore' c (`updateRcvFileDeleted` rcvFileId)
+  rcvFile <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
+  handleError (const $ pure ()) $ withStore' c (`getRcvFileEntityRedirect` rcvFileEntityId) >>= mapM_ remove
+  remove rcvFile
+  where
+    remove RcvFile {rcvFileId, prefixPath, status} =
+      if status == RFSComplete || status == RFSError
+        then do
+          removePath prefixPath
+          withStore' c (`deleteRcvFile'` rcvFileId)
+        else withStore' c (`updateRcvFileDeleted` rcvFileId)
 
 notify :: forall m e. (MonadUnliftIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)

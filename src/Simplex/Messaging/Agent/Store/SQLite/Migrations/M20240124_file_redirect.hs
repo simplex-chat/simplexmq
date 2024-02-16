@@ -11,7 +11,7 @@ m20240124_file_redirect =
 ALTER TABLE snd_files ADD COLUMN redirect_size INTEGER;
 ALTER TABLE snd_files ADD COLUMN redirect_digest BLOB;
 
-ALTER TABLE rcv_files ADD COLUMN redirect_id INTEGER REFERENCES rcv_files ON DELETE CASCADE;
+ALTER TABLE rcv_files ADD COLUMN redirect_id INTEGER REFERENCES rcv_files ON DELETE SET NULL;
 ALTER TABLE rcv_files ADD COLUMN redirect_entity_id BLOB;
 ALTER TABLE rcv_files ADD COLUMN redirect_size INTEGER;
 ALTER TABLE rcv_files ADD COLUMN redirect_digest BLOB;
