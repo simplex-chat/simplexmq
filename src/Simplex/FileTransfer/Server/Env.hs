@@ -24,7 +24,7 @@ import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (BasicAuth, RcvPublicVerifyKey)
+import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
 import Simplex.Messaging.Util (tshow)
@@ -103,6 +103,6 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
-  = XFTPReqNew FileInfo (NonEmpty RcvPublicVerifyKey) (Maybe BasicAuth)
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing

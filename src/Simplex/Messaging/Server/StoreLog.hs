@@ -46,7 +46,7 @@ data StoreLog (a :: IOMode) where
 
 data StoreLogRecord
   = CreateQueue QueueRec
-  | SecureQueue QueueId SndPublicVerifyKey
+  | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
   | DeleteQueue QueueId
@@ -120,7 +120,7 @@ writeStoreLogRecord (WriteStoreLog _ h) r = do
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
 logCreateQueue s = writeStoreLogRecord s . CreateQueue
 
-logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicVerifyKey -> IO ()
+logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
 
 logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NtfCreds -> IO ()

@@ -92,7 +92,7 @@ fileDesc =
   where
     defaultChunkSize = FileSize $ mb 8
     replicaId = ChunkReplicaId "abc"
-    replicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+    replicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
 
 yamlFileDesc :: YAMLFileDescription

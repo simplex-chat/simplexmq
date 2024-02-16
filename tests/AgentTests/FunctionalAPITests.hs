@@ -15,6 +15,7 @@
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
     testServerMatrix2,
+    withAgentClientsCfg2,
     getSMPAgentClient',
     makeConnection,
     exchangeGreetingsMsgId,
@@ -29,6 +30,7 @@ module AgentTests.FunctionalAPITests
     (##>),
     (=##>),
     pattern Msg,
+    agentCfgV7,
   )
 where
 
@@ -49,21 +51,22 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Notifications.Transport (authBatchCmdsNTFVersion)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ATransport (..))
+import Simplex.Messaging.Transport (ATransport (..), authCmdsSMPVersion)
 import Simplex.Messaging.Version
 import System.Directory (copyFile, renameFile)
 import Test.Hspec
@@ -126,8 +129,14 @@ pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMs
 smpCfgVPrev :: ProtocolClientConfig
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-smpCfgV1 :: ProtocolClientConfig
-smpCfgV1 = (smpCfg agentCfg) {serverVRange = v1Range}
+smpCfgV4 :: ProtocolClientConfig
+smpCfgV4 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 4}
+
+smpCfgV7 :: ProtocolClientConfig
+smpCfgV7 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}
+
+ntfCfgV2 :: ProtocolClientConfig
+ntfCfgV2 = (smpCfg agentCfg) {serverVRange = mkVersionRange 1 authBatchCmdsNTFVersion}
 
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
@@ -138,13 +147,21 @@ agentCfgVPrev =
       smpCfg = smpCfgVPrev
     }
 
+agentCfgV7 :: AgentConfig
+agentCfgV7 = 
+  agentCfg
+    { sndAuthAlg = C.AuthAlg C.SX25519,
+      smpCfg = smpCfgV7,
+      ntfCfg = ntfCfgV2
+    }
+
 agentCfgV1 :: AgentConfig
 agentCfgV1 =
   agentCfg
     { smpAgentVRange = v1Range,
       smpClientVRange = v1Range,
       e2eEncryptVRange = v1Range,
-      smpCfg = smpCfgV1
+      smpCfg = smpCfgV4
     }
 
 agentCfgRatchetVPrev :: AgentConfig
@@ -363,6 +380,10 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
+  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 runTest
+  it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 runTest
+  it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
+  it "current with v7 server" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
@@ -2019,7 +2040,7 @@ testCreateQueueAuth clnt1 clnt2 = do
   where
     getClient clientId (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
-          smpCfg = (defaultClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
+          smpCfg = (defaultSMPClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange 4 clntVersion}
        in getSMPAgentClient' clientId agentCfg {smpCfg} servers db
 
 testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)

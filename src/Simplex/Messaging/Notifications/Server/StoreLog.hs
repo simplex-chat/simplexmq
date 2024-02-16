@@ -32,7 +32,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
-import Simplex.Messaging.Protocol (NtfPrivateSignKey)
+import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (whenM)
 import System.Directory (doesFileExist, renameFile)
@@ -52,7 +52,7 @@ data NtfTknRec = NtfTknRec
   { ntfTknId :: NtfTokenId,
     token :: DeviceToken,
     tknStatus :: NtfTknStatus,
-    tknVerifyKey :: C.APublicVerifyKey,
+    tknVerifyKey :: C.APublicAuthKey,
     tknDhKeys :: C.KeyPair 'C.X25519,
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
@@ -74,7 +74,7 @@ mkTknRec NtfTknData {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKey
 data NtfSubRec = NtfSubRec
   { ntfSubId :: NtfSubscriptionId,
     smpQueue :: SMPQueueNtf,
-    notifierKey :: NtfPrivateSignKey,
+    notifierKey :: NtfPrivateAuthKey,
     tokenId :: NtfTokenId,
     subStatus :: NtfSubStatus
   }

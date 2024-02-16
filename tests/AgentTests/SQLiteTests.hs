@@ -174,8 +174,8 @@ testForeignKeysEnabled =
 cData1 :: ConnData
 cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
 
-testPrivateSignKey :: C.APrivateSignKey
-testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+testPrivateAuthKey :: C.APrivateAuthKey
+testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
@@ -193,7 +193,7 @@ rcvQueue1 =
       connId = "conn1",
       server = smpServer1,
       rcvId = "1234",
-      rcvPrivateKey = testPrivateSignKey,
+      rcvPrivateKey = testPrivateAuthKey,
       rcvDhSecret = testDhSecret,
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
@@ -216,7 +216,7 @@ sndQueue1 =
       server = smpServer1,
       sndId = "3456",
       sndPublicKey = Nothing,
-      sndPrivateKey = testPrivateSignKey,
+      sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
@@ -354,7 +354,7 @@ testUpgradeRcvConnToDuplex =
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
               sndPublicKey = Nothing,
-              sndPrivateKey = testPrivateSignKey,
+              sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
@@ -381,7 +381,7 @@ testUpgradeSndConnToDuplex =
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               rcvId = "3456",
-              rcvPrivateKey = testPrivateSignKey,
+              rcvPrivateKey = testPrivateAuthKey,
               rcvDhSecret = testDhSecret,
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
@@ -672,8 +672,8 @@ testFileSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD
 testFileCbNonce :: C.CbNonce
 testFileCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
 
-testFileReplicaKey :: C.APrivateSignKey
-testFileReplicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+testFileReplicaKey :: C.APrivateAuthKey
+testFileReplicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
 testGetNextRcvChunkToDownload :: SQLiteStore -> Expectation
 testGetNextRcvChunkToDownload st = do

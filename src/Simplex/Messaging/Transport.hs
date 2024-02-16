@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -26,7 +27,13 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
-    supportedSMPServerVRange,
+    supportedClientSMPRelayVRange,
+    supportedServerSMPRelayVRange,
+    currentClientSMPRelayVersion,
+    currentServerSMPRelayVersion,
+    basicAuthSMPVersion,
+    subModeSMPVersion,
+    authCmdsSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -36,6 +43,7 @@ module Simplex.Messaging.Transport
     TProxy (..),
     ATransport (..),
     TransportPeer (..),
+    getServerVerifyKey,
 
     -- * TLS Transport
     TLS (..),
@@ -47,6 +55,8 @@ module Simplex.Messaging.Transport
 
     -- * SMP transport
     THandle (..),
+    THandleParams (..),
+    THandleAuth (..),
     TransportError (..),
     HandshakeError (..),
     smpServerHandshake,
@@ -61,12 +71,13 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (forM)
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -74,6 +85,8 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Version (showVersion)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import qualified Network.TLS as T
@@ -83,7 +96,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
 import Simplex.Messaging.Version
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
@@ -94,8 +107,40 @@ import UnliftIO.STM
 smpBlockSize :: Int
 smpBlockSize = 16384
 
-supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange 1 6
+-- SMP protocol version history:
+-- 1 - binary protocol encoding (1/1/2022)
+-- 2 - message flags (used to control notifications, 6/6/2022)
+-- 3 - encrypt message timestamp and flags together with the body when delivered to the recipient (7/5/2022)
+-- 4 - support command batching (7/17/2022)
+-- 5 - basic auth for SMP servers (11/12/2022)
+-- 6 - allow creating queues without subscribing (9/10/2023)
+-- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (2/3/2024)
+
+batchCmdsSMPVersion :: Version
+batchCmdsSMPVersion = 4
+
+basicAuthSMPVersion :: Version
+basicAuthSMPVersion = 5
+
+subModeSMPVersion :: Version
+subModeSMPVersion = 6
+
+authCmdsSMPVersion :: Version
+authCmdsSMPVersion = 7
+
+currentClientSMPRelayVersion :: Version
+currentClientSMPRelayVersion = 6
+
+currentServerSMPRelayVersion :: Version
+currentServerSMPRelayVersion = 6
+
+-- minimal supported protocol version is 4
+-- TODO remove code that supports sending commands without batching
+supportedClientSMPRelayVRange :: VersionRange
+supportedClientSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentClientSMPRelayVersion
+
+supportedServerSMPRelayVRange :: VersionRange
+supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
 
 simplexMQVersion :: String
 simplexMQVersion = showVersion SMQ.version
@@ -118,10 +163,12 @@ class Transport c where
   transportConfig :: c -> TransportConfig
 
   -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: TransportConfig -> T.Context -> IO c
+  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
 
   -- | Upgrade client TLS context to connection (used in the client)
-  getClientConnection :: TransportConfig -> T.Context -> IO c
+  getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
+
+  getServerCerts :: c -> X.CertificateChain
 
   -- | tls-unique channel binding per RFC5929
   tlsUnique :: c -> SessionId
@@ -149,6 +196,12 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
+getServerVerifyKey :: Transport c => c -> Either String C.APublicVerifyKey
+getServerVerifyKey c =
+  case getServerCerts c of
+    X.CertificateChain (server : _ca) -> C.x509ToPublic (X.certPubKey . X.signedObject $ X.getSigned server, []) >>= C.pubKey
+    _ -> Left "no certificate chain"
+
 -- * TLS Transport
 
 data TLS = TLS
@@ -156,6 +209,7 @@ data TLS = TLS
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
+    tlsServerCerts :: X.CertificateChain,
     tlsTransportConfig :: TransportConfig
   }
 
@@ -168,12 +222,12 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: TransportPeer -> TransportConfig -> T.Context -> IO TLS
-getTLS tlsPeer cfg cxt = withTlsUnique tlsPeer cxt newTLS
+getTLS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO TLS
+getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
-      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsPeer, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -208,6 +262,7 @@ instance Transport TLS where
   transportConfig = tlsTransportConfig
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
+  getServerCerts = tlsServerCerts
   tlsUnique = tlsUniq
   closeConnection tls = closeTLS $ tlsContext tls
 
@@ -231,16 +286,30 @@ instance Transport TLS where
 
 -- * SMP transport
 
--- | The handle for SMP encrypted transport connection over Transport .
+-- | The handle for SMP encrypted transport connection over Transport.
 data THandle c = THandle
   { connection :: c,
-    sessionId :: SessionId,
+    params :: THandleParams
+  }
+
+data THandleParams = THandleParams
+  { sessionId :: SessionId,
     blockSize :: Int,
     -- | agreed server protocol version
     thVersion :: Version,
+    -- | peer public key for command authorization and shared secrets for entity ID encryption
+    thAuth :: Maybe THandleAuth,
+    -- | do NOT send session ID in transmission, but include it into signed message
+    -- based on protocol version
+    implySessId :: Bool,
     -- | send multiple transmissions in a single block
-    -- based on protocol and protocol version
+    -- based on protocol version
     batch :: Bool
+  }
+
+data THandleAuth = THandleAuth
+  { peerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
+    privKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
   }
 
 -- | TLS-unique channel binding
@@ -248,28 +317,54 @@ type SessionId = ByteString
 
 data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRange,
-    sessionId :: SessionId
+    sessionId :: SessionId,
+    -- pub key to agree shared secrets for command authorization and entity ID encryption.
+    authPubKey :: Maybe (X.CertificateChain, X.SignedExact X.PubKey)
   }
 
 data ClientHandshake = ClientHandshake
   { -- | agreed SMP server protocol version
     smpVersion :: Version,
     -- | server identity - CA certificate fingerprint
-    keyHash :: C.KeyHash
+    keyHash :: C.KeyHash,
+    -- pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
+    authPubKey :: Maybe C.PublicKeyX25519
   }
 
 instance Encoding ClientHandshake where
-  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
+  smpEncode ClientHandshake {smpVersion, keyHash, authPubKey} =
+    smpEncode (smpVersion, keyHash) <> encodeAuthEncryptCmds smpVersion authPubKey
   smpP = do
     (smpVersion, keyHash) <- smpP
-    pure ClientHandshake {smpVersion, keyHash}
+    -- TODO drop SMP v6: remove special parser and make key non-optional
+    authPubKey <- authEncryptCmdsP smpVersion smpP
+    pure ClientHandshake {smpVersion, keyHash, authPubKey}
 
 instance Encoding ServerHandshake where
-  smpEncode ServerHandshake {smpVersionRange, sessionId} =
-    smpEncode (smpVersionRange, sessionId)
+  smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey} =
+    smpEncode (smpVersionRange, sessionId) <> auth
+    where
+      auth =
+        encodeAuthEncryptCmds (maxVersion smpVersionRange) $
+          bimap C.encodeCertChain C.SignedObject <$> authPubKey
   smpP = do
     (smpVersionRange, sessionId) <- smpP
-    pure ServerHandshake {smpVersionRange, sessionId}
+    -- TODO drop SMP v6: remove special parser and make key non-optional
+    authPubKey <- authEncryptCmdsP (maxVersion smpVersionRange) authP
+    pure ServerHandshake {smpVersionRange, sessionId, authPubKey}
+    where
+      authP = do
+        cert <- C.certChainP
+        C.SignedObject key <- smpP
+        pure (cert, key)
+
+encodeAuthEncryptCmds :: Encoding a => Version -> Maybe a -> ByteString
+encodeAuthEncryptCmds v k
+  | v >= authCmdsSMPVersion = maybe "" smpEncode k
+  | otherwise = ""
+
+authEncryptCmdsP :: Version -> Parser a -> Parser (Maybe a)
+authEncryptCmdsP v p = if v >= authCmdsSMPVersion then Just <$> p else pure Nothing
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -279,6 +374,9 @@ data TransportError
     TELargeMsg
   | -- | incorrect session ID
     TEBadSession
+  | -- | absent server key for v7 entity
+    -- This error happens when the server did not provide a DH key to authorize commands for the queue that should be authorized with a DH key.
+    TENoServerAuth
   | -- | transport handshake error
     TEHandshake {handshakeErr :: HandshakeError}
   deriving (Eq, Read, Show, Exception)
@@ -291,6 +389,8 @@ data HandshakeError
     VERSION
   | -- | incorrect server identity
     IDENTITY
+  | -- | v7 authentication failed
+    BAD_AUTH
   deriving (Eq, Read, Show, Exception)
 
 -- | SMP encrypted transport error parser.
@@ -299,6 +399,7 @@ transportErrorP =
   "BLOCK" $> TEBadBlock
     <|> "LARGE_MSG" $> TELargeMsg
     <|> "SESSION" $> TEBadSession
+    <|> "NO_AUTH" $> TENoServerAuth
     <|> "HANDSHAKE " *> (TEHandshake <$> parseRead1)
 
 -- | Serialize SMP encrypted transport error.
@@ -307,17 +408,18 @@ serializeTransportError = \case
   TEBadBlock -> "BLOCK"
   TELargeMsg -> "LARGE_MSG"
   TEBadSession -> "SESSION"
+  TENoServerAuth -> "NO_AUTH"
   TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
-tPutBlock THandle {connection = c, blockSize} block =
+tPutBlock THandle {connection = c, params = THandleParams {blockSize}} block =
   bimapM (const $ pure TELargeMsg) (cPut c) $
     C.pad block blockSize
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
-tGetBlock THandle {connection = c, blockSize} = do
+tGetBlock THandle {connection = c, params = THandleParams {blockSize}} = do
   msg <- cGet c blockSize
   if B.length msg == blockSize
     then pure . first (const TELargeMsg) $ C.unPad msg
@@ -326,35 +428,49 @@ tGetBlock THandle {connection = c, blockSize} = do
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpServerHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-smpServerHandshake c kh smpVRange = do
-  let th@THandle {sessionId} = smpTHandle c
-  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange}
+smpServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
+  let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
+      sk = C.signX509 serverSignKey $ C.publicToX509 k
+      certChain = getServerCerts c
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange, authPubKey = Just (certChain, sk)}
   getHandshake th >>= \case
-    ClientHandshake {smpVersion, keyHash}
+    ClientHandshake {smpVersion = v, keyHash, authPubKey = k'}
       | keyHash /= kh ->
           throwE $ TEHandshake IDENTITY
-      | smpVersion `isCompatible` smpVRange -> do
-          pure $ smpThHandle th smpVersion
+      | v `isCompatible` smpVRange ->
+          pure $ smpThHandle th v pk k'
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-smpClientHandshake c keyHash smpVRange = do
-  let th@THandle {sessionId} = smpTHandle c
-  ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
+smpClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
+  let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
+  ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` smpVRange of
-      Just (Compatible smpVersion) -> do
-        sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure $ smpThHandle th smpVersion
+      Just (Compatible v) -> do
+        sk_ <- forM authPubKey $ \(X.CertificateChain cert, exact) ->
+          liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+            case cert of
+              [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
+              _ -> throwError "bad certificate"
+            serverKey <- getServerVerifyKey c
+            pubKey <- C.verifyX509 serverKey exact
+            C.x509ToPublic (pubKey, []) >>= C.pubKey
+        sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
+        pure $ smpThHandle th v pk sk_
       Nothing -> throwE $ TEHandshake VERSION
 
-smpThHandle :: forall c. THandle c -> Version -> THandle c
-smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
+smpThHandle :: forall c. THandle c -> Version -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandle c
+smpThHandle th@THandle {params} v privKey k_ =
+  -- TODO drop SMP v6: make thAuth non-optional
+  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
+      params' = params {thVersion = v, thAuth, implySessId = v >= authCmdsSMPVersion}
+   in (th :: THandle c) {params = params'}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
@@ -364,7 +480,9 @@ getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportErr
 getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
 
 smpTHandle :: Transport c => c -> THandle c
-smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, batch = False}
+smpTHandle c = THandle {connection = c, params}
+  where
+    params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, thAuth = Nothing, implySessId = False, batch = True}
 
 $(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
 

@@ -63,7 +63,7 @@ getQueue QueueStore {queues, senders, notifiers} party qId =
       SSender -> TM.lookup qId senders $>>= (`TM.lookup` queues)
       SNotifier -> TM.lookup qId notifiers $>>= (`TM.lookup` queues)
 
-secureQueue :: QueueStore -> RecipientId -> SndPublicVerifyKey -> STM (Either ErrorType QueueRec)
+secureQueue :: QueueStore -> RecipientId -> SndPublicAuthKey -> STM (Either ErrorType QueueRec)
 secureQueue QueueStore {queues} rId sKey =
   withQueue rId queues $ \qVar ->
     readTVar qVar >>= \q -> case senderKey q of

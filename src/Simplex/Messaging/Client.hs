@@ -28,7 +28,7 @@
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
-    ProtocolClient (thVersion, sessionId, sessionTs),
+    ProtocolClient (thParams, sessionTs),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -63,6 +63,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     TransportSessionMode (..),
     defaultClientConfig,
+    defaultSMPClientConfig,
     defaultNetworkConfig,
     transportClientConfig,
     chooseTransportHost,
@@ -74,6 +75,7 @@ module Simplex.Messaging.Client
     -- * For testing
     PCTransmission,
     mkTransmission,
+    authTransmission,
     clientStub,
   )
 where
@@ -83,7 +85,9 @@ import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Except
 import Control.Monad.Trans.Except
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -115,12 +119,9 @@ import System.Timeout (timeout)
 -- Use 'getSMPClient' to connect to an SMP server and create a client handle.
 data ProtocolClient err msg = ProtocolClient
   { action :: Maybe (Async ()),
-    sessionId :: SessionId,
+    thParams :: THandleParams,
     sessionTs :: UTCTime,
-    thVersion :: Version,
     timeoutPerBlock :: Int,
-    blockSize :: Int,
-    batch :: Bool,
     client_ :: PClient err msg
   }
 
@@ -131,29 +132,34 @@ data PClient err msg = PClient
     tcpTimeout :: Int,
     batchDelay :: Maybe Int,
     pingErrorCount :: TVar Int,
-    clientCorrId :: TVar Natural,
+    clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
-clientStub :: ByteString -> STM (ProtocolClient err msg)
-clientStub sessionId = do
+clientStub :: TVar ChaChaDRG -> ByteString -> Version -> Maybe THandleAuth -> STM (ProtocolClient err msg)
+clientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
-  clientCorrId <- newTVar 0
+  clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
   sndQ <- newTBQueue 100
   rcvQ <- newTBQueue 100
   return
     ProtocolClient
       { action = Nothing,
-        sessionId,
+        thParams =
+          THandleParams
+            { sessionId,
+              thVersion,
+              thAuth,
+              blockSize = smpBlockSize,
+              implySessId = thVersion >= authCmdsSMPVersion,
+              batch = True
+            },
         sessionTs = undefined,
-        thVersion = 5,
         timeoutPerBlock = undefined,
-        blockSize = smpBlockSize,
-        batch = undefined,
         client_ =
           PClient
             { connected,
@@ -173,7 +179,7 @@ clientStub sessionId = do
 type SMPClient = ProtocolClient ErrorType BrokerMsg
 
 -- | Type for client command data
-type ClientCommand msg = (Maybe C.APrivateSignKey, EntityId, ProtoCommand msg)
+type ClientCommand msg = (Maybe C.APrivateAuthKey, EntityId, ProtoCommand msg)
 
 -- | Type synonym for transmission from some SPM server queue.
 type ServerTransmission msg = (TransportSession msg, Version, SessionId, EntityId, msg)
@@ -251,15 +257,18 @@ data ProtocolClientConfig = ProtocolClientConfig
   }
 
 -- | Default protocol client configuration.
-defaultClientConfig :: ProtocolClientConfig
-defaultClientConfig =
+defaultClientConfig :: VersionRange -> ProtocolClientConfig
+defaultClientConfig serverVRange =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
-      serverVRange = supportedSMPServerVRange,
+      serverVRange,
       batchDelay = Nothing
     }
+
+defaultSMPClientConfig :: ProtocolClientConfig
+defaultSMPClientConfig = defaultClientConfig supportedClientSMPRelayVRange
 
 data Request err msg = Request
   { entityId :: EntityId,
@@ -306,8 +315,8 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall err msg. Protocol err msg => TransportSession msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient err msg))
-getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, batchDelay} msgQ disconnected = do
+getProtocolClient :: forall err msg. Protocol err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient err msg))
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, batchDelay} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
@@ -319,7 +328,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
     mkProtocolClient transportHost = do
       connected <- newTVar False
       pingErrorCount <- newTVar 0
-      clientCorrId <- newTVar 0
+      clientCorrId <- C.newRandomDRG g
       sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
       rcvQ <- newTBQueue qSize
@@ -360,13 +369,14 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
       p -> (p, transport @TLS)
 
     client :: forall c. Transport c => TProxy c -> PClient err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient err msg)) -> c -> IO ()
-    client _ c cVar h =
-      runExceptT (protocolClientHandshake @err @msg h (keyHash srv) serverVRange) >>= \case
+    client _ c cVar h = do
+      ks <- atomically $ C.generateKeyPair g
+      runExceptT (protocolClientHandshake @err @msg h ks (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
-        Right th@THandle {sessionId, thVersion, blockSize, batch} -> do
+        Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
-          let timeoutPerBlock = (blockSize * tcpTimeoutPerKb) `div` 1024
-              c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, sessionTs, timeoutPerBlock, blockSize, batch}
+          let timeoutPerBlock = (blockSize params * tcpTimeoutPerKb) `div` 1024
+              c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs, timeoutPerBlock}
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
@@ -468,13 +478,12 @@ temporaryClientError = \case
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#create-queue-command
 createSMPQueue ::
   SMPClient ->
-  RcvPrivateSignKey ->
-  RcvPublicVerifyKey ->
+  C.AAuthKeyPair -> -- SMP v6 - signature key pair, SMP v7 - DH key pair
   RcvPublicDhKey ->
   Maybe BasicAuth ->
   SubscriptionMode ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c rpKey rKey dhKey auth subMode =
+createSMPQueue c (rKey, rpKey) dhKey auth subMode =
   sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey auth subMode) >>= \case
     IDS qik -> pure qik
     r -> throwE . PCEUnexpectedResponse $ bshow r
@@ -482,7 +491,7 @@ createSMPQueue c rpKey rKey dhKey auth subMode =
 -- | Subscribe to the SMP queue.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
-subscribeSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c rpKey rId =
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> return ()
@@ -490,12 +499,12 @@ subscribeSMPQueue c rpKey rId =
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
-subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
+subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 subscribeSMPQueues c qs = sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
 
-streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> ([(RecipientId, Either SMPClientError ())] -> IO ()) -> IO ()
+streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> ([(RecipientId, Either SMPClientError ())] -> IO ()) -> IO ()
 streamSubscribeSMPQueues c qs cb = streamProtocolCommands c cs $ mapM process >=> cb
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
@@ -512,13 +521,13 @@ writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
 writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ $ client_ c)
 
 serverTransmission :: ProtocolClient err msg -> RecipientId -> msg -> ServerTransmission msg
-serverTransmission ProtocolClient {thVersion, sessionId, client_ = PClient {transportSession}} entityId message =
+serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} entityId message =
   (transportSession, thVersion, sessionId, entityId, message)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --
 -- https://github.covm/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#receive-a-message-from-the-queue
-getSMPMessage :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT SMPClientError IO (Maybe RcvMessage)
+getSMPMessage :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO (Maybe RcvMessage)
 getSMPMessage c rpKey rId =
   sendSMPCommand c (Just rpKey) rId GET >>= \case
     OK -> pure Nothing
@@ -528,30 +537,30 @@ getSMPMessage c rpKey rId =
 -- | Subscribe to the SMP queue notifications.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
-subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateSignKey -> NotifierId -> ExceptT SMPClientError IO ()
+subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateAuthKey -> NotifierId -> ExceptT SMPClientError IO ()
 subscribeSMPQueueNotifications = okSMPCommand NSUB
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
-subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateSignKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
+subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateAuthKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
 subscribeSMPQueuesNtfs = okSMPCommands NSUB
 
 -- | Secure the SMP queue by adding a sender public key.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
-secureSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> SndPublicVerifyKey -> ExceptT SMPClientError IO ()
+secureSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (KEY senderKey) c rpKey rId
 
 -- | Enable notifications for the queue for push notifications server.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
-enableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> ExceptT SMPClientError IO (NotifierId, RcvNtfPublicDhKey)
+enableSMPQueueNotifications :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> ExceptT SMPClientError IO (NotifierId, RcvNtfPublicDhKey)
 enableSMPQueueNotifications c rpKey rId notifierKey rcvNtfPublicDhKey =
   sendSMPCommand c (Just rpKey) rId (NKEY notifierKey rcvNtfPublicDhKey) >>= \case
     NID nId rcvNtfSrvPublicDhKey -> pure (nId, rcvNtfSrvPublicDhKey)
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Enable notifications for the multiple queues for push notifications server.
-enableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId, NtfPublicVerifyKey, RcvNtfPublicDhKey) -> IO (NonEmpty (Either SMPClientError (NotifierId, RcvNtfPublicDhKey)))
+enableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId, NtfPublicAuthKey, RcvNtfPublicDhKey) -> IO (NonEmpty (Either SMPClientError (NotifierId, RcvNtfPublicDhKey)))
 enableSMPQueuesNtfs c qs = L.map process <$> sendProtocolCommands c cs
   where
     cs = L.map (\(rpKey, rId, notifierKey, rcvNtfPublicDhKey) -> (Just rpKey, rId, Cmd SRecipient $ NKEY notifierKey rcvNtfPublicDhKey)) qs
@@ -563,17 +572,17 @@ enableSMPQueuesNtfs c qs = L.map process <$> sendProtocolCommands c cs
 -- | Disable notifications for the queue for push notifications server.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#disable-notifications-command
-disableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT SMPClientError IO ()
+disableSMPQueueNotifications :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 disableSMPQueueNotifications = okSMPCommand NDEL
 
 -- | Disable notifications for multiple queues for push notifications server.
-disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
+disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 disableSMPQueuesNtfs = okSMPCommands NDEL
 
 -- | Send SMP message.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message
-sendSMPMessage :: SMPClient -> Maybe SndPrivateSignKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
+sendSMPMessage :: SMPClient -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
 sendSMPMessage c spKey sId flags msg =
   sendSMPCommand c spKey sId (SEND flags msg) >>= \case
     OK -> pure ()
@@ -582,7 +591,7 @@ sendSMPMessage c spKey sId flags msg =
 -- | Acknowledge message delivery (server deletes the message).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
-ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> MsgId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO ()
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c (Just rpKey) rId (ACK msgId) >>= \case
     OK -> return ()
@@ -593,26 +602,26 @@ ackSMPMessage c rpKey rId msgId =
 -- The existing messages from the queue will still be delivered.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#suspend-queue
-suspendSMPQueue :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
+suspendSMPQueue :: SMPClient -> RcvPrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 suspendSMPQueue = okSMPCommand OFF
 
 -- | Irreversibly delete SMP queue and all messages in it.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#delete-queue
-deleteSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT SMPClientError IO ()
+deleteSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand DEL
 
 -- | Delete multiple SMP queues batching commands if supported.
-deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
+deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 deleteSMPQueues = okSMPCommands DEL
 
-okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
     OK -> return ()
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
-okSMPCommands :: PartyI p => Command p -> SMPClient -> NonEmpty (C.APrivateSignKey, QueueId) -> IO (NonEmpty (Either SMPClientError ()))
+okSMPCommands :: PartyI p => Command p -> SMPClient -> NonEmpty (C.APrivateAuthKey, QueueId) -> IO (NonEmpty (Either SMPClientError ()))
 okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
   where
     aCmd = Cmd sParty cmd
@@ -623,14 +632,14 @@ okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
       Left e -> Left e
 
 -- | Send SMP command
-sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
+sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
-type PCTransmission err msg = (SentRawTransmission, Request err msg)
+type PCTransmission err msg = (Either TransportError SentRawTransmission, Request err msg)
 
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
-sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
+sendProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
   validate . concat =<< mapM (sendBatch c) bs
   where
@@ -647,16 +656,16 @@ sendProtocolCommands c@ProtocolClient {batch, blockSize} cs = do
         diff = L.length cs - length rs
 
 streamProtocolCommands :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
-streamProtocolCommands c@ProtocolClient {batch, blockSize} cs cb = do
+streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs cb = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
 sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
-    TBLargeTransmission Request {entityId} -> do
+    TBError e Request {entityId} -> do
       putStrLn "send error: large message"
-      pure [Response entityId $ Left $ PCETransportError TELargeMsg]
+      pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
           atomically $ writeTBQueue sndQ s
@@ -667,19 +676,21 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       (: []) <$> getResponse c r
 
 -- | Send Protocol command
-sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateSignKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, batch, blockSize} pKey entId cmd =
+sendProtocolCommand :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission c (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
-    sendRecv :: SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t r
-      | B.length s > blockSize - 2 = pure $ Left $ PCETransportError TELargeMsg
-      | otherwise = atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
-      where
-        s
-          | batch = tEncodeBatch1 t
-          | otherwise = tEncode t
+    sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
+    sendRecv t_ r = case t_ of
+      Left e -> pure . Left $ PCETransportError e
+      Right t
+        | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
+        | otherwise -> atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
+        where
+          s
+            | batch = tEncodeBatch1 t
+            | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
 getResponse :: ProtocolClient err msg -> Request err msg -> IO (Response err msg)
@@ -691,23 +702,33 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Requ
   pure Response {entityId, response}
 
 mkTransmission :: forall err msg. ProtocolEncoding err (ProtoCommand msg) => ProtocolClient err msg -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission ProtocolClient {sessionId, thVersion, client_ = PClient {clientCorrId, sentCommands}} (pKey, entId, cmd) = do
+mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entId, cmd) = do
   corrId <- atomically getNextCorrId
-  let t = signTransmission $ encodeTransmission thVersion sessionId (corrId, entId, cmd)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, entId, cmd)
+      auth = authTransmission (thAuth thParams) pKey_ corrId tForAuth
   r <- atomically $ mkRequest corrId
-  pure (t, r)
+  pure ((,tToSend) <$> auth, r)
   where
     getNextCorrId :: STM CorrId
-    getNextCorrId = do
-      i <- stateTVar clientCorrId $ \i -> (i, i + 1)
-      pure . CorrId $ bshow i
-    signTransmission :: ByteString -> SentRawTransmission
-    signTransmission t = ((`C.sign` t) <$> pKey, t)
+    getNextCorrId = CorrId <$> C.randomBytes 24 clientCorrId -- also used as nonce
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
       r <- Request entId <$> newEmptyTMVar
       TM.insert corrId r sentCommands
       pure r
+
+authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
+  where
+    authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
+    authenticate (C.APrivateAuthKey a pk) = case a of
+      C.SX25519 -> case thAuth of
+        Just THandleAuth {peerPubKey} -> Right $ TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t
+        Nothing -> Left TENoServerAuth
+      C.SEd25519 -> sign pk
+      C.SEd448 -> sign pk
+    sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
+    sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 

@@ -30,8 +30,8 @@ import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import SMPClient (serverBracket)
-import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
-import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
@@ -45,6 +45,7 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -72,8 +73,10 @@ ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
-    liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedNTFServerVRange) >>= \case
+  runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h -> do
+    g <- liftIO C.newRandom
+    ks <- atomically $ C.generateKeyPair g
+    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -104,7 +107,15 @@ ntfServerCfg =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      ntfServerVRange = supportedServerNTFVRange,
       transportConfig = defaultTransportServerConfig
+    }
+
+ntfServerCfgV2 :: NtfServerConfig
+ntfServerCfgV2 =
+  ntfServerCfg
+    { ntfServerVRange = mkVersionRange 1 authBatchCmdsNTFVersion,
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}}
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
@@ -135,14 +146,14 @@ ntfServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c ->
-  (Maybe C.ASignature, ByteString, ByteString, smp) ->
-  IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
+  (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
+  IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
-    tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
+    tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' h@THandle {params = THandleParams {sessionId}} (sig, corrId, queueId, smp) = do
       let t' = smpEncode (sessionId, corrId, queueId, smp)
-      [Right ()] <- tPut h [(sig, t')]
+      [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h

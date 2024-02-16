@@ -26,7 +26,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version
+import Simplex.Messaging.Version (VersionRange, mkVersionRange)
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -68,15 +68,17 @@ xit'' d t = do
   (if ci == Just "true" then xit else it) d t
 
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
-testSMPClient client = do
+testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
+
+testSMPClientVR :: (Transport c, MonadUnliftIO m, MonadFail m) => VersionRange -> (THandle c -> m a) -> m a
+testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
-    liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
+  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h -> do
+    g <- liftIO C.newRandom
+    ks <- atomically $ C.generateKeyPair g
+    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
-
-cfgV2 :: ServerConfig
-cfgV2 = cfg {smpServerVRange = mkVersionRange 1 2}
 
 cfg :: ServerConfig
 cfg =
@@ -101,13 +103,13 @@ cfg =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
-      smpServerVRange = supportedSMPServerVRange,
+      smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
       controlPort = Nothing
     }
 
-withSmpServerStoreMsgLogOnV2 :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
+cfgV7 :: ServerConfig
+cfgV7 = cfg {smpServerVRange = mkVersionRange 4 authCmdsSMPVersion}
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -143,28 +145,34 @@ withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
+withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
+
 runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandle c -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
 runSmpTestN :: forall c a. (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
-runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
+runSmpTestN = runSmpTestNCfg cfg supportedClientSMPRelayVRange
+
+runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => ServerConfig -> VersionRange -> Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
+runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c) srvCfg testPort $ \_ -> run nClients []
   where
     run :: Int -> [THandle c] -> IO a
     run 0 hs = test hs
-    run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
+    run n hs = testSMPClientVR clntVR $ \h -> run (n - 1) (h : hs)
 
 smpServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c ->
-  (Maybe C.ASignature, ByteString, ByteString, smp) ->
-  IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
+  (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
+  IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (Maybe C.ASignature, ByteString, ByteString, smp) -> IO ()
-    tPut' h@THandle {sessionId} (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId, corrId, queueId, smp)
-      [Right ()] <- tPut h [(sig, t')]
+    tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' h@THandle {params = THandleParams {sessionId}} (sig, corrId, queueId, smp) = do
+      let t' = smpEncode (sessionId,corrId, queueId, smp)
+      [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
@@ -177,7 +185,10 @@ smpTestN :: (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
 smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
-smpTest2 _ test' = smpTestN 2 _test
+smpTest2 = smpTest2Cfg cfg supportedClientSMPRelayVRange
+
+smpTest2Cfg :: forall c. (HasCallStack, Transport c) => ServerConfig -> VersionRange -> TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `shouldReturn` ()
   where
     _test :: HasCallStack => [THandle c] -> IO ()
     _test [h1, h2] = test' h1 h2
