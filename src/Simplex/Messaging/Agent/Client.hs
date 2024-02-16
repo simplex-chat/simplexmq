@@ -155,8 +155,6 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
-
--- import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -219,8 +217,7 @@ import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
-import UnliftIO.Directory (getTemporaryDirectory)
-import UnliftIO.Exception (bracket)
+import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -342,7 +339,7 @@ newWorker c = do
 
 runWorkerAsync :: AgentMonad' m => Worker -> m () -> m ()
 runWorkerAsync Worker {action} work =
-  bracket
+  E.bracket
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
     (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
     (\a -> when (isNothing a) start) -- start worker if it's not running
@@ -897,10 +894,9 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
   liftIO $ do
     let tSess = (userId, srv, Nothing)
     X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
-      Right xftp -> do
+      Right xftp -> withTestChunk filePath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-        createTestChunk filePath
         digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
         let file = FileInfo {sndKey, size = chSize, digest}
             chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
@@ -920,12 +916,17 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
     testErr :: ProtocolTestStep -> XFTPClientError -> ProtocolTestFailure
     testErr step = ProtocolTestFailure step . protocolClientError XFTP addr
     chSize :: Integral a => a
-    chSize = kb 256
+    chSize = kb 64
     getTempFilePath :: FilePath -> m FilePath
     getTempFilePath workPath = do
       ts <- liftIO getCurrentTime
       let isoTime = formatTime defaultTimeLocale "%Y-%m-%dT%H%M%S.%6q" ts
       uniqueCombine workPath isoTime
+    withTestChunk :: FilePath -> IO a -> IO a
+    withTestChunk fp =
+      E.bracket_
+        (createTestChunk fp)
+        (whenM (doesFileExist fp) $ removeFile fp `catchAll_` pure ())
     -- this creates a new DRG on purpose to avoid blocking the one used in the agent
     createTestChunk :: FilePath -> IO ()
     createTestChunk fp = B.writeFile fp =<< atomically . C.randomBytes chSize =<< C.newRandom
