@@ -135,6 +135,7 @@ module Simplex.Messaging.Protocol
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
+    srvHostnamesSMPClientVersion,
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,

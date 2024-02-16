@@ -104,15 +104,15 @@ data RatchetInitParams = RatchetInitParams
   deriving (Eq, Show)
 
 x3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhSnd spk1 spk2 (E2ERatchetParams v rk1 rk2) =
-  x3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
+x3dhSnd spk1 spk2 (E2ERatchetParams _ rk1 rk2) =
+  x3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
 
 x3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhRcv rpk1 rpk2 (E2ERatchetParams v sk1 sk2) =
-  x3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
+x3dhRcv rpk1 rpk2 (E2ERatchetParams _ sk1 sk2) =
+  x3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
 
-x3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
-x3dh v (sk1, rk1) dh1 dh2 dh3 =
+x3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
+x3dh (sk1, rk1) dh1 dh2 dh3 =
   RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1

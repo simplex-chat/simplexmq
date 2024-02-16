@@ -205,6 +205,7 @@ import Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     noAuthSrv,
     sameSrvAddr,
+    srvHostnamesSMPClientVersion,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
@@ -1291,7 +1292,7 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 
 instance StrEncoding SMPQueueUri where
   strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
-    | minVersion vr > 1 = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
+    | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
@@ -1303,7 +1304,7 @@ instance StrEncoding SMPQueueUri where
     senderId <- strP <* optional (A.char '/') <* A.char '#'
     (vr, hs, dhPublicKey) <- unversioned <|> versioned
     let srv' = srv {host = h :| host <> hs}
-        smpServer = if maxVersion vr == 1 then updateSMPServerHosts srv' else srv'
+        smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
     pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
     where
       unversioned = (versionToRange 1,[],) <$> strP <* A.endOfInput
