@@ -170,8 +170,8 @@ smpServerTest ::
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
-    tPut' h@THandle {params = THandleParams {sessionId}} (sig, corrId, queueId, smp) = do
-      let t' = smpEncode (sessionId,corrId, queueId, smp)
+    tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
+      let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
