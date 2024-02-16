@@ -1,3 +1,4 @@
+{-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -10,6 +11,7 @@
 module Simplex.Messaging.Server.CLI where
 
 import Control.Monad
+import Data.ASN1.Types (asn1CharacterToString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
@@ -17,6 +19,8 @@ import Data.Ini (Ini, lookupValue)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Data.X509 as X
+import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
@@ -32,6 +36,7 @@ import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, hGetLine, stdout, withFile)
 import System.Process (readCreateProcess, shell)
+import Text.Read (readMaybe)
 
 exitError :: String -> IO a
 exitError msg = putStrLn msg >> exitFailure
@@ -135,6 +140,59 @@ createServerX509_ createCA cfgPath x509cfg = do
       Fingerprint fp <- loadFingerprint $ c caCrtFile
       withFile (c fingerprintFile) WriteMode (`B.hPutStrLn` strEncode fp)
       pure fp
+
+data CertOptions = CertOptions
+  { signAlgorithm_ :: Maybe SignAlgorithm,
+    commonName_ :: Maybe HostName
+  }
+  deriving (Show)
+
+certOptionsP :: Parser CertOptions
+certOptionsP = do
+  signAlgorithm_ <-
+    optional $
+      option
+        (maybeReader readMaybe)
+        ( long "sign-algorithm"
+            <> short 'a'
+            <> help "Set new signature algorithm used for TLS certificates: ED25519, ED448"
+            <> metavar "ALG"
+        )
+  commonName_ <-
+    optional $
+      strOption
+        ( long "cn"
+            <> help
+              "Set new Common Name for TLS online certificate"
+            <> metavar "FQDN"
+        )
+  pure CertOptions {signAlgorithm_, commonName_}
+
+genOnline :: FilePath -> CertOptions -> IO ()
+genOnline cfgPath CertOptions {signAlgorithm_, commonName_} = do
+  (signAlgorithm, commonName) <-
+    case (signAlgorithm_, commonName_) of
+      (Just alg, Just cn) -> pure (alg, cn)
+      _ ->
+        XF.readSignedObject certPath >>= \case
+          [old] -> either exitError pure . fromX509 . X.signedObject $ X.getSigned old
+          [] -> exitError $ "No certificate found at " <> certPath
+          _ -> exitError $ "Too many certificates at " <> certPath
+  let x509cfg = defaultX509Config {signAlgorithm, commonName}
+  void $ createServerX509_ False cfgPath x509cfg
+  putStrLn "Generated new server credentials"
+  warnCAPrivateKeyFile cfgPath x509cfg
+  where
+    certPath = combine cfgPath $ serverCrtFile defaultX509Config
+    fromX509 X.Certificate {certSignatureAlg, certSubjectDN} = (,) <$> maybe oldAlg Right signAlgorithm_ <*> maybe oldCN Right commonName_
+      where
+        oldAlg = case certSignatureAlg of
+          X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448 -> Right ED448
+          X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed25519 -> Right ED25519
+          alg -> Left $ "Unexpected signature algorithm " <> show alg
+        oldCN = case X.getDnElement X.DnCommonName certSubjectDN of
+          Nothing -> Left "Certificate subject has no CN element"
+          Just cn -> maybe (Left "Certificate subject CN decoding failed") Right $ asn1CharacterToString cn
 
 warnCAPrivateKeyFile :: FilePath -> X509Config -> IO ()
 warnCAPrivateKeyFile cfgPath X509Config {caKeyFile} =
