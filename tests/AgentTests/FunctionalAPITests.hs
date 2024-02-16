@@ -139,7 +139,8 @@ ntfCfgV2 = (smpCfg agentCfg) {serverVRange = mkVersionRange 1 authBatchCmdsNTFVe
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
-    { smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
+    { sndAuthAlg = C.AuthAlg C.SEd25519,
+      smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
       e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
       smpCfg = smpCfgVPrev
