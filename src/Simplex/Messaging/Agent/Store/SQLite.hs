@@ -167,7 +167,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createRcvFileRedirect,
     getRcvFile,
     getRcvFileByEntityId,
-    getRcvFileEntityRedirect,
+    lookupRcvFileRedirect,
     updateRcvChunkReplicaDelay,
     updateRcvFileChunkReceived,
     updateRcvFileStatus,
@@ -2338,9 +2338,9 @@ getRcvFileIdByEntityId_ db rcvFileEntityId =
   firstRow fromOnly SEFileNotFound $
     DB.query db "SELECT rcv_file_id FROM rcv_files WHERE rcv_file_entity_id = ?" (Only rcvFileEntityId)
 
-getRcvFileEntityRedirect :: DB.Connection -> RcvFileId -> IO (Maybe RcvFile)
-getRcvFileEntityRedirect db rcvFileEntityId = do
-  redirectId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_file_id FROM rcv_files WHERE redirect_entity_id = ?" (Only rcvFileEntityId)
+lookupRcvFileRedirect :: DB.Connection -> DBRcvFileId -> IO (Maybe RcvFile)
+lookupRcvFileRedirect db rcvFileId = do
+  redirectId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_file_id FROM rcv_files WHERE redirect_id = ?" (Only rcvFileId)
   fmap join . forM redirectId_ $ getRcvFile db >=> either (const $ pure Nothing) (pure . Just)
 
 getRcvFile :: DB.Connection -> DBRcvFileId -> IO (Either StoreError RcvFile)
