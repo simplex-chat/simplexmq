@@ -7,7 +7,12 @@ typedef unsigned long u32;
 typedef unsigned long long u64;
 typedef long long i64;
 typedef i64 gf[16];
-extern void randombytes(u8 *,u64);
+// extern void randombytes(u8 *,u64);
+// fudge unused function
+#include "string.h"
+static void randombytes(u8 * dst, u64 len) {
+  memset(dst, 42, len);
+}
 
 static const u8
   _0[16],
