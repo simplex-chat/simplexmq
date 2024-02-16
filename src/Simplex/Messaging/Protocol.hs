@@ -80,6 +80,7 @@ module Simplex.Messaging.Protocol
     SMPServerWithAuth,
     NtfServer,
     pattern NtfServer,
+    NtfServerWithAuth,
     XFTPServer,
     pattern XFTPServer,
     XFTPServerWithAuth,
@@ -695,6 +696,8 @@ pattern NtfServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> Proto
 pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
+
+type NtfServerWithAuth = ProtoServerWithAuth 'PNTF
 
 type XFTPServer = ProtocolServer 'PXFTP
 

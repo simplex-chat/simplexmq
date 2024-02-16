@@ -31,6 +31,7 @@ module Simplex.Messaging.Agent.Client
     closeXFTPServerClient,
     runSMPServerTest,
     runXFTPServerTest,
+    runNTFServerTest,
     getXFTPWorkPath,
     newRcvQueue,
     subscribeQueues,
@@ -191,6 +192,7 @@ import Simplex.Messaging.Protocol
     MsgFlags (..),
     MsgId,
     NtfServer,
+    NtfServerWithAuth,
     ProtoServer,
     ProtoServerWithAuth (..),
     Protocol (..),
@@ -852,6 +854,8 @@ data ProtocolTestStep
   | TSDownloadFile
   | TSCompareFile
   | TSDeleteFile
+  | TSCreateNtfToken
+  | TSDeleteNtfToken
   deriving (Eq, Show)
 
 data ProtocolTestFailure = ProtocolTestFailure
@@ -929,6 +933,30 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
     -- this creates a new DRG on purpose to avoid blocking the one used in the agent
     createTestChunk :: FilePath -> IO ()
     createTestChunk fp = B.writeFile fp =<< atomically . C.randomBytes chSize =<< C.newRandom
+
+runNTFServerTest :: AgentMonad m => AgentClient -> UserId -> NtfServerWithAuth -> m (Maybe ProtocolTestFailure)
+runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
+  cfg <- getClientConfig c ntfCfg
+  C.AuthAlg a <- asks $ rcvAuthAlg . config
+  g <- asks random
+  liftIO $ do
+    let tSess = (userId, srv, Nothing)
+    getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
+      Right ntf -> do
+        (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
+        (dhKey, _) <- atomically $ C.generateKeyPair g
+        r <- runExceptT $ do
+          let deviceToken = DeviceToken PPApnsNull "test_ntf_token"
+          (tknId, _) <- liftError (testErr TSCreateNtfToken) $ ntfRegisterToken ntf npKey (NewNtfTkn deviceToken nKey dhKey)
+          liftError (testErr TSDeleteNtfToken) $ ntfDeleteToken ntf npKey tknId
+        ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient ntf
+        incClientStat c userId ntf "NTF_TEST" "OK"
+        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
+      Left e -> pure (Just $ testErr TSConnect e)
+  where
+    addr = B.unpack $ strEncode srv
+    testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
+    testErr step = ProtocolTestFailure step . protocolClientError SMP addr
 
 getXFTPWorkPath :: AgentMonad m => m FilePath
 getXFTPWorkPath = do
