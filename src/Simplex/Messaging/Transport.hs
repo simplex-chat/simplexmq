@@ -132,7 +132,7 @@ currentClientSMPRelayVersion :: Version
 currentClientSMPRelayVersion = 6
 
 currentServerSMPRelayVersion :: Version
-currentServerSMPRelayVersion = 6
+currentServerSMPRelayVersion = 7
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
