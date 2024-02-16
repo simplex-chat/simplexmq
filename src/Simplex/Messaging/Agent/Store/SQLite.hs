@@ -167,7 +167,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createRcvFileRedirect,
     getRcvFile,
     getRcvFileByEntityId,
-    lookupRcvFileRedirect,
+    getRcvFileRedirects,
     updateRcvChunkReplicaDelay,
     updateRcvFileChunkReceived,
     updateRcvFileStatus,
@@ -243,7 +243,7 @@ import Data.List (foldl', intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, catMaybes)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -2338,10 +2338,10 @@ getRcvFileIdByEntityId_ db rcvFileEntityId =
   firstRow fromOnly SEFileNotFound $
     DB.query db "SELECT rcv_file_id FROM rcv_files WHERE rcv_file_entity_id = ?" (Only rcvFileEntityId)
 
-lookupRcvFileRedirect :: DB.Connection -> DBRcvFileId -> IO (Maybe RcvFile)
-lookupRcvFileRedirect db rcvFileId = do
-  redirectId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_file_id FROM rcv_files WHERE redirect_id = ?" (Only rcvFileId)
-  fmap join . forM redirectId_ $ getRcvFile db >=> either (const $ pure Nothing) (pure . Just)
+getRcvFileRedirects :: DB.Connection -> DBRcvFileId -> IO [RcvFile]
+getRcvFileRedirects db rcvFileId = do
+  redirects <- fromOnly <$$> DB.query db "SELECT rcv_file_id FROM rcv_files WHERE redirect_id = ?" (Only rcvFileId)
+  fmap catMaybes . forM redirects $ getRcvFile db >=> either (const $ pure Nothing) (pure . Just)
 
 getRcvFile :: DB.Connection -> DBRcvFileId -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do

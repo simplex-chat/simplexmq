@@ -289,7 +289,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
 xftpDeleteRcvFile' :: AgentMonad m => AgentClient -> RcvFileId -> m ()
 xftpDeleteRcvFile' c rcvFileEntityId = do
   rcvFile@RcvFile {rcvFileId} <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
-  handleError (const $ pure ()) $ withStore' c (`lookupRcvFileRedirect` rcvFileId) >>= mapM_ remove
+  handleError (const $ pure ()) $ withStore' c (`getRcvFileRedirects` rcvFileId) >>= mapM_ remove
   remove rcvFile
   where
     remove RcvFile {rcvFileId, prefixPath, status} =
