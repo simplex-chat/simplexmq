@@ -317,7 +317,6 @@ data ConnData = ConnData
     userId :: UserId,
     connAgentVersion :: Version,
     enableNtfs :: Bool,
-    duplexHandshake :: Maybe Bool, -- added in agent protocol v2
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState
@@ -326,14 +325,8 @@ data ConnData = ConnData
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
-ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
-  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
-
-ratchetSyncSupported' :: ConnData -> Bool
-ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
-
-messageRcptsSupported :: ConnData -> Bool
-messageRcptsSupported ConnData {connAgentVersion} = connAgentVersion >= 4
+ratchetSyncAllowed ConnData {ratchetSyncState, connAgentVersion} =
+  connAgentVersion >= ratchetSyncSMPAgentVersion && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
 
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool

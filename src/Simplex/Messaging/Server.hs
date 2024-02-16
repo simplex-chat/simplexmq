@@ -542,7 +542,7 @@ dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -856,17 +856,12 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
         time name = timed name queueId
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
-        encryptMsg qr msg = case msg of
-          Message {msgFlags, msgBody}
-            | thVersion == 1 || thVersion == 2 -> encrypt msgFlags msgBody
-            | otherwise -> encrypt msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
-          MessageQuota {} ->
-            encrypt noMsgFlags $ encodeRcvMsgBody (RcvMsgQuota msgTs')
+        encryptMsg qr msg = encrypt . encodeRcvMsgBody $ case msg of
+          Message {msgFlags, msgBody} -> RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
+          MessageQuota {} -> RcvMsgQuota msgTs'
           where
-            encrypt :: KnownNat i => MsgFlags -> C.MaxLenBS i -> RcvMessage
-            encrypt msgFlags body =
-              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
-               in RcvMessage msgId' msgTs' msgFlags encBody
+            encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
+            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
             msgId' = messageId msg
             msgTs' = messageTs msg
 
@@ -942,11 +937,10 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
   where
     restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
-      st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired st ms quota old_) 0 . B.lines) >>= \case
+      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired ms quota old_) 0 . B.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -955,14 +949,9 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
           logInfo "messages restored"
           pure expired
       where
-        restoreMsg !expired st ms quota old_ s = do
-          r <- liftEither . first (msgErr "parsing") $ strDecode s
-          case r of
-            MLRv3 rId msg -> addToMsgQueue rId msg
-            MLRv1 rId encMsg -> do
-              qr <- liftEitherError (msgErr "queue unknown") . atomically $ getQueue st SRecipient rId
-              msg' <- updateMsgV1toV3 qr encMsg
-              addToMsgQueue rId msg'
+        restoreMsg !expired ms quota old_ s = do
+          MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
+          addToMsgQueue rId msg
           where
             addToMsgQueue rId msg = do
               (isExpired, logFull) <- atomically $ do
@@ -974,10 +963,6 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
                   MessageQuota {} -> writeMsg q msg $> (False, False)
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
               pure $ if isExpired then expired + 1 else expired
-            updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
-              let nonce = C.cbNonce msgId
-              msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
-              pure Message {msgId, msgTs, msgFlags, msgBody}
             msgErr :: Show e => String -> e -> String
             msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 

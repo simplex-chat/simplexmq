@@ -42,11 +42,18 @@ import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE'
 import Simplex.Messaging.Version
 import UnliftIO.STM
 
+-- e2e encryption headers version history:
+-- 1 - binary protocol encoding (1/1/2022)
+-- 2 - use KDF in x3dh (10/20/2022)
+
+kdfX3DHE2EEncryptVersion :: Version
+kdfX3DHE2EEncryptVersion = 2
+
 currentE2EEncryptVersion :: Version
 currentE2EEncryptVersion = 2
 
 supportedE2EEncryptVRange :: VersionRange
-supportedE2EEncryptVRange = mkVersionRange 1 currentE2EEncryptVersion
+supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
 
 data E2ERatchetParams (a :: Algorithm)
   = E2ERatchetParams Version (PublicKey a) (PublicKey a)
@@ -97,27 +104,22 @@ data RatchetInitParams = RatchetInitParams
   deriving (Eq, Show)
 
 x3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhSnd spk1 spk2 (E2ERatchetParams v rk1 rk2) =
-  x3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
+x3dhSnd spk1 spk2 (E2ERatchetParams _ rk1 rk2) =
+  x3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
 
 x3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
-x3dhRcv rpk1 rpk2 (E2ERatchetParams v sk1 sk2) =
-  x3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
+x3dhRcv rpk1 rpk2 (E2ERatchetParams _ sk1 sk2) =
+  x3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
 
-x3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
-x3dh v (sk1, rk1) dh1 dh2 dh3 =
+x3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
+x3dh (sk1, rk1) dh1 dh2 dh3 =
   RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
-    (hk, nhk, sk)
-      -- for backwards compatibility with clients using agent version before 3.4.0
-      | v == 1 =
-          let (hk', rest) = B.splitAt 32 dhs
-           in uncurry (hk',,) $ B.splitAt 32 rest
-      | otherwise =
-          let salt = B.replicate 64 '\0'
-           in hkdf3 salt dhs "SimpleXX3DH"
+    (hk, nhk, sk) =
+      let salt = B.replicate 64 '\0'
+        in hkdf3 salt dhs "SimpleXX3DH"
 
 type RatchetX448 = Ratchet 'X448
 

@@ -34,7 +34,7 @@ module AgentTests.FunctionalAPITests
   )
 where
 
-import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams)
+import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams12)
 import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
@@ -129,9 +129,6 @@ pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMs
 smpCfgVPrev :: ProtocolClientConfig
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-smpCfgV4 :: ProtocolClientConfig
-smpCfgV4 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 4}
-
 smpCfgV7 :: ProtocolClientConfig
 smpCfgV7 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}
 
@@ -155,26 +152,11 @@ agentCfgV7 =
       ntfCfg = ntfCfgV2
     }
 
-agentCfgV1 :: AgentConfig
-agentCfgV1 =
-  agentCfg
-    { smpAgentVRange = v1Range,
-      smpClientVRange = v1Range,
-      e2eEncryptVRange = v1Range,
-      smpCfg = smpCfgV4
-    }
-
 agentCfgRatchetVPrev :: AgentConfig
 agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
 
-agentCfgRatchetV1 :: AgentConfig
-agentCfgRatchetV1 = agentCfg {e2eEncryptVRange = v1Range}
-
 prevRange :: VersionRange -> VersionRange
-prevRange vr = vr {maxVersion = maxVersion vr - 1}
-
-v1Range :: VersionRange
-v1Range = mkVersionRange 1 1
+prevRange vr = vr {maxVersion = max (minVersion vr) (maxVersion vr - 1)}
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
@@ -223,8 +205,6 @@ functionalAPITests t = do
       withSmpServer t testAsyncBothOffline
     it "should connect on the second attempt if server was offline" $
       testAsyncServerOffline t
-    it "should notify after HELLO timeout" $
-      withSmpServer t testAsyncHelloTimeout
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart t
   describe "Message delivery" $ do
@@ -388,19 +368,17 @@ testMatrix2 t runTest = do
   it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
-  it "v1" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfgV1 4 runTest
-  it "v1 to current" $ withSmpServer t $ runTestCfg2 agentCfgV1 agentCfg 4 runTest
-  it "current to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgV1 4 runTest
 
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
   it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
-  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
-  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
-  it "ratchet v1" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfgRatchetV1 3 runTest
-  it "ratchets v1 to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetV1 agentCfg 3 runTest
-  it "ratchets current to v1" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetV1 3 runTest
+  pendingV "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
+  pendingV "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
+  pendingV "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
+  where
+    pendingV = 
+      let vr = e2eEncryptVRange agentCfg
+       in if minVersion vr == maxVersion vr then xit else it
 
 testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -423,7 +401,7 @@ withAgentClients2 :: (AgentClient -> AgentClient -> IO ()) -> IO ()
 withAgentClients2 = withAgentClientsCfg2 agentCfg agentCfg
 
 runAgentClientTest :: HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientTest alice bob baseId =
+runAgentClientTest alice@AgentClient {} bob baseId =
   runRight_ $ do
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
@@ -599,15 +577,6 @@ testAsyncServerOffline t = withAgentClients2 $ \alice bob -> do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     exchangeGreetings alice bobId bob aliceId
-
-testAsyncHelloTimeout :: HasCallStack => IO ()
-testAsyncHelloTimeout = do
-  -- this test would only work if any of the agent is v1, there is no HELLO timeout in v2
-  withAgentClientsCfg2 agentCfgV1 agentCfg {helloTimeout = 1} $ \alice bob -> runRight_ $ do
-    (_, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    disconnectAgentClient alice
-    aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
-    get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
 
 testAllowConnectionClientRestart :: HasCallStack => ATransport -> IO ()
 testAllowConnectionClientRestart t = do
@@ -2278,7 +2247,7 @@ testServerMultipleIdentities =
                     }
               ]
           }
-        testE2ERatchetParams
+        testE2ERatchetParams12
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

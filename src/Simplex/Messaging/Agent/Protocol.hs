@@ -33,6 +33,8 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
+    ratchetSyncSMPAgentVersion,
+    deliveryRcptsSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,
@@ -164,7 +166,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -203,6 +205,7 @@ import Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     noAuthSrv,
     sameSrvAddr,
+    srvHostnamesSMPClientVersion,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
@@ -216,11 +219,26 @@ import Simplex.RemoteControl.Types
 import Text.Read
 import UnliftIO.Exception (Exception)
 
+-- SMP agent protocol version history:
+-- 1 - binary protocol encoding (1/1/2022)
+-- 2 - "duplex" (more efficient) connection handshake (6/9/2022)
+-- 3 - support ratchet renegotiation (6/30/2023)
+-- 4 - delivery receipts (7/13/2023)
+
+duplexHandshakeSMPAgentVersion :: Version
+duplexHandshakeSMPAgentVersion = 2
+
+ratchetSyncSMPAgentVersion :: Version
+ratchetSyncSMPAgentVersion = 3
+
+deliveryRcptsSMPAgentVersion :: Version
+deliveryRcptsSMPAgentVersion = 4
+
 currentSMPAgentVersion :: Version
 currentSMPAgentVersion = 4
 
 supportedSMPAgentVRange :: VersionRange
-supportedSMPAgentVRange = mkVersionRange 1 currentSMPAgentVersion
+supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -843,9 +861,10 @@ instance Encoding AgentMsgEnvelope where
 -- or in case of AgentInvitation - in plain text body)
 -- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
-  = AgentConnInfo ConnInfo
-  | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
-    -- It makes REPLY message unnecessary.
+  = -- used by the initiating party when confirming reply queue
+  AgentConnInfo ConnInfo
+  | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
+    -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
@@ -927,8 +946,6 @@ agentMessageType = \case
     --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
     -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
     HELLO -> AM_HELLO_
-    -- REPLY is only used in v1
-    REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
     A_RCVD {} -> AM_A_RCVD_
     QCONT _ -> AM_QCONT_
@@ -953,7 +970,6 @@ instance Encoding APrivHeader where
 
 data AMsgType
   = HELLO_
-  | REPLY_
   | A_MSG_
   | A_RCVD_
   | QCONT_
@@ -967,7 +983,6 @@ data AMsgType
 instance Encoding AMsgType where
   smpEncode = \case
     HELLO_ -> "H"
-    REPLY_ -> "R"
     A_MSG_ -> "M"
     A_RCVD_ -> "V"
     QCONT_ -> "QC"
@@ -979,7 +994,6 @@ instance Encoding AMsgType where
   smpP =
     A.anyChar >>= \case
       'H' -> pure HELLO_
-      'R' -> pure REPLY_
       'M' -> pure A_MSG_
       'V' -> pure A_RCVD_
       'Q' ->
@@ -999,8 +1013,6 @@ instance Encoding AMsgType where
 data AMessage
   = -- | the first message in the queue to validate it is secured
     HELLO
-  | -- | reply queues information
-    REPLY (NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
   | -- | agent envelope for delivery receipt
@@ -1062,7 +1074,6 @@ type SndQAddr = (SMPServer, SMP.SenderId)
 instance Encoding AMessage where
   smpEncode = \case
     HELLO -> smpEncode HELLO_
-    REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
     A_MSG body -> smpEncode (A_MSG_, Tail body)
     A_RCVD mrs -> smpEncode (A_RCVD_, mrs)
     QCONT addr -> smpEncode (QCONT_, addr)
@@ -1075,7 +1086,6 @@ instance Encoding AMessage where
     smpP
       >>= \case
         HELLO_ -> pure HELLO
-        REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
         A_RCVD_ -> A_RCVD <$> smpP
         QCONT_ -> QCONT <$> smpP
@@ -1126,17 +1136,22 @@ instance StrEncoding AConnectionRequestUri where
     _crScheme :: ServiceScheme <- strP
     crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
-    crAgentVRange <- queryParam "v" query
+    aVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
     let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-    let crData = ConnReqUriData {crScheme = SSSimplex, crAgentVRange, crSmpQueues, crClientData}
+    let crData = ConnReqUriData {crScheme = SSSimplex, crAgentVRange = aVRange, crSmpQueues, crClientData}
     case crMode of
       CMInvitation -> do
         crE2eParams <- queryParam "e2e" query
         pure . ACR SCMInvitation $ CRInvitationUri crData crE2eParams
-      CMContact -> pure . ACR SCMContact $ CRContactUri crData
+      -- contact links are adjusted to the minimum version supported by the agent
+      -- to preserve compatibility with the old links published online
+      CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
     where
       crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+      adjustAgentVRange vr =
+        let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
+         in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"
@@ -1277,7 +1292,7 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 
 instance StrEncoding SMPQueueUri where
   strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
-    | minVersion vr > 1 = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
+    | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
@@ -1289,7 +1304,7 @@ instance StrEncoding SMPQueueUri where
     senderId <- strP <* optional (A.char '/') <* A.char '#'
     (vr, hs, dhPublicKey) <- unversioned <|> versioned
     let srv' = srv {host = h :| host <> hs}
-        smpServer = if maxVersion vr == 1 then updateSMPServerHosts srv' else srv'
+        smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
     pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
     where
       unversioned = (versionToRange 1,[],) <$> strP <* A.endOfInput
