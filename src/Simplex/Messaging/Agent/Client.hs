@@ -957,7 +957,7 @@ runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
   where
     addr = B.unpack $ strEncode srv
     testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
-    testErr step = ProtocolTestFailure step . protocolClientError SMP addr
+    testErr step = ProtocolTestFailure step . protocolClientError NTF addr
 
 getXFTPWorkPath :: AgentMonad m => m FilePath
 getXFTPWorkPath = do
