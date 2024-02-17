@@ -142,7 +142,9 @@ newNtfPushServer qSize apnsConfig = do
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
-  c <- apnsPushProviderClient <$> createAPNSPushClient (apnsProviderHost pp) apnsConfig
+  c <- case apnsProviderHost pp of
+    Nothing -> pure $ \_ _ -> pure ()
+    Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
   atomically $ TM.insert pp c pushClients
   pure c
 

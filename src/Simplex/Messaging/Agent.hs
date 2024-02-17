@@ -338,10 +338,11 @@ setProtocolServers :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentErrorMo
 setProtocolServers c = withAgentEnv c .: setProtocolServers' c
 
 -- | Test protocol server
-testProtocolServer :: forall p m. (ProtocolTypeI p, UserProtocol p, AgentErrorMonad m) => AgentClient -> UserId -> ProtoServerWithAuth p -> m (Maybe ProtocolTestFailure)
+testProtocolServer :: forall p m. (ProtocolTypeI p, AgentErrorMonad m) => AgentClient -> UserId -> ProtoServerWithAuth p -> m (Maybe ProtocolTestFailure)
 testProtocolServer c userId srv = withAgentEnv c $ case protocolTypeI @p of
   SPSMP -> runSMPServerTest c userId srv
   SPXFTP -> runXFTPServerTest c userId srv
+  SPNTF -> runNTFServerTest c userId srv
 
 setNtfServers :: MonadUnliftIO m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
