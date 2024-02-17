@@ -358,7 +358,11 @@ instance StrEncoding SMPQueueNtf where
     notifierId <- A.char '/' *> strP
     pure SMPQueueNtf {smpServer, notifierId}
 
-data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
+data PushProvider
+  = PPApnsDev -- provider for Apple development environment
+  | PPApnsProd -- production environment, including TestFlight
+  | PPApnsTest -- used for tests, to use APNS mock server
+  | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
@@ -366,11 +370,13 @@ instance Encoding PushProvider where
     PPApnsDev -> "AD"
     PPApnsProd -> "AP"
     PPApnsTest -> "AT"
+    PPApnsNull -> "AN"
   smpP =
     A.take 2 >>= \case
       "AD" -> pure PPApnsDev
       "AP" -> pure PPApnsProd
       "AT" -> pure PPApnsTest
+      "AN" -> pure PPApnsNull
       _ -> fail "bad PushProvider"
 
 instance StrEncoding PushProvider where
@@ -378,11 +384,13 @@ instance StrEncoding PushProvider where
     PPApnsDev -> "apns_dev"
     PPApnsProd -> "apns_prod"
     PPApnsTest -> "apns_test"
+    PPApnsNull -> "apns_null"
   strP =
     A.takeTill (== ' ') >>= \case
       "apns_dev" -> pure PPApnsDev
       "apns_prod" -> pure PPApnsProd
       "apns_test" -> pure PPApnsTest
+      "apns_null" -> pure PPApnsNull
       _ -> fail "bad PushProvider"
 
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
