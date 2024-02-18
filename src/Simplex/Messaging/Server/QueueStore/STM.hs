@@ -94,14 +94,14 @@ suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
 suspendQueue QueueStore {queues} rId =
   withQueue rId queues $ \qVar -> modifyTVar' qVar (\q -> q {status = QueueOff}) $> Just ()
 
-deleteQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+deleteQueue :: QueueStore -> RecipientId -> STM (Either ErrorType QueueRec)
 deleteQueue QueueStore {queues, senders, notifiers} rId = do
   TM.lookupDelete rId queues >>= \case
     Just qVar ->
       readTVar qVar >>= \q -> do
         TM.delete (senderId q) senders
         forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
-        pure $ Right ()
+        pure $ Right q
     _ -> pure $ Left AUTH
 
 toResult :: Maybe a -> Either ErrorType a
