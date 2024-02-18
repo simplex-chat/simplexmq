@@ -394,26 +394,26 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} alice bob =
     liftIO $ threadDelay 1000000
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ threadDelay 750000
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     liftIO $ threadDelay 500000
     allowConnection alice bobId confId "alice's connInfo"
-    void $ messageNotification apnsQ
+    void $ messageNotificationData bob apnsQ
     get bob ##> ("", aliceId, INFO "alice's connInfo")
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice ##> ("", bobId, CON)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData bob apnsQ
     get bob ##> ("", aliceId, CON)
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 1) Nothing
     -- alice sends message
     2 <- msgId <$> sendMessage alice bobId (SMP.MsgFlags True) "hey there"
     get alice ##> ("", bobId, SENT $ baseId + 2)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData bob apnsQ
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 2) Nothing
     -- no unexpected notifications should follow
@@ -454,7 +454,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 500000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 1) Nothing
     -- set mode to NMPeriodic
@@ -472,7 +472,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 500000
     3 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello there") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 3) Nothing
     -- turn off notifications
@@ -490,7 +490,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 500000
     5 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hey"
     get bob ##> ("", aliceId, SENT $ baseId + 5)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hey") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 5) Nothing
     -- no notifications should follow
@@ -520,7 +520,7 @@ testChangeToken APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 500000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 1) Nothing
     pure (aliceId, bobId)
@@ -535,7 +535,7 @@ testChangeToken APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 500000
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice1 apnsQ
     get alice1 =##> \case ("", c, Msg "hello there") -> c == bobId; _ -> False
     ackMessage alice1 bobId (baseId + 2) Nothing
     -- no notifications should follow
@@ -556,7 +556,7 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 250000
     4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT 4)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId 4 Nothing
     liftIO $ killThread threadId
@@ -568,7 +568,7 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 250000
     5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT 5)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
     liftIO $ killThread threadId
   disconnectAgentClient alice
@@ -584,7 +584,7 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 250000
     4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT 4)
-    void $ messageNotification apnsQ
+    void $ messageNotificationData alice apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId 4 Nothing
     liftIO $ killThread threadId
@@ -618,7 +618,7 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} = do
     forM_ conns $ \(aliceId, bobId) -> do
       msgId <- sendMessage b aliceId (SMP.MsgFlags True) "hello"
       get b ##> ("", aliceId, SENT msgId)
-      void $ messageNotification apnsQ
+      void $ messageNotificationData a apnsQ
       get a =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
       ackMessage a bobId msgId Nothing
     pure conns
@@ -667,7 +667,7 @@ testSwitchNotifications servers APNSMockServer {apnsQ} = do
     let testMessage msg = do
           msgId <- sendMessage b aId (SMP.MsgFlags True) msg
           get b ##> ("", aId, SENT msgId)
-          void $ messageNotification apnsQ
+          void $ messageNotificationData a apnsQ
           get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
           ackMessage a bId msgId Nothing
     testMessage "hello"
@@ -735,7 +735,7 @@ testMessage_ :: HasCallStack => TBQueue APNSMockRequest -> AgentClient -> ConnId
 testMessage_ apnsQ a aId b bId msg = do
   msgId <- sendMessage b aId (SMP.MsgFlags True) msg
   get b ##> ("", aId, SENT msgId)
-  void $ messageNotification apnsQ
+  void $ messageNotificationData a apnsQ
   get a =##> \case ("", c, Msg msg') -> c == bId && msg == msg'; _ -> False
   ackMessage a bId msgId Nothing
 
