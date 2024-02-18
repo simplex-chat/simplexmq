@@ -7,7 +7,7 @@ import Data.Ini (lookupValue, readIniFile)
 import Data.List (isPrefixOf)
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
-import Simplex.FileTransfer.Server.Main (xftpServerCLI, xftpServerVersion)
+import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Transport (simplexMQVersion)
@@ -105,7 +105,7 @@ ntfServerTest storeLog = do
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
   doesFileExist (ntfCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SMP notifications server v" <> ntfServerVersion]
+  r `shouldContain` ["SMP notifications server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
@@ -122,7 +122,7 @@ xftpServerTest storeLog = do
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
   doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SimpleX XFTP server v" <> xftpServerVersion]
+  r `shouldContain` ["SimpleX XFTP server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> fileLogPath <> "/file-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 443..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ xftpServerCLI fileCfgPath fileLogPath)
