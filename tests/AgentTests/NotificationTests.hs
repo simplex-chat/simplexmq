@@ -23,12 +23,13 @@ import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
-import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer2)
+import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer, testNtfServer2)
 import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Client (withStore')
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
@@ -38,7 +39,7 @@ import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfToken (..))
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
@@ -72,6 +73,11 @@ notificationTests t = do
     it "should keep working with active token until replaced" $
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
+  describe "notification server tests" $ do
+    it "should pass" $ testRunNTFServerTests t testNtfServer `shouldReturn` Nothing
+    let srv1 = testNtfServer {keyHash = "1234"}
+    it "should fail with incorrect fingerprint" $ do
+      testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
@@ -312,6 +318,14 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
     withNtfServerOn t ntfTestPort2 $ runRight_ $ do
       tkn <- registerTestToken a "qwer" NMInstant apnsQ
       checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
+
+testRunNTFServerTests :: ATransport -> NtfServer -> IO (Maybe ProtocolTestFailure)
+testRunNTFServerTests t srv =
+  withNtfServerThreadOn t ntfTestPort $ \ntf -> do
+    a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
+    r <- runRight $ testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing 
+    killThread ntf
+    pure r
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentClient -> AgentClient -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@AgentClient {agentEnv = Env {config = aliceCfg}} bob = do
