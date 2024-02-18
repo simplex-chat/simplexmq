@@ -8,6 +8,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -36,7 +37,7 @@ module Simplex.Messaging.Crypto
     Algorithm (..),
     SAlgorithm (..),
     Alg (..),
-    SignAlg (..),
+    AuthAlg (..),
     DhAlg (..),
     DhAlgorithm,
     PrivateKey (..),
@@ -53,23 +54,32 @@ module Simplex.Messaging.Crypto
     APublicVerifyKey (..),
     APrivateDhKey (..),
     APublicDhKey (..),
+    APrivateAuthKey (..),
+    APublicAuthKey (..),
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
+    AAuthKeyPair,
     KeyPair,
+    KeyPairX25519,
     ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
     ADhSecret (..),
     KeyHash (..),
     newRandom,
+    newRandomDRG,
     generateAKeyPair,
     generateKeyPair,
     generateSignatureKeyPair,
+    generateAuthKeyPair,
     generateDhKeyPair,
     privateToX509,
+    x509ToPublic,
+    x509ToPrivate,
     publicKey,
     signatureKeyPair,
     publicToX509,
+    encodeASNObj,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -84,12 +94,19 @@ module Simplex.Messaging.Crypto
     CryptoSignature (..),
     SignatureSize (..),
     SignatureAlgorithm,
+    AuthAlgorithm,
     AlgorithmI (..),
     sign,
     sign',
     verify,
     verify',
     validSignatureSize,
+
+    -- * crypto_box authenticator, as discussed in https://groups.google.com/g/sci.crypt/c/73yb5a9pz2Y/m/LNgRO7IYXOwJ
+    CbAuthenticator (..),
+    cbAuthenticatorSize,
+    cbAuthenticate,
+    cbVerify,
 
     -- * DH derivation
     dh',
@@ -115,8 +132,10 @@ module Simplex.Messaging.Crypto
     CbNonce (unCbNonce),
     pattern CbNonce,
     cbEncrypt,
+    cbEncryptNoPad,
     cbEncryptMaxLenBS,
     cbDecrypt,
+    cbDecryptNoPad,
     sbDecrypt_,
     sbEncrypt_,
     cbNonce,
@@ -147,10 +166,13 @@ module Simplex.Messaging.Crypto
     Certificate,
     signCertificate,
     signX509,
+    verifyX509,
     certificateFingerprint,
     signedFingerprint,
     SignatureAlgorithmX509 (..),
     SignedObject (..),
+    encodeCertChain,
+    certChainP,
 
     -- * Cryptography error type
     CryptoError (..),
@@ -173,7 +195,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), SHA512, hash)
+import Crypto.Hash (Digest, SHA256 (..), SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -195,6 +217,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
+import qualified Data.List.NonEmpty as L
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
@@ -226,10 +249,10 @@ deriving instance Show (SAlgorithm a)
 
 data Alg = forall a. AlgorithmI a => Alg (SAlgorithm a)
 
-data SignAlg
+data AuthAlg
   = forall a.
-    (AlgorithmI a, SignatureAlgorithm a) =>
-    SignAlg (SAlgorithm a)
+    (AlgorithmI a, AuthAlgorithm a) =>
+    AuthAlg (SAlgorithm a)
 
 data DhAlg
   = forall a.
@@ -278,6 +301,12 @@ instance Eq APublicKey where
   APublicKey a k == APublicKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
+
+instance Encoding APublicKey where
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
 
 deriving instance Show APublicKey
 
@@ -425,6 +454,57 @@ dhAlgorithm = \case
   SX448 -> Just Dict
   _ -> Nothing
 
+data APrivateAuthKey
+  = forall a.
+    (AlgorithmI a, AuthAlgorithm a) =>
+    APrivateAuthKey (SAlgorithm a) (PrivateKey a)
+
+instance Eq APrivateAuthKey where
+  APrivateAuthKey a k == APrivateAuthKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APrivateAuthKey
+
+instance Encoding APrivateAuthKey where
+  smpEncode = smpEncode . encodePrivKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePrivKey
+  {-# INLINE smpDecode #-}
+
+instance StrEncoding APrivateAuthKey where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
+
+data APublicAuthKey
+  = forall a.
+    (AlgorithmI a, AuthAlgorithm a) =>
+    APublicAuthKey (SAlgorithm a) (PublicKey a)
+
+instance Eq APublicAuthKey where
+  APublicAuthKey a k == APublicAuthKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APublicAuthKey
+
+-- either X25519 or Ed algorithm that can be used to authorize commands to SMP server
+type family AuthAlgorithm (a :: Algorithm) :: Constraint where
+  AuthAlgorithm Ed25519 = ()
+  AuthAlgorithm Ed448 = ()
+  AuthAlgorithm X25519 = ()
+  AuthAlgorithm a =
+    (Int ~ Bool, TypeError (Text "Algorithm " :<>: ShowType a :<>: Text " cannot be used for authorization"))
+
+authAlgorithm :: SAlgorithm a -> Maybe (Dict (AuthAlgorithm a))
+authAlgorithm = \case
+  SEd25519 -> Just Dict
+  SEd448 -> Just Dict
+  SX25519 -> Just Dict
+  _ -> Nothing
+
 dhBytes' :: DhSecret a -> ByteString
 dhBytes' = \case
   DhSecretX25519 s -> BA.convert s
@@ -464,6 +544,12 @@ instance CryptoPublicKey APublicVerifyKey where
     Just Dict -> Right $ APublicVerifyKey a k
     _ -> Left "key does not support signature algorithms"
 
+instance CryptoPublicKey APublicAuthKey where
+  toPubKey f (APublicAuthKey _ k) = f k
+  pubKey (APublicKey a k) = case authAlgorithm a of
+    Just Dict -> Right $ APublicAuthKey a k
+    _ -> Left "key does not support auth algorithms"
+
 instance CryptoPublicKey APublicDhKey where
   toPubKey f (APublicDhKey _ k) = f k
   pubKey (APublicKey a k) = case dhAlgorithm a of
@@ -475,6 +561,12 @@ instance AlgorithmI a => CryptoPublicKey (PublicKey a) where
   pubKey (APublicKey _ k) = checkAlgorithm k
 
 instance Encoding APublicVerifyKey where
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
+
+instance Encoding APublicAuthKey where
   smpEncode = smpEncode . encodePubKey
   {-# INLINE smpEncode #-}
   smpDecode = decodePubKey
@@ -493,6 +585,12 @@ instance AlgorithmI a => Encoding (PublicKey a) where
   {-# INLINE smpDecode #-}
 
 instance StrEncoding APublicVerifyKey where
+  strEncode = strEncode . encodePubKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePubKey
+  {-# INLINE strDecode #-}
+
+instance StrEncoding APublicAuthKey where
   strEncode = strEncode . encodePubKey
   {-# INLINE strEncode #-}
   strDecode = decodePubKey
@@ -545,6 +643,13 @@ instance CryptoPrivateKey APrivateSignKey where
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
 
+instance CryptoPrivateKey APrivateAuthKey where
+  type PublicKeyType APrivateAuthKey = APublicAuthKey
+  toPrivKey f (APrivateAuthKey _ k) = f k
+  privKey (APrivateKey a k) = case authAlgorithm a of
+    Just Dict -> Right $ APrivateAuthKey a k
+    _ -> Left "key does not support auth algorithms"
+
 instance CryptoPrivateKey APrivateDhKey where
   type PublicKeyType APrivateDhKey = APublicDhKey
   toPrivKey f (APrivateDhKey _ k) = f k
@@ -588,20 +693,31 @@ type KeyPairType pk = (PublicKeyType pk, pk)
 
 type KeyPair a = KeyPairType (PrivateKey a)
 
+type KeyPairX25519 = KeyPair X25519
+
+-- TODO narrow key pair types to have the same algorithm in both keys
 type AKeyPair = KeyPairType APrivateKey
 
 type ASignatureKeyPair = KeyPairType APrivateSignKey
 
 type ADhKeyPair = KeyPairType APrivateDhKey
 
+type AAuthKeyPair = KeyPairType APrivateAuthKey
+
 newRandom :: IO (TVar ChaChaDRG)
 newRandom = newTVarIO =<< drgNew
+
+newRandomDRG :: TVar ChaChaDRG -> STM (TVar ChaChaDRG)
+newRandomDRG g = newTVar =<< stateTVar g (`withDRG` drgNew)
 
 generateAKeyPair :: AlgorithmI a => SAlgorithm a -> TVar ChaChaDRG -> STM AKeyPair
 generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair g
 
 generateSignatureKeyPair :: (AlgorithmI a, SignatureAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ASignatureKeyPair
 generateSignatureKeyPair a g = bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair g
+
+generateAuthKeyPair :: (AlgorithmI a, AuthAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM AAuthKeyPair
+generateAuthKeyPair a g = bimap (APublicAuthKey a) (APrivateAuthKey a) <$> generateKeyPair g
 
 generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ADhKeyPair
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
@@ -632,6 +748,10 @@ instance ToField APrivateSignKey where toField = toField . encodePrivKey
 
 instance ToField APublicVerifyKey where toField = toField . encodePubKey
 
+instance ToField APrivateAuthKey where toField = toField . encodePrivKey
+
+instance ToField APublicAuthKey where toField = toField . encodePubKey
+
 instance ToField APrivateDhKey where toField = toField . encodePrivKey
 
 instance ToField APublicDhKey where toField = toField . encodePubKey
@@ -646,6 +766,10 @@ instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePriv
 
 instance FromField APublicVerifyKey where fromField = blobFieldDecoder decodePubKey
 
+instance FromField APrivateAuthKey where fromField = blobFieldDecoder decodePrivKey
+
+instance FromField APublicAuthKey where fromField = blobFieldDecoder decodePubKey
+
 instance FromField APrivateDhKey where fromField = blobFieldDecoder decodePrivKey
 
 instance FromField APublicDhKey where fromField = blobFieldDecoder decodePubKey
@@ -656,7 +780,7 @@ instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField =
 
 instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldDecoder strDecode
 
-instance IsString (Maybe ASignature) where
+instance IsString ASignature where
   fromString = parseString $ decode >=> decodeSignature
 
 data Signature (a :: Algorithm) where
@@ -1021,6 +1145,18 @@ signX509 key = fst . objectToSignedExact f
         signatureAlgorithmX509 key,
         ()
       )
+{-# INLINE signX509 #-}
+
+verifyX509 :: (ASN1Object o, Eq o, Show o) => APublicVerifyKey -> SignedExact o -> Either String o
+verifyX509 key exact = do
+  signature <- case signedAlg of
+    SignatureALG_IntrinsicHash PubKeyALG_Ed25519 -> ASignature SEd25519 <$> decodeSignature signedSignature
+    SignatureALG_IntrinsicHash PubKeyALG_Ed448 -> ASignature SEd448 <$> decodeSignature signedSignature
+    _ -> Left "unknown x509 signature algorithm"
+  if verify key signature $ getSignedData exact then Right signedObject else Left "bad signature"
+  where
+    Signed {signedObject, signedAlg, signedSignature} = getSigned exact
+{-# INLINE verifyX509 #-}
 
 certificateFingerprint :: SignedCertificate -> KeyHash
 certificateFingerprint = signedFingerprint
@@ -1049,13 +1185,27 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
   signatureAlgorithmX509 = signatureAlgorithmX509 . snd
 
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
-newtype SignedObject a = SignedObject (SignedExact a)
+newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
   toField (SignedObject s) = toField $ encodeSignedObject s
+
+instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
+  smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact
+  smpP = fmap SignedObject . decodeSignedObject . unLarge <$?> smpP
+
+encodeCertChain :: CertificateChain -> L.NonEmpty Large
+encodeCertChain cc = L.fromList $ map Large blobs
+  where
+    CertificateChainRaw blobs = encodeCertificateChain cc
+
+certChainP :: A.Parser CertificateChain
+certChainP = do
+  rawChain <- CertificateChainRaw . map unLarge . L.toList <$> smpP
+  either (fail . show) pure $ decodeCertificateChain rawChain
 
 -- | Signature verification.
 --
@@ -1073,9 +1223,13 @@ dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
 dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk _) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
--- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+-- | NaCl @crypto_box@ encrypt with padding with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
+
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce (without padding).
+cbEncryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> ByteString
+cbEncryptNoPad (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce
 
 -- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
 sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
@@ -1098,20 +1252,42 @@ cryptoBox secret nonce s = BA.convert tag <> c
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
 cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
 
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
+cbDecryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
+cbDecryptNoPad (DhSecretX25519 secret) = sbDecryptNoPad_ secret
+
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
 sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
 sbDecrypt (SbKey key) = sbDecrypt_ key
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
-sbDecrypt_ secret (CbNonce nonce) packet
+sbDecrypt_ secret nonce = unPad <=< sbDecryptNoPad_ secret nonce
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
+sbDecryptNoPad_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecryptNoPad_ secret (CbNonce nonce) packet
   | B.length packet < 16 = Left CBDecryptError
-  | BA.constEq tag' tag = unPad msg
+  | BA.constEq tag' tag = Right msg
   | otherwise = Left CBDecryptError
   where
     (tag', c) = B.splitAt 16 packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
+
+-- type for authentication scheme using NaCl @crypto_box@ over the sha512 digest of the message.
+newtype CbAuthenticator = CbAuthenticator ByteString deriving (Eq, Show)
+
+cbAuthenticatorSize :: Int
+cbAuthenticatorSize = hashDigestSize SHA512 + authTagSize -- 64 + 16 = 80 bytes
+
+-- create crypto_box authenticator for a message.
+cbAuthenticate :: PublicKeyX25519 -> PrivateKeyX25519 -> CbNonce -> ByteString -> CbAuthenticator
+cbAuthenticate k pk nonce msg = CbAuthenticator $ cbEncryptNoPad (dh' k pk) nonce (sha512Hash msg)
+
+-- verify crypto_box authenticator for a message.
+cbVerify :: PublicKeyX25519 -> PrivateKeyX25519 -> CbNonce -> CbAuthenticator -> ByteString -> Bool
+cbVerify k pk nonce (CbAuthenticator s) authorized = cbDecryptNoPad (dh' k pk) nonce s == Right (sha512Hash authorized)
 
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)

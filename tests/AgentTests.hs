@@ -359,7 +359,6 @@ testServerConnectionAfterError t _ = do
     withAgent2 $ \alice -> do
       withServer $ do
         connect (bob, "bob") (alice, "alice")
-
       bob <#. ("", "", DOWN server ["alice"])
       alice <#. ("", "", DOWN server ["bob"])
       alice #: ("1", "bob", "SEND F 5\nhello") #> ("1", "bob", MID 4)
@@ -386,10 +385,10 @@ testServerConnectionAfterError t _ = do
   where
     server = SMPServer "localhost" testPort2 testKeyHash
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
-    withAgent1 = withAgent agentTestPort testDB
-    withAgent2 = withAgent agentTestPort2 testDB2
-    withAgent :: String -> FilePath -> (c -> IO a) -> IO a
-    withAgent agentPort agentDB = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) (pure ()) . const . testSMPAgentClientOn agentPort
+    withAgent1 = withAgent agentTestPort testDB 0 
+    withAgent2 = withAgent agentTestPort2 testDB2 10
+    withAgent :: String -> FilePath -> Int -> (c -> IO a) -> IO a
+    withAgent agentPort agentDB initClientId = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) initClientId (pure ()) . const . testSMPAgentClientOn agentPort
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
 testMsgDeliveryAgentRestart t bob = do
@@ -424,7 +423,7 @@ testMsgDeliveryAgentRestart t bob = do
   removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
-    withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
+    withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) 0 (pure ()) . const . testSMPAgentClientOn agentTestPort
 
 testConcurrentMsgDelivery :: Transport c => TProxy c -> c -> c -> IO ()
 testConcurrentMsgDelivery _ alice bob = do
@@ -547,8 +546,8 @@ syntaxTests t = do
             <> urlEncode True "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
             <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
             <> urlEncode True sampleDhKey
-            <> "&v=1"
-            <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&v=2"
+            <> "&e2e=v%3D2%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> " subscribe "
             <> "14\nbob's connInfo"
         )

@@ -35,9 +35,10 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultSMPClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
@@ -180,11 +181,17 @@ testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:50
 testSMPServer2 :: SMPServer
 testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
 
+testNtfServer :: NtfServer
+testNtfServer = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"
+
+testNtfServer2 :: NtfServer
+testNtfServer2 = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6002"
+
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = userServers [noAuthSrv testSMPServer],
-      ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
+      ntf = [testNtfServer],
       xftp = userServers [noAuthSrv testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
@@ -198,9 +205,9 @@ agentCfg =
     { tcpPort = agentTestPort,
       tbqSize = 4,
       -- database = testDB,
-      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
-      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
-      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
+      smpCfg = defaultSMPClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
+      ntfCfg = defaultNTFClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
+      reconnectInterval = fastRetryInterval,
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,
       ntfSMPWorkerDelay = 100,
@@ -211,17 +218,23 @@ agentCfg =
   where
     networkConfig = defaultNetworkConfig {tcpConnectTimeout = 3_000_000, tcpTimeout = 2_000_000}
 
+fastRetryInterval :: RetryInterval
+fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
+
+fastMessageRetryInterval :: RetryInterval2
+fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = fastRetryInterval}
+
 type AgentTestMonad m = (MonadUnliftIO m, MonadRandom m, MonadFail m)
 
-withSmpAgentThreadOn_ :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m () -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
+withSmpAgentThreadOn_ :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> Int -> m () -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn_ t (port', smpPort', db') initClientId afterProcess =
   let cfg' = agentCfg {tcpPort = port'}
       initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         ( \started -> do
             Right st <- liftIO $ createAgentStore db' "" False MCError
             when (dbNew st) . liftIO $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
-            runSMPAgentBlocking t cfg' initServers' st started
+            runSMPAgentBlocking t cfg' initServers' st initClientId started
         )
         afterProcess
 
@@ -229,7 +242,7 @@ userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoSe
 userServers srvs = M.fromList [(1, srvs)]
 
 withSmpAgentThreadOn :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a 0 $ removeFile db'
 
 withSmpAgentOn :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m a -> m a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const

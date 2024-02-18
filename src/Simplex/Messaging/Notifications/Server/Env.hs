@@ -12,7 +12,6 @@ import Control.Concurrent.Async (Async)
 import Control.Logger.Simple
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
@@ -33,8 +32,9 @@ import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, THandleParams)
 import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Version (VersionRange)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -60,6 +60,7 @@ data NtfServerConfig = NtfServerConfig
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
+    ntfServerVRange :: VersionRange,
     transportConfig :: TransportServerConfig
   }
 
@@ -89,7 +90,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   logInfo "restoring subscriptions..."
   storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
   logInfo "restored subscriptions"
-  subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
+  subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg random
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
@@ -102,11 +103,11 @@ data NtfSubscriber = NtfSubscriber
     smpAgent :: SMPClientAgent
   }
 
-newNtfSubscriber :: Natural -> SMPClientAgentConfig -> STM NtfSubscriber
-newNtfSubscriber qSize smpAgentCfg = do
+newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> STM NtfSubscriber
+newNtfSubscriber qSize smpAgentCfg random = do
   smpSubscribers <- TM.empty
   newSubQ <- newTBQueue qSize
-  smpAgent <- newSMPClientAgent smpAgentCfg
+  smpAgent <- newSMPClientAgent smpAgentCfg random
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
 data SMPSubscriber = SMPSubscriber
@@ -142,7 +143,9 @@ newNtfPushServer qSize apnsConfig = do
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
-  c <- apnsPushProviderClient <$> createAPNSPushClient (apnsProviderHost pp) apnsConfig
+  c <- case apnsProviderHost pp of
+    Nothing -> pure $ \_ _ -> pure ()
+    Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
   atomically $ TM.insert pp c pushClients
   pure c
 
@@ -158,17 +161,17 @@ data NtfRequest
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue NtfRequest,
     sndQ :: TBQueue (Transmission NtfResponse),
-    sessionId :: ByteString,
+    ntfThParams :: THandleParams,
     connected :: TVar Bool,
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime
   }
 
-newNtfServerClient :: Natural -> ByteString -> SystemTime -> STM NtfServerClient
-newNtfServerClient qSize sessionId ts = do
+newNtfServerClient :: Natural -> THandleParams -> SystemTime -> STM NtfServerClient
+newNtfServerClient qSize ntfThParams ts = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
   rcvActiveAt <- newTVar ts
   sndActiveAt <- newTVar ts
-  return NtfServerClient {rcvQ, sndQ, sessionId, connected, rcvActiveAt, sndActiveAt}
+  return NtfServerClient {rcvQ, sndQ, ntfThParams, connected, rcvActiveAt, sndActiveAt}

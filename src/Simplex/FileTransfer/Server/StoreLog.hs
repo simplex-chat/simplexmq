@@ -31,7 +31,7 @@ import Data.Time.Clock.System (SystemTime)
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
+import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow, whenM)
 import System.Directory (doesFileExist, renameFile)
@@ -109,7 +109,7 @@ writeFileStore s FileStore {files, recipients} = do
   allRcps <- readTVarIO recipients
   readTVarIO files >>= mapM_ (logFile allRcps)
   where
-    logFile :: Map RecipientId (SenderId, RcvPublicVerifyKey) -> FileRec -> IO ()
+    logFile :: Map RecipientId (SenderId, RcvPublicAuthKey) -> FileRec -> IO ()
     logFile allRcps FileRec {senderId, fileInfo, filePath, recipientIds, createdAt} = do
       logAddFile s senderId fileInfo createdAt
       (rcpErrs, rcps) <- M.mapEither getRcp . M.fromSet id <$> readTVarIO recipientIds

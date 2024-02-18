@@ -37,12 +37,13 @@ import Simplex.Messaging.Protocol
     MsgFlags,
     MsgId,
     NotifierId,
-    NtfPrivateSignKey,
-    NtfPublicVerifyKey,
+    NtfPrivateAuthKey,
+    NtfPublicAuthKey,
     RcvDhSecret,
     RcvNtfDhSecret,
-    RcvPrivateSignKey,
-    SndPrivateSignKey,
+    RcvPrivateAuthKey,
+    SndPrivateAuthKey,
+    SndPublicAuthKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util ((<$?>))
@@ -75,8 +76,8 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     server :: SMPServer,
     -- | recipient queue ID
     rcvId :: SMP.RecipientId,
-    -- | key used by the recipient to sign transmissions
-    rcvPrivateKey :: RcvPrivateSignKey,
+    -- | key used by the recipient to authorize transmissions
+    rcvPrivateKey :: RcvPrivateAuthKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
     -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
@@ -119,9 +120,9 @@ canAbortRcvSwitch = maybe False canAbort . rcvSwchStatus
       RSReceivedMessage -> False
 
 data ClientNtfCreds = ClientNtfCreds
-  { -- | key pair to be used by the notification server to sign transmissions
-    ntfPublicKey :: NtfPublicVerifyKey,
-    ntfPrivateKey :: NtfPrivateSignKey,
+  { -- | key pair to be used by the notification server to authorize transmissions
+    ntfPublicKey :: NtfPublicAuthKey,
+    ntfPrivateKey :: NtfPrivateAuthKey,
     -- | queue ID to be used by the notification server for NSUB command
     notifierId :: NotifierId,
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
@@ -140,9 +141,10 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
-    -- | key pair used by the sender to sign transmissions
-    sndPublicKey :: Maybe C.APublicVerifyKey,
-    sndPrivateKey :: SndPrivateSignKey,
+    -- | key pair used by the sender to authorize transmissions
+    -- TODO combine keys to key pair so that types match
+    sndPublicKey :: Maybe SndPublicAuthKey,
+    sndPrivateKey :: SndPrivateAuthKey,
     -- | DH public key used to negotiate per-queue e2e encryption
     e2ePubKey :: Maybe C.PublicKeyX25519,
     -- | shared DH secret agreed for simple per-queue e2e encryption
@@ -315,7 +317,6 @@ data ConnData = ConnData
     userId :: UserId,
     connAgentVersion :: Version,
     enableNtfs :: Bool,
-    duplexHandshake :: Maybe Bool, -- added in agent protocol v2
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState
@@ -324,14 +325,8 @@ data ConnData = ConnData
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
-ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
-  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
-
-ratchetSyncSupported' :: ConnData -> Bool
-ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
-
-messageRcptsSupported :: ConnData -> Bool
-messageRcptsSupported ConnData {connAgentVersion} = connAgentVersion >= 4
+ratchetSyncAllowed ConnData {ratchetSyncState, connAgentVersion} =
+  connAgentVersion >= ratchetSyncSMPAgentVersion && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
 
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool
@@ -388,11 +383,11 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
-  | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
-  | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICAllowSecure SMP.RecipientId SMP.SndPublicAuthKey
+  | ICDuplexSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICDeleteConn
   | ICDeleteRcvQueue SMP.RecipientId
-  | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICQDelete SMP.RecipientId
 
 data InternalCommandTag

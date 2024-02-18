@@ -25,7 +25,7 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8)
@@ -41,6 +41,10 @@ smpServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
+    OnlineCert certOpts ->
+      doesFileExist iniFile >>= \case
+        True -> genOnline cfgPath certOpts
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError runServer
@@ -56,8 +60,8 @@ smpServerCLI cfgPath logPath =
     defaultServerPort = "5223"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
-    initializeServer opts
-      | scripted opts = initialize opts
+    initializeServer opts@InitOptions {ip, fqdn, scripted}
+      | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
           void $ withPrompt "SMP server will be initialized (press Enter)" getLine
@@ -65,9 +69,9 @@ smpServerCLI cfgPath logPath =
           logStats <- onOffPrompt "Enable logging daily statistics" False
           putStrLn "Require a password to create new messaging queues?"
           password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
-          let host = fromMaybe (ip opts) (fqdn opts)
+          let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn opts else Just host', password}
+          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password}
       where
         serverPassword =
           getLine >>= \case
@@ -78,7 +82,7 @@ smpServerCLI cfgPath logPath =
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
-        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password} = do
+        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password} = do
           clearDirIfExists cfgPath
           clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
@@ -200,7 +204,7 @@ smpServerCLI cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
-              smpServerVRange = supportedSMPServerVRange,
+              smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
@@ -210,6 +214,7 @@ smpServerCLI cfgPath logPath =
 
 data CliCommand
   = Init InitOptions
+  | OnlineCert CertOptions
   | Start
   | Delete
 
@@ -231,6 +236,7 @@ cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+        <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
@@ -255,7 +261,7 @@ cliCommandP cfgPath logPath iniFile =
           ( long "sign-algorithm"
               <> short 'a'
               <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
-              <> value ED448
+              <> value ED25519
               <> showDefault
               <> metavar "ALG"
           )
@@ -295,3 +301,4 @@ cliCommandP cfgPath logPath iniFile =
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
+

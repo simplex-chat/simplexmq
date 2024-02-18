@@ -48,8 +48,8 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
-import Simplex.Messaging.Transport.Server (runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport.Server (runTransportServer, tlsServerCredentials)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
@@ -82,12 +82,16 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer started tcpPort serverParams tCfg (runClient t)
+      serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
+      runTransportServer started tcpPort serverParams tCfg (runClient serverSignKey t)
+    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
-    runClient :: Transport c => TProxy c -> c -> M ()
-    runClient _ h = do
+    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
+    runClient signKey _ h = do
       kh <- asks serverIdentity
-      liftIO (runExceptT $ ntfServerHandshake h kh supportedNTFServerVRange) >>= \case
+      ks <- atomically . C.generateKeyPair =<< asks random
+      NtfServerConfig {ntfServerVRange} <- asks config
+      liftIO (runExceptT $ ntfServerHandshake signKey h ks kh ntfServerVRange) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 
@@ -109,9 +113,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
       let interval = 1000000 * logInterval
-      withFile statsFilePath AppendMode $ \h -> liftIO $ do
-        hSetBuffering h LineBuffering
-        forever $ do
+      forever $ do
+        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+          hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomically $ swapTVar fromTime ts
           tknCreated' <- atomically $ swapTVar tknCreated 0
@@ -141,7 +145,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                 weekCount sub,
                 monthCount sub
               ]
-          threadDelay' interval
+        liftIO $ threadDelay' interval
 
 resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
 resubscribe NtfSubscriber {newSubQ} subs = do
@@ -335,10 +339,10 @@ updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
 runNtfClientTransport :: Transport c => THandle c -> M ()
-runNtfClientTransport th@THandle {sessionId} = do
+runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newNtfServerClient qSize sessionId ts
+  c <- atomically $ newNtfServerClient qSize params ts
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
@@ -352,7 +356,7 @@ clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: Transport c => THandle c -> NtfServerClient -> M ()
-receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
+receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
@@ -360,16 +364,16 @@ receive th NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
     case cmdOrError of
       Left e -> write sndQ (corrId, entId, NRErr e)
       Right cmd ->
-        verifyNtfTransmission t cmd >>= \case
+        verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd >>= \case
           VRVerified req -> write rcvQ req
           VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
   where
     write q t = atomically $ writeTBQueue q t
 
 send :: Transport c => THandle c -> NtfServerClient -> IO ()
-send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = forever $ do
+send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h [(Nothing, encodeTransmission v sessionId t)]
+  void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
   atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where
@@ -377,14 +381,14 @@ send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, sndActiveAt} = 
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
-verifyNtfTransmission :: SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
-verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
+verifyNtfTransmission :: Maybe (THandleAuth, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
+verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
       r_ <- atomically $ getNtfTokenRegistration st tkn
       pure $
-        if verifyCmdSignature sig_ signed k
+        if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
             Just t@NtfTknData {tknVerifyKey}
               | k == tknVerifyKey -> verifiedTknCmd t c
@@ -405,7 +409,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
             then do
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
-            else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+            else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
@@ -413,7 +417,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
         Just s@NtfSubData {tokenId = subTknId} -> do
           t_ <- atomically $ getActiveNtfToken st subTknId
           verifyToken' t_ $ verifiedSubCmd s c
-        _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+        _ -> pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
   where
     verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
     verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
@@ -421,10 +425,10 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
     verifyToken t_ positiveVerificationResult =
       pure $ case t_ of
         Just t@NtfTknData {tknVerifyKey} ->
-          if verifyCmdSignature sig_ signed tknVerifyKey
+          if verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey
             then positiveVerificationResult t
             else VRFailed
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+        _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     verifyToken' :: Maybe NtfTknData -> VerificationResult -> M VerificationResult
     verifyToken' t_ = verifyToken t_ . const
 

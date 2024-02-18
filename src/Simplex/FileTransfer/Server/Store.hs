@@ -31,14 +31,14 @@ import Data.Time.Clock.System (SystemTime (..))
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPErrorType (..), XFTPFileId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
+import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, ($>>=))
 
 data FileStore = FileStore
   { files :: TMap SenderId FileRec,
-    recipients :: TMap RecipientId (SenderId, RcvPublicVerifyKey),
+    recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey),
     usedStorage :: TVar Int64
   }
 
@@ -51,7 +51,7 @@ data FileRec = FileRec
   }
   deriving (Eq)
 
-data FileRecipient = FileRecipient RecipientId RcvPublicVerifyKey
+data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
 
 instance StrEncoding FileRecipient where
   strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey
@@ -113,7 +113,7 @@ deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = do
   TM.delete rId recipients
   modifyTVar' recipientIds $ S.delete rId
 
-getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either XFTPErrorType (FileRec, C.APublicVerifyKey))
+getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either XFTPErrorType (FileRec, C.APublicAuthKey))
 getFile st party fId = case party of
   SFSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
   SFRecipient ->

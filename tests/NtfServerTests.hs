@@ -59,25 +59,30 @@ ntfSyntaxTests (ATransport t) = do
   where
     (>#>) ::
       Encoding smp =>
-      (Maybe C.ASignature, ByteString, ByteString, smp) ->
-      (Maybe C.ASignature, ByteString, ByteString, BrokerMsg) ->
+      (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
+      (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> SignedTransmission ErrorType NtfResponse
 pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
-sendRecvNtf h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
-  let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut1 h (sgn, t)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
-signSendRecvNtf h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
-  let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut1 h (Just $ C.sign pk t, t)
+signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateAuthKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
+  where
+    authorize t = case a of
+      C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
+      C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
+      _ -> Nothing
 
 (.->) :: J.Value -> J.Key -> Either String ByteString
 v .-> key =
@@ -89,9 +94,9 @@ testNotificationSubscription (ATransport t) =
   -- hangs on Ubuntu 20/22
   xit' "should create notification subscription and notify when message is received" $ do
     g <- C.newRandom
-    (sPub, sKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
-    (nPub, nKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
-    (tknPub, tknKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = DeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \APNSMockServer {apnsQ} ->

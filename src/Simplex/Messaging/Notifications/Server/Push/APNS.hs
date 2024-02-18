@@ -193,11 +193,12 @@ data APNSPushClientConfig = APNSPushClientConfig
     caStoreFile :: FilePath
   }
 
-apnsProviderHost :: PushProvider -> HostName
+apnsProviderHost :: PushProvider -> Maybe HostName
 apnsProviderHost = \case
-  PPApnsTest -> "localhost"
-  PPApnsDev -> "api.sandbox.push.apple.com"
-  PPApnsProd -> "api.push.apple.com"
+  PPApnsNull -> Nothing
+  PPApnsTest -> Just "localhost"
+  PPApnsDev -> Just "api.sandbox.push.apple.com"
+  PPApnsProd -> Just "api.push.apple.com"
 
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =

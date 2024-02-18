@@ -124,8 +124,8 @@ instance ToJSON NtfRegCode where
   toEncoding = strToJEncoding
 
 data NewNtfEntity (e :: NtfEntity) where
-  NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
-  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateSignKey -> NewNtfEntity 'Subscription
+  NewNtfTkn :: DeviceToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateAuthKey -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
 
@@ -206,20 +206,20 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
   fromProtocolError = fromProtocolError @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (sig, _, entityId, _) cmd = case cmd of
+  checkCredentials (auth, _, entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
     PING
-      | isNothing sig && B.null entityId -> Right cmd
+      | isNothing auth && B.null entityId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and entity ID
     _
-      | isNothing sig || B.null entityId -> Left $ CMD NO_AUTH
+      | isNothing auth || B.null entityId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     where
       sigNoEntity
-        | isNothing sig = Left $ CMD NO_AUTH
+        | isNothing auth = Left $ CMD NO_AUTH
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
@@ -358,7 +358,11 @@ instance StrEncoding SMPQueueNtf where
     notifierId <- A.char '/' *> strP
     pure SMPQueueNtf {smpServer, notifierId}
 
-data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
+data PushProvider
+  = PPApnsDev -- provider for Apple development environment
+  | PPApnsProd -- production environment, including TestFlight
+  | PPApnsTest -- used for tests, to use APNS mock server
+  | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
@@ -366,11 +370,13 @@ instance Encoding PushProvider where
     PPApnsDev -> "AD"
     PPApnsProd -> "AP"
     PPApnsTest -> "AT"
+    PPApnsNull -> "AN"
   smpP =
     A.take 2 >>= \case
       "AD" -> pure PPApnsDev
       "AP" -> pure PPApnsProd
       "AT" -> pure PPApnsTest
+      "AN" -> pure PPApnsNull
       _ -> fail "bad PushProvider"
 
 instance StrEncoding PushProvider where
@@ -378,11 +384,13 @@ instance StrEncoding PushProvider where
     PPApnsDev -> "apns_dev"
     PPApnsProd -> "apns_prod"
     PPApnsTest -> "apns_test"
+    PPApnsNull -> "apns_null"
   strP =
     A.takeTill (== ' ') >>= \case
       "apns_dev" -> pure PPApnsDev
       "apns_prod" -> pure PPApnsProd
       "apns_test" -> pure PPApnsTest
+      "apns_null" -> pure PPApnsNull
       _ -> fail "bad PushProvider"
 
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8

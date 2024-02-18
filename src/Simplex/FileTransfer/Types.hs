@@ -47,6 +47,7 @@ data RcvFile = RcvFile
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
+    redirect :: Maybe RcvFileRedirect,
     chunks :: [RcvFileChunk],
     prefixPath :: FilePath,
     tmpPath :: Maybe FilePath,
@@ -101,10 +102,17 @@ data RcvFileChunkReplica = RcvFileChunkReplica
   { rcvChunkReplicaId :: Int64,
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
+    replicaKey :: C.APrivateAuthKey,
     received :: Bool,
     delay :: Maybe Int64,
     retries :: Int
+  }
+  deriving (Eq, Show)
+
+data RcvFileRedirect = RcvFileRedirect
+  { redirectDbId :: DBRcvFileId,
+    redirectEntityId :: RcvFileId,
+    redirectFileInfo :: RedirectFileInfo
   }
   deriving (Eq, Show)
 
@@ -124,7 +132,8 @@ data SndFile = SndFile
     srcFile :: CryptoFile,
     prefixPath :: Maybe FilePath,
     status :: SndFileStatus,
-    deleted :: Bool
+    deleted :: Bool,
+    redirect :: Maybe RedirectFileInfo
   }
   deriving (Eq, Show)
 
@@ -181,8 +190,8 @@ sndChunkSize SndFileChunk {chunkSpec = XFTPChunkSpec {chunkSize}} = chunkSize
 data NewSndChunkReplica = NewSndChunkReplica
   { server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
-    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateSignKey)]
+    replicaKey :: C.APrivateAuthKey,
+    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
   deriving (Eq, Show)
 
@@ -190,8 +199,8 @@ data SndFileChunkReplica = SndFileChunkReplica
   { sndChunkReplicaId :: Int64,
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
-    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateSignKey)],
+    replicaKey :: C.APrivateAuthKey,
+    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateAuthKey)],
     replicaStatus :: SndFileReplicaStatus,
     delay :: Maybe Int64,
     retries :: Int
@@ -221,7 +230,7 @@ data DeletedSndChunkReplica = DeletedSndChunkReplica
     userId :: Int64,
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
+    replicaKey :: C.APrivateAuthKey,
     chunkDigest :: FileDigest,
     delay :: Maybe Int64,
     retries :: Int

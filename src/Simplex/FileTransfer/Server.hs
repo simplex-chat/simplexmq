@@ -47,10 +47,11 @@ import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicVerifyKey, RecipientId)
-import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdSignature)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, RecipientId, TransmissionAuth)
+import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Transport (THandleParams (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Server
@@ -65,6 +66,14 @@ import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
 import qualified UnliftIO.Exception as E
 
 type M a = ReaderT XFTPEnv IO a
+
+data XFTPTransportRequest =
+  XFTPTransportRequest
+    { thParams :: THandleParams,
+      reqBody :: HTTP2Body,
+      request :: H.Request,
+      sendResponse :: H.Response -> IO ()
+    }
 
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
@@ -86,7 +95,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       liftIO $
         runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration $ \sessionId r sendResponse -> do
           reqBody <- getHTTP2Body r xftpBlockSize
-          processRequest HTTP2Request {sessionId, request = r, reqBody, sendResponse} `runReaderT` env
+          let thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, implySessId = False, batch = True}
+          processRequest XFTPTransportRequest {thParams, request = r, reqBody, sendResponse} `runReaderT` env
 
     stopServer :: M ()
     stopServer = do
@@ -215,11 +225,11 @@ data ServerFile = ServerFile
     sbState :: LC.SbState
   }
 
-processRequest :: HTTP2Request -> M ()
-processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
+processRequest :: XFTPTransportRequest -> M ()
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
   | otherwise = do
-      case xftpDecodeTransmission sessionId bodyHead of
+      case xftpDecodeTransmission thParams bodyHead of
         Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
           case cmdOrErr of
             Right cmd -> do
@@ -233,7 +243,7 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
   where
     sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      let t_ = xftpEncodeTransmission sessionId Nothing (corrId, fId, resp)
+      let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do
@@ -250,10 +260,10 @@ processRequest HTTP2Request {sessionId, reqBody = body@HTTP2Body {bodyHead}, sen
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
-verifyXFTPTransmission :: Maybe C.ASignature -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
-verifyXFTPTransmission sig_ signed fId cmd =
+verifyXFTPTransmission :: Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission tAuth authorized fId cmd =
   case cmd of
-    FileCmd SFSender (FNEW file rcps auth) -> pure $ XFTPReqNew file rcps auth `verifyWith` sndKey file
+    FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
     FileCmd party _ -> verifyCmd party
   where
@@ -264,8 +274,9 @@ verifyXFTPTransmission sig_ signed fId cmd =
       where
         verify = \case
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
-          _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    req `verifyWith` k = if verifyCmdSignature sig_ signed k then VRVerified req else VRFailed
+          _ -> maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed
+    -- TODO verify with DH authorization
+    req `verifyWith` k = if verifyCmdAuthorization Nothing tAuth authorized k then VRVerified req else VRFailed
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
@@ -286,7 +297,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileInfo -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> M FileResponse
     createFile file rks = do
       st <- asks store
       r <- runExceptT $ do
@@ -310,7 +321,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       retryAdd n $ \sId -> runExceptT $ do
         ExceptT $ addFile st sId file ts
         pure sId
-    addRecipientRetry :: FileStore -> Int -> XFTPFileId -> RcvPublicVerifyKey -> M (Either XFTPErrorType FileRecipient)
+    addRecipientRetry :: FileStore -> Int -> XFTPFileId -> RcvPublicAuthKey -> M (Either XFTPErrorType FileRecipient)
     addRecipientRetry st n sId rpk =
       retryAdd n $ \rId -> runExceptT $ do
         let rcp = FileRecipient rId rpk
@@ -323,7 +334,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       atomically (add fId) >>= \case
         Left DUPLICATE_ -> retryAdd (n - 1) add
         r -> pure r
-    addRecipients :: XFTPFileId -> NonEmpty RcvPublicVerifyKey -> M FileResponse
+    addRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M FileResponse
     addRecipients sId rks = do
       st <- asks store
       r <- runExceptT $ do

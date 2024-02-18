@@ -47,10 +47,11 @@ data NtfToken = NtfToken
   { deviceToken :: DeviceToken,
     ntfServer :: NtfServer,
     ntfTokenId :: Maybe NtfTokenId,
+    -- TODO combine keys to key pair as the types should match
     -- | key used by the ntf server to verify transmissions
-    ntfPubKey :: C.APublicVerifyKey,
+    ntfPubKey :: C.APublicAuthKey,
     -- | key used by the ntf client to sign transmissions
-    ntfPrivKey :: C.APrivateSignKey,
+    ntfPrivKey :: C.APrivateAuthKey,
     -- | client's DH keys (to repeat registration if necessary)
     ntfDhKeys :: C.KeyPair 'C.X25519,
     -- | shared DH secret used to encrypt/decrypt notifications e2e
@@ -63,7 +64,7 @@ data NtfToken = NtfToken
   }
   deriving (Show)
 
-newNtfToken :: DeviceToken -> NtfServer -> C.ASignatureKeyPair -> C.KeyPair 'C.X25519 -> NotificationsMode -> NtfToken
+newNtfToken :: DeviceToken -> NtfServer -> C.AAuthKeyPair -> C.KeyPair 'C.X25519 -> NotificationsMode -> NtfToken
 newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
   NtfToken
     { deviceToken,

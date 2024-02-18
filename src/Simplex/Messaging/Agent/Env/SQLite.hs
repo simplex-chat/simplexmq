@@ -57,6 +57,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
+import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
@@ -82,7 +83,8 @@ data InitialAgentServers = InitialAgentServers
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
-    cmdSignAlg :: C.SignAlg,
+    rcvAuthAlg :: C.AuthAlg,
+    sndAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
     smpCfg :: ProtocolClientConfig,
@@ -92,6 +94,7 @@ data AgentConfig = AgentConfig
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
+    quotaExceededTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
@@ -135,13 +138,10 @@ defaultMessageRetryInterval =
             maxInterval = 60_000000
           },
       riSlow =
-        -- TODO: these timeouts can be increased in v5.0 once most clients are updated
-        -- to resume sending on QCONT messages.
-        -- After that local message expiration period should be also increased.
         RetryInterval
-          { initialInterval = 60_000000,
+          { initialInterval = 180_000000, -- 3 minutes
             increaseAfter = 60_000000,
-            maxInterval = 3600_000000 -- 1 hour
+            maxInterval = 3 * 3600_000000 -- 3 hours
           }
     }
 
@@ -149,16 +149,20 @@ defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      cmdSignAlg = C.SignAlg C.SEd448,
+      -- while the current client version supports X25519, it can only be enabled once support for SMP v6 is dropped,
+      -- and all servers are required to support v7 to be compatible.
+      rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
+      sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
       tbqSize = 64,
-      smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
-      ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
+      smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
+      ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
+      quotaExceededTimeout = 7 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms

@@ -12,6 +12,7 @@
 
 module Simplex.FileTransfer.Description
   ( FileDescription (..),
+    RedirectFileInfo (..),
     AFileDescription (..),
     ValidFileDescription, -- constructor is not exported, use pattern
     pattern ValidFileDescription,
@@ -30,12 +31,17 @@ module Simplex.FileTransfer.Description
     kb,
     mb,
     gb,
+    FileDescriptionURI (..),
+    FileClientData,
+    fileDescriptionURI,
+    qrSizeLimit,
   )
 where
 
 import Control.Applicative (optional)
 import Control.Monad ((<=<))
 import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -50,17 +56,21 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.String
+import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
+import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
   { party :: SFileParty p,
@@ -69,7 +79,14 @@ data FileDescription (p :: FileParty) = FileDescription
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: FileSize Word32,
-    chunks :: [FileChunk]
+    chunks :: [FileChunk],
+    redirect :: Maybe RedirectFileInfo
+  }
+  deriving (Eq, Show)
+
+data RedirectFileInfo = RedirectFileInfo
+  { size :: FileSize Int64,
+    digest :: FileDigest
   }
   deriving (Eq, Show)
 
@@ -118,7 +135,7 @@ data FileChunk = FileChunk
 data FileChunkReplica = FileChunkReplica
   { server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey
+    replicaKey :: C.APrivateAuthKey
   }
   deriving (Eq, Show)
 
@@ -147,7 +164,8 @@ data YAMLFileDescription = YAMLFileDescription
     key :: C.SbKey,
     nonce :: C.CbNonce,
     chunkSize :: String,
-    replicas :: [YAMLServerReplicas]
+    replicas :: [YAMLServerReplicas],
+    redirect :: Maybe RedirectFileInfo
   }
   deriving (Eq, Show)
 
@@ -161,7 +179,7 @@ data FileServerReplica = FileServerReplica
   { chunkNo :: Int,
     server :: XFTPServer,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
+    replicaKey :: C.APrivateAuthKey,
     digest :: Maybe FileDigest,
     chunkSize :: Maybe (FileSize Word32)
   }
@@ -170,7 +188,15 @@ data FileServerReplica = FileServerReplica
 newtype FileSize a = FileSize {unFileSize :: a}
   deriving (Eq, Show)
 
+instance FromJSON a => FromJSON (FileSize a) where
+  parseJSON v = FileSize <$> Y.parseJSON v
+
+instance ToJSON a => ToJSON (FileSize a) where
+  toJSON = Y.toJSON . unFileSize
+
 $(J.deriveJSON defaultJSON ''YAMLServerReplicas)
+
+$(J.deriveJSON defaultJSON ''RedirectFileInfo)
 
 $(J.deriveJSON defaultJSON ''YAMLFileDescription)
 
@@ -204,7 +230,7 @@ validateFileDescription fd@FileDescription {size, chunks}
     chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
 
 encodeFileDescription :: FileDescription p -> YAMLFileDescription
-encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks} =
+encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks, redirect} =
   YAMLFileDescription
     { party = toFileParty party,
       size = B.unpack $ strEncode size,
@@ -212,8 +238,38 @@ encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSiz
       key,
       nonce,
       chunkSize = B.unpack $ strEncode chunkSize,
-      replicas = encodeFileReplicas chunkSize chunks
+      replicas = encodeFileReplicas chunkSize chunks,
+      redirect
     }
+
+data FileDescriptionURI = FileDescriptionURI
+  { scheme :: ServiceScheme,
+    description :: ValidFileDescription 'FRecipient,
+    clientData :: Maybe FileClientData -- JSON-encoded extensions to pass in a link
+  }
+  deriving (Eq, Show)
+
+type FileClientData = Text
+
+fileDescriptionURI :: ValidFileDescription 'FRecipient -> FileDescriptionURI
+fileDescriptionURI vfd = FileDescriptionURI SSSimplex vfd mempty
+
+instance StrEncoding FileDescriptionURI where
+  strEncode FileDescriptionURI {scheme, description, clientData} = mconcat [strEncode scheme, "/file", "#/?", queryStr]
+    where
+      queryStr = strEncode $ QSP QEscape qs
+      qs = ("desc", strEncode description) : maybe [] (\cd -> [("data", encodeUtf8 cd)]) clientData
+  strP = do
+    scheme <- strP
+    _ <- "/file" <* optional (A.char '/') <* "#/?"
+    query <- strP
+    description <- queryParam "desc" query
+    let clientData = safeDecodeUtf8 <$> queryParamStr "data" query
+    pure FileDescriptionURI {scheme, description, clientData}
+
+-- | URL length in QR code before jumping up to a next size.
+qrSizeLimit :: Int
+qrSizeLimit = 1002 -- ~2 chunks in URLencoded YAML with some spare size for server hosts
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
@@ -285,13 +341,13 @@ unfoldChunksToReplicas defChunkSize = concatMap chunkReplicas
        in FileServerReplica {chunkNo, server, replicaId, replicaKey, digest = digest', chunkSize = chunkSize'}
 
 decodeFileDescription :: YAMLFileDescription -> Either String AFileDescription
-decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chunkSize, replicas} = do
+decodeFileDescription YAMLFileDescription {party, size, digest, key, nonce, chunkSize, replicas, redirect} = do
   size' <- strDecode $ B.pack size
   chunkSize' <- strDecode $ B.pack chunkSize
   replicas' <- decodeFileParts replicas
   chunks <- foldReplicasToChunks chunkSize' replicas'
   pure $ case aFileParty party of
-    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks}
+    AFP party' -> AFD FileDescription {party = party', size = size', digest, key, nonce, chunkSize = chunkSize', chunks, redirect}
   where
     decodeFileParts = fmap concat . mapM decodeYAMLServerReplicas
 

@@ -15,6 +15,7 @@ module Simplex.FileTransfer.Client.Main
     CLIError (..),
     xftpClientCLI,
     cliSendFile,
+    cliSendFileOpts,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
@@ -62,7 +63,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
@@ -208,7 +209,7 @@ cliCommandP =
 data SentFileChunk = SentFileChunk
   { chunkNo :: Int,
     sndId :: SenderId,
-    sndPrivateKey :: SndPrivateSignKey,
+    sndPrivateKey :: SndPrivateAuthKey,
     chunkSize :: FileSize Word32,
     digest :: FileDigest,
     replicas :: [SentFileChunkReplica]
@@ -217,7 +218,7 @@ data SentFileChunk = SentFileChunk
 
 data SentFileChunkReplica = SentFileChunkReplica
   { server :: XFTPServer,
-    recipients :: [(ChunkReplicaId, C.APrivateSignKey)]
+    recipients :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
   deriving (Eq, Show)
 
@@ -226,7 +227,7 @@ data SentRecipientReplica = SentRecipientReplica
     server :: XFTPServer,
     rcvNo :: Int,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
+    replicaKey :: C.APrivateAuthKey,
     digest :: FileDigest,
     chunkSize :: FileSize Word32
   }
@@ -297,8 +298,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
-          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
+          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
     uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
@@ -318,8 +319,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec, XFTPServerWithAuth) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}, ProtoServerWithAuth xftpServer auth) = do
           logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
-          (sndKey, spKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
-          rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519 g)
+          (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
           let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
@@ -387,7 +388,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
             sentChunks
         -- SentFileChunk having sndId and sndPrivateKey represents the current implementation's limitation
         -- that sender uploads each chunk only to one server, so we can use the first replica's server for FileChunkReplica
-        sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
+        sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateAuthKey -> [FileChunkReplica]
         sndReplicas [] _ _ = []
         sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
     writeFileDescriptions :: String -> [FileDescription 'FRecipient] -> FileDescription 'FSender -> IO ([FilePath], FilePath)
@@ -526,9 +527,8 @@ prepareChunkSizes size' = prepareSizes size'
   where
     (smallSize, bigSize)
       | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
-      | otherwise = (chunkSize1, chunkSize2)
-    --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
-    --  | otherwise = (chunkSize0, chunkSize1)
+      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size
