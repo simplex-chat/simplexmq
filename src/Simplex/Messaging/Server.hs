@@ -204,7 +204,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -213,7 +213,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           fromTime' <- atomically $ swapTVar fromTime ts
           qCreated' <- atomically $ swapTVar qCreated 0
           qSecured' <- atomically $ swapTVar qSecured 0
-          qDeleted' <- atomically $ swapTVar qDeleted 0
+          qDeletedAll' <- atomically $ swapTVar qDeletedAll 0
+          qDeletedNew' <- atomically $ swapTVar qDeletedNew 0
+          qDeletedSecured' <- atomically $ swapTVar qDeletedSecured 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
           msgExpired' <- atomically $ swapTVar msgExpired 0
@@ -229,7 +231,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               [ iso8601Show $ utctDay fromTime',
                 show qCreated',
                 show qSecured',
-                show qDeleted',
+                show qDeletedAll',
                 show msgSent',
                 show msgRecv',
                 dayCount ps,
@@ -242,7 +244,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 monthCount psNtf,
                 show qCount',
                 show msgCount',
-                show msgExpired'
+                show msgExpired',
+                show qDeletedNew',
+                show qDeletedSecured'
               ]
         liftIO $ threadDelay' interval
 
@@ -299,11 +303,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> do
-                ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
+                ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
                 putStat "qSecured" qSecured
-                putStat "qDeleted" qDeleted
+                putStat "qDeletedAll" qDeletedAll
+                putStat "qDeletedNew" qDeletedNew
+                putStat "qDeletedSecured" qDeletedSecured
                 putStat "msgSent" msgSent
                 putStat "msgRecv" msgRecv
                 putStat "msgSentNtf" msgSentNtf
@@ -350,19 +356,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPDelete queueId' -> unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
-                stats <- asks serverStats
                 queueId <- atomically (getQueue st SSender queueId') >>= \case
                   Left _ -> pure queueId' -- fallback to using as recipientId directly
                   Right QueueRec {recipientId} -> pure recipientId
                 r <- atomically $
-                  deleteQueue st queueId $>>= \() ->
-                    Right <$> delMsgQueueSize ms queueId
+                  deleteQueue st queueId $>>= \q ->
+                    Right . (q,) <$> delMsgQueueSize ms queueId
                 case r of
                   Left e -> liftIO . hPutStrLn h $ "error: " <> show e
-                  Right numDeleted -> do
+                  Right (q, numDeleted) -> do
                     withLog (`logDeleteQueue` queueId)
-                    atomically $ modifyTVar' (qDeleted stats) (+ 1)
-                    atomically $ modifyTVar' (qCount stats) (subtract 1)
+                    updateDeletedStats q
                     liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPSave -> withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
@@ -878,13 +882,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
         delQueueAndMsgs st = do
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
-          stats <- asks serverStats
-          atomically $ modifyTVar' (qDeleted stats) (+ 1)
-          atomically $ modifyTVar' (qCount stats) (subtract 1)
-          atomically $
-            deleteQueue st queueId >>= \case
-              Left e -> pure $ err e
-              Right _ -> delMsgQueue ms queueId $> ok
+          atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
+            Right q -> updateDeletedStats q $> ok
+            Left e -> pure $ err e
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
@@ -894,6 +894,14 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
 
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
+
+updateDeletedStats :: (MonadUnliftIO m, MonadReader Env m) => QueueRec -> m ()
+updateDeletedStats q = do
+  stats <- asks serverStats
+  let delSel = if isNothing (senderKey q) then qDeletedNew else qDeletedSecured
+  atomically $ modifyTVar' (delSel stats) (+ 1)
+  atomically $ modifyTVar' (qDeletedAll stats) (+ 1)
+  atomically $ modifyTVar' (qCount stats) (subtract 1)
 
 withLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withLog action = do
