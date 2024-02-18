@@ -25,15 +25,13 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-
-xftpServerVersion :: String
-xftpServerVersion = "1.2.3.0"
 
 xftpServerCLI :: FilePath -> FilePath -> IO ()
 xftpServerCLI cfgPath logPath = do
@@ -57,7 +55,7 @@ xftpServerCLI cfgPath logPath = do
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "file-server.ini"
-    serverVersion = "SimpleX XFTP server v" <> xftpServerVersion
+    serverVersion = "SimpleX XFTP server v" <> simplexMQVersion
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"

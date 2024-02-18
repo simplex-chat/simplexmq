@@ -23,15 +23,13 @@ import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-
-ntfServerVersion :: String
-ntfServerVersion = "1.7.3.0"
 
 defaultSMPBatchDelay :: Int
 defaultSMPBatchDelay = 10000
@@ -58,7 +56,7 @@ ntfServerCLI cfgPath logPath =
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "ntf-server.ini"
-    serverVersion = "SMP notifications server v" <> ntfServerVersion
+    serverVersion = "SMP notifications server v" <> simplexMQVersion
     defaultServerPort = "443"
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"
