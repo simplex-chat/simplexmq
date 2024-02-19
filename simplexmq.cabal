@@ -109,6 +109,7 @@ library
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
+      Simplex.Messaging.Crypto.Memory
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Crypto.SNTRUP761
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
@@ -173,6 +174,7 @@ library
   c-sources:
       cbits/sha512.c
       cbits/sntrup761.c
+      cbits/sodium/utils_memory.c
   extra-libraries:
       crypto
   build-depends:
