@@ -525,9 +525,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         -- because we can have a race condition when a new current client could have already
         -- made subscriptions active, and the old client would be processing diconnection later.
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
-        removeClientAndSubs = atomically $ ifM activeClient removeSubs $ pure ([], [])
+        removeClientAndSubs = atomically $ ifM currentActiveClient removeSubs $ pure ([], [])
           where
-            activeClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
+            currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
               qs <- RQ.getDelSessQueues tSess $ activeSubs c
               mapM_ (`RQ.addQueue` pendingSubs c) qs
