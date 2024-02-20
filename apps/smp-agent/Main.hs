@@ -5,13 +5,13 @@
 module Main where
 
 import Control.Logger.Simple
-import Data.ByteArray (ScrubbedBytes)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Server (runSMPAgent)
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
 import Simplex.Messaging.Client (defaultNetworkConfig)
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig
@@ -20,7 +20,7 @@ cfg = defaultAgentConfig
 agentDbFile :: String
 agentDbFile = "smp-agent.db"
 
-agentDbKey :: ScrubbedBytes
+agentDbKey :: LockedBytes
 agentDbKey = ""
 
 servers :: InitialAgentServers

@@ -15,23 +15,23 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
 where
 
 import Control.Concurrent (threadDelay)
-import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Util (diffToMilliseconds)
 import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-storeKey :: ScrubbedBytes -> Bool -> Maybe ScrubbedBytes
+storeKey :: LockedBytes -> Bool -> Maybe LockedBytes
 storeKey key keepKey = if keepKey || BA.null key then Just key else Nothing
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
-    dbKey :: TVar (Maybe ScrubbedBytes),
+    dbKey :: TVar (Maybe LockedBytes),
     dbConnection :: TMVar DB.Connection,
     dbClosed :: TVar Bool,
     dbNew :: Bool

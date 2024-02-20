@@ -1,21 +1,20 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 
 module Simplex.Messaging.Crypto.SNTRUP761 where
 
 import Crypto.Hash (Digest, SHA256, hash)
-import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import Simplex.Messaging.Crypto
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 
 -- Hybrid shared secret for crypto_box is defined as SHA256(DHSecret || KEMSharedKey),
 -- similar to https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/
 
-newtype KEMHybridSecret = KEMHybridSecret ScrubbedBytes
+newtype KEMHybridSecret = KEMHybridSecret LockedBytes
 
 -- | NaCl @crypto_box@ decrypt with a shared hybrid DH + KEM secret and 192-bit nonce.
 kcbDecrypt :: KEMHybridSecret -> CbNonce -> ByteString -> Either CryptoError ByteString

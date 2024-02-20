@@ -230,7 +230,6 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first, second)
-import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
@@ -243,7 +242,7 @@ import Data.List (foldl', intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe, catMaybes)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -270,6 +269,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRE
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -328,7 +328,7 @@ instance StrEncoding MigrationConfirmation where
       "error" -> pure MCError
       _ -> fail "invalid MigrationConfirmation"
 
-createSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
+createSQLiteStore :: FilePath -> LockedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createSQLiteStore dbFilePath dbKey keepKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
@@ -378,7 +378,7 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO SQLiteStore
+connectSQLiteStore :: FilePath -> LockedBytes -> Bool -> IO SQLiteStore
 connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- dbBusyLoop (connectDB dbFilePath key)
@@ -388,7 +388,7 @@ connectSQLiteStore dbFilePath key keepKey = do
     dbClosed <- newTVar False
     pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew, dbClosed}
 
-connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
+connectDB :: FilePath -> LockedBytes -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
   prepare db `onException` DB.close db
@@ -414,11 +414,11 @@ closeSQLiteStore st@SQLiteStore {dbClosed} =
       DB.close conn
       atomically $ writeTVar dbClosed True
 
-openSQLiteStore :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
+openSQLiteStore :: SQLiteStore -> LockedBytes -> Bool -> IO ()
 openSQLiteStore st@SQLiteStore {dbClosed} key keepKey =
   ifM (readTVarIO dbClosed) (openSQLiteStore_ st key keepKey) (putStrLn "openSQLiteStore: already opened")
 
-openSQLiteStore_ :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
+openSQLiteStore_ :: SQLiteStore -> LockedBytes -> Bool -> IO ()
 openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
   bracketOnError
     (atomically $ takeTMVar dbConnection)
@@ -439,7 +439,7 @@ reopenSQLiteStore st@SQLiteStore {dbKey, dbClosed} =
         Just key -> openSQLiteStore_ st key True
         Nothing -> fail "reopenSQLiteStore: no key"
 
-keyString :: ScrubbedBytes -> Text
+keyString :: LockedBytes -> Text
 keyString = sqlString . safeDecodeUtf8 . BA.convert
 
 sqlString :: Text -> Text
@@ -2286,17 +2286,18 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
       forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertRcvFileChunkReplica db rno replica chunkId
   pure dstEntityId
   where
-    dummyDst = FileDescription
-      { party = SFRecipient,
-        size,
-        digest,
-        redirect = Nothing,
-        -- updated later with updateRcvFileRedirect
-        key = C.unsafeSbKey $ B.replicate 32 '#',
-        nonce = C.cbNonce "",
-        chunkSize = FileSize 0,
-        chunks = []
-      }
+    dummyDst =
+      FileDescription
+        { party = SFRecipient,
+          size,
+          digest,
+          redirect = Nothing,
+          -- updated later with updateRcvFileRedirect
+          key = C.unsafeSbKey $ B.replicate 32 '#',
+          nonce = C.cbNonce "",
+          chunkSize = FileSize 0,
+          chunks = []
+        }
 
 insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> IO (Either StoreError (RcvFileId, DBRcvFileId))
 insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectId_ redirectEntityId_ = runExceptT $ do
@@ -2365,10 +2366,11 @@ getRcvFile db rcvFileId = runExceptT $ do
         toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted, redirectDbId, redirectEntityId, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
-              redirect = RcvFileRedirect
-                <$> redirectDbId
-                <*> redirectEntityId
-                <*> (RedirectFileInfo <$> redirectSize_ <*> redirectDigest_)
+              redirect =
+                RcvFileRedirect
+                  <$> redirectDbId
+                  <*> redirectEntityId
+                  <*> (RedirectFileInfo <$> redirectSize_ <*> redirectDigest_)
            in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do

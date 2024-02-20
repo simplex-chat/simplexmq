@@ -15,7 +15,6 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
-import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
@@ -39,6 +38,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
@@ -64,7 +64,7 @@ withStore2 = before connect2 . after (removeStore . fst)
 createStore :: IO SQLiteStore
 createStore = createEncryptedStore "" False
 
-createEncryptedStore :: ScrubbedBytes -> Bool -> IO SQLiteStore
+createEncryptedStore :: LockedBytes -> Bool -> IO SQLiteStore
 createEncryptedStore key keepKey = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific

@@ -39,7 +39,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
-import Data.ByteArray (ScrubbedBytes)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
@@ -56,6 +55,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Types
@@ -211,7 +211,7 @@ newSMPAgentEnv config store = do
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
-createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
+createAgentStore :: FilePath -> LockedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor

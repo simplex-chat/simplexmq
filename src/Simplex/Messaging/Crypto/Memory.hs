@@ -4,12 +4,10 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-{-# HLINT ignore "Redundant lambda" #-}
-
 -- |
 -- Module      : Data.ByteArray.ScrubbedBytes
 -- License     : BSD-style
--- Maintainer  : Vincent Hanquez <vincent@snarc.org>
+-- Author      : Vincent Hanquez <vincent@snarc.org>
 -- Stability   : Stable
 -- Portability : GHC
 module Simplex.Messaging.Crypto.Memory where
@@ -89,8 +87,7 @@ newLockedBytes (I# sz)
           let !locker = getLocker (byteArrayContents# (unsafeCoerce# mbarr))
               !scrubber = getScrubber (byteArrayContents# (unsafeCoerce# mbarr))
               !mba = LockedBytes mbarr
-           in
-            case mkWeak# mbarr () (finalize scrubber mba) (locker s1) of
+           in case mkWeak# mbarr () (finalize scrubber mba) (locker s1) of
                 (# s2, _weak #) ->
                   (# s2, mba #)
   where

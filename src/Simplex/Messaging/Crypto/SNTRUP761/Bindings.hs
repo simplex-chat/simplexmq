@@ -6,12 +6,12 @@ import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Bifunctor (bimap)
-import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import Foreign (nullPtr)
+import Simplex.Messaging.Crypto.Memory (LockedBytes)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (withDRG)
@@ -21,13 +21,13 @@ import Simplex.Messaging.Encoding.String
 newtype KEMPublicKey = KEMPublicKey ByteString
   deriving (Show)
 
-newtype KEMSecretKey = KEMSecretKey ScrubbedBytes
+newtype KEMSecretKey = KEMSecretKey LockedBytes
   deriving (Show)
 
 newtype KEMCiphertext = KEMCiphertext ByteString
   deriving (Show)
 
-newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
+newtype KEMSharedKey = KEMSharedKey LockedBytes
   deriving (Show)
 
 type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
