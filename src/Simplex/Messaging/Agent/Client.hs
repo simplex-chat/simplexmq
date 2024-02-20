@@ -500,17 +500,12 @@ instance ProtocolServerClient XFTPErrorType FileResponse where
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getTSessVar c tSess smpClients) >>= either newClient (waitForProtocolClient c tSess)
+  atomically (getTSessVar c tSess smpClients)
+    >>= either newClient (waitForProtocolClient c tSess)
   where
     newClient v =
-      newProtocolClient_ c tSess connectClient v `catchAgentError` \e -> do
-        (qs, conns) <- atomically $ do
-          putTMVar (sessionVar v) (Left e)
-          removeClientAndSubs v
-        unless (null conns) $ liftIO . notifySub "" $ DOWN srv conns
-        atomically $ mapM_ (releaseGetLock c) qs
-        resubscribeSMPSession c tSess -- should be unconditional to recover from errors on start
-        throwError e
+      newProtocolClient c tSess smpClients connectClient v
+        `catchAgentError` \e -> resubscribeSMPSession c tSess >> throwError e
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
@@ -519,9 +514,23 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
 
     clientDisconnected :: UnliftIO m -> SMPClientVar -> SMPClient -> IO ()
     clientDisconnected u v client = do
-      atomically (removeClientAndSubs v) >>= serverDown
+      atomically removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
+        removeClientAndSubs :: STM ([RcvQueue], [ConnId])
+        removeClientAndSubs =
+          ifM
+            ((&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active)
+            removeSubs
+            (pure ([], []))
+          where
+            removeSubs = do
+              qs <- RQ.getDelSessQueues tSess $ activeSubs c
+              mapM_ (`RQ.addQueue` pendingSubs c) qs
+              let cs = S.fromList $ map qConnId qs
+              cs' <- RQ.getConns $ activeSubs c
+              pure (qs, S.toList $ cs `S.difference` cs')
+
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
           incClientStat c userId client "DISCONNECT" ""
@@ -531,22 +540,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
             atomically $ mapM_ (releaseGetLock c) qs
             unliftIO u $ resubscribeSMPSession c tSess
 
-    removeClientAndSubs :: SMPClientVar -> STM ([RcvQueue], [ConnId])
-    removeClientAndSubs v =
-      ifM
-        ((&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active)
-        removeSubs
-        (pure ([], []))
-      where
-        removeSubs = do
-          qs <- RQ.getDelSessQueues tSess $ activeSubs c
-          mapM_ (`RQ.addQueue` pendingSubs c) qs
-          let cs = S.fromList $ map qConnId qs
-          cs' <- RQ.getConns $ activeSubs c
-          pure (qs, S.toList $ cs `S.difference` cs')
-
-    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
-    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
+        notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
+        notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 resubscribeSMPSession :: AgentMonad' m => AgentClient -> SMPTransportSession -> m ()
 resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
@@ -687,22 +682,7 @@ newProtocolClient ::
   (ClientVar msg -> m (Client msg)) ->
   ClientVar msg ->
   m (Client msg)
-newProtocolClient c tSess clients connectClient v =
-  newProtocolClient_ c tSess connectClient v `catchAgentError` \e -> do
-    atomically $ do
-      removeTSessVar v tSess clients
-      putTMVar (sessionVar v) (Left e)
-    throwError e
-
-newProtocolClient_ ::
-  forall err msg m.
-  (AgentMonad m, ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) =>
-  AgentClient ->
-  TransportSession msg ->
-  (ClientVar msg -> m (Client msg)) ->
-  ClientVar msg ->
-  m (Client msg)
-newProtocolClient_ c (userId, srv, entityId_) connectClient v =
+newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
   tryAgentError (connectClient v) >>= \case
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
@@ -712,6 +692,9 @@ newProtocolClient_ c (userId, srv, entityId_) connectClient v =
       pure client
     Left e -> do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
+      atomically $ do
+        removeTSessVar v tSess clients
+        putTMVar (sessionVar v) (Left e)
       throwError e -- signal error to caller
 
 hostEvent :: forall err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
