@@ -404,7 +404,7 @@ clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endT
     M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
   asks clients >>= atomically . TM.delete clientId
   tIds <- atomically $ swapTVar endThreads IM.empty
-  forM_ tIds $ \tId -> liftIO $ deRefWeak tId >>= mapM_ killThread
+  liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
