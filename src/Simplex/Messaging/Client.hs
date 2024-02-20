@@ -118,7 +118,6 @@ data ProtocolClient err msg = ProtocolClient
     sessionId :: SessionId,
     sessionTs :: UTCTime,
     thVersion :: Version,
-    timeoutPerBlock :: Int,
     blockSize :: Int,
     batch :: Bool,
     client_ :: PClient err msg
@@ -151,7 +150,6 @@ clientStub sessionId = do
         sessionId,
         sessionTs = undefined,
         thVersion = 5,
-        timeoutPerBlock = undefined,
         blockSize = smpBlockSize,
         batch = undefined,
         client_ =
@@ -314,7 +312,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpTimeoutPerKb, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> STM (PClient err msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
@@ -365,8 +363,7 @@ getProtocolClient transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, 
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {sessionId, thVersion, blockSize, batch} -> do
           sessionTs <- getCurrentTime
-          let timeoutPerBlock = (blockSize * tcpTimeoutPerKb) `div` 1024
-              c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, sessionTs, timeoutPerBlock, blockSize, batch}
+          let c' = ProtocolClient {action = Nothing, client_ = c, sessionId, thVersion, sessionTs, blockSize, batch}
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
