@@ -521,6 +521,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
+        -- we make active subscriptions pending only if the client for tSess was current (in the map) and active,
+        -- because we can have a race condition when a new current client could have already
+        -- made subscriptions active, and the old client would be processing diconnection later.
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ ifM activeClient removeSubs $ pure ([], [])
           where
