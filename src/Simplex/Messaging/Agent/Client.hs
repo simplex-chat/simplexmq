@@ -505,11 +505,12 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     newClient v =
       newProtocolClient_ c tSess connectClient v
         `catchAgentError` \e -> do
-          qcs <- atomically $ do
+          (qs, conns) <- atomically $ do
             putTMVar (sessionVar v) (Left e)
             removeClientAndSubs v
-          u <- askUnliftIO
-          liftIO $ notifyAndResubscribe u qcs
+          unless (null conns) $ liftIO . notifySub "" $ DOWN srv conns
+          atomically $ mapM_ (releaseGetLock c) qs
+          resubscribeSMPSession c tSess -- should be unconditional to recover from errors on start
           throwError e
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
@@ -523,10 +524,13 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
-        serverDown qcs = whenM (readTVarIO active) $ do
+        serverDown (qs, conns) = whenM (readTVarIO active) $ do
           incClientStat c userId client "DISCONNECT" ""
           notifySub "" $ hostEvent DISCONNECT client
-          notifyAndResubscribe u qcs
+          unless (null conns) $ notifySub "" $ DOWN srv conns
+          unless (null qs) $ do
+            atomically $ mapM_ (releaseGetLock c) qs
+            unliftIO u $ resubscribeSMPSession c tSess
 
     removeClientAndSubs :: SMPClientVar -> STM ([RcvQueue], [ConnId])
     removeClientAndSubs v =
@@ -541,13 +545,6 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           let cs = S.fromList $ map qConnId qs
           cs' <- RQ.getConns $ activeSubs c
           pure (qs, S.toList $ cs `S.difference` cs')
-
-    notifyAndResubscribe :: UnliftIO m -> ([RcvQueue], [ConnId]) -> IO ()
-    notifyAndResubscribe u (qs, conns) = do
-      unless (null conns) $ notifySub "" $ DOWN srv conns
-      unless (null qs) $ do
-        atomically $ mapM_ (releaseGetLock c) qs
-        unliftIO u $ resubscribeSMPSession c tSess
 
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
