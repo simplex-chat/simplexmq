@@ -290,7 +290,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPClients -> do
                 active <- unliftIO u (asks clients) >>= readTVarIO
                 hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
-                forM_ (M.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
+                forM_ (IM.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
@@ -331,13 +331,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h "Sockets: "
                 hPutStrLn h $ "accepted: " <> show accepted
                 hPutStrLn h $ "closed: " <> show closed
-                hPutStrLn h $ "active: " <> show (M.size active)
-                hPutStrLn h $ "leaked: " <> show (accepted - closed - M.size active)
+                hPutStrLn h $ "active: " <> show (IM.size active)
+                hPutStrLn h $ "leaked: " <> show (accepted - closed - IM.size active)
               CPSocketThreads -> do
 #if MIN_VERSION_base(4,18,0)
                 (_, _, active') <- unliftIO u $ asks sockets
                 active <- readTVarIO active'
-                forM_ (M.toList active) $ \(sid, tid') ->
+                forM_ (IM.toList active) $ \(sid, tid') ->
                   deRefWeak tid' >>= \case
                     Nothing -> hPutStrLn h $ intercalate "," [show sid, "", "gone", ""]
                     Just tid -> do
@@ -380,7 +380,7 @@ runClientTransport th@THandle {thVersion, sessionId} = do
   nextClientId <- asks clientSeq
   c <- atomically $ do
     new@Client {clientId} <- newClient nextClientId q thVersion sessionId ts
-    TM.insert clientId new active
+    modifyTVar' active $ IM.insert clientId new
     pure new
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
@@ -402,7 +402,7 @@ clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endT
   srvSubs <- asks $ subscribers . server
   atomically $ modifyTVar' srvSubs $ \cs ->
     M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
-  asks clients >>= atomically . TM.delete clientId
+  asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
   tIds <- atomically $ swapTVar endThreads IM.empty
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where

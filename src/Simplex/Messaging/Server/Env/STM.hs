@@ -109,7 +109,7 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar Int,
-    clients :: TMap Int Client
+    clients :: TVar (IntMap Client)
   }
 
 data Server = Server
@@ -184,7 +184,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
-  clients <- atomically TM.empty
+  clients <- newTVarIO mempty
   return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
