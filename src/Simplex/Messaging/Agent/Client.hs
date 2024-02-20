@@ -28,6 +28,7 @@ module Simplex.Messaging.Agent.Client
     withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
+    reconnectServerClients,
     closeXFTPServerClient,
     runSMPServerTest,
     runXFTPServerTest,
@@ -503,6 +504,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   atomically (getTSessVar c tSess smpClients)
     >>= either newClient (waitForProtocolClient c tSess)
   where
+    -- we resubscribe only on newClient error, but not on waitForProtocolClient error,
+    -- as the large number of delivery workers waiting for the client TMVar
+    -- make it expensive to check for pending subscriptions.
     newClient v =
       newProtocolClient c tSess smpClients connectClient v
         `catchAgentError` \e -> resubscribeSMPSession c tSess >> throwError e
@@ -514,16 +518,13 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
 
     clientDisconnected :: UnliftIO m -> SMPClientVar -> SMPClient -> IO ()
     clientDisconnected u v client = do
-      atomically removeClientAndSubs >>= serverDown
+      removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
-        removeClientAndSubs :: STM ([RcvQueue], [ConnId])
-        removeClientAndSubs =
-          ifM
-            ((&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active)
-            removeSubs
-            (pure ([], []))
+        removeClientAndSubs :: IO ([RcvQueue], [ConnId])
+        removeClientAndSubs = atomically $ ifM activeClient removeSubs $ pure ([], [])
           where
+            activeClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
               qs <- RQ.getDelSessQueues tSess $ activeSubs c
               mapM_ (`RQ.addQueue` pendingSubs c) qs
@@ -747,11 +748,15 @@ throwWhenNoDelivery c sq =
 
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
+  atomically (clientsSel c `swapTVar` M.empty) >>= mapM_ (forkIO . closeClient_ c)
+
+reconnectServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
+reconnectServerClients c clientsSel =
   readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
 
 closeClient :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
-  atomically (TM.lookup tSess $ clientSel c) >>= mapM_ (closeClient_ c)
+  atomically (TM.lookupDelete tSess $ clientSel c) >>= mapM_ (closeClient_ c)
 
 closeClient_ :: ProtocolServerClient err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c v = do
