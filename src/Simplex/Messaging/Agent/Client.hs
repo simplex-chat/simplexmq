@@ -503,15 +503,14 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
   atomically (getTSessVar c tSess smpClients) >>= either newClient (waitForProtocolClient c tSess)
   where
     newClient v =
-      newProtocolClient_ c tSess connectClient v
-        `catchAgentError` \e -> do
-          (qs, conns) <- atomically $ do
-            putTMVar (sessionVar v) (Left e)
-            removeClientAndSubs v
-          unless (null conns) $ liftIO . notifySub "" $ DOWN srv conns
-          atomically $ mapM_ (releaseGetLock c) qs
-          resubscribeSMPSession c tSess -- should be unconditional to recover from errors on start
-          throwError e
+      newProtocolClient_ c tSess connectClient v `catchAgentError` \e -> do
+        (qs, conns) <- atomically $ do
+          putTMVar (sessionVar v) (Left e)
+          removeClientAndSubs v
+        unless (null conns) $ liftIO . notifySub "" $ DOWN srv conns
+        atomically $ mapM_ (releaseGetLock c) qs
+        resubscribeSMPSession c tSess -- should be unconditional to recover from errors on start
+        throwError e
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
@@ -535,7 +534,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     removeClientAndSubs :: SMPClientVar -> STM ([RcvQueue], [ConnId])
     removeClientAndSubs v =
       ifM
-        (removeTSessVar' v tSess smpClients)
+        ((&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active)
         removeSubs
         (pure ([], []))
       where
