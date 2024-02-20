@@ -6,10 +6,12 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+-- {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
 module Simplex.Messaging.Crypto.Ratchet where
@@ -27,6 +29,7 @@ import Data.Bifunctor (bimap)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+-- import Data.Kind (Constraint)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -35,6 +38,7 @@ import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+-- import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
@@ -51,14 +55,57 @@ import UnliftIO.STM
 kdfX3DHE2EEncryptVersion :: Version
 kdfX3DHE2EEncryptVersion = 2
 
-currentE2EEncryptVersion :: Version
-currentE2EEncryptVersion = 3
-
 pqRatchetVersion :: Version
 pqRatchetVersion = 3
 
+currentE2EEncryptVersion :: Version
+currentE2EEncryptVersion = 3
+
 supportedE2EEncryptVRange :: VersionRange
 supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
+
+-- data RatchetKEMState
+--   = RKSNone -- no KEM in link or header
+--   | RKSOffer -- only KEM encapsulation key
+--   | RKSAgreed -- KEM ciphertext and the next encapsulation key
+
+-- data SRatchetKEMState (s :: RatchetKEMState) where
+--   SRKSNone :: SRatchetKEMState 'RKSNone
+--   SRKSOffer :: SRatchetKEMState 'RKSOffer
+--   SRKSAgreed :: SRatchetKEMState 'RKSAgreed
+
+-- data RatchetKEMParams (s :: RatchetKEMState) where
+--   RatchetKEMParamsNone :: RatchetKEMParams 'RKSNone
+--   RatchetKEMParamsOffer :: KEMPublicKey -> RatchetKEMParams 'RKSOffer
+--   RatchetKEMParamsAnswer :: KEMPublicKey -> KEMCiphertext -> RatchetKEMParams 'RKSAgreed
+
+-- data ARatchetKEMParams = forall s. ARKP (SRatchetKEMState s) (RatchetKEMParams s)
+
+-- data ARatchetKEMParamsOffer = forall s. (RatchetKEMOffer s) => ARKPOffer (SRatchetKEMState s) (RatchetKEMParams s)
+
+-- data ARatchetKEMParamsAnswer = forall s. (RatchetKEMAnswer s) => ARKPAnswer (SRatchetKEMState s) (RatchetKEMParams s)
+
+-- type family RatchetKEMOffer (s :: RatchetKEMState) :: Constraint where
+--   RatchetKEMOffer RKSNone = ()
+--   RatchetKEMOffer RKSOffer = ()
+--   RatchetKEMOffer RKSAgreed =
+--     (Int ~ Bool, TypeError (Text "Encaps key and cyphertext are not allowed to offer KEM"))
+
+-- type family RatchetKEMAnswer (s :: RatchetKEMState) :: Constraint where
+--   RatchetKEMAnswer RKSNone = ()
+--   RatchetKEMAnswer RKSOffer =
+--     (Int ~ Bool, TypeError (Text "Encaps key without cyphertext is not allowed to confirm KEM"))
+--   RatchetKEMAnswer RKSAgreed = ()
+
+-- nextRatchetKEM :: ARatchetKEM -> ARatchetKEMParams -> Maybe (ARatchetKEM, ARatchetKEMParams)
+-- nextRatchetKEM (ARK s kem) (ARKP s' params) = case (s, s') of
+--   (_, SRKSNone) -> Just (ARK SRKSNone RatchetKEMNone, ARKP SRKSNone RatchetKEMParamsNone)
+--   (SRKSNone, SRKSOffer) -> do
+--     let RatchetKEMParamsOffer key = params
+
+--      in Just $ ARK SRKSOffer params
+--   (SRKSOffer, SRKSAgreed) -> Just $ ARK SRKSAgreed params
+--   _ -> Nothing
 
 data E2ERatchetParams (a :: Algorithm) kem
   = E2ERatchetParams Version (PublicKey a) (PublicKey a) (Maybe kem)
@@ -325,6 +372,7 @@ data MsgHeader a = MsgHeader
   { -- | max supported ratchet version
     msgMaxVersion :: Version,
     msgDHRs :: PublicKey a,
+    msgPQRs :: Maybe E2ERachetKEM,
     msgPN :: Word32,
     msgNs :: Word32
   }
@@ -346,14 +394,16 @@ fullHeaderLen :: Int
 fullHeaderLen = 2 + 1 + paddedHeaderLen + authTagSize + ivSize @AES256
 
 instance AlgorithmI a => Encoding (MsgHeader a) where
-  smpEncode MsgHeader {msgMaxVersion, msgDHRs, msgPN, msgNs} =
-    smpEncode (msgMaxVersion, msgDHRs, msgPN, msgNs)
+  smpEncode MsgHeader {msgMaxVersion, msgDHRs, msgPQRs, msgPN, msgNs}
+    | msgMaxVersion < pqRatchetVersion = smpEncode (msgMaxVersion, msgDHRs, msgPN, msgNs)
+    | otherwise = smpEncode (msgMaxVersion, msgDHRs, msgPQRs, msgPN, msgNs)
   smpP = do
     msgMaxVersion <- smpP
     msgDHRs <- smpP
+    msgPQRs <- if msgMaxVersion < pqRatchetVersion then pure Nothing else smpP
     msgPN <- smpP
     msgNs <- smpP
-    pure MsgHeader {msgMaxVersion, msgDHRs, msgPN, msgNs}
+    pure MsgHeader {msgMaxVersion, msgDHRs, msgPQRs, msgPN, msgNs}
 
 data EncMessageHeader = EncMessageHeader
   { ehVersion :: Version,
@@ -403,6 +453,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, r
         MsgHeader
           { msgMaxVersion = maxVersion rcVersion,
             msgDHRs = publicKey rcDHRs,
+            msgPQRs = Nothing,
             msgPN = rcPN,
             msgNs = rcNs
           }

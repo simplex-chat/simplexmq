@@ -61,7 +61,7 @@ fullMsgLen = 1 + fullHeaderLen + C.authTagSize + paddedMsgLen
 testMessageHeader :: Expectation
 testMessageHeader = do
   (k, _) <- atomically . C.generateKeyPair @X25519 =<< C.newRandom
-  let hdr = MsgHeader {msgMaxVersion = currentE2EEncryptVersion, msgDHRs = k, msgPN = 0, msgNs = 0}
+  let hdr = MsgHeader {msgMaxVersion = currentE2EEncryptVersion, msgDHRs = k, msgPQRs = Nothing, msgPN = 0, msgNs = 0}
   parseAll (smpP @(MsgHeader 'X25519)) (smpEncode hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
