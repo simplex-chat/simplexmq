@@ -768,11 +768,11 @@ throwWhenNoDelivery c sq =
 
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
-  atomically (clientsSel c `swapTVar` M.empty) >>= mapM_ (forkIO . closeClient_ c)
+  readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
 
 closeClient :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
-  atomically (TM.lookupDelete tSess $ clientSel c) >>= mapM_ (closeClient_ c)
+  atomically (TM.lookup tSess $ clientSel c) >>= mapM_ (closeClient_ c)
 
 closeClient_ :: ProtocolServerClient err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c v = do
