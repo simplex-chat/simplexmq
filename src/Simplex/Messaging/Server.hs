@@ -51,7 +51,7 @@ import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
-import Data.List (foldl', intercalate)
+import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
@@ -400,7 +400,8 @@ clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endT
     swapTVar subscriptions M.empty
   liftIO $ mapM_ cancelSub subs
   srvSubs <- asks $ subscribers . server
-  atomically $ modifyTVar' srvSubs $ \cs -> foldl' (\cs' sub -> M.update deleteCurrentClient sub cs') cs $ M.keys subs
+  atomically $ modifyTVar' srvSubs $ \cs ->
+    M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
   asks clients >>= atomically . TM.delete clientId
   tIds <- atomically $ swapTVar endThreads IM.empty
   forM_ tIds $ \tId -> liftIO $ deRefWeak tId >>= mapM_ killThread
