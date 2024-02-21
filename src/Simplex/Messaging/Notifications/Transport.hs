@@ -26,7 +26,7 @@ authBatchCmdsNTFVersion :: Version
 authBatchCmdsNTFVersion = 2
 
 currentClientNTFVersion :: Version
-currentClientNTFVersion = 1
+currentClientNTFVersion = 2
 
 currentServerNTFVersion :: Version
 currentServerNTFVersion = 2

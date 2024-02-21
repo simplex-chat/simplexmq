@@ -129,7 +129,7 @@ authCmdsSMPVersion :: Version
 authCmdsSMPVersion = 7
 
 currentClientSMPRelayVersion :: Version
-currentClientSMPRelayVersion = 6
+currentClientSMPRelayVersion = 7
 
 currentServerSMPRelayVersion :: Version
 currentServerSMPRelayVersion = 7
