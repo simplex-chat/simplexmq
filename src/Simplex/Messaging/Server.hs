@@ -50,6 +50,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
+import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -157,7 +158,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         updateSubscribers = do
           (qId, clnt) <- readTQueue $ subQ s
           let clientToBeNotified c' =
-                if sameClientSession clnt c'
+                if sameClientId clnt c'
                   then pure Nothing
                   else do
                     yes <- readTVar $ connected c'
@@ -165,9 +166,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          void . forkIO $ do
+          tId <- atomically $ stateTVar (endThreadSeq c) $ \next -> (next, next + 1)
+          t <- forkIO $ do
             labelMyThread $ label <> ".endPreviousSubscriptions"
             atomically $ writeTBQueue (sndQ c) [(CorrId "", qId, END)]
+            atomically $ modifyTVar' (endThreads c) $ IM.delete tId
+          mkWeakThreadId t >>= atomically . modifyTVar' (endThreads c) . IM.insert tId
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
@@ -389,23 +393,26 @@ runClientTransport th@THandle {thVersion, sessionId} = do
     noSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
 
 clientDisconnected :: Client -> M ()
-clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
+clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endThreads} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
-  atomically $ writeTVar connected False
-  subs <- readTVarIO subscriptions
+  subs <- atomically $ do
+    writeTVar connected False
+    swapTVar subscriptions M.empty
   liftIO $ mapM_ cancelSub subs
-  atomically $ writeTVar subscriptions M.empty
-  cs <- asks $ subscribers . server
-  atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
+  srvSubs <- asks $ subscribers . server
+  atomically $ modifyTVar' srvSubs $ \cs ->
+    M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
   asks clients >>= atomically . TM.delete clientId
+  tIds <- atomically $ swapTVar endThreads IM.empty
+  liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
-      | sameClientSession c c' = Nothing
+      | sameClientId c c' = Nothing
       | otherwise = Just c'
 
-sameClientSession :: Client -> Client -> Bool
-sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
+sameClientId :: Client -> Client -> Bool
+sameClientId Client {clientId} Client {clientId = cId'} = clientId == cId'
 
 cancelSub :: TVar Sub -> IO ()
 cancelSub sub =
