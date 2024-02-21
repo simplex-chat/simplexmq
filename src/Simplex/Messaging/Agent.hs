@@ -360,8 +360,8 @@ getNetworkConfig = readTVarIO . useNetworkConfig
 
 reconnectAllServers :: MonadUnliftIO m => AgentClient -> m ()
 reconnectAllServers c = liftIO $ do
-  closeProtocolServerClients c smpClients
-  closeProtocolServerClients c ntfClients
+  reconnectServerClients c smpClients
+  reconnectServerClients c ntfClients
 
 -- | Register device notifications token
 registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
