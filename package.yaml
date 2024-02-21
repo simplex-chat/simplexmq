@@ -73,6 +73,8 @@ dependencies:
   - unliftio-core == 0.2.*
   - websockets == 0.12.*
   - yaml == 0.11.*
+  - hashable == 1.4.*
+  - unordered-containers == 0.2.19.*
 
 flags:
   swift:

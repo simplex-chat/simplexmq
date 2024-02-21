@@ -144,6 +144,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:.))
 import Data.Either (lefts, partitionEithers)
+import Data.Hashable (Hashed, unhashed)
+import qualified Data.HashMap.Strict as HM
 import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
@@ -259,7 +261,7 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
-    removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
+    removedSubs :: TVar (HM.HashMap (Hashed (UserId, SMPServer, SMP.RecipientId)) SMPClientError),
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
     asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
@@ -402,7 +404,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
-  removedSubs <- TM.empty
+  removedSubs <- newTVar HM.empty
   workerSeq <- newTVar 0
   smpDeliveryWorkers <- TM.empty
   asyncCmdWorkers <- TM.empty
@@ -1038,7 +1040,7 @@ processSubResult c rq r = do
     Left e ->
       unless (temporaryClientError e) . atomically $ do
         RQ.deleteQueue rq (pendingSubs c)
-        TM.insert (RQ.qKey rq) e (removedSubs c)
+        modifyTVar' (removedSubs c) $ HM.insert (RQ.qKey rq) e
     _ -> addSubscription c rq
   pure r
 
@@ -1583,8 +1585,8 @@ getAgentSubscriptions c = do
   removedSubscriptions <- getRemovedSubs
   pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions, removedSubscriptions}
   where
-    getSubs sel = map (`subInfo` Nothing) . M.keys <$> readTVarIO (getRcvQueues $ sel c)
-    getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
+    getSubs sel = map (\hk -> unhashed hk `subInfo` Nothing) . HM.keys <$> readTVarIO (getRcvQueues $ sel c)
+    getRemovedSubs = map (uncurry subInfo . bimap unhashed Just) . HM.toList <$> readTVarIO (removedSubs c)
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
     subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text

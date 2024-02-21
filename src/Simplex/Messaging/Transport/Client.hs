@@ -56,6 +56,7 @@ import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Data.Hashable (Hashable (..))
 
 data TransportHost
   = THIPv4 (Word8, Word8, Word8, Word8)
@@ -63,6 +64,13 @@ data TransportHost
   | THOnionHost ByteString
   | THDomainName HostName
   deriving (Eq, Ord, Show)
+
+instance Hashable TransportHost where
+  hashWithSalt s = \case
+    THIPv4 v4 -> hashWithSalt s v4
+    THIPv6 v6 -> hashWithSalt s v6
+    THOnionHost oh -> hashWithSalt s oh
+    THDomainName dn -> hashWithSalt s dn
 
 instance Encoding TransportHost where
   smpEncode = smpEncode . strEncode

@@ -172,6 +172,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
+import Data.Hashable (Hashable (..))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -742,6 +743,12 @@ deriving instance Ord (SProtocolType p)
 
 deriving instance Show (SProtocolType p)
 
+instance Hashable (SProtocolType p) where
+  hashWithSalt s = \case
+    SPSMP -> hashWithSalt s (0 :: Int)
+    SPNTF -> hashWithSalt s (1 :: Int)
+    SPXFTP -> hashWithSalt s (2 :: Int)
+
 data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
 
 deriving instance Show AProtocolType
@@ -823,6 +830,10 @@ data ProtocolServer p = ProtocolServer
     keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
+
+instance Hashable (SProtocolType p) => Hashable (ProtocolServer p) where
+  hashWithSalt s ProtocolServer {scheme, host, port, keyHash} =
+    s `hashWithSalt` scheme `hashWithSalt` host `hashWithSalt` port `hashWithSalt` C.unKeyHash keyHash
 
 data AProtocolServer = forall p. ProtocolTypeI p => AProtocolServer (SProtocolType p) (ProtocolServer p)
 
