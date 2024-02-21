@@ -62,6 +62,7 @@ library
       Simplex.FileTransfer.Util
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
+      Simplex.Messaging.Agent.Env.Postgres
       Simplex.Messaging.Agent.Env.SQLite
       Simplex.Messaging.Agent.Lock
       Simplex.Messaging.Agent.NtfSubSupervisor
@@ -70,6 +71,9 @@ library
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Server
       Simplex.Messaging.Agent.Store
+      Simplex.Messaging.Agent.Store.Postgres
+      Simplex.Messaging.Agent.Store.Postgres.Migrations
+      Simplex.Messaging.Agent.Store.Postgres.Migrations.M20220202_initial
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common
       Simplex.Messaging.Agent.Store.SQLite.DB
