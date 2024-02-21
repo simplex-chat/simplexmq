@@ -338,6 +338,8 @@ data XFTPErrorType
     HAS_FILE
   | -- | file IO error
     FILE_IO
+  | -- | bad redirect data
+    REDIRECT {redirectError :: String}
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -347,8 +349,12 @@ data XFTPErrorType
 instance StrEncoding XFTPErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
+    REDIRECT e -> "REDIRECT " <> bshow e
     e -> bshow e
-  strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+  strP =
+    "CMD " *> (CMD <$> parseRead1)
+      <|> "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
+      <|> parseRead1
 
 instance Encoding XFTPErrorType where
   smpEncode = \case
@@ -363,6 +369,7 @@ instance Encoding XFTPErrorType where
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
+    REDIRECT err -> "REDIRECT " <> smpEncode err
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -379,6 +386,7 @@ instance Encoding XFTPErrorType where
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO
+      "REDIRECT" -> REDIRECT <$> _smpP
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"

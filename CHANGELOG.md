@@ -1,3 +1,13 @@
+# 5.5.3
+
+Agent:
+- notification token API also returns active notifications server.
+- support file descriptions with redirection and file URIs.
+
+Servers:
+- CLI commands for online key and certificate rotation.
+- Configure config and log paths via environment variables.
+
 # 5.5.2
 
 Extensible handshake for clients and SMP/NTF servers (ignore extra data).

@@ -15,6 +15,7 @@ module Simplex.FileTransfer.Client.Main
     CLIError (..),
     xftpClientCLI,
     cliSendFile,
+    cliSendFileOpts,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
@@ -297,8 +298,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
-          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
+          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
     uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
@@ -526,9 +527,8 @@ prepareChunkSizes size' = prepareSizes size'
   where
     (smallSize, bigSize)
       | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
-      | otherwise = (chunkSize1, chunkSize2)
-    --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
-    --  | otherwise = (chunkSize0, chunkSize1)
+      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size

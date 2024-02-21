@@ -30,7 +30,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 ntfServerVersion :: String
-ntfServerVersion = "1.7.2.0"
+ntfServerVersion = "1.7.3.0"
 
 defaultSMPBatchDelay :: Int
 defaultSMPBatchDelay = 10000
@@ -42,6 +42,10 @@ ntfServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
+    OnlineCert certOpts ->
+      doesFileExist iniFile >>= \case
+        True -> genOnline cfgPath certOpts
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError runServer
@@ -143,6 +147,7 @@ ntfServerCLI cfgPath logPath =
 
 data CliCommand
   = Init InitOptions
+  | OnlineCert CertOptions
   | Start
   | Delete
 
@@ -158,6 +163,7 @@ cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+        <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
