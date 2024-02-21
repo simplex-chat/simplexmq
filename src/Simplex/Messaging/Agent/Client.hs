@@ -28,6 +28,7 @@ module Simplex.Messaging.Agent.Client
     withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
+    reconnectServerClients,
     closeXFTPServerClient,
     runSMPServerTest,
     runXFTPServerTest,
@@ -141,6 +142,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Composition ((.:.))
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -499,11 +501,15 @@ instance ProtocolServerClient XFTPErrorType FileResponse where
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPTransportSession -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  v <- atomically (getTSessVar c tSess smpClients)
-  either newClient (waitForProtocolClient c tSess) v
-    `catchAgentError` \e -> resubscribeSMPSession c tSess >> throwError e
+  atomically (getTSessVar c tSess smpClients)
+    >>= either newClient (waitForProtocolClient c tSess)
   where
-    newClient = newProtocolClient c tSess smpClients connectClient
+    -- we resubscribe only on newClient error, but not on waitForProtocolClient error,
+    -- as the large number of delivery workers waiting for the client TMVar
+    -- make it expensive to check for pending subscriptions.
+    newClient v =
+      newProtocolClient c tSess smpClients connectClient v
+        `catchAgentError` \e -> resubscribeSMPSession c tSess >> throwError e
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
@@ -516,14 +522,19 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
+        -- we make active subscriptions pending only if the client for tSess was current (in the map) and active,
+        -- because we can have a race condition when a new current client could have already
+        -- made subscriptions active, and the old client would be processing diconnection later.
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
-        removeClientAndSubs = atomically $ do
-          removeTSessVar v tSess smpClients
-          qs <- RQ.getDelSessQueues tSess $ activeSubs c
-          mapM_ (`RQ.addQueue` pendingSubs c) qs
-          let cs = S.fromList $ map qConnId qs
-          cs' <- RQ.getConns $ activeSubs c
-          pure (qs, S.toList $ cs `S.difference` cs')
+        removeClientAndSubs = atomically $ ifM currentActiveClient removeSubs $ pure ([], [])
+          where
+            currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
+            removeSubs = do
+              qs <- RQ.getDelSessQueues tSess $ activeSubs c
+              mapM_ (`RQ.addQueue` pendingSubs c) qs
+              let cs = S.fromList $ map qConnId qs
+              cs' <- RQ.getConns $ activeSubs c
+              pure (qs, S.toList $ cs `S.difference` cs')
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
@@ -650,9 +661,13 @@ getTSessVar c tSess vs = maybe (Left <$> newSessionVar) (pure . Right) =<< TM.lo
       pure v
 
 removeTSessVar :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM ()
-removeTSessVar v tSess vs =
-  TM.lookup tSess vs
-    >>= mapM_ (\v' -> when (sessionVarId v == sessionVarId v') $ TM.delete tSess vs)
+removeTSessVar = void .:. removeTSessVar'
+
+removeTSessVar' :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM Bool
+removeTSessVar' v tSess vs =
+  TM.lookup tSess vs >>= \case
+    Just v' | sessionVarId v == sessionVarId v' -> TM.delete tSess vs $> True
+    _ -> pure False
 
 waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (ProtoType msg)) => AgentClient -> TransportSession msg -> ClientVar msg -> m (Client msg)
 waitForProtocolClient c (_, srv, _) v = do
@@ -739,6 +754,10 @@ throwWhenNoDelivery c sq =
 closeProtocolServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
   atomically (clientsSel c `swapTVar` M.empty) >>= mapM_ (forkIO . closeClient_ c)
+
+reconnectServerClients :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
+reconnectServerClients c clientsSel =
+  readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
 
 closeClient :: ProtocolServerClient err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
