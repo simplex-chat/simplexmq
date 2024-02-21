@@ -29,14 +29,14 @@ import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
 import Data.List (find)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
 import Data.Maybe (fromJust)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
@@ -110,18 +110,18 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
     forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
       let closeConn _ = do
-            atomically $ TM.delete cId clients
+            atomically $ modifyTVar' clients $ IM.delete cId 
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
             atomically $ modifyTVar' gracefullyClosed (+1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
-      atomically $ TM.insert cId tId clients
+      atomically $ modifyTVar' clients $ IM.insert cId tId
 
-type SocketState = (TVar Int, TVar Int, TMap Int (Weak ThreadId))
+type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
 newSocketState :: STM SocketState
 newSocketState = (,,) <$> newTVar 0 <*> newTVar 0 <*> newTVar mempty
 
-closeServer :: TMVar Bool -> TMap Int (Weak ThreadId) -> Socket -> IO ()
+closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
   readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   close sock
