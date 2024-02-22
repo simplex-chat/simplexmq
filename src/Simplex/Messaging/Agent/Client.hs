@@ -952,13 +952,13 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
 runNTFServerTest :: AgentMonad m => AgentClient -> UserId -> NtfServerWithAuth -> m (Maybe ProtocolTestFailure)
 runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
   cfg <- getClientConfig c ntfCfg
-  C.AuthAlg a <- asks $ rcvAuthAlg . config
+  C.SignAlg a <- asks $ cmdSignAlg . config
   g <- asks random
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
+    getProtocolClient tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right ntf -> do
-        (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
+        (nKey, npKey) <- atomically $ C.generateSignatureKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
           let deviceToken = DeviceToken PPApnsNull "test_ntf_token"
