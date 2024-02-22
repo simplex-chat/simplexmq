@@ -18,7 +18,6 @@ where
 import Control.Concurrent.STM
 import Control.DeepSeq (NFData (..))
 import qualified Data.HashMap.Strict as HM
-import Data.Hashable (Hashed, hashed)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
