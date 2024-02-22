@@ -1,7 +1,5 @@
-module Simplex.Messaging.Agent.TRcvQueues
-  ( RcvQueues,
-    RcvQueueKey,
-    TRcvQueues (getRcvQueues),
+module Simplex.Messaging.Agent.TRcvQueues.Ord
+  ( TRcvQueues (getRcvQueues),
     empty,
     clear,
     deleteConn,
@@ -17,57 +15,55 @@ where
 
 import Control.Concurrent.STM
 import Control.DeepSeq (NFData (..))
-import qualified Data.HashMap.Strict as HM
-import Data.Hashable (Hashed, hashed)
+import qualified Data.Map.Strict as M
 import Data.Set (Set)
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
 import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
 import Simplex.Messaging.Protocol (RecipientId, SMPServer)
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 
-type RcvQueueKey = (UserId, SMPServer, RecipientId)
-type RcvQueues = HM.HashMap RcvQueueKey RcvQueue
-
-newtype TRcvQueues = TRcvQueues {getRcvQueues :: TVar RcvQueues}
+newtype TRcvQueues = TRcvQueues {getRcvQueues :: TMap (UserId, SMPServer, RecipientId) RcvQueue}
 
 instance NFData TRcvQueues where rnf trqs = trqs `seq` ()
 
 empty :: STM TRcvQueues
-empty = TRcvQueues <$> newTVar mempty
+empty = TRcvQueues <$> TM.empty
 
 clear :: TRcvQueues -> STM ()
-clear (TRcvQueues qs) = writeTVar qs mempty
+clear (TRcvQueues qs) = TM.clear qs
 
 deleteConn :: ConnId -> TRcvQueues -> STM ()
-deleteConn cId (TRcvQueues qs) = modifyTVar' qs $ HM.filter (\rq -> cId /= connId rq)
+deleteConn cId (TRcvQueues qs) = modifyTVar' qs $ M.filter (\rq -> cId /= connId rq)
 
 hasConn :: ConnId -> TRcvQueues -> STM Bool
 hasConn cId (TRcvQueues qs) = any (\rq -> cId == connId rq) <$> readTVar qs
 
 getConns :: TRcvQueues -> STM (Set ConnId)
-getConns (TRcvQueues qs) = HM.foldr' (S.insert . connId) S.empty <$> readTVar qs
+getConns (TRcvQueues qs) = M.foldr' (S.insert . connId) S.empty <$> readTVar qs
 
 addQueue :: RcvQueue -> TRcvQueues -> STM ()
-addQueue rq (TRcvQueues qs) = modifyTVar' qs $ HM.insert (qKey rq) rq
+addQueue rq (TRcvQueues qs) = TM.insert (qKey rq) rq qs
 
 deleteQueue :: RcvQueue -> TRcvQueues -> STM ()
-deleteQueue rq (TRcvQueues qs) = modifyTVar' qs $ HM.delete (qKey rq)
+deleteQueue rq (TRcvQueues qs) = TM.delete (qKey rq) qs
 
 getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
-getSessQueues tSess (TRcvQueues qs) = HM.foldl' addQ [] <$> readTVar qs
+getSessQueues tSess (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
 getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
-getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ HM.foldl' addQ ([], HM.empty)
+getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.empty)
   where
     addQ (removed, qs') rq
       | rq `isSession` tSess = (rq : removed, qs')
-      | otherwise = (removed, HM.insert (qKey rq) rq qs')
+      | otherwise = (removed, M.insert (qKey rq) rq qs')
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
   userId rq == uId && server rq == srv && maybe True (connId rq ==) connId_
 
-qKey :: RcvQueue -> RcvQueueKey
+qKey :: RcvQueue -> (UserId, SMPServer, ConnId)
 qKey rq = (userId rq, server rq, connId rq)

@@ -261,7 +261,7 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
-    removedSubs :: TVar (HM.HashMap (Hashed (UserId, SMPServer, SMP.RecipientId)) SMPClientError),
+    removedSubs :: TVar (HM.HashMap (UserId, SMPServer, SMP.RecipientId) SMPClientError),
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
     asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
@@ -1585,8 +1585,8 @@ getAgentSubscriptions c = do
   removedSubscriptions <- getRemovedSubs
   pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions, removedSubscriptions}
   where
-    getSubs sel = map (\hk -> unhashed hk `subInfo` Nothing) . HM.keys <$> readTVarIO (getRcvQueues $ sel c)
-    getRemovedSubs = map (uncurry subInfo . bimap unhashed Just) . HM.toList <$> readTVarIO (removedSubs c)
+    getSubs sel = map (`subInfo` Nothing) . HM.keys <$> readTVarIO (getRcvQueues $ sel c)
+    getRemovedSubs = map (uncurry subInfo . fmap Just) . HM.toList <$> readTVarIO (removedSubs c)
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
     subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text

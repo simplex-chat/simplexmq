@@ -160,6 +160,7 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.DeepSeq (NFData (..))
 import Control.Monad
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
@@ -720,6 +721,9 @@ sameSrvAddr ProtocolServer {host, port} ProtocolServer {host = h', port = p'} = 
 data ProtocolType = PSMP | PNTF | PXFTP
   deriving (Eq, Ord, Show)
 
+instance NFData ProtocolType where
+  rnf x = x `seq` ()
+
 instance StrEncoding ProtocolType where
   strEncode = \case
     PSMP -> "smp"
@@ -824,12 +828,15 @@ userProtocol = \case
 
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer
-  { scheme :: SProtocolType p,
-    host :: NonEmpty TransportHost,
-    port :: ServiceName,
-    keyHash :: C.KeyHash
+  { scheme :: !(SProtocolType p),
+    host :: !(NonEmpty TransportHost),
+    port :: !ServiceName,
+    keyHash :: !C.KeyHash
   }
   deriving (Eq, Ord, Show)
+
+instance NFData (ProtocolServer p) where
+  rnf ps = ps `seq` ()
 
 instance Hashable (SProtocolType p) => Hashable (ProtocolServer p) where
   hashWithSalt s ProtocolServer {scheme, host, port, keyHash} =
