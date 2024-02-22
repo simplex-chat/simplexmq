@@ -1,26 +1,28 @@
 {-# LANGUAGE NamedFieldPuns #-}
-{-# OPTIONS_GHC -Wno-missing-fields #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Bench.TRcvQueues (benchTRcvQueues) where
+module Bench.TRcvQueues where -- (benchTRcvQueues) where
 
-import Test.Tasty.Bench
-import qualified Simplex.Messaging.Agent.TRcvQueues as H
-import qualified Simplex.Messaging.Agent.TRcvQueues.Ord as O
-import qualified Simplex.Messaging.Agent.TRcvQueues.HAMT as HAMT
-import Crypto.Random
-import UnliftIO
-import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue(..))
-import Simplex.Messaging.Protocol (ProtocolServer(..), SMPServer, SProtocolType(..))
-import Simplex.Messaging.Transport.Client (TransportHost(..))
 import Control.Monad (replicateM)
-import Data.Hashable (hash)
-import qualified Simplex.Messaging.Crypto as C
+import Crypto.Random
 import Data.ByteString (ByteString)
+import Data.Hashable (hash)
+import Simplex.Messaging.Agent.Protocol (QueueStatus (..))
+import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
+import qualified Simplex.Messaging.Agent.TRcvQueues as H
+import qualified Simplex.Messaging.Agent.TRcvQueues.HAMT as HAMT
+import qualified Simplex.Messaging.Agent.TRcvQueues.Ord as O
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Protocol (ProtocolServer (..), SMPServer, SProtocolType (..))
+import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Test.Tasty.Bench
+import UnliftIO
 
 benchTRcvQueues :: [Benchmark]
 benchTRcvQueues =
-  [ bgroup "getDelSessQueues"
+  [ bgroup
+      "getDelSessQueues"
       [ env (prepareOrd nUsers nServers nQueues) $ bench "ord" . nfAppIO (fmap length . benchTRcvQueuesOrd),
         env (prepareHash nUsers nServers nQueues) $ bcompare "ord" . bench "hash" . nfAppIO (fmap length . benchTRcvQueuesHash),
         env (prepareHamt nUsers nServers nQueues) $ bcompare "ord" . bench "hamt" . nfAppIO (fmap length . benchTRcvQueuesHamt)
@@ -73,7 +75,26 @@ genQueues random servers nUsers nQueues =
     connId <- getRandomBytes 10
     serverRandom <- hash @ByteString <$> getRandomBytes 8
     let server = servers !! (serverRandom `mod` nServers)
-    pure RcvQueue {userId, connId, server}
+    pure
+      RcvQueue
+        { userId,
+          connId,
+          server,
+          rcvId = "",
+          rcvPrivateKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe",
+          rcvDhSecret = "01234567890123456789012345678901",
+          e2ePrivKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk",
+          e2eDhSecret = Nothing,
+          sndId = "",
+          status = New,
+          dbQueueId = DBQueueId 0,
+          primary = True,
+          dbReplaceQueueId = Nothing,
+          rcvSwchStatus = Nothing,
+          smpClientVersion = 123,
+          clientNtfCreds = Nothing,
+          deleteErrors = 0
+        }
   where
     nServers = length servers
 
