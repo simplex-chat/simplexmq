@@ -10,6 +10,8 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -107,7 +109,7 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar Int,
-    clients :: TMap Int Client
+    clients :: TVar (IntMap Client)
   }
 
 data Server = Server
@@ -124,6 +126,8 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    endThreads :: TVar (IntMap (Weak ThreadId)),
+    endThreadSeq :: TVar Int,
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
@@ -155,10 +159,12 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
+  endThreads <- newTVar IM.empty
+  endThreadSeq <- newTVar 0
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -178,7 +184,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
-  clients <- atomically TM.empty
+  clients <- newTVarIO mempty
   return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
