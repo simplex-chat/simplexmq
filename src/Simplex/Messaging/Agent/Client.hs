@@ -531,7 +531,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           where
             currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
-              qs <- RQ.getDelSessQueues tSess $ activeSubs c
+              qs <- RQ.getDelSessQueuesFlip tSess $ activeSubs c
               mapM_ (`RQ.addQueue` pendingSubs c) qs
               let cs = S.fromList $ map qConnId qs
               cs' <- RQ.getConns $ activeSubs c
