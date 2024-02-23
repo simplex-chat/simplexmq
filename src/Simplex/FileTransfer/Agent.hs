@@ -7,7 +7,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -18,6 +17,7 @@ module Simplex.FileTransfer.Agent
     -- Receiving files
     xftpReceiveFile',
     xftpDeleteRcvFile',
+    xftpDeleteRcvFiles',
     -- Sending files
     xftpSendFile',
     xftpSendDescription',
@@ -30,9 +30,11 @@ import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:))
+import Data.Either (partitionEithers)
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
@@ -55,6 +57,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
@@ -287,17 +290,27 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           throwError $ INTERNAL "no chunk path"
 
 xftpDeleteRcvFile' :: AgentMonad m => AgentClient -> RcvFileId -> m ()
-xftpDeleteRcvFile' c rcvFileEntityId = do
-  rcvFile@RcvFile {rcvFileId} <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
-  handleError (const $ pure ()) $ withStore' c (`getRcvFileRedirects` rcvFileId) >>= mapM_ remove
-  remove rcvFile
+xftpDeleteRcvFile' c rcvFileEntityId = xftpDeleteRcvFiles' c [rcvFileEntityId]
+
+xftpDeleteRcvFiles' :: AgentMonad m => AgentClient -> [RcvFileId] -> m ()
+xftpDeleteRcvFiles' c rcvFileEntityIds = do
+  (_, rcvFiles) <- partitionEithers <$> withStoreBatch c (\db -> map (getById db) rcvFileEntityIds)
+  (_, redirects) <- partitionEithers <$> withStoreBatch' c (\db -> map (getRedirects db) rcvFiles)
+  let rcvFilesAll = concat redirects <> rcvFiles
+      pathsToRemove = filter (\RcvFile {status} -> status == RFSComplete || status == RFSError) rcvFilesAll
+  forM_ pathsToRemove $ \RcvFile {prefixPath} -> removePath prefixPath `catchAgentError` const (pure ())
+  void $ withStoreBatch' c (\db -> map (deleteFile db) rcvFilesAll)
   where
-    remove RcvFile {rcvFileId, prefixPath, status} =
+    getById :: DB.Connection -> RcvFileId -> IO (Either AgentErrorType RcvFile)
+    getById db rcvFileEntityId =
+      fmap (first storeError) $ runExceptT $ ExceptT $ getRcvFileByEntityId db rcvFileEntityId
+    getRedirects :: DB.Connection -> RcvFile -> IO [RcvFile]
+    getRedirects db RcvFile {rcvFileId} = getRcvFileRedirects db rcvFileId
+    deleteFile :: DB.Connection -> RcvFile -> IO ()
+    deleteFile db RcvFile {rcvFileId, status} =
       if status == RFSComplete || status == RFSError
-        then do
-          removePath prefixPath
-          withStore' c (`deleteRcvFile'` rcvFileId)
-        else withStore' c (`updateRcvFileDeleted` rcvFileId)
+        then deleteRcvFile' db rcvFileId
+        else updateRcvFileDeleted db rcvFileId
 
 notify :: forall m e. (MonadUnliftIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)

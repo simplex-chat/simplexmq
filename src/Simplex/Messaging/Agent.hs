@@ -92,6 +92,7 @@ module Simplex.Messaging.Agent
     xftpStartWorkers,
     xftpReceiveFile,
     xftpDeleteRcvFile,
+    xftpDeleteRcvFiles,
     xftpSendFile,
     xftpSendDescription,
     xftpDeleteSndFileInternal,
@@ -138,7 +139,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -242,7 +243,7 @@ switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnectionAsync c = withAgentEnv c . deleteConnectionAsync' c
 
--- -- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
+-- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
 deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
 deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c
 
@@ -399,6 +400,10 @@ xftpReceiveFile c = withAgentEnv c .:. xftpReceiveFile' c
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> RcvFileId -> m ()
 xftpDeleteRcvFile c = withAgentEnv c . xftpDeleteRcvFile' c
+
+-- | Delete multiple rcv files, batching operations when possible (deletes work files from file system and db records)
+xftpDeleteRcvFiles :: AgentErrorMonad m => AgentClient -> [RcvFileId] -> m ()
+xftpDeleteRcvFiles c = withAgentEnv c . xftpDeleteRcvFiles' c
 
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> CryptoFile -> Int -> m SndFileId
