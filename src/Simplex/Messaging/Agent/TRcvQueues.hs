@@ -52,11 +52,11 @@ getSessQueues tSess (TRcvQueues qs) = M.foldl' addQ [] <$> readTVar qs
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
 getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
-getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.empty)
+getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ \qs' -> M.foldl' addQ ([], qs') qs'
   where
-    addQ (removed, qs') rq
-      | rq `isSession` tSess = (rq : removed, qs')
-      | otherwise = (removed, M.insert (qKey rq) rq qs')
+    addQ acc@(removed, qs') rq
+      | rq `isSession` tSess = (rq : removed, M.delete (qKey rq) qs')
+      | otherwise = acc
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
