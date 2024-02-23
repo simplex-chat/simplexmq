@@ -1,11 +1,14 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module AgentTests.DoubleRatchetTests where
 
@@ -18,6 +21,7 @@ import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
+import Data.Type.Equality
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -68,6 +72,25 @@ pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteSt
 pattern Decrypted msg <- Right (Right msg)
 
 type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
+
+deriving instance Eq (Ratchet a)
+
+deriving instance Eq (SndRatchet a)
+
+deriving instance Eq RcvRatchet
+
+deriving instance Eq SndRatchetKEM
+
+deriving instance Eq RatchetInitParams
+
+deriving instance Eq RatchetKey
+
+instance Eq ARatchetKEMParams where
+  (ARKP s ps) == (ARKP s' ps') = case testEquality s s' of
+    Just Refl -> ps == ps'
+    Nothing -> False
+
+deriving instance Eq (MsgHeader a)
 
 testEncryptDecrypt :: TestRatchets a
 testEncryptDecrypt alice bob = do

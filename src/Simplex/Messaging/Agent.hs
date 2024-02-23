@@ -2096,7 +2096,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             case status of
               New -> case (conn', e2eEncryption) of
                 -- party initiating connection
-                (RcvConnection {}, Just e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _)) -> do
+                (RcvConnection {}, Just e2eSndParams@(CR.AE2ERatchetParams _ (CR.E2ERatchetParams e2eVersion _ _ _))) -> do
                   unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
                   -- TODO this should also return previously generated KEM keypair rcPQRs
                   (pk1, rcDHRs) <- withStore c (`getRatchetX3dhKeys` connId)

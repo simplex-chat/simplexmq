@@ -101,6 +101,7 @@ module Simplex.Messaging.Crypto
     verify,
     verify',
     validSignatureSize,
+    checkAlgorithm,
 
     -- * crypto_box authenticator, as discussed in https://groups.google.com/g/sci.crypt/c/73yb5a9pz2Y/m/LNgRO7IYXOwJ
     CbAuthenticator (..),
