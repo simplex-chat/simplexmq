@@ -531,9 +531,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
             removeSubs = do
               qs <- RQ.getDelSessQueues tSess $ activeSubs c
               mapM_ (`RQ.addQueue` pendingSubs c) qs
-              let cs = S.fromList $ map qConnId qs
               cs' <- RQ.getConns $ activeSubs c
-              pure (qs, S.toList $ cs `S.difference` cs')
+              pure (qs, filter (`S.notMember` cs') $ map qConnId qs)
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
@@ -595,7 +594,7 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
       liftIO $ do
-        let conns = S.toList $ S.fromList okConns `S.difference` cs
+        let conns = filter (`S.notMember` cs) okConns
         unless (null conns) $ notifySub "" $ UP srv conns
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
