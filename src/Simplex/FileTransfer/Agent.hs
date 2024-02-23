@@ -22,7 +22,9 @@ module Simplex.FileTransfer.Agent
     xftpSendFile',
     xftpSendDescription',
     deleteSndFileInternal,
+    deleteSndFilesInternal,
     deleteSndFileRemote,
+    deleteSndFilesRemote,
   )
 where
 
@@ -40,6 +42,8 @@ import Data.List (foldl', sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (mapMaybe)
+import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -559,24 +563,44 @@ runXFTPSndWorker c srv Worker {doWork} = do
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
 
 deleteSndFileInternal :: AgentMonad m => AgentClient -> SndFileId -> m ()
-deleteSndFileInternal c sndFileEntityId = do
-  SndFile {sndFileId, prefixPath, status} <- withStore c $ \db -> getSndFileByEntityId db sndFileEntityId
-  if status == SFSComplete || status == SFSError
-    then do
-      forM_ prefixPath $ removePath <=< toFSFilePath
-      withStore' c (`deleteSndFile'` sndFileId)
-    else withStore' c (`updateSndFileDeleted` sndFileId)
+deleteSndFileInternal c sndFileEntityId = deleteSndFilesInternal c [sndFileEntityId]
+
+deleteSndFilesInternal :: AgentMonad m => AgentClient -> [SndFileId] -> m ()
+deleteSndFilesInternal c sndFileEntityIds = do
+  (_, sndFiles) <- partitionEithers <$> withStoreBatch c (\db -> map (getById db) sndFileEntityIds)
+  let pathsToRemove = filter (\SndFile {status} -> status == SFSComplete || status == SFSError) sndFiles
+  forM_ pathsToRemove $ \SndFile {prefixPath} ->
+    forM_ prefixPath (removePath <=< toFSFilePath) `catchAgentError` const (pure ())
+  void $ withStoreBatch' c (\db -> map (deleteFile db) sndFiles)
+  where
+    getById :: DB.Connection -> SndFileId -> IO (Either AgentErrorType SndFile)
+    getById db sndFileEntityId =
+      fmap (first storeError) $ runExceptT $ ExceptT $ getSndFileByEntityId db sndFileEntityId
+    deleteFile :: DB.Connection -> SndFile -> IO ()
+    deleteFile db SndFile {sndFileId, status} =
+      if status == SFSComplete || status == SFSError
+        then deleteSndFile' db sndFileId
+        else updateSndFileDeleted db sndFileId
 
 deleteSndFileRemote :: forall m. AgentMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
-deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescription {chunks}) = do
-  deleteSndFileInternal c sndFileEntityId `catchAgentError` (notify c sndFileEntityId . SFERR)
-  forM_ chunks $ \ch -> deleteFileChunk ch `catchAgentError` (notify c sndFileEntityId . SFERR)
+deleteSndFileRemote c userId sndFileEntityId sfd = deleteSndFilesRemote c userId [(sndFileEntityId, sfd)]
+
+deleteSndFilesRemote :: forall m. AgentMonad m => AgentClient -> UserId -> [(SndFileId, ValidFileDescription 'FSender)] -> m ()
+deleteSndFilesRemote c userId sndFileIdsDescrs = do
+  deleteSndFilesInternal c (map fst sndFileIdsDescrs) `catchAgentError` (notify c "" . SFERR)
+  let chunks = concatMap (fdChunks . snd) sndFileIdsDescrs
+  void $ withStoreBatch' c (\db -> map (deleteChunk db) chunks)
+  let servers = S.fromList $ mapMaybe chunkServer chunks
+  forM_ servers $ \server -> void $ getXFTPDelWorker True c server
   where
-    deleteFileChunk :: FileChunk -> m ()
-    deleteFileChunk FileChunk {digest, replicas = replica@FileChunkReplica {server} : _} = do
-      withStore' c $ \db -> createDeletedSndChunkReplica db userId replica digest
-      void $ getXFTPDelWorker True c server
-    deleteFileChunk _ = pure ()
+    fdChunks (ValidFileDescription FileDescription {chunks}) = chunks
+    deleteChunk :: DB.Connection -> FileChunk -> IO ()
+    deleteChunk db FileChunk {digest, replicas = replica : _} =
+      createDeletedSndChunkReplica db userId replica digest
+    deleteChunk _ _ = pure ()
+    chunkServer :: FileChunk -> Maybe XFTPServer
+    chunkServer FileChunk {replicas = FileChunkReplica {server} : _} = Just server
+    chunkServer _ = Nothing
 
 resumeXFTPDelWork :: AgentMonad' m => AgentClient -> XFTPServer -> m ()
 resumeXFTPDelWork = void .: getXFTPDelWorker False

@@ -96,7 +96,9 @@ module Simplex.Messaging.Agent
     xftpSendFile,
     xftpSendDescription,
     xftpDeleteSndFileInternal,
+    xftpDeleteSndFilesInternal,
     xftpDeleteSndFileRemote,
+    xftpDeleteSndFilesRemote,
     rcNewHostPairing,
     rcConnectHost,
     rcConnectCtrl,
@@ -139,7 +141,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFilesInternal, deleteSndFileRemote, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -417,9 +419,17 @@ xftpSendDescription c = withAgentEnv c .:. xftpSendDescription' c
 xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> SndFileId -> m ()
 xftpDeleteSndFileInternal c = withAgentEnv c . deleteSndFileInternal c
 
+-- | Delete multiple snd files internally, batching operations when possible (deletes work files from file system and db records)
+xftpDeleteSndFilesInternal :: AgentErrorMonad m => AgentClient -> [SndFileId] -> m ()
+xftpDeleteSndFilesInternal c = withAgentEnv c . deleteSndFilesInternal c
+
 -- | Delete XFTP snd file chunks on servers
 xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
+
+-- | Delete XFTP snd file chunks on servers for multiple snd files, batching operations when possible
+xftpDeleteSndFilesRemote :: AgentErrorMonad m => AgentClient -> UserId -> [(SndFileId, ValidFileDescription 'FSender)] -> m ()
+xftpDeleteSndFilesRemote c = withAgentEnv c .: deleteSndFilesRemote c
 
 -- | Create new remote host pairing
 rcNewHostPairing :: AgentErrorMonad m => AgentClient -> m RCHostPairing
