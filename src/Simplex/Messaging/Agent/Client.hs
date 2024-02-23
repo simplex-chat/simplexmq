@@ -144,7 +144,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:.))
 import Data.Either (lefts, partitionEithers)
-import Data.Hashable (Hashed, unhashed)
 import qualified Data.HashMap.Strict as HM
 import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))

@@ -5,10 +5,12 @@ module Simplex.Messaging.Agent.TRcvQueues.Ord
     deleteConn,
     hasConn,
     getConns,
+    getConnsL,
     addQueue,
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
+    getDelSessQueuesFlip,
     qKey,
   )
 where
@@ -43,6 +45,9 @@ hasConn cId (TRcvQueues qs) = any (\rq -> cId == connId rq) <$> readTVar qs
 getConns :: TRcvQueues -> STM (Set ConnId)
 getConns (TRcvQueues qs) = M.foldr' (S.insert . connId) S.empty <$> readTVar qs
 
+getConnsL :: TRcvQueues -> STM (Set ConnId)
+getConnsL (TRcvQueues qs) = M.foldl' (flip $ S.insert . connId) S.empty <$> readTVar qs
+
 addQueue :: RcvQueue -> TRcvQueues -> STM ()
 addQueue rq (TRcvQueues qs) = TM.insert (qKey rq) rq qs
 
@@ -60,6 +65,13 @@ getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.emp
     addQ (removed, qs') rq
       | rq `isSession` tSess = (rq : removed, qs')
       | otherwise = (removed, M.insert (qKey rq) rq qs')
+
+getDelSessQueuesFlip :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
+getDelSessQueuesFlip tSess (TRcvQueues qs) = stateTVar qs $ \cur -> M.foldl' addQ ([], cur) cur
+  where
+    addQ acc@(removed, qs') rq
+      | rq `isSession` tSess = (rq : removed, M.delete (qKey rq) qs')
+      | otherwise = acc
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =

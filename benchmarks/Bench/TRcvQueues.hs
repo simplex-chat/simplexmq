@@ -7,8 +7,10 @@ module Bench.TRcvQueues where -- (benchTRcvQueues) where
 import Control.Monad (replicateM)
 import Crypto.Random
 import Data.ByteString (ByteString)
+import Data.HashSet (HashSet)
 import Data.Hashable (hash)
-import Simplex.Messaging.Agent.Protocol (QueueStatus (..))
+import Data.Set (Set)
+import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as H
 import qualified Simplex.Messaging.Agent.TRcvQueues.HAMT as HAMT
@@ -22,10 +24,24 @@ import UnliftIO
 benchTRcvQueues :: [Benchmark]
 benchTRcvQueues =
   [ bgroup
+      "addQueue"
+      [ bench "aq-ord" $ whnfIO (prepareOrd nUsers nServers nQueues),
+        bcompare "aq-ord" . bench "aq-hash" $ whnfIO (prepareHash nUsers nServers nQueues),
+        bcompare "aq-ord" . bench "aq-hamt" $ whnfIO (prepareHamt nUsers nServers nQueues)
+      ],
+    bgroup
       "getDelSessQueues"
-      [ env (prepareOrd nUsers nServers nQueues) $ bench "ord" . nfAppIO (fmap length . benchTRcvQueuesOrd),
-        env (prepareHash nUsers nServers nQueues) $ bcompare "ord" . bench "hash" . nfAppIO (fmap length . benchTRcvQueuesHash),
-        env (prepareHamt nUsers nServers nQueues) $ bcompare "ord" . bench "hamt" . nfAppIO (fmap length . benchTRcvQueuesHamt)
+      [ env (prepareOrd nUsers nServers nQueues) $ bench "gds-ord" . nfAppIO (fmap length . benchTRcvQueuesOrd),
+        env (prepareOrd nUsers nServers nQueues) $ bcompare "gds-ord" . bench "gds-flip" . nfAppIO (fmap length . benchTRcvQueuesOrdFlip),
+        env (prepareHash nUsers nServers nQueues) $ bcompare "gds-ord" . bench "gds-hash" . nfAppIO (fmap length . benchTRcvQueuesHash),
+        env (prepareHash nUsers nServers nQueues) $ bcompare "gds-ord" . bench "gds-hash-flip" . nfAppIO (fmap length . benchTRcvQueuesHashFlip),
+        env (prepareHamt nUsers nServers nQueues) $ bcompare "gds-ord" . bench "gds-hamt" . nfAppIO (fmap length . benchTRcvQueuesHamt)
+      ],
+    bgroup
+      "getConns"
+      [ env (prepareOrd nUsers nServers nQueues) $ bench "gc-Set" . nfAppIO (benchTRcvQueuesSet . snd),
+        env (prepareOrd nUsers nServers nQueues) $ bcompare "gc-Set" . bench "gc-LeftFold" . nfAppIO (benchTRcvQueuesLeftFold . snd),
+        env (prepareHash nUsers nServers nQueues) $ bcompare "gc-Set" . bench "gc-HashSet" . nfAppIO (benchTRcvQueuesHashSet . snd)
       ]
   ]
   where
@@ -33,32 +49,58 @@ benchTRcvQueues =
     nServers = 10
     nQueues = 10000
 
-prepareHash :: Int -> Int -> Int -> IO ([SMPServer], H.TRcvQueues)
+benchTRcvQueuesHash :: (TSessKey, H.TRcvQueues) -> IO [RcvQueue]
+benchTRcvQueuesHash (tSess, qs) = atomically $ H.getDelSessQueues tSess qs
+
+benchTRcvQueuesHashFlip :: (TSessKey, H.TRcvQueues) -> IO [RcvQueue]
+benchTRcvQueuesHashFlip (tSess, qs) = atomically $ H.getDelSessQueuesFlip tSess qs
+
+benchTRcvQueuesOrd :: (TSessKey, O.TRcvQueues) -> IO [RcvQueue]
+benchTRcvQueuesOrd (tSess, qs) = atomically $ O.getDelSessQueues tSess qs
+
+benchTRcvQueuesOrdFlip :: (TSessKey, O.TRcvQueues) -> IO [RcvQueue]
+benchTRcvQueuesOrdFlip (tSess, qs) = atomically $ O.getDelSessQueuesFlip tSess qs
+
+benchTRcvQueuesHamt :: (TSessKey, HAMT.TRcvQueues) -> IO [RcvQueue]
+benchTRcvQueuesHamt (tSess, qs) = atomically $ HAMT.getDelSessQueues tSess qs
+
+benchTRcvQueuesSet :: O.TRcvQueues -> IO (Set ConnId)
+benchTRcvQueuesSet = atomically . O.getConns
+
+benchTRcvQueuesLeftFold :: O.TRcvQueues -> IO (Set ConnId)
+benchTRcvQueuesLeftFold = atomically . O.getConnsL
+
+benchTRcvQueuesHashSet :: H.TRcvQueues -> IO (HashSet ConnId)
+benchTRcvQueuesHashSet = atomically . H.getConnsHS
+
+type TSessKey = (UserId, SMPServer, Maybe ConnId)
+
+prepareHash :: Int -> Int -> Int -> IO (TSessKey, H.TRcvQueues)
 prepareHash nUsers nServers nQueues = do
   let (servers, gen1) = genServers gen0 nServers
   let (qs, _gen2) = genQueues gen1 servers nUsers nQueues
   atomically $ do
     trqs <- H.empty
     mapM_ (`H.addQueue` trqs) qs
-    pure (servers, trqs)
+    pure (fmap (const Nothing) . H.qKey $ head qs, trqs)
 
-prepareOrd :: Int -> Int -> Int -> IO ([SMPServer], O.TRcvQueues)
+prepareOrd :: Int -> Int -> Int -> IO (TSessKey, O.TRcvQueues)
 prepareOrd nUsers nServers nQueues = do
   let (servers, gen1) = genServers gen0 nServers
   let (qs, _gen2) = genQueues gen1 servers nUsers nQueues
   atomically $ do
     trqs <- O.empty
     mapM_ (`O.addQueue` trqs) qs
-    pure (servers, trqs)
+    pure (fmap (const Nothing) . O.qKey $ head qs, trqs)
 
-prepareHamt :: Int -> Int -> Int -> IO ([SMPServer], HAMT.TRcvQueues)
+prepareHamt :: Int -> Int -> Int -> IO (TSessKey, HAMT.TRcvQueues)
 prepareHamt nUsers nServers nQueues = do
   let (servers, gen1) = genServers gen0 nServers
   let (qs, _gen2) = genQueues gen1 servers nUsers nQueues
   atomically $ do
     trqs <- HAMT.empty
     mapM_ (`HAMT.addQueue` trqs) qs
-    pure (servers, trqs)
+    pure (fmap (const Nothing) . HAMT.qKey $ head qs, trqs)
 
 genServers :: ChaChaDRG -> Int -> ([SMPServer], ChaChaDRG)
 genServers random nServers =
@@ -97,15 +139,6 @@ genQueues random servers nUsers nQueues =
         }
   where
     nServers = length servers
-
-benchTRcvQueuesHash :: ([SMPServer], H.TRcvQueues) -> IO [RcvQueue]
-benchTRcvQueuesHash (servers, qs) = atomically $ H.getDelSessQueues (1, head servers, Nothing) qs
-
-benchTRcvQueuesOrd :: ([SMPServer], O.TRcvQueues) -> IO [RcvQueue]
-benchTRcvQueuesOrd (servers, qs) = atomically $ O.getDelSessQueues (1, head servers, Nothing) qs
-
-benchTRcvQueuesHamt :: ([SMPServer], HAMT.TRcvQueues) -> IO [RcvQueue]
-benchTRcvQueuesHamt (servers, qs) = atomically $ HAMT.getDelSessQueues (1, head servers, Nothing) qs
 
 gen0 :: ChaChaDRG
 gen0 = drgNewSeed (seedFromInteger 100500)

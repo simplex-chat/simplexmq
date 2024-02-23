@@ -7,10 +7,12 @@ module Simplex.Messaging.Agent.TRcvQueues
     deleteConn,
     hasConn,
     getConns,
+    getConnsHS,
     addQueue,
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
+    getDelSessQueuesFlip,
     qKey,
   )
 where
@@ -18,6 +20,8 @@ where
 import Control.Concurrent.STM
 import Control.DeepSeq (NFData (..))
 import qualified Data.HashMap.Strict as HM
+import Data.HashSet (HashSet)
+import qualified Data.HashSet as HS
 import Data.Set (Set)
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
@@ -46,6 +50,9 @@ hasConn cId (TRcvQueues qs) = any (\rq -> cId == connId rq) <$> readTVar qs
 getConns :: TRcvQueues -> STM (Set ConnId)
 getConns (TRcvQueues qs) = HM.foldr' (S.insert . connId) S.empty <$> readTVar qs
 
+getConnsHS :: TRcvQueues -> STM (HashSet ConnId)
+getConnsHS (TRcvQueues qs) = HM.foldr' (HS.insert . connId) HS.empty <$> readTVar qs
+
 addQueue :: RcvQueue -> TRcvQueues -> STM ()
 addQueue rq (TRcvQueues qs) = modifyTVar' qs $ HM.insert (qKey rq) rq
 
@@ -63,6 +70,13 @@ getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ HM.foldl' addQ ([], HM.e
     addQ (removed, qs') rq
       | rq `isSession` tSess = (rq : removed, qs')
       | otherwise = (removed, HM.insert (qKey rq) rq qs')
+
+getDelSessQueuesFlip :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
+getDelSessQueuesFlip tSess (TRcvQueues qs) = stateTVar qs $ \now -> HM.foldl' addQ ([], now) now
+  where
+    addQ acc@(removed, qs') rq
+      | rq `isSession` tSess = (rq : removed, HM.delete (qKey rq) qs')
+      | otherwise = acc
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
