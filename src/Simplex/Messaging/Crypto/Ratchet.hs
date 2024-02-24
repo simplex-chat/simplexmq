@@ -19,6 +19,7 @@
 module Simplex.Messaging.Crypto.Ratchet where
 
 import Control.Monad.Except
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
@@ -29,6 +30,7 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString as A
 import Data.Bifunctor (bimap)
+import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -102,7 +104,7 @@ checkRatchetKEMState' x = case testEquality (sRatchetKEMState @s) (sRatchetKEMSt
 
 data RatchetKEMParams (s :: RatchetKEMState) where
   RKParamsProposed :: KEMPublicKey -> RatchetKEMParams 'RKSProposed
-  RKParamsAccepted :: KEMPublicKey -> KEMCiphertext -> RatchetKEMParams 'RKSAccepted
+  RKParamsAccepted :: KEMCiphertext -> KEMPublicKey -> RatchetKEMParams 'RKSAccepted
 
 deriving instance Eq (RatchetKEMParams s)
 
@@ -117,7 +119,7 @@ deriving instance Show ARatchetKEMParams
 instance RatchetKEMStateI s => Encoding (RatchetKEMParams s) where
   smpEncode = \case
     RKParamsProposed k -> smpEncode ('P', k)
-    RKParamsAccepted k ct -> smpEncode ('A', k, ct)
+    RKParamsAccepted ct k -> smpEncode ('A', ct, k)
   smpP = (\(ARKP _ ps) -> checkRatchetKEMState' ps) <$?> smpP
 
 instance Encoding (ARatchetKEMParams) where
@@ -128,15 +130,15 @@ instance Encoding (ARatchetKEMParams) where
       'A' -> ARKP SRKSAccepted .: RKParamsAccepted <$> smpP <*> smpP
       _ -> fail "bad ratchet KEM params"
 
--- nextRatchetKEM :: ARatchetKEM -> ARatchetKEMParams -> Maybe (ARatchetKEM, ARatchetKEMParams)
--- nextRatchetKEM (ARK s kem) (ARKP s' params) = case (s, s') of
---   (_, SRKSNone) -> Just (ARK SRKSNone RatchetKEMNone, ARKP SRKSNone RatchetKEMParamsNone)
---   (SRKSNone, SRKSProposed) -> do
---     let RatchetKEMParamsOffer key = params
+rachetKEMPublicKey :: RatchetKEMParams s -> KEMPublicKey
+rachetKEMPublicKey = \case
+  RKParamsProposed k -> k
+  RKParamsAccepted _ k -> k
 
---      in Just $ ARK SRKSProposed params
---   (SRKSProposed, SRKSAccepted) -> Just $ ARK SRKSAccepted params
---   _ -> Nothing
+ratchetKEMParams :: KEMPublicKey -> Maybe KEMCiphertext -> ARatchetKEMParams
+ratchetKEMParams k = \case
+  Nothing -> ARKP SRKSProposed $ RKParamsProposed k
+  Just ct -> ARKP SRKSAccepted $ RKParamsAccepted ct k
 
 data E2ERatchetParams (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParams Version (PublicKey a) (PublicKey a) (Maybe (RatchetKEMParams s))
@@ -227,7 +229,7 @@ instance (RatchetKEMStateI s, AlgorithmI a) => StrEncoding (E2ERatchetParamsUri 
         | maxVersion vs < pqRatchetVersion = []
         | otherwise = case kem of
             RKParamsProposed k -> [("kem_key", strEncode k)]
-            RKParamsAccepted k ct -> [("kem_key", strEncode k), ("kem_ct", strEncode ct)]
+            RKParamsAccepted ct k -> [("kem_ct", strEncode ct), ("kem_key", strEncode k)]
   strP = toParamsURI <$?> strP
     where
       toParamsURI = \case
@@ -260,7 +262,7 @@ instance StrEncoding AnyE2ERatchetParamsUri where
         | otherwise = pure Nothing
       kemParams k = \case
         Nothing -> ARKP SRKSProposed $ RKParamsProposed k
-        Just ct -> ARKP SRKSAccepted $ RKParamsAccepted k ct
+        Just ct -> ARKP SRKSAccepted $ RKParamsAccepted ct k
 
 -- data E2ERachetKEM = E2ERachetKEM KEMPublicKey (Maybe KEMCiphertext)
 --   deriving (Eq, Show)
@@ -307,17 +309,15 @@ generateSndE2EParams g v withKEM = do
     kemParams :: PublicKey a -> PublicKey a -> IO (Maybe PrivateE2ERachetKEM, SndE2ERatchetParams a)
     kemParams k1 k2 = case withKEM of
       WithKEM kem_ | v >= pqRatchetVersion -> do
-        pKem@(kem, _) <- sntrup761Keypair g
+        pKem@(k', _) <- sntrup761Keypair g
         (ct_, shared_) <- case kem_ of
           Just k -> bimap Just Just <$> sntrup761Enc g k
           Nothing -> pure (Nothing, Nothing)
-        pure (Just $ PrivateE2ERachetKEM pKem shared_, e2eRachetParams kem ct_)
+        pure (Just $ PrivateE2ERachetKEM pKem shared_, e2eRachetParams $ ratchetKEMParams k' ct_)
       _ -> pure (Nothing, AE2ERatchetParams SRKSProposed $ E2ERatchetParams v k1 k2 Nothing)
       where
-        e2eRachetParams :: KEMPublicKey -> Maybe KEMCiphertext -> AE2ERatchetParams a
-        e2eRachetParams kem = \case
-          Nothing -> AE2ERatchetParams SRKSProposed $ E2ERatchetParams v k1 k2 (Just $ RKParamsProposed kem)
-          Just ct -> AE2ERatchetParams SRKSAccepted $ E2ERatchetParams v k1 k2 (Just $ RKParamsAccepted kem ct)
+        e2eRachetParams :: ARatchetKEMParams -> AE2ERatchetParams a
+        e2eRachetParams (ARKP s kem) = AE2ERatchetParams s $ E2ERatchetParams v k1 k2 (Just kem)
 
 data RatchetInitParams = RatchetInitParams
   { assocData :: Str,
@@ -349,20 +349,13 @@ pqX3dh _v (sk1, rk1) dh1 dh2 dh3 =
 
 type RatchetX448 = Ratchet 'X448
 
-data SndRatchetKEM = SndRatchetKEM
-  { rcPQRr :: KEMPublicKey,
-    rcPQRss :: KEMSharedKey,
-    rcPQRct :: KEMCiphertext
-  }
-  deriving (Show)
-
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
     rcVersion :: VersionRange,
     -- associated data - must be the same in both parties ratchets
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
-    rcPQRs :: Maybe KEMKeyPair,
+    rcKEM :: Maybe RatchetKEM,
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
     rcRcv :: Maybe RcvRatchet,
@@ -376,7 +369,6 @@ data Ratchet a = Ratchet
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
-    rcPQR :: Maybe SndRatchetKEM,
     rcCKs :: RatchetKey,
     rcHKs :: HeaderKey
   }
@@ -385,6 +377,22 @@ data SndRatchet a = SndRatchet
 data RcvRatchet = RcvRatchet
   { rcCKr :: RatchetKey,
     rcHKr :: HeaderKey
+  }
+  deriving (Show)
+
+data RatchetKEM = RatchetKEM
+  { rcPQRs :: KEMKeyPair,
+    rcKEMs :: Maybe RatchetKEMAccepted
+  }
+  deriving (Show)
+
+ratchetKEM :: KEMKeyPair -> RatchetKEM
+ratchetKEM rcPQRs = RatchetKEM {rcPQRs, rcKEMs = Nothing}
+
+data RatchetKEMAccepted = RatchetKEMAccepted
+  { rcPQRr :: KEMPublicKey, -- received key
+    rcPQRss :: KEMSharedKey, -- computed shared secret
+    rcPQRct :: KEMCiphertext -- sent encaps(rcPQRr, rcPQRss)
   }
   deriving (Show)
 
@@ -441,18 +449,28 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 --
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
+-- @
+-- // below added for post-quantum KEM
+-- state.PQRs = GENERATE_PQKEM()
+-- state.PQRr = bob_pq_kem_encapsulation_key
+-- state.PQRss = random // shared secret for KEM
+-- state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret
+-- // above added for KEM
+-- @
 initSndRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> Maybe KEMKeyPair -> RatchetInitParams -> Ratchet a
-initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+  -- TODO PQ
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
-  let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs
+  let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs Nothing
    in Ratchet
         { rcVersion,
           rcAD = assocData,
           rcDHRs,
-          rcPQRs,
+          -- TODO here we can have accepted KEM state if encapsulation key is passed
+          rcKEM = ratchetKEM <$> rcPQRs_,
           rcRK,
-          rcSnd = Just SndRatchet {rcDHRr, rcPQR = Nothing, rcCKs, rcHKs = sndHK}, -- rcPQR should be initialized here
+          rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK}, -- rcKEMs should be initialized here
           rcRcv = Nothing,
           rcPN = 0,
           rcNs = 0,
@@ -467,12 +485,17 @@ initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs RatchetInitParams {assocData, ratc
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> Maybe KEMKeyPair -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcVersion rcDHRs rcPQRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
+initRcvRatchet rcVersion rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
   Ratchet
     { rcVersion,
       rcAD = assocData,
       rcDHRs,
-      rcPQRs,
+      -- rcKEM:
+      -- state.PQRs = bob_pq_kem_key_pair
+      -- state.PQRr = None
+      -- state.PQRss = None
+      -- state.PQRct = None
+      rcKEM = ratchetKEM <$> rcPQRs_,
       rcRK = ratchetKey,
       rcSnd = Nothing,
       rcRcv = Nothing,
@@ -483,11 +506,13 @@ initRcvRatchet rcVersion rcDHRs rcPQRs RatchetInitParams {assocData, ratchetKey,
       rcNHKr = sndHK
     }
 
+-- encaps = state.PQRs.encaps, // added for KEM #2
+-- ct = state.PQRct // added for KEM #1
 data MsgHeader a = MsgHeader
   { -- | max supported ratchet version
     msgMaxVersion :: Version,
     msgDHRs :: PublicKey a,
-    msgPQRs :: Maybe ARatchetKEMParams,
+    msgKEM :: Maybe ARatchetKEMParams,
     msgPN :: Word32,
     msgNs :: Word32
   }
@@ -509,16 +534,16 @@ fullHeaderLen :: Int
 fullHeaderLen = 2 + 1 + paddedHeaderLen + authTagSize + ivSize @AES256
 
 instance AlgorithmI a => Encoding (MsgHeader a) where
-  smpEncode MsgHeader {msgMaxVersion, msgDHRs, msgPQRs, msgPN, msgNs}
+  smpEncode MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
     | msgMaxVersion < pqRatchetVersion = smpEncode (msgMaxVersion, msgDHRs, msgPN, msgNs)
-    | otherwise = smpEncode (msgMaxVersion, msgDHRs, msgPQRs, msgPN, msgNs)
+    | otherwise = smpEncode (msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs)
   smpP = do
     msgMaxVersion <- smpP
     msgDHRs <- smpP
-    msgPQRs <- if msgMaxVersion < pqRatchetVersion then pure Nothing else smpP
+    msgKEM <- if msgMaxVersion < pqRatchetVersion then pure Nothing else smpP
     msgPN <- smpP
     msgNs <- smpP
-    pure MsgHeader {msgMaxVersion, msgDHRs, msgPQRs, msgPN, msgNs}
+    pure MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
 
 data EncMessageHeader = EncMessageHeader
   { ehVersion :: Version,
@@ -549,7 +574,7 @@ instance Encoding EncRatchetMessage where
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -562,13 +587,19 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, r
       rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
   pure (msg', rc')
   where
-    -- header = HEADER(state.DHRs, state.PN, state.Ns)
+    -- header = HEADER_PQ2(
+    --   dh = state.DHRs.public,
+    --   kem = state.PQRs.public, // added for KEM #2
+    --   ct = state.PQRct, // added for KEM #1
+    --   pn = state.PN,
+    --   n = state.Ns
+    -- )
     msgHeader =
       smpEncode
         MsgHeader
           { msgMaxVersion = maxVersion rcVersion,
             msgDHRs = publicKey rcDHRs,
-            msgPQRs = Nothing,
+            msgKEM = (\RatchetKEM {rcPQRs, rcKEMs} -> ratchetKEMParams (fst rcPQRs) (rcPQRct <$> rcKEMs)) <$> rcKEM,
             msgPN = rcPN,
             msgNs = rcNs
           }
@@ -609,7 +640,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
     SMMessage r -> pure r
   where
     decryptRcMessage :: RatchetStep -> MsgHeader a -> EncRatchetMessage -> ExceptT CryptoError IO (DecryptResult a)
-    decryptRcMessage rcStep MsgHeader {msgDHRs, msgPN, msgNs} encMsg = do
+    decryptRcMessage rcStep MsgHeader {msgDHRs, msgKEM, msgPN, msgNs} encMsg = do
       -- if dh_ratchet:
       (rc', smks1) <- ratchetStep rcStep
       case skipMessageKeys msgNs rc' of
@@ -632,19 +663,21 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
           -- SkipMessageKeysHE(state, header.pn)
           case skipMessageKeys msgPN rc of
             Left e -> throwE e
-            Right (rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
-              -- DHRatchetHE(state, header)
+            Right (rc'@Ratchet {rcDHRs, rcKEM, rcRK, rcNHKs, rcNHKr}, hmks) -> do
+              -- DHRatchetPQ2HE(state, header)
+              (kemSS, kemSS', rcKEM') <- pqRatchetStep rcKEM msgKEM
+              -- state.DHRs = GENERATE_DH()
               (_, rcDHRs') <- atomically $ generateKeyPair @a g
-              -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
-              let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs
-                  -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
-                  (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs'
+              -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || ss)
+              let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
+                  -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
+                  (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
                   rc'' =
                     rc'
                       { rcDHRs = rcDHRs',
-                        rcPQRs = Nothing, -- update
+                        rcKEM = rcKEM',
                         rcRK = rcRK'',
-                        rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcPQR = Nothing, rcCKs = rcCKs', rcHKs = rcNHKs},
+                        rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
                         rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
                         rcPN = rcNs rc,
                         rcNs = 0,
@@ -653,6 +686,23 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
                         rcNHKr = rcNHKr'
                       }
               pure (rc'', hmks)
+        pqRatchetStep :: Maybe RatchetKEM -> Maybe ARatchetKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
+        pqRatchetStep _ Nothing = pure (Nothing, Nothing, Nothing)
+        pqRatchetStep kem_ (Just (ARKP _ ps)) = do
+          -- ss = PQKEM-DEC(state.PQRs.private, header.ct)
+          ss <- case ps of
+            RKParamsProposed _ -> pure Nothing
+            RKParamsAccepted ct _ -> case kem_ of
+              Nothing -> throwE CERatchetKEMState
+              Just RatchetKEM {rcPQRs} -> liftIO $ Just <$> sntrup761Dec ct (snd rcPQRs)
+          -- state.PQRr = header.kem
+          let rcPQRr = rachetKEMPublicKey ps
+          -- state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret KEM #1
+          (rcPQRct, rcPQRss) <- liftIO $ sntrup761Enc g rcPQRr
+          -- state.PQRs = GENERATE_PQKEM()
+          rcPQRs <- liftIO $ sntrup761Keypair g
+          let kem' = RatchetKEM {rcPQRs, rcKEMs = Just RatchetKEMAccepted {rcPQRr, rcPQRss, rcPQRct}}
+          pure (ss, Just rcPQRss, Just kem')
     skipMessageKeys :: Word32 -> Ratchet a -> Either CryptoError (Ratchet a, SkippedMsgKeys)
     skipMessageKeys _ r@Ratchet {rcRcv = Nothing} = Right (r, M.empty)
     skipMessageKeys untilN r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr}, rcNr}
@@ -707,10 +757,10 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
-rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)
-rootKdf (RatchetKey rk) k pk =
-  let dhOut = dhBytes' $ dh' k pk
-      (rk', ck, nhk) = hkdf3 rk dhOut "SimpleXRootRatchet"
+rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> Maybe KEMSharedKey -> (RatchetKey, RatchetKey, Key)
+rootKdf (RatchetKey rk) k pk kemSecret_ =
+  let sharedSecret = maybe id (\(KEMSharedKey s) -> (<> BA.convert s)) kemSecret_ $ dhBytes' (dh' k pk)
+      (rk', ck, nhk) = hkdf3 rk sharedSecret "SimpleXRootRatchet"
    in (RatchetKey rk', RatchetKey ck, Key nhk)
 
 chainKdf :: RatchetKey -> (RatchetKey, Key, IV, IV)
@@ -729,7 +779,9 @@ hkdf3 salt ikm info = (s1, s2, s3)
 
 $(JQ.deriveJSON defaultJSON ''RcvRatchet)
 
-$(JQ.deriveJSON defaultJSON ''SndRatchetKEM)
+$(JQ.deriveJSON defaultJSON ''RatchetKEMAccepted)
+
+$(JQ.deriveJSON defaultJSON ''RatchetKEM)
 
 instance AlgorithmI a => ToJSON (SndRatchet a) where
   toEncoding = $(JQ.mkToEncoding defaultJSON ''SndRatchet)

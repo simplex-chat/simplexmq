@@ -886,6 +886,8 @@ data CryptoError
     CryptoHeaderError String
   | -- | no sending chain key in ratchet state
     CERatchetState
+  | -- | no decapsulation key in ratchet state
+    CERatchetKEMState
   | -- | header decryption error (could indicate that another key should be tried)
     CERatchetHeader
   | -- | too many skipped messages
