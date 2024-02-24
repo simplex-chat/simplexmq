@@ -532,10 +532,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           where
             currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
-              qs <- RQ.getDelSessQueues tSess $ activeSubs c
+              (qs, cs) <- RQ.getDelSessQueues tSess $ activeSubs c
               mapM_ (`RQ.addQueue` pendingSubs c) qs
-              cs' <- RQ.getConns $ activeSubs c
-              pure (qs, filter (`S.notMember` cs') $ map qConnId qs)
+              pure (qs, cs)
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
@@ -593,16 +592,16 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   where
     resubscribe :: m ()
     resubscribe = do
-      cs <- atomically . RQ.getConns $ activeSubs c
+      cs <- readTVarIO $ RQ.getConnections $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
       liftIO $ do
-        let conns = filter (`S.notMember` cs) okConns
+        let conns = filter (`M.notMember` cs) okConns
         unless (null conns) $ notifySub "" $ UP srv conns
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
-        when (null okConns && S.null cs && null finalErrs) . liftIO $
+        when (null okConns && M.null cs && null finalErrs) . liftIO $
           closeClient c smpClients tSess
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
