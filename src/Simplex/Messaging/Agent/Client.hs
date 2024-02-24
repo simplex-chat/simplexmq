@@ -13,6 +13,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
@@ -1648,7 +1649,7 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
     textKey = decodeASCII . strEncode
     workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text WorkersDetails)
     workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts, doWork, action}) -> do
-      RestartCount {restartCount} <- readTVarIO restarts -- XXX: restartMinute should be checked to prevent counting stale restarts
+      RestartCount {restartCount} <- readTVarIO restarts
       hasWork <- atomically $ not <$> isEmptyTMVar doWork
       hasAction <- atomically $ not <$> isEmptyTMVar action
       pure (textKey qa, WorkersDetails {restarts = restartCount, hasWork, hasAction})
@@ -1672,17 +1673,11 @@ data AgentWorkersSummary = AgentWorkersSummary
   deriving (Show)
 
 data WorkersSummary = WorkersSummary
-  { numActive :: !Int,
-    numIdle :: !Int,
-    totalRestarts :: !Int
+  { numActive :: Int,
+    numIdle :: Int,
+    totalRestarts :: Int
   }
   deriving (Show)
-
-instance J.ToJSON WorkersSummary where
-  toJSON WorkersSummary {numActive, numIdle, totalRestarts} = J.object [ "active" .= numActive, "idle" .= numIdle, "restarts" .= totalRestarts]
-
-instance J.FromJSON WorkersSummary where
-  parseJSON = J.withObject "WorkersSummary" $ \o -> WorkersSummary <$> o .: "active" <*> o .: "idle" <*> o .: "restarts"
 
 getAgentWorkersSummary :: MonadIO m => AgentClient -> m AgentWorkersSummary
 getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, agentEnv} = do
@@ -1736,6 +1731,9 @@ $(J.deriveJSON defaultJSON ''SubInfo)
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
 
 $(J.deriveJSON defaultJSON ''WorkersDetails)
+
+$(J.deriveJSON defaultJSON ''WorkersSummary)
+
 $(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
 
 $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
