@@ -13,6 +13,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
@@ -137,6 +138,8 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson ((.:), (.=))
+import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
@@ -150,7 +153,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing, listToMaybe)
+import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -1658,14 +1661,21 @@ data AgentWorkersSummary = AgentWorkersSummary
   { smpClientsCount :: Int,
     ntfClientsCount :: Int,
     xftpClientsCount :: Int,
-    smpDeliveryWorkersCount :: Int,
-    asyncCmdWorkersCount :: Int,
+    smpDeliveryWorkersCount :: WorkersSummary,
+    asyncCmdWorkersCount :: WorkersSummary,
     smpSubWorkersCount :: Int,
-    ntfWorkersCount :: Int,
-    ntfSMPWorkersCount :: Int,
-    xftpRcvWorkersCount :: Int,
-    xftpSndWorkersCount :: Int,
-    xftpDelWorkersCount :: Int
+    ntfWorkersCount :: WorkersSummary,
+    ntfSMPWorkersCount :: WorkersSummary,
+    xftpRcvWorkersCount :: WorkersSummary,
+    xftpSndWorkersCount :: WorkersSummary,
+    xftpDelWorkersCount :: WorkersSummary
+  }
+  deriving (Show)
+
+data WorkersSummary = WorkersSummary
+  { numActive :: Int,
+    numIdle :: Int,
+    totalRestarts :: Int
   }
   deriving (Show)
 
@@ -1674,14 +1684,14 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
   smpClientsCount <- M.size <$> readTVarIO smpClients
   ntfClientsCount <- M.size <$> readTVarIO ntfClients
   xftpClientsCount <- M.size <$> readTVarIO xftpClients
-  smpDeliveryWorkersCount <- M.size <$> readTVarIO smpDeliveryWorkers
-  asyncCmdWorkersCount <- M.size <$> readTVarIO asyncCmdWorkers
+  smpDeliveryWorkersCount <- readTVarIO smpDeliveryWorkers >>= workerSummary . fmap fst
+  asyncCmdWorkersCount <- readTVarIO asyncCmdWorkers >>= workerSummary
   smpSubWorkersCount <- M.size <$> readTVarIO smpSubWorkers
-  ntfWorkersCount <- M.size <$> readTVarIO ntfWorkers
-  ntfSMPWorkersCount <- M.size <$> readTVarIO ntfSMPWorkers
-  xftpRcvWorkersCount <- M.size <$> readTVarIO xftpRcvWorkers
-  xftpSndWorkersCount <- M.size <$> readTVarIO xftpSndWorkers
-  xftpDelWorkersCount <- M.size <$> readTVarIO xftpDelWorkers
+  ntfWorkersCount <- readTVarIO ntfWorkers >>= workerSummary
+  ntfSMPWorkersCount <- readTVarIO ntfSMPWorkers >>= workerSummary
+  xftpRcvWorkersCount <- readTVarIO xftpRcvWorkers >>= workerSummary
+  xftpSndWorkersCount <- readTVarIO xftpSndWorkers >>= workerSummary
+  xftpDelWorkersCount <- readTVarIO xftpDelWorkers >>= workerSummary
   pure
     AgentWorkersSummary
       { smpClientsCount,
@@ -1700,6 +1710,15 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
     Env {ntfSupervisor, xftpAgent} = agentEnv
     NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
     XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
+    workerSummary :: MonadIO m => M.Map k Worker -> m WorkersSummary
+    workerSummary = liftIO . foldM byWork WorkersSummary {numActive = 0, numIdle = 0, totalRestarts = 0}
+      where
+        byWork WorkersSummary {numActive, numIdle, totalRestarts} Worker {action, restarts} = do
+          RestartCount {restartCount} <- readTVarIO restarts
+          ifM
+            (atomically $ isJust <$> tryReadTMVar action)
+            (pure WorkersSummary {numActive, numIdle = numIdle + 1, totalRestarts = totalRestarts + restartCount})
+            (pure WorkersSummary {numActive = numActive + 1, numIdle, totalRestarts = totalRestarts + restartCount})
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
@@ -1712,6 +1731,9 @@ $(J.deriveJSON defaultJSON ''SubInfo)
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
 
 $(J.deriveJSON defaultJSON ''WorkersDetails)
+
+$(J.deriveJSON defaultJSON ''WorkersSummary)
+
 $(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
 
 $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
