@@ -159,7 +159,8 @@ CREATE TABLE ratchets(
   e2e_version INTEGER NOT NULL DEFAULT 1
   ,
   x3dh_pub_key_1 BLOB,
-  x3dh_pub_key_2 BLOB
+  x3dh_pub_key_2 BLOB,
+  pq_priv_kem BLOB
 ) WITHOUT ROWID;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,

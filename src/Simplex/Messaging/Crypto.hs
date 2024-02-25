@@ -244,8 +244,6 @@ data SAlgorithm :: Algorithm -> Type where
   SX25519 :: SAlgorithm X25519
   SX448 :: SAlgorithm X448
 
-deriving instance Eq (SAlgorithm a)
-
 deriving instance Show (SAlgorithm a)
 
 data Alg = forall a. AlgorithmI a => Alg (SAlgorithm a)
@@ -298,11 +296,6 @@ data APublicKey
     AlgorithmI a =>
     APublicKey (SAlgorithm a) (PublicKey a)
 
-instance Eq APublicKey where
-  APublicKey a k == APublicKey a' k' = case testEquality a a' of
-    Just Refl -> k == k'
-    Nothing -> False
-
 instance Encoding APublicKey where
   smpEncode = smpEncode . encodePubKey
   {-# INLINE smpEncode #-}
@@ -343,11 +336,6 @@ data APrivateKey
     AlgorithmI a =>
     APrivateKey (SAlgorithm a) (PrivateKey a)
 
-instance Eq APrivateKey where
-  APrivateKey a k == APrivateKey a' k' = case testEquality a a' of
-    Just Refl -> k == k'
-    Nothing -> False
-
 deriving instance Show APrivateKey
 
 type PrivateKeyEd25519 = PrivateKey Ed25519
@@ -373,11 +361,6 @@ data APrivateSignKey
     (AlgorithmI a, SignatureAlgorithm a) =>
     APrivateSignKey (SAlgorithm a) (PrivateKey a)
 
-instance Eq APrivateSignKey where
-  APrivateSignKey a k == APrivateSignKey a' k' = case testEquality a a' of
-    Just Refl -> k == k'
-    Nothing -> False
-
 deriving instance Show APrivateSignKey
 
 instance Encoding APrivateSignKey where
@@ -397,11 +380,6 @@ data APublicVerifyKey
     (AlgorithmI a, SignatureAlgorithm a) =>
     APublicVerifyKey (SAlgorithm a) (PublicKey a)
 
-instance Eq APublicVerifyKey where
-  APublicVerifyKey a k == APublicVerifyKey a' k' = case testEquality a a' of
-    Just Refl -> k == k'
-    Nothing -> False
-
 deriving instance Show APublicVerifyKey
 
 data APrivateDhKey
@@ -409,22 +387,12 @@ data APrivateDhKey
     (AlgorithmI a, DhAlgorithm a) =>
     APrivateDhKey (SAlgorithm a) (PrivateKey a)
 
-instance Eq APrivateDhKey where
-  APrivateDhKey a k == APrivateDhKey a' k' = case testEquality a a' of
-    Just Refl -> k == k'
-    Nothing -> False
-
 deriving instance Show APrivateDhKey
 
 data APublicDhKey
   = forall a.
     (AlgorithmI a, DhAlgorithm a) =>
     APublicDhKey (SAlgorithm a) (PublicKey a)
-
-instance Eq APublicDhKey where
-  APublicDhKey a k == APublicDhKey a' k' = case testEquality a a' of
-    Just Refl -> k == k'
-    Nothing -> False
 
 deriving instance Show APublicDhKey
 
@@ -788,19 +756,12 @@ data Signature (a :: Algorithm) where
   SignatureEd25519 :: Ed25519.Signature -> Signature Ed25519
   SignatureEd448 :: Ed448.Signature -> Signature Ed448
 
-deriving instance Eq (Signature a)
-
 deriving instance Show (Signature a)
 
 data ASignature
   = forall a.
     (AlgorithmI a, SignatureAlgorithm a) =>
     ASignature (SAlgorithm a) (Signature a)
-
-instance Eq ASignature where
-  ASignature a s == ASignature a' s' = case testEquality a a' of
-    Just Refl -> s == s'
-    _ -> False
 
 deriving instance Show ASignature
 

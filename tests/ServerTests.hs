@@ -8,7 +8,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module ServerTests where
 
@@ -23,6 +25,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Set as S
+import Data.Type.Equality
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
@@ -918,6 +921,15 @@ sampleSig = Just $ TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8B
 
 noAuth :: (Char, Maybe BasicAuth)
 noAuth = ('A', Nothing)
+
+deriving instance Eq TransmissionAuth
+
+instance Eq C.ASignature where
+  C.ASignature a s == C.ASignature a' s' = case testEquality a a' of
+    Just Refl -> s == s'
+    _ -> False
+
+deriving instance Eq (C.Signature a)
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do

@@ -7,8 +7,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module AgentTests.DoubleRatchetTests where
 
@@ -87,7 +87,9 @@ deriving instance Eq RatchetInitParams
 
 deriving instance Eq RatchetKey
 
-instance Eq ARatchetKEMParams where
+deriving instance Eq (RKEMParams s)
+
+instance Eq ARKEMParams where
   (ARKP s ps) == (ARKP s' ps') = case testEquality s s' of
     Just Refl -> ps == ps'
     Nothing -> False
@@ -199,8 +201,8 @@ testEncodeDecode x = do
 testX3dh :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dh _ = do
   g <- C.newRandom
-  (pkBob1, pkBob2, Nothing, e2eBob) <- liftIO $ generateSndE2EParams @a g currentE2EEncryptVersion NoKEM
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g currentE2EEncryptVersion False
+  (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g currentE2EEncryptVersion Nothing
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g currentE2EEncryptVersion Nothing
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
       paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
@@ -208,8 +210,8 @@ testX3dh _ = do
 testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dhV1 _ = do
   g <- C.newRandom
-  (pkBob1, pkBob2, Nothing, e2eBob) <- liftIO $ generateSndE2EParams @a g 1 NoKEM
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g 1 False
+  (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g 1 Nothing
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g 1 Nothing
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
       paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
@@ -232,8 +234,8 @@ withRatchets test = do
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
 initRatchets = do
   g <- C.newRandom
-  (pkBob1, pkBob2, _pKemParams, e2eBob) <- liftIO $ generateSndE2EParams g currentE2EEncryptVersion NoKEM
-  (pkAlice1, pkAlice2, _pKem, e2eAlice) <- liftIO $ generateRcvE2EParams g currentE2EEncryptVersion False
+  (pkBob1, pkBob2, _pKemParams, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g currentE2EEncryptVersion Nothing
+  (pkAlice1, pkAlice2, _pKem, e2eAlice) <- liftIO $ generateRcvE2EParams g currentE2EEncryptVersion Nothing
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
       paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g

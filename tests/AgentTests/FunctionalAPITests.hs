@@ -9,7 +9,9 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
@@ -45,7 +47,7 @@ import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (nub)
 import qualified Data.Map as M
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -63,7 +65,7 @@ import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), 
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (authBatchCmdsNTFVersion)
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (AProtocolType (..), BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -75,6 +77,16 @@ import UnliftIO
 import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
+
+deriving instance Eq (ACommand p e)
+
+instance Eq AConnectionMode where
+  ACM m == ACM m' = isJust $ testEquality m m'
+
+instance Eq AProtocolType where
+  AProtocolType p == AProtocolType p' = isJust $ testEquality p p'
+
+-- deriving instance Eq (ValidFileDescription p)
 
 (##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
 a ##> t = withTimeout a (`shouldBe` t)

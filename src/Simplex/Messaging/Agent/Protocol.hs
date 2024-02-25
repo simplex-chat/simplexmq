@@ -166,7 +166,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -273,8 +273,6 @@ data SAParty :: AParty -> Type where
 
 deriving instance Show (SAParty p)
 
-deriving instance Eq (SAParty p)
-
 instance TestEquality SAParty where
   testEquality SAgent SAgent = Just Refl
   testEquality SClient SClient = Just Refl
@@ -296,8 +294,6 @@ data SAEntity :: AEntity -> Type where
   SAENone :: SAEntity AENone
 
 deriving instance Show (SAEntity e)
-
-deriving instance Eq (SAEntity e)
 
 instance TestEquality SAEntity where
   testEquality SAEConn SAEConn = Just Refl
@@ -321,11 +317,6 @@ data ACmd = forall p e. (APartyI p, AEntityI e) => ACmd (SAParty p) (SAEntity e)
 deriving instance Show ACmd
 
 data APartyCmd p = forall e. AEntityI e => APC (SAEntity e) (ACommand p e)
-
-instance Eq (APartyCmd p) where
-  APC e cmd == APC e' cmd' = case testEquality e e' of
-    Just Refl -> cmd == cmd'
-    Nothing -> False
 
 deriving instance Show (APartyCmd p)
 
@@ -379,18 +370,11 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
   SFERR :: AgentErrorType -> ACommand Agent AESndFile
 
-deriving instance Eq (ACommand p e)
-
 deriving instance Show (ACommand p e)
 
 data ACmdTag = forall p e. (APartyI p, AEntityI e) => ACmdTag (SAParty p) (SAEntity e) (ACommandTag p e)
 
 data APartyCmdTag p = forall e. AEntityI e => APCT (SAEntity e) (ACommandTag p e)
-
-instance Eq (APartyCmdTag p) where
-  APCT e cmd == APCT e' cmd' = case testEquality e e' of
-    Just Refl -> cmd == cmd'
-    Nothing -> False
 
 deriving instance Show (APartyCmdTag p)
 
@@ -440,8 +424,6 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   SFPROG_ :: ACommandTag Agent AESndFile
   SFDONE_ :: ACommandTag Agent AESndFile
   SFERR_ :: ACommandTag Agent AESndFile
-
-deriving instance Eq (ACommandTag p e)
 
 deriving instance Show (ACommandTag p e)
 
@@ -726,8 +708,6 @@ data SConnectionMode (m :: ConnectionMode) where
   SCMInvitation :: SConnectionMode CMInvitation
   SCMContact :: SConnectionMode CMContact
 
-deriving instance Eq (SConnectionMode m)
-
 deriving instance Show (SConnectionMode m)
 
 instance TestEquality SConnectionMode where
@@ -736,9 +716,6 @@ instance TestEquality SConnectionMode where
   testEquality _ _ = Nothing
 
 data AConnectionMode = forall m. ConnectionModeI m => ACM (SConnectionMode m)
-
-instance Eq AConnectionMode where
-  ACM m == ACM m' = isJust $ testEquality m m'
 
 cmInvitation :: AConnectionMode
 cmInvitation = ACM SCMInvitation
@@ -1329,16 +1306,9 @@ data ConnectionRequestUri (m :: ConnectionMode) where
   -- they are passed in AgentInvitation message
   CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
 
-deriving instance Eq (ConnectionRequestUri m)
-
 deriving instance Show (ConnectionRequestUri m)
 
 data AConnectionRequestUri = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequestUri m)
-
-instance Eq AConnectionRequestUri where
-  ACR m cr == ACR m' cr' = case testEquality m m' of
-    Just Refl -> cr == cr'
-    _ -> False
 
 deriving instance Show AConnectionRequestUri
 

@@ -61,8 +61,6 @@ data DBQueueId (q :: QueueStored) where
   DBQueueId :: Int64 -> DBQueueId 'QSStored
   DBNewQueue :: DBQueueId 'QSNew
 
-deriving instance Eq (DBQueueId q)
-
 deriving instance Show (DBQueueId q)
 
 type RcvQueue = StoredRcvQueue 'QSStored
@@ -101,7 +99,7 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     clientNtfCreds :: Maybe ClientNtfCreds,
     deleteErrors :: Int
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
 rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
@@ -128,7 +126,7 @@ data ClientNtfCreds = ClientNtfCreds
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
     rcvNtfDhSecret :: RcvNtfDhSecret
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 type SndQueue = StoredSndQueue 'QSStored
 
@@ -161,7 +159,7 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     -- | SMP client version
     smpClientVersion :: Version
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 sndQueueInfo :: SndQueue -> SndQueueInfo
 sndQueueInfo SndQueue {server, sndSwchStatus} =
@@ -256,8 +254,6 @@ data Connection (d :: ConnType) where
   DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
   ContactConnection :: ConnData -> RcvQueue -> Connection CContact
 
-deriving instance Eq (Connection d)
-
 deriving instance Show (Connection d)
 
 toConnData :: Connection d -> ConnData
@@ -290,8 +286,6 @@ connType SCSnd = CSnd
 connType SCDuplex = CDuplex
 connType SCContact = CContact
 
-deriving instance Eq (SConnType d)
-
 deriving instance Show (SConnType d)
 
 instance TestEquality SConnType where
@@ -304,11 +298,6 @@ instance TestEquality SConnType where
 -- | Connection of an unknown type.
 -- Used to refer to an arbitrary connection when retrieving from store.
 data SomeConn = forall d. SomeConn (SConnType d) (Connection d)
-
-instance Eq SomeConn where
-  SomeConn d c == SomeConn d' c' = case testEquality d d' of
-    Just Refl -> c == c'
-    _ -> False
 
 deriving instance Show SomeConn
 

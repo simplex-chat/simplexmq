@@ -214,13 +214,13 @@ data SentFileChunk = SentFileChunk
     digest :: FileDigest,
     replicas :: [SentFileChunkReplica]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentFileChunkReplica = SentFileChunkReplica
   { server :: XFTPServer,
     recipients :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentRecipientReplica = SentRecipientReplica
   { chunkNo :: Int,

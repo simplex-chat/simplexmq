@@ -269,6 +269,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
@@ -1175,34 +1176,34 @@ deleteSndMsgsExpired db ttl = do
     "DELETE FROM messages WHERE internal_ts < ? AND internal_snd_id IS NOT NULL"
     (Only cutoffTs)
 
-createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
-createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
-  DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2) VALUES (?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2)
+createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
+createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
+  DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem) VALUES (?, ?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)
 
-getRatchetX3dhKeys :: DB.Connection -> ConnId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448))
+getRatchetX3dhKeys :: DB.Connection -> ConnId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
 getRatchetX3dhKeys db connId =
-  fmap hasKeys $
-    firstRow id SEX3dhKeysNotFound $
-      DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
+  firstRow' keys SEX3dhKeysNotFound $
+    DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem FROM ratchets WHERE conn_id = ?" (Only connId)
   where
-    hasKeys = \case
-      Right (Just k1, Just k2) -> Right (k1, k2)
+    keys = \case
+      (Just k1, Just k2, pKem) -> Right (k1, k2, pKem)
       _ -> Left SEX3dhKeysNotFound
 
 -- used to remember new keys when starting ratchet re-synchronization
 -- TODO remove the columns for public keys in v5.7.
 -- Currently, the keys are not used but still stored to support app downgrade to the previous version.
-setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
-setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
+setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
+setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
   DB.execute
     db
     [sql|
       UPDATE ratchets
-      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?
+      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?, pq_priv_kem = ? 
       WHERE conn_id = ?
     |]
-    (x3dhPrivKey1, x3dhPrivKey2, C.publicKey x3dhPrivKey1, C.publicKey x3dhPrivKey2, connId)
+    (x3dhPrivKey1, x3dhPrivKey2, C.publicKey x3dhPrivKey1, C.publicKey x3dhPrivKey2, pqPrivKem, connId)
 
+-- TODO remove the columns for public keys in v5.7.
 createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
 createRatchet db connId rc =
   DB.executeNamed
@@ -1213,7 +1214,10 @@ createRatchet db connId rc =
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = :ratchet_state,
         x3dh_priv_key_1 = NULL,
-        x3dh_priv_key_2 = NULL
+        x3dh_priv_key_2 = NULL,
+        x3dh_pub_key_1 = NULL,
+        x3dh_pub_key_2 = NULL,
+        pq_priv_kem = NULL
     |]
     [":conn_id" := connId, ":ratchet_state" := rc]
 

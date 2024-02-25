@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -7,6 +8,8 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module AgentTests.SQLiteTests (storeTests) where
@@ -21,6 +24,7 @@ import Data.List (isInfixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
+import Data.Type.Equality
 import Data.Word (Word32)
 import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQL
@@ -45,6 +49,23 @@ import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
 import UnliftIO.Directory (removeFile)
+
+instance Eq SomeConn where
+  SomeConn d c == SomeConn d' c' = case testEquality d d' of
+    Just Refl -> c == c'
+    _ -> False
+
+deriving instance Eq (Connection d)
+
+deriving instance Eq (SConnType d)
+
+deriving instance Eq (StoredRcvQueue q)
+
+deriving instance Eq (StoredSndQueue q)
+
+deriving instance Eq (DBQueueId q)
+
+deriving instance Eq ClientNtfCreds
 
 testDB :: String
 testDB = "tests/tmp/smp-agent.test.db"

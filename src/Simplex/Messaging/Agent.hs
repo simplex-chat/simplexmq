@@ -654,8 +654,8 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData subMode srv = do
     SCMContact -> pure (connId, CRContactUri crData)
     SCMInvitation -> do
       g <- asks random
-      (pk1, pk2, _kem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) False
-      withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2
+      (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) Nothing
+      withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
       pure (connId, CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange)
 
 joinConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
@@ -675,10 +675,10 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
        ) of
     (Just qInfo, Just (Compatible e2eRcvParams@(CR.E2ERatchetParams _ _ rcDHRr _kem)), Just aVersion@(Compatible connAgentVersion)) -> do
       g <- asks random
-      (pk1, pk2, _pKemParams, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g (version e2eRcvParams) CR.NoKEM
+      (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g (version e2eRcvParams) Nothing
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       -- generate KEM keypair if needed
-      let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs Nothing $ CR.pqX3dhSnd pk1 pk2 _pKemParams e2eRcvParams
+      let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs Nothing $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
       q <- newSndQueue userId "" qInfo
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
       pure (aVersion, cData, q, rc, e2eSndParams)
@@ -1388,11 +1388,11 @@ synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" 
           -- check queues are not switching?
           AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
-          (pk1, pk2, _pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) False
+          (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) Nothing
           enqueueRatchetKeyMsgs c cData sqs e2eParams
           withStore' c $ \db -> do
             setConnRatchetSync db connId RSStarted
-            setRatchetX3dhKeys db connId pk1 pk2
+            setRatchetX3dhKeys db connId pk1 pk2 pKem
           let cData' = cData {ratchetSyncState = RSStarted} :: ConnData
               conn' = DuplexConnection cData' rqs sqs
           pure $ connectionStats conn'
@@ -2096,11 +2096,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             case status of
               New -> case (conn', e2eEncryption) of
                 -- party initiating connection
-                (RcvConnection {}, Just e2eSndParams@(CR.AE2ERatchetParams _ (CR.E2ERatchetParams e2eVersion _ _ _))) -> do
+                (RcvConnection {}, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _))) -> do
                   unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
                   -- TODO this should also return previously generated KEM keypair rcPQRs
-                  (pk1, rcDHRs) <- withStore c (`getRatchetX3dhKeys` connId)
-                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs Nothing $ CR.pqX3dhRcv pk1 rcDHRs Nothing e2eSndParams
+                  (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
+                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs Nothing $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
                   g <- asks random
                   (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
                   case (agentMsgBody_, skipped) of
@@ -2302,7 +2302,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 exists <- checkRatchetKeyHashExists db connId rkHashRcv
                 unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
-              getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448)
+              getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams)
               getSendRatchetKeys = case rss of
                 RSOk -> sendReplyKey -- receiving client
                 RSAllowed -> sendReplyKey
@@ -2318,9 +2318,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 where
                   sendReplyKey = do
                     g <- asks random
-                    (pk1, pk2, _pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (version e2eOtherPartyParams) False
+                    (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (version e2eOtherPartyParams) Nothing
                     enqueueRatchetKeyMsgs c cData' sqs e2eParams
-                    pure (pk1, pk2)
+                    pure (pk1, pk2, pKem)
                   notifyRatchetSyncError = do
                     let cData'' = cData' {ratchetSyncState = RSRequired} :: ConnData
                         conn'' = updateConnection cData'' conn'
@@ -2337,11 +2337,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 createRatchet db connId rc
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448) -> m ()
-              initRatchet e2eEncryptVRange (pk1, pk2)
+              initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> m ()
+              initRatchet e2eEncryptVRange (pk1, pk2, pKem)
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
                     -- TODO if KEM was sent in the invitation it should be passed here
-                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 Nothing $ CR.pqX3dhRcv pk1 pk2 Nothing $ CR.toSndE2EParams e2eOtherPartyParams
+                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 Nothing $ CR.pqX3dhRcv pk1 pk2 pKem e2eOtherPartyParams
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
                     -- TODO it should check if KEM is already used in ratchet, and if yes generate and pass a new key pair
