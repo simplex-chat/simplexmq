@@ -1190,7 +1190,8 @@ getRatchetX3dhKeys db connId =
       _ -> Left SEX3dhKeysNotFound
 
 -- used to remember new keys when starting ratchet re-synchronization
--- TODO remove the columns for public keys in v5.7
+-- TODO remove the columns for public keys in v5.7.
+-- Currently, the keys are not used but still stored to support app downgrade to the previous version.
 setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
 setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
   DB.execute
