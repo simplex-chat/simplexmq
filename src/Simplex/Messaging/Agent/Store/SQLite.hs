@@ -123,8 +123,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Double ratchet persistence
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
-    createRatchetX3dhKeys',
-    getRatchetX3dhKeys',
     setRatchetX3dhKeys,
     createRatchet,
     deleteRatchet,
@@ -1191,26 +1189,10 @@ getRatchetX3dhKeys db connId =
       Right (Just k1, Just k2) -> Right (k1, k2)
       _ -> Left SEX3dhKeysNotFound
 
-createRatchetX3dhKeys' :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> C.PublicKeyX448 -> C.PublicKeyX448 -> IO ()
-createRatchetX3dhKeys' db connId x3dhPrivKey1 x3dhPrivKey2 x3dhPubKey1 x3dhPubKey2 =
-  DB.execute
-    db
-    "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2, x3dh_pub_key_1, x3dh_pub_key_2) VALUES (?,?,?,?,?)"
-    (connId, x3dhPrivKey1, x3dhPrivKey2, x3dhPubKey1, x3dhPubKey2)
-
-getRatchetX3dhKeys' :: DB.Connection -> ConnId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448))
-getRatchetX3dhKeys' db connId =
-  fmap hasKeys $
-    firstRow id SEX3dhKeysNotFound $
-      DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2, x3dh_pub_key_1, x3dh_pub_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
-  where
-    hasKeys = \case
-      Right (Just pk1, Just pk2, Just k1, Just k2) -> Right (pk1, pk2, k1, k2)
-      _ -> Left SEX3dhKeysNotFound
-
 -- used to remember new keys when starting ratchet re-synchronization
-setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> C.PublicKeyX448 -> C.PublicKeyX448 -> IO ()
-setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 x3dhPubKey1 x3dhPubKey2 =
+-- TODO remove the columns for public keys in v5.7
+setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
+setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
   DB.execute
     db
     [sql|
@@ -1218,7 +1200,7 @@ setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 x3dhPubKey1 x3dhPubKey2 =
       SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?
       WHERE conn_id = ?
     |]
-    (x3dhPrivKey1, x3dhPrivKey2, x3dhPubKey1, x3dhPubKey2, connId)
+    (x3dhPrivKey1, x3dhPrivKey2, C.publicKey x3dhPrivKey1, C.publicKey x3dhPrivKey2, connId)
 
 createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
 createRatchet db connId rc =
@@ -1230,9 +1212,7 @@ createRatchet db connId rc =
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = :ratchet_state,
         x3dh_priv_key_1 = NULL,
-        x3dh_priv_key_2 = NULL,
-        x3dh_pub_key_1 = NULL,
-        x3dh_pub_key_2 = NULL
+        x3dh_priv_key_2 = NULL
     |]
     [":conn_id" := connId, ":ratchet_state" := rc]
 
