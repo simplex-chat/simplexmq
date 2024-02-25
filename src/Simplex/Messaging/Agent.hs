@@ -1388,11 +1388,11 @@ synchronizeRatchet' c connId force = withConnLock c connId "synchronizeRatchet" 
           -- check queues are not switching?
           AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
-          (pk1, pk2, _pKem, e2eParams@(CR.E2ERatchetParams _ k1 k2 _kem)) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) False
+          (pk1, pk2, _pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) False
           enqueueRatchetKeyMsgs c cData sqs e2eParams
           withStore' c $ \db -> do
             setConnRatchetSync db connId RSStarted
-            setRatchetX3dhKeys db connId pk1 pk2 k1 k2
+            setRatchetX3dhKeys db connId pk1 pk2
           let cData' = cData {ratchetSyncState = RSStarted} :: ConnData
               conn' = DuplexConnection cData' rqs sqs
           pure $ connectionStats conn'
@@ -2302,12 +2302,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 exists <- checkRatchetKeyHashExists db connId rkHashRcv
                 unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
-              getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448)
+              getSendRatchetKeys :: m (C.PrivateKeyX448, C.PrivateKeyX448)
               getSendRatchetKeys = case rss of
                 RSOk -> sendReplyKey -- receiving client
                 RSAllowed -> sendReplyKey
                 RSRequired -> sendReplyKey
-                RSStarted -> withStore c (`getRatchetX3dhKeys'` connId) -- initiating client
+                RSStarted -> withStore c (`getRatchetX3dhKeys` connId) -- initiating client
                 RSAgreed -> do
                   withStore' c $ \db -> setConnRatchetSync db connId RSRequired
                   notifyRatchetSyncError
@@ -2318,9 +2318,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 where
                   sendReplyKey = do
                     g <- asks random
-                    (pk1, pk2, _pKem, e2eParams@(CR.E2ERatchetParams _ k1 k2 _kem)) <- liftIO $ CR.generateRcvE2EParams g (version e2eOtherPartyParams) False
+                    (pk1, pk2, _pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (version e2eOtherPartyParams) False
                     enqueueRatchetKeyMsgs c cData' sqs e2eParams
-                    pure (pk1, pk2, k1, k2)
+                    pure (pk1, pk2)
                   notifyRatchetSyncError = do
                     let cData'' = cData' {ratchetSyncState = RSRequired} :: ConnData
                         conn'' = updateConnection cData'' conn'
@@ -2337,9 +2337,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 createRatchet db connId rc
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448, C.PublicKeyX448, C.PublicKeyX448) -> m ()
-              initRatchet e2eEncryptVRange (pk1, pk2, k1, k2)
-                | rkHash k1 k2 <= rkHashRcv = do
+              initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448) -> m ()
+              initRatchet e2eEncryptVRange (pk1, pk2)
+                | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
                     -- TODO if KEM was sent in the invitation it should be passed here
                     recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 Nothing $ CR.pqX3dhRcv pk1 pk2 Nothing $ CR.toSndE2EParams e2eOtherPartyParams
                 | otherwise = do
