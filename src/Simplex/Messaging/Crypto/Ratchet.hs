@@ -445,11 +445,12 @@ instance ToField MessageKey where toField = toField . smpEncode
 
 instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
--- | Sending ratchet initialization, equivalent to RatchetInitAliceHE in double ratchet spec
+-- | Sending ratchet initialization
 --
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 -- @
+-- RatchetInitAlicePQ2HE(state, SK, bob_dh_public_key, shared_hka, shared_nhkb, bob_pq_kem_encapsulation_key)
 -- // below added for post-quantum KEM
 -- state.PQRs = GENERATE_PQKEM()
 -- state.PQRr = bob_pq_kem_encapsulation_key
@@ -479,7 +480,9 @@ initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs_ RatchetInitParams {assocData, rat
           rcNHKr = rcvNextHK
         }
 
--- | Receiving ratchet initialization, equivalent to RatchetInitBobHE in double ratchet spec
+-- | Receiving ratchet initialization, equivalent to RatchetInitBobPQ2HE in double ratchet spec
+--
+-- def RatchetInitBobPQ2HE(state, SK, bob_dh_key_pair, shared_hka, shared_nhkb, bob_pq_kem_key_pair)
 --
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
