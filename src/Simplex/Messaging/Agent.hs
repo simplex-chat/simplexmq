@@ -126,7 +126,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
-import Data.Either (isRight, partitionEithers, rights)
+import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
@@ -1483,31 +1483,28 @@ prepareDeleteConnections_ getConnections c connIds = do
 deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> [RcvQueue] -> m (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
-  let connIds = map fst $ filter (\(_, r) -> isRight r) $ M.assocs rs
-  (_errs, rs') <- partitionEithers <$> withStoreBatch' c (\db -> map (\cId -> deleteConn db cId >> pure cId) connIds)
+  let connIds = M.keys $ M.filter isRight rs
+  rs' <- rights <$> withStoreBatch' c (\db -> map (\cId -> deleteConn db cId $> cId) connIds)
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure rs
   where
     deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> m [(RcvQueue, Either AgentErrorType ())]
     deleteQueueRecs rs = do
       maxErrs <- asks $ deleteErrorCount . config
-      (_errs, rs') <- partitionEithers <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
-      let rs'' = map fst rs'
-          notifyActions = map snd rs'
-      forM_ notifyActions $ \a_ -> forM_ a_ id
-      pure rs''
+      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+      mapM_ sequence_ notifyActions
+      pure rs'
       where
         deleteQueueRec ::
           DB.Connection ->
           Int ->
           (RcvQueue, Either AgentErrorType ()) ->
           IO ((RcvQueue, Either AgentErrorType ()), Maybe (m ()))
-        deleteQueueRec db maxErrs (rq, r) =
-          case r of
-            Right _ -> deleteConnRcvQueue db rq >> pure ((rq, r), Just (notifyRQ rq Nothing))
-            Left e
-              | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
-              | otherwise -> deleteConnRcvQueue db rq >> pure ((rq, Right ()), Just (notifyRQ rq (Just e)))
+        deleteQueueRec db maxErrs (rq, r) = case r of
+          Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just (notifyRQ rq Nothing))
+          Left e
+            | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
+            | otherwise -> deleteConnRcvQueue db rq $> ((rq, Right ()), Just (notifyRQ rq (Just e)))
     notifyRQ rq e_ = notify ("", qConnId rq, APC SAEConn $ DEL_RCVQ (qServer rq) (queueId rq) e_)
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
