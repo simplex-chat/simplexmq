@@ -60,6 +60,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setConnDeleted,
     setConnAgentVersion,
     getDeletedConnIds,
+    getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
     addProcessedRatchetKeyHash,
     checkRatchetKeyHashExists,
@@ -241,7 +242,7 @@ import Data.List (foldl', intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, listToMaybe, catMaybes)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -602,12 +603,21 @@ getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
       DB.query db (rcvQueueQuery <> " WHERE q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 0") (host, port, rcvId)
   (rq,) <$> ExceptT (getConn db connId)
 
-deleteConn :: DB.Connection -> ConnId -> IO ()
-deleteConn db connId =
-  DB.executeNamed
-    db
-    "DELETE FROM connections WHERE conn_id = :conn_id;"
-    [":conn_id" := connId]
+deleteConn :: DB.Connection -> Bool -> ConnId -> IO ()
+deleteConn db waitDelivery connId
+  | waitDelivery = do
+    pending <- checkConnPendingSndDeliveries_ db connId
+    unless pending delete
+  | otherwise = delete
+  where
+    delete = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
+
+checkConnPendingSndDeliveries_ :: DB.Connection -> ConnId -> IO Bool
+checkConnPendingSndDeliveries_ db connId = do
+  r :: (Maybe Int64) <-
+    maybeFirstRow fromOnly $
+      DB.query db "SELECT 1 FROM snd_message_deliveries WHERE conn_id = ? AND failed = 0 LIMIT 1" (Only connId)
+  pure $ isJust r
 
 upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 upgradeRcvConnToDuplex db connId sq =
@@ -1912,8 +1922,12 @@ getConnData db connId' =
     cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, deleted, ratchetSyncState) =
       (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, lastExternalSndId, deleted, ratchetSyncState}, cMode)
 
-setConnDeleted :: DB.Connection -> ConnId -> IO ()
-setConnDeleted db connId = DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
+setConnDeleted db waitDelivery connId
+  | waitDelivery =
+    DB.execute db "UPDATE connections SET deleted_wait_delivery = ? WHERE conn_id = ?" (True, connId)
+  | otherwise =
+    DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> Version -> IO ()
 setConnAgentVersion db connId aVersion =
@@ -1921,6 +1935,11 @@ setConnAgentVersion db connId aVersion =
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
+
+getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
+getDeletedWaitingDeliveryConnIds db =
+  -- TODO join snd_message_deliveries to check if there are any pending messages
+  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted_wait_delivery = ?" (Only True)
 
 setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
 setConnRatchetSync db connId ratchetSyncState =
@@ -2267,17 +2286,18 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
       forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertRcvFileChunkReplica db rno replica chunkId
   pure dstEntityId
   where
-    dummyDst = FileDescription
-      { party = SFRecipient,
-        size,
-        digest,
-        redirect = Nothing,
-        -- updated later with updateRcvFileRedirect
-        key = C.unsafeSbKey $ B.replicate 32 '#',
-        nonce = C.cbNonce "",
-        chunkSize = FileSize 0,
-        chunks = []
-      }
+    dummyDst =
+      FileDescription
+        { party = SFRecipient,
+          size,
+          digest,
+          redirect = Nothing,
+          -- updated later with updateRcvFileRedirect
+          key = C.unsafeSbKey $ B.replicate 32 '#',
+          nonce = C.cbNonce "",
+          chunkSize = FileSize 0,
+          chunks = []
+        }
 
 insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> IO (Either StoreError (RcvFileId, DBRcvFileId))
 insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectId_ redirectEntityId_ = runExceptT $ do
@@ -2346,10 +2366,11 @@ getRcvFile db rcvFileId = runExceptT $ do
         toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted, redirectDbId, redirectEntityId, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
-              redirect = RcvFileRedirect
-                <$> redirectDbId
-                <*> redirectEntityId
-                <*> (RedirectFileInfo <$> redirectSize_ <*> redirectDigest_)
+              redirect =
+                RcvFileRedirect
+                  <$> redirectDbId
+                  <*> redirectEntityId
+                  <*> (RedirectFileInfo <$> redirectSize_ <*> redirectDigest_)
            in RcvFile {rcvFileId, rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, redirect, prefixPath, tmpPath, saveFile, status, deleted, chunks = []}
     getChunks :: RcvFileId -> UserId -> FilePath -> IO [RcvFileChunk]
     getChunks rcvFileEntityId userId fileTmpPath = do

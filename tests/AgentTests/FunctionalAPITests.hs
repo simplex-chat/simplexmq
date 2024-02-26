@@ -1428,7 +1428,7 @@ testAsyncCommands =
       ]
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
     get alice =##> \case ("7", _, OK) -> True; _ -> False
-    deleteConnectionAsync alice bobId
+    deleteConnectionAsync alice False bobId
     get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1498,7 +1498,7 @@ testDeleteConnectionAsync t = do
     (bId3, _inv) <- createConnection a 1 True SCMInvitation Nothing SMSubscribe
     pure ([bId1, bId2, bId3] :: [ConnId])
   runRight_ $ do
-    deleteConnectionsAsync a connIds
+    deleteConnectionsAsync a False connIds
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
@@ -1714,7 +1714,7 @@ testSwitchDelete servers = do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-    deleteConnectionAsync a bId
+    deleteConnectionAsync a False bId
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False
