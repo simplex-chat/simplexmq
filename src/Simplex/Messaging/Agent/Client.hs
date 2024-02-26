@@ -122,6 +122,9 @@ module Simplex.Messaging.Agent.Client
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
     getAgentWorkersSummary,
+    SMPTransportSession,
+    NtfTransportSession,
+    XFTPTransportSession,
   )
 where
 
