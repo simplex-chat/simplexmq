@@ -271,6 +271,8 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
+    it "should delete connection after waiting for delivery to complete" $
+      testDeleteConnectionAsyncWaitDelivery t
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError t
   describe "Users" $ do
@@ -1507,6 +1509,55 @@ testDeleteConnectionAsync t = do
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
   disconnectAgentClient a
+
+testDeleteConnectionAsyncWaitDelivery :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDelivery t = do
+  alice <- getSMPAgentClient' 1 agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    pure (aliceId, bobId)
+
+  runRight_ $ do
+    ("", "", DOWN _ _) <- nGet alice
+    ("", "", DOWN _ _) <- nGet bob
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    get alice ##> ("", bobId, SENT $ baseId + 3)
+    liftIO $
+      getInAnyOrder
+        bob
+        [ \case ("", "", APC SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
+          \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
+        ]
+    ackMessage bob aliceId (baseId + 3) Nothing
+
+    liftIO $ threadDelay 3000000
+
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
 
 testJoinConnectionAsyncReplyError :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyError t = do

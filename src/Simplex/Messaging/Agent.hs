@@ -712,7 +712,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv 
       Right _ -> pure connId'
       Left e -> do
         -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
-        withStore' c $ \db -> deleteConn db False connId'
+        void $ withStore' c $ \db -> deleteConn db False connId'
         throwError e
 joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) cInfo subMode srv = do
   aVRange <- asks $ smpAgentVRange . config
@@ -1452,10 +1452,13 @@ disableConn c connId = do
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteConnections' = deleteConnections_ getConns False
+deleteConnections' = deleteConnections_ getConns False False
 
 deleteDeletedConns :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteDeletedConns = deleteConnections_ getDeletedConns True
+deleteDeletedConns = deleteConnections_ getDeletedConns True False
+
+deleteDeletedWaitingDeliveryConns :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+deleteDeletedWaitingDeliveryConns = deleteConnections_ getConns True True
 
 prepareDeleteConnections_ ::
   forall m.
@@ -1474,6 +1477,10 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
       connIds' = M.keys rcvQs
   forM_ connIds' $ disableConn c
   withStore' c $ \db -> forM_ (M.keys delRs) $ deleteConn db waitDelivery
+  -- ! delRs is not used to notify about the result in any calling functions,
+  -- ! it is only used to check result count in deleteConnections_;
+  -- ! if it was used to notify about the result, it might be necessary to differentiate
+  -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
   pure (errs' <> delRs, rqs, connIds')
   where
     rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
@@ -1485,7 +1492,7 @@ deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> Bool -> [Rc
 deleteConnQueues c waitDelivery ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
   let connIds = M.keys $ M.filter isRight rs
-  rs' <- rights <$> withStoreBatch' c (\db -> map (\cId -> deleteConn db waitDelivery cId $> cId) connIds)
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDelivery) connIds)
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure rs
   where
@@ -1528,13 +1535,14 @@ deleteConnections_ ::
   AgentMonad m =>
   (DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]) ->
   Bool ->
+  Bool ->
   AgentClient ->
   [ConnId] ->
   m (Map ConnId (Either AgentErrorType ()))
-deleteConnections_ _ _ _ [] = pure M.empty
-deleteConnections_ getConnections ntf c connIds = do
-  (rs, rqs, _) <- prepareDeleteConnections_ getConnections c False connIds
-  rcvRs <- deleteConnQueues c False ntf rqs
+deleteConnections_ _ _ _ _ [] = pure M.empty
+deleteConnections_ getConnections ntf waitDelivery c connIds = do
+  (rs, rqs, _) <- prepareDeleteConnections_ getConnections c waitDelivery connIds
+  rcvRs <- deleteConnQueues c waitDelivery ntf rqs
   let rs' = M.union rs rcvRs
   notifyResultError rs'
   pure rs'
@@ -1863,9 +1871,7 @@ cleanupManager c@AgentClient {subQ} = do
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
-        -- TODO deleteWaitingDeliveryConns
-        -- getDeletedWaitingDeliveryConnIds
-        -- use same deleteDeletedConns, or simpler?
+        void $ withStore' c getDeletedWaitingDeliveryConnIds >>= deleteDeletedWaitingDeliveryConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config

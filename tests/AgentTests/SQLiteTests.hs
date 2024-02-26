@@ -313,7 +313,7 @@ testDeleteRcvConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
     deleteConn db False "conn1"
-      `shouldReturn` ()
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -325,7 +325,7 @@ testDeleteSndConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
     deleteConn db False "conn1"
-      `shouldReturn` ()
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -338,7 +338,7 @@ testDeleteDuplexConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
     deleteConn db False "conn1"
-      `shouldReturn` ()
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 

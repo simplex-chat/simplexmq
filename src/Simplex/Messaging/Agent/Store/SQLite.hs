@@ -603,14 +603,15 @@ getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
       DB.query db (rcvQueueQuery <> " WHERE q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 0") (host, port, rcvId)
   (rq,) <$> ExceptT (getConn db connId)
 
-deleteConn :: DB.Connection -> Bool -> ConnId -> IO ()
+-- | Deletes connection, optionally checking for pending snd message deliveries; returns connection id if it was deleted
+deleteConn :: DB.Connection -> Bool -> ConnId -> IO (Maybe ConnId)
 deleteConn db waitDelivery connId
   | waitDelivery = do
     pending <- checkConnPendingSndDeliveries_ db connId
-    unless pending delete
+    if pending then pure Nothing else delete
   | otherwise = delete
   where
-    delete = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
+    delete = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId) $> Just connId
 
 checkConnPendingSndDeliveries_ :: DB.Connection -> ConnId -> IO Bool
 checkConnPendingSndDeliveries_ db connId = do
@@ -1938,7 +1939,6 @@ getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connect
 
 getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =
-  -- TODO join snd_message_deliveries to check if there are any pending messages
   map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted_wait_delivery = ?" (Only True)
 
 setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
