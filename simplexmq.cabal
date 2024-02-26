@@ -104,6 +104,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Agent.TRcvQueues.Master
+      Simplex.Messaging.Agent.TRcvQueues.Master.RS
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto

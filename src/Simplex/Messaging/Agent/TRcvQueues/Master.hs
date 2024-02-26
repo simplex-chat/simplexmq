@@ -9,6 +9,8 @@ module Simplex.Messaging.Agent.TRcvQueues.Master
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
+    getDelSessQueuesFlip,
+    removeSubs,
     qKey,
   )
 where
@@ -18,7 +20,7 @@ import qualified Data.Map.Strict as M
 import Data.Set (Set)
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
-import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
+import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..), qConnId)
 import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -60,6 +62,20 @@ getDelSessQueues tSess (TRcvQueues qs) = stateTVar qs $ M.foldl' addQ ([], M.emp
     addQ (removed, qs') rq
       | rq `isSession` tSess = (rq : removed, qs')
       | otherwise = (removed, M.insert (qKey rq) rq qs')
+
+removeSubs :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> TRcvQueues -> STM ([RcvQueue], [ConnId])
+removeSubs tSess activeSubs pendingSubs = do
+  qs <- getDelSessQueuesFlip tSess activeSubs
+  mapM_ (`addQueue` pendingSubs) qs
+  cs' <- getConns activeSubs
+  pure (qs, filter (`S.notMember` cs') $ map qConnId qs)
+
+getDelSessQueuesFlip :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueue]
+getDelSessQueuesFlip tSess (TRcvQueues qs) = stateTVar qs $ \now -> M.foldl' delQ ([], now) now
+  where
+    delQ acc@(removed, qs') rq
+      | rq `isSession` tSess = (rq : removed, M.delete (qKey rq) qs')
+      | otherwise = acc
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =

@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
+    removeSubs,
     qKey,
   )
 where
@@ -69,6 +70,12 @@ getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM [RcvQueu
 getSessQueues tSess (TRcvQueues qs _) = M.foldl' addQ [] <$> readTVar qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
+
+removeSubs :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> TRcvQueues -> STM ([RcvQueue], [ConnId])
+removeSubs tSess activeSubs pendingSubs = do
+  (qs, cs) <- getDelSessQueues tSess activeSubs
+  mapM_ (`addQueue` pendingSubs) qs
+  pure (qs, cs)
 
 getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues -> STM ([RcvQueue], [ConnId])
 getDelSessQueues tSess (TRcvQueues qs cs) = do
