@@ -305,7 +305,9 @@ xftpDeleteRcvFiles' c rcvFileEntityIds = do
   let (toDelete, toMarkDeleted) = partition fileComplete $ concat redirects <> rcvFiles
   void $ batchFiles deleteRcvFile' toDelete
   void $ batchFiles updateRcvFileDeleted toMarkDeleted
-  liftIO $ forM_ toDelete $ \RcvFile {prefixPath} -> removePath prefixPath `catchAll_` pure ()
+  workPath <- getXFTPWorkPath
+  liftIO . forM_ toDelete $ \RcvFile {prefixPath} ->
+    (removePath . (workPath </>)) prefixPath `catchAll_` pure ()
   where
     fileComplete RcvFile {status} = status == RFSComplete || status == RFSError
     batchFiles :: (DB.Connection -> DBRcvFileId -> IO a) -> [RcvFile] -> m [Either AgentErrorType a]
