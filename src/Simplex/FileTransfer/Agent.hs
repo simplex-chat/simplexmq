@@ -585,7 +585,7 @@ deleteSndFilesRemote c userId sndFileIdsDescrs = do
   let rs = concatMap (mapMaybe chunkReplica . fdChunks . snd) sndFileIdsDescrs
   void $ withStoreBatch' c (\db -> map (uncurry $ createDeletedSndChunkReplica db userId) rs)
   let servers = S.fromList $ map (\(FileChunkReplica {server}, _) -> server) rs
-  mapM_ (void . getXFTPDelWorker True c) servers
+  mapM_ (getXFTPDelWorker True c) servers
   where
     fdChunks (ValidFileDescription FileDescription {chunks}) = chunks
     chunkReplica :: FileChunk -> Maybe (FileChunkReplica, FileDigest)
