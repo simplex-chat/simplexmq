@@ -2,15 +2,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Bench.TRcvQueues where -- (benchTRcvQueues) where
+module Bench.TRcvQueues where
 
-import Control.Monad (replicateM, unless)
+import Control.Monad (replicateM)
 import Crypto.Random
 import Data.Bifunctor (bimap)
 import Data.ByteString (ByteString)
-import Data.HashSet (HashSet)
 import Data.Hashable (hash)
-import Data.Set (Set)
 import GHC.IO (unsafePerformIO)
 import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
@@ -41,8 +39,8 @@ benchTRcvQueues =
 
 testGDSequivalent :: Spec
 testGDSequivalent = it "same" $ do
-  m@(mKey, master) <- prepareMaster
-  c@(cKey, current) <- prepareCurrent
+  m@(mKey, _) <- prepareMaster
+  c@(cKey, _) <- prepareCurrent
   mKey `shouldBe` cKey
   qsMaster <- benchGDSMaster m
   (qsCurrent, _connIds) <- benchGDSCurrent c
