@@ -298,7 +298,9 @@ xftpDeleteRcvFile' c rcvFileEntityId = xftpDeleteRcvFiles' c [rcvFileEntityId]
 
 xftpDeleteRcvFiles' :: forall m. AgentMonad m => AgentClient -> [RcvFileId] -> m ()
 xftpDeleteRcvFiles' c rcvFileEntityIds = do
-  (_, rcvFiles) <- partitionEithers <$> withStoreBatch c (\db -> map (fmap (first storeError) . getRcvFileByEntityId db) rcvFileEntityIds)
+  (_, rcvFiles) <-
+    partitionEithers
+      <$> withStoreBatch c (\db -> map (fmap (first storeError) . getRcvFileByEntityId db) rcvFileEntityIds)
   (_, redirects) <- partitionEithers <$> batchFiles getRcvFileRedirects rcvFiles
   let (toDelete, toMarkDeleted) = partition fileComplete $ concat redirects <> rcvFiles
   void $ batchFiles deleteRcvFile' toDelete
@@ -560,7 +562,9 @@ deleteSndFileInternal c sndFileEntityId = deleteSndFilesInternal c [sndFileEntit
 
 deleteSndFilesInternal :: forall m. AgentMonad m => AgentClient -> [SndFileId] -> m ()
 deleteSndFilesInternal c sndFileEntityIds = do
-  (_, sndFiles) <- partitionEithers <$> withStoreBatch c (\db -> map (fmap (first storeError) . getSndFileByEntityId db) sndFileEntityIds)
+  (_, sndFiles) <-
+    partitionEithers
+      <$> withStoreBatch c (\db -> map (fmap (first storeError) . getSndFileByEntityId db) sndFileEntityIds)
   let (toDelete, toMarkDeleted) = partition fileComplete sndFiles
   workPath <- getXFTPWorkPath
   liftIO . forM_ toDelete $ \SndFile {prefixPath} ->
