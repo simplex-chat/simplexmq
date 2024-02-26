@@ -160,6 +160,7 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.DeepSeq (NFData (..))
 import Control.Monad
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
@@ -742,6 +743,8 @@ deriving instance Ord (SProtocolType p)
 
 deriving instance Show (SProtocolType p)
 
+instance NFData (SProtocolType p) where rnf spt = spt `seq` ()
+
 data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
 
 deriving instance Show AProtocolType
@@ -825,6 +828,8 @@ data ProtocolServer p = ProtocolServer
   deriving (Eq, Ord, Show)
 
 data AProtocolServer = forall p. ProtocolTypeI p => AProtocolServer (SProtocolType p) (ProtocolServer p)
+
+instance NFData (ProtocolServer p) where rnf ProtocolServer {} = ()
 
 instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
