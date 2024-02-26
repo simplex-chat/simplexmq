@@ -92,10 +92,13 @@ module Simplex.Messaging.Agent
     xftpStartWorkers,
     xftpReceiveFile,
     xftpDeleteRcvFile,
+    xftpDeleteRcvFiles,
     xftpSendFile,
     xftpSendDescription,
     xftpDeleteSndFileInternal,
+    xftpDeleteSndFilesInternal,
     xftpDeleteSndFileRemote,
+    xftpDeleteSndFilesRemote,
     rcNewHostPairing,
     rcConnectHost,
     rcConnectCtrl,
@@ -123,7 +126,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
-import Data.Either (rights)
+import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
@@ -138,7 +141,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFilesInternal, deleteSndFileRemote, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -165,8 +168,8 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import Simplex.Messaging.Transport (THandleParams (sessionId))
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (THandleParams (sessionId))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
@@ -242,7 +245,7 @@ switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnectionAsync c = withAgentEnv c . deleteConnectionAsync' c
 
--- -- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
+-- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
 deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
 deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c
 
@@ -400,6 +403,10 @@ xftpReceiveFile c = withAgentEnv c .:. xftpReceiveFile' c
 xftpDeleteRcvFile :: AgentErrorMonad m => AgentClient -> RcvFileId -> m ()
 xftpDeleteRcvFile c = withAgentEnv c . xftpDeleteRcvFile' c
 
+-- | Delete multiple rcv files, batching operations when possible (deletes work files from file system and db records)
+xftpDeleteRcvFiles :: AgentErrorMonad m => AgentClient -> [RcvFileId] -> m ()
+xftpDeleteRcvFiles c = withAgentEnv c . xftpDeleteRcvFiles' c
+
 -- | Send XFTP file
 xftpSendFile :: AgentErrorMonad m => AgentClient -> UserId -> CryptoFile -> Int -> m SndFileId
 xftpSendFile c = withAgentEnv c .:. xftpSendFile' c
@@ -412,9 +419,17 @@ xftpSendDescription c = withAgentEnv c .:. xftpSendDescription' c
 xftpDeleteSndFileInternal :: AgentErrorMonad m => AgentClient -> SndFileId -> m ()
 xftpDeleteSndFileInternal c = withAgentEnv c . deleteSndFileInternal c
 
+-- | Delete multiple snd files internally, batching operations when possible (deletes work files from file system and db records)
+xftpDeleteSndFilesInternal :: AgentErrorMonad m => AgentClient -> [SndFileId] -> m ()
+xftpDeleteSndFilesInternal c = withAgentEnv c . deleteSndFilesInternal c
+
 -- | Delete XFTP snd file chunks on servers
 xftpDeleteSndFileRemote :: AgentErrorMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
 xftpDeleteSndFileRemote c = withAgentEnv c .:. deleteSndFileRemote c
+
+-- | Delete XFTP snd file chunks on servers for multiple snd files, batching operations when possible
+xftpDeleteSndFilesRemote :: AgentErrorMonad m => AgentClient -> UserId -> [(SndFileId, ValidFileDescription 'FSender)] -> m ()
+xftpDeleteSndFilesRemote c = withAgentEnv c .: deleteSndFilesRemote c
 
 -- | Create new remote host pairing
 rcNewHostPairing :: AgentErrorMonad m => AgentClient -> m RCHostPairing
@@ -1468,21 +1483,28 @@ prepareDeleteConnections_ getConnections c connIds = do
 deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> [RcvQueue] -> m (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
-  forM_ (M.assocs rs) $ \case
-    (connId, Right _) -> withStore' c (`deleteConn` connId) >> notify ("", connId, APC SAEConn DEL_CONN)
-    _ -> pure ()
+  let connIds = M.keys $ M.filter isRight rs
+  rs' <- rights <$> withStoreBatch' c (\db -> map (\cId -> deleteConn db cId $> cId) connIds)
+  forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure rs
   where
     deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> m [(RcvQueue, Either AgentErrorType ())]
     deleteQueueRecs rs = do
       maxErrs <- asks $ deleteErrorCount . config
-      forM rs $ \(rq, r) -> do
-        r' <- case r of
-          Right _ -> withStore' c (`deleteConnRcvQueue` rq) >> notifyRQ rq Nothing $> r
+      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+      mapM_ sequence_ notifyActions
+      pure rs'
+      where
+        deleteQueueRec ::
+          DB.Connection ->
+          Int ->
+          (RcvQueue, Either AgentErrorType ()) ->
+          IO ((RcvQueue, Either AgentErrorType ()), Maybe (m ()))
+        deleteQueueRec db maxErrs (rq, r) = case r of
+          Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just (notifyRQ rq Nothing))
           Left e
-            | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> withStore' c (`incRcvDeleteErrors` rq) $> r
-            | otherwise -> withStore' c (`deleteConnRcvQueue` rq) >> notifyRQ rq (Just e) $> Right ()
-        pure (rq, r')
+            | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
+            | otherwise -> deleteConnRcvQueue db rq $> ((rq, Right ()), Just (notifyRQ rq (Just e)))
     notifyRQ rq e_ = notify ("", qConnId rq, APC SAEConn $ DEL_RCVQ (qServer rq) (queueId rq) e_)
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())

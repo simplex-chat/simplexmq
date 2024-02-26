@@ -7,7 +7,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -18,11 +17,14 @@ module Simplex.FileTransfer.Agent
     -- Receiving files
     xftpReceiveFile',
     xftpDeleteRcvFile',
+    xftpDeleteRcvFiles',
     -- Sending files
     xftpSendFile',
     xftpSendDescription',
     deleteSndFileInternal,
+    deleteSndFilesInternal,
     deleteSndFileRemote,
+    deleteSndFilesRemote,
   )
 where
 
@@ -30,14 +32,18 @@ import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:))
+import Data.Either (rights)
 import Data.Int (Int64)
-import Data.List (foldl', sortOn)
+import Data.List (foldl', partition, sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (mapMaybe)
+import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -55,6 +61,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
@@ -62,7 +69,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
-import Simplex.Messaging.Util (liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -287,17 +294,22 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           throwError $ INTERNAL "no chunk path"
 
 xftpDeleteRcvFile' :: AgentMonad m => AgentClient -> RcvFileId -> m ()
-xftpDeleteRcvFile' c rcvFileEntityId = do
-  rcvFile@RcvFile {rcvFileId} <- withStore c $ \db -> getRcvFileByEntityId db rcvFileEntityId
-  handleError (const $ pure ()) $ withStore' c (`getRcvFileRedirects` rcvFileId) >>= mapM_ remove
-  remove rcvFile
+xftpDeleteRcvFile' c rcvFileEntityId = xftpDeleteRcvFiles' c [rcvFileEntityId]
+
+xftpDeleteRcvFiles' :: forall m. AgentMonad m => AgentClient -> [RcvFileId] -> m ()
+xftpDeleteRcvFiles' c rcvFileEntityIds = do
+  rcvFiles <- rights <$> withStoreBatch c (\db -> map (fmap (first storeError) . getRcvFileByEntityId db) rcvFileEntityIds)
+  redirects <- rights <$> batchFiles getRcvFileRedirects rcvFiles
+  let (toDelete, toMarkDeleted) = partition fileComplete $ concat redirects <> rcvFiles
+  void $ batchFiles deleteRcvFile' toDelete
+  void $ batchFiles updateRcvFileDeleted toMarkDeleted
+  workPath <- getXFTPWorkPath
+  liftIO . forM_ toDelete $ \RcvFile {prefixPath} ->
+    (removePath . (workPath </>)) prefixPath `catchAll_` pure ()
   where
-    remove RcvFile {rcvFileId, prefixPath, status} =
-      if status == RFSComplete || status == RFSError
-        then do
-          removePath prefixPath
-          withStore' c (`deleteRcvFile'` rcvFileId)
-        else withStore' c (`updateRcvFileDeleted` rcvFileId)
+    fileComplete RcvFile {status} = status == RFSComplete || status == RFSError
+    batchFiles :: (DB.Connection -> DBRcvFileId -> IO a) -> [RcvFile] -> m [Either AgentErrorType a]
+    batchFiles f rcvFiles = withStoreBatch' c $ \db -> map (\RcvFile {rcvFileId} -> f db rcvFileId) rcvFiles
 
 notify :: forall m e. (MonadUnliftIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
@@ -546,24 +558,38 @@ runXFTPSndWorker c srv Worker {doWork} = do
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSUploaded) replicas
 
 deleteSndFileInternal :: AgentMonad m => AgentClient -> SndFileId -> m ()
-deleteSndFileInternal c sndFileEntityId = do
-  SndFile {sndFileId, prefixPath, status} <- withStore c $ \db -> getSndFileByEntityId db sndFileEntityId
-  if status == SFSComplete || status == SFSError
-    then do
-      forM_ prefixPath $ removePath <=< toFSFilePath
-      withStore' c (`deleteSndFile'` sndFileId)
-    else withStore' c (`updateSndFileDeleted` sndFileId)
+deleteSndFileInternal c sndFileEntityId = deleteSndFilesInternal c [sndFileEntityId]
+
+deleteSndFilesInternal :: forall m. AgentMonad m => AgentClient -> [SndFileId] -> m ()
+deleteSndFilesInternal c sndFileEntityIds = do
+  sndFiles <- rights <$> withStoreBatch c (\db -> map (fmap (first storeError) . getSndFileByEntityId db) sndFileEntityIds)
+  let (toDelete, toMarkDeleted) = partition fileComplete sndFiles
+  workPath <- getXFTPWorkPath
+  liftIO . forM_ toDelete $ \SndFile {prefixPath} ->
+    mapM_ (removePath . (workPath </>)) prefixPath `catchAll_` pure ()
+  batchFiles_ deleteSndFile' toDelete
+  batchFiles_ updateSndFileDeleted toMarkDeleted
+  where
+    fileComplete SndFile {status} = status == SFSComplete || status == SFSError
+    batchFiles_ :: (DB.Connection -> DBSndFileId -> IO a) -> [SndFile] -> m ()
+    batchFiles_ f sndFiles = void $ withStoreBatch' c $ \db -> map (\SndFile {sndFileId} -> f db sndFileId) sndFiles
 
 deleteSndFileRemote :: forall m. AgentMonad m => AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> m ()
-deleteSndFileRemote c userId sndFileEntityId (ValidFileDescription FileDescription {chunks}) = do
-  deleteSndFileInternal c sndFileEntityId `catchAgentError` (notify c sndFileEntityId . SFERR)
-  forM_ chunks $ \ch -> deleteFileChunk ch `catchAgentError` (notify c sndFileEntityId . SFERR)
+deleteSndFileRemote c userId sndFileEntityId sfd = deleteSndFilesRemote c userId [(sndFileEntityId, sfd)]
+
+deleteSndFilesRemote :: forall m. AgentMonad m => AgentClient -> UserId -> [(SndFileId, ValidFileDescription 'FSender)] -> m ()
+deleteSndFilesRemote c userId sndFileIdsDescrs = do
+  deleteSndFilesInternal c (map fst sndFileIdsDescrs) `catchAgentError` (notify c "" . SFERR)
+  let rs = concatMap (mapMaybe chunkReplica . fdChunks . snd) sndFileIdsDescrs
+  void $ withStoreBatch' c (\db -> map (uncurry $ createDeletedSndChunkReplica db userId) rs)
+  let servers = S.fromList $ map (\(FileChunkReplica {server}, _) -> server) rs
+  mapM_ (getXFTPDelWorker True c) servers
   where
-    deleteFileChunk :: FileChunk -> m ()
-    deleteFileChunk FileChunk {digest, replicas = replica@FileChunkReplica {server} : _} = do
-      withStore' c $ \db -> createDeletedSndChunkReplica db userId replica digest
-      void $ getXFTPDelWorker True c server
-    deleteFileChunk _ = pure ()
+    fdChunks (ValidFileDescription FileDescription {chunks}) = chunks
+    chunkReplica :: FileChunk -> Maybe (FileChunkReplica, FileDigest)
+    chunkReplica = \case
+      FileChunk {digest, replicas = replica : _} -> Just (replica, digest)
+      _ -> Nothing
 
 resumeXFTPDelWork :: AgentMonad' m => AgentClient -> XFTPServer -> m ()
 resumeXFTPDelWork = void .: getXFTPDelWorker False
