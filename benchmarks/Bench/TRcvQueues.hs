@@ -31,6 +31,7 @@ benchTRcvQueues =
   [ bgroup
       "addQueue"
       [ bench "aq-master" $ nfIO prepareMaster,
+        bcompare "aq-current" . bench "aq-batch" $ nfIO prepareCurrentBatch,
         bcompare "aq-master" . bench "aq-current" $ nfIO prepareCurrent
       ],
     bgroup "getDelSessQueues" benchGDS,
@@ -118,18 +119,24 @@ prepareMaster = prepareWith Master.empty Master.addQueue
 prepareCurrent :: IO (TSessKey, Current.TRcvQueues)
 prepareCurrent = prepareWith Current.empty Current.addQueue
 
+prepareCurrentBatch :: IO (TSessKey, Current.TRcvQueues)
+prepareCurrentBatch = prepareWithBatch Current.empty Current.addQueuesBatch
+
 prepareWith :: STM qs -> (RcvQueue -> qs -> STM ()) -> IO (TSessKey, qs)
-prepareWith initQS addQueue = do
+prepareWith initQS addQueue = prepareWithBatch initQS (\trqs qs -> mapM_ (`addQueue` trqs) qs)
+
+prepareWithBatch :: STM qs -> (qs -> [RcvQueue] -> STM ()) -> IO (TSessKey, qs)
+prepareWithBatch initQS addQueues = do
   let (servers, gen1) = genServers gen0 nServers
   let (qs, _gen2) = genQueues gen1 servers nUsers nQueues
   atomically $ do
     trqs <- initQS
-    mapM_ (`addQueue` trqs) qs
+    addQueues trqs qs
     pure (fmap (const Nothing) . Current.qKey $ head qs, trqs)
   where
     nUsers = 4
     nServers = 10
-    nQueues = 50000
+    nQueues = 10000
 
 genServers :: ChaChaDRG -> Int -> ([SMPServer], ChaChaDRG)
 genServers random nServers =
