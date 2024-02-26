@@ -169,6 +169,22 @@ tests:
       - main-tester == 0.2.*
       - timeit == 2.0.*
 
+benchmarks:
+  simplexmq-bench:
+    source-dirs: benchmarks
+    main: Bench.hs
+    dependencies:
+    - containers
+    - simplexmq
+    - tasty-bench
+    - unliftio
+    - unordered-containers
+    ghc-options:
+    - -with-rtsopts=-A64m
+    - -with-rtsopts=-N1
+    - -with-rtsopts=-T
+    - -fproc-alignment=64
+
 ghc-options:
   # - -haddock
   - -Wall
