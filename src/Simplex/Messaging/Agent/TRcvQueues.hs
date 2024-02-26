@@ -25,6 +25,8 @@ import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 
+-- the fields in this record have the same data with swapped keys for lookup efficiency,
+-- and all methods must maintain this invariant.
 data TRcvQueues = TRcvQueues
   { getRcvQueues :: TMap (UserId, SMPServer, RecipientId) RcvQueue,
     getConnections :: TMap ConnId (NonEmpty (UserId, SMPServer, RecipientId))
@@ -76,11 +78,14 @@ getDelSessQueues tSess (TRcvQueues qs cs) = do
     delQ acc@(removed, qs') rq
       | rq `isSession` tSess = (rq : removed, M.delete (qKey rq) qs')
       | otherwise = acc
-    delConn (removed, cs') rq =
-      (if M.member cId cs'' then removed else cId : removed, cs'')
+    delConn (removed, cs') rq = M.alterF f cId cs'
       where
-        cs'' = M.update (L.nonEmpty . L.filter (/= qKey rq)) cId cs'
         cId = connId rq
+        f = \case
+          Just ks -> case L.nonEmpty $ L.filter (qKey rq /=) ks of
+            Just ks' -> (removed, Just ks')
+            Nothing -> (cId : removed, Nothing)
+          Nothing -> (removed, Nothing) -- "impossible" in invariant holds, because we get keys from the known queues
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
