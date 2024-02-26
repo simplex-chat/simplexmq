@@ -7,6 +7,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     deleteConn,
     hasConn,
     addQueue,
+    batchAddQueues,
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
@@ -54,6 +55,14 @@ addQueue rq (TRcvQueues qs cs) = do
   where
     addQ = Just . maybe (L.singleton k) (k <|)
     k = qKey rq
+
+-- Save time by aggregating modifyTVar
+batchAddQueues :: Foldable t => TRcvQueues -> t RcvQueue -> STM ()
+batchAddQueues (TRcvQueues qs cs) rqs = do
+  modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs
+  modifyTVar' cs $ \now -> foldl' (\cs' rq -> M.alter (addQ $ qKey rq) (connId rq) cs') now rqs
+  where
+    addQ k = Just . maybe (L.singleton k) (k <|)
 
 deleteQueue :: RcvQueue -> TRcvQueues -> STM ()
 deleteQueue rq (TRcvQueues qs cs) = do

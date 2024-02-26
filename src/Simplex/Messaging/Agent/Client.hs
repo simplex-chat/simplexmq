@@ -533,7 +533,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
             currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
               (qs, cs) <- RQ.getDelSessQueues tSess $ activeSubs c
-              mapM_ (`RQ.addQueue` pendingSubs c) qs
+              RQ.batchAddQueues (pendingSubs c) qs
               pure (qs, cs)
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
@@ -1026,9 +1026,9 @@ temporaryOrHostError = \case
 subscribeQueues :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
-  forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
-    modifyTVar (subscrConns c) $ S.insert connId
-    RQ.addQueue rq $ pendingSubs c
+  atomically $ do
+    modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
+    RQ.batchAddQueues (pendingSubs c) qs'
   u <- askUnliftIO
   -- only "checked" queues are subscribed
   (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'

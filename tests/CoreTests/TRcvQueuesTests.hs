@@ -17,10 +17,11 @@ import UnliftIO
 
 tRcvQueuesTests :: Spec
 tRcvQueuesTests = do
-  fdescribe "connection API" $ do
+  describe "connection API" $ do
     it "hasConn" hasConnTest
+    it "hasConn, batch add" hasConnTestBatch
     it "deleteConn" deleteConnTest
-  fdescribe "session API" $ do
+  describe "session API" $ do
     it "getSessQueues" getSessQueuesTest
     it "getDelSessQueues" getDelSessQueuesTest
 
@@ -42,6 +43,17 @@ hasConnTest = do
   atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2") trq
   checkDataInvariant trq `shouldReturn` True
   atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@beta" "c3") trq
+  checkDataInvariant trq `shouldReturn` True
+  atomically (RQ.hasConn "c1" trq) `shouldReturn` True
+  atomically (RQ.hasConn "c2" trq) `shouldReturn` True
+  atomically (RQ.hasConn "c3" trq) `shouldReturn` True
+  atomically (RQ.hasConn "nope" trq) `shouldReturn` False
+
+hasConnTestBatch :: IO ()
+hasConnTestBatch = do
+  trq <- atomically RQ.empty
+  let qs = [dummyRQ 0 "smp://1234-w==@alpha" "c1", dummyRQ 0 "smp://1234-w==@alpha" "c2", dummyRQ 0 "smp://1234-w==@beta" "c3"]
+  atomically $ RQ.batchAddQueues trq qs
   checkDataInvariant trq `shouldReturn` True
   atomically (RQ.hasConn "c1" trq) `shouldReturn` True
   atomically (RQ.hasConn "c2" trq) `shouldReturn` True
@@ -81,11 +93,13 @@ getSessQueuesTest = do
 getDelSessQueuesTest :: IO ()
 getDelSessQueuesTest = do
   trq <- atomically RQ.empty
-  atomically $ do
-    RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c1") trq
-    RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2") trq
-    RQ.addQueue (dummyRQ 0 "smp://1234-w==@beta" "c3") trq
-    RQ.addQueue (dummyRQ 1 "smp://1234-w==@beta" "c4") trq
+  let qs =
+        [ dummyRQ 0 "smp://1234-w==@alpha" "c1",
+          dummyRQ 0 "smp://1234-w==@alpha" "c2",
+          dummyRQ 0 "smp://1234-w==@beta" "c3",
+          dummyRQ 1 "smp://1234-w==@beta" "c4"
+        ]
+  atomically $ RQ.batchAddQueues trq qs
   checkDataInvariant trq `shouldReturn` True
   -- no user
   atomically (RQ.getDelSessQueues (2, "smp://1234-w==@alpha", Nothing) trq) `shouldReturn` ([], [])
