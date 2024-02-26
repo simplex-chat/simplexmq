@@ -1,4 +1,4 @@
-module Simplex.Messaging.Agent.TRcvQueues
+module Simplex.Messaging.Agent.TRcvQueues.Master
   ( TRcvQueues (getRcvQueues),
     empty,
     clear,

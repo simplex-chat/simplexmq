@@ -175,6 +175,7 @@ benchmarks:
     main: Bench.hs
     dependencies:
     - containers
+    - hashable == 1.4.*
     - simplexmq
     - tasty-bench
     - unliftio
