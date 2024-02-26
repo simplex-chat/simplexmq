@@ -17,7 +17,7 @@ where
 
 import Control.Concurrent.STM
 import Data.Foldable (foldl')
-import Data.List.NonEmpty (NonEmpty, (<|))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
@@ -53,7 +53,7 @@ addQueue rq (TRcvQueues qs cs) = do
   TM.insert k rq qs
   TM.alter addQ (connId rq) cs
   where
-    addQ = Just . maybe (L.singleton k) (k <|)
+    addQ = Just . maybe (k :| []) (k <|)
     k = qKey rq
 
 -- Save time by aggregating modifyTVar
@@ -62,7 +62,7 @@ batchAddQueues (TRcvQueues qs cs) rqs = do
   modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs
   modifyTVar' cs $ \now -> foldl' (\cs' rq -> M.alter (addQ $ qKey rq) (connId rq) cs') now rqs
   where
-    addQ k = Just . maybe (L.singleton k) (k <|)
+    addQ k = Just . maybe (k :| []) (k <|)
 
 deleteQueue :: RcvQueue -> TRcvQueues -> STM ()
 deleteQueue rq (TRcvQueues qs cs) = do
