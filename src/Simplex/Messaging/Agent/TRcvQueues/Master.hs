@@ -22,8 +22,11 @@ import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
 import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Control.DeepSeq (NFData (..))
 
 newtype TRcvQueues = TRcvQueues {getRcvQueues :: TMap (UserId, SMPServer, RecipientId) RcvQueue}
+
+instance NFData TRcvQueues where rnf TRcvQueues {} = ()
 
 empty :: STM TRcvQueues
 empty = TRcvQueues <$> TM.empty

@@ -193,6 +193,7 @@ library
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
@@ -264,6 +265,7 @@ executable ntf-server
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
@@ -336,6 +338,7 @@ executable smp-agent
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
@@ -408,6 +411,7 @@ executable smp-server
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
@@ -480,6 +484,7 @@ executable xftp
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
@@ -552,6 +557,7 @@ executable xftp-server
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
@@ -736,11 +742,13 @@ benchmark simplexmq-bench
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
+    , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , hashable ==1.4.*
     , hourglass ==0.2.*
+    , hspec
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
@@ -760,7 +768,9 @@ benchmark simplexmq-bench
     , socks ==0.6.*
     , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
+    , tasty
     , tasty-bench
+    , tasty-hspec
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*

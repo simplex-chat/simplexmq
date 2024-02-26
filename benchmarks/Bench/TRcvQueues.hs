@@ -4,51 +4,77 @@
 
 module Bench.TRcvQueues where -- (benchTRcvQueues) where
 
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, unless)
 import Crypto.Random
+import Data.Bifunctor (bimap)
 import Data.ByteString (ByteString)
 import Data.HashSet (HashSet)
 import Data.Hashable (hash)
 import Data.Set (Set)
+import GHC.IO (unsafePerformIO)
 import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
-import qualified Simplex.Messaging.Agent.TRcvQueues as Base
+import qualified Simplex.Messaging.Agent.TRcvQueues as Current
+import qualified Simplex.Messaging.Agent.TRcvQueues.Master as Master
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ProtocolServer (..), SMPServer, SProtocolType (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Test.Hspec
 import Test.Tasty.Bench
+import Test.Tasty.Hspec (testSpec)
 import UnliftIO
 
 benchTRcvQueues :: [Benchmark]
 benchTRcvQueues =
   [ bgroup
+      "addQueue"
+      [ bench "aq-master" $ nfIO prepareMaster,
+        bcompare "aq-master" . bench "aq-current" $ nfIO prepareCurrent
+      ],
+    bgroup
       "getDelSessQueues"
-      [ bench "baseline" $ whnfIO (pure ())
+      [ env prepareMaster $ bench "gds-master" . nfAppIO (fmap length . benchGDSMaster),
+        env prepareCurrent $ bcompare "gds-master" . bench "gds-current" . nfAppIO (fmap (bimap length length) . benchGDSCurrent),
+        unsafePerformIO $ testSpec "gds-equiv" testGDSequivalent
       ]
-      --   bgroup
-      --     "getDelSessQueues"
-      --     [ env (prepareOrd nUsers nServers nQueues) $ bench "gds-ord" . nfAppIO (fmap length . benchTRcvQueuesOrd),
-      --       env (prepareOrd nUsers nServers nQueues) $ bcompare "gds-ord" . bench "gds-flip" . nfAppIO (fmap length . benchTRcvQueuesOrdFlip)
-      --     ]
   ]
-  where
-    nUsers = 4
-    nServers = 10
-    nQueues = 10000
 
--- benchTRcvQueuesHash :: (TSessKey, H.TRcvQueues) -> IO [RcvQueue]
--- benchTRcvQueuesHash (tSess, qs) = atomically $ H.getDelSessQueues tSess qs
+testGDSequivalent :: Spec
+testGDSequivalent = it "same" $ do
+  m@(mKey, master) <- prepareMaster
+  c@(cKey, current) <- prepareCurrent
+  mKey `shouldBe` cKey
+  qsMaster <- benchGDSMaster m
+  (qsCurrent, _connIds) <- benchGDSCurrent c
+  length qsMaster `shouldBe` length qsCurrent
+  qsMaster `shouldBe` qsCurrent
+
+benchGDSMaster :: (TSessKey, Master.TRcvQueues) -> IO [RcvQueue]
+benchGDSMaster (tSess, qs) = atomically $ Master.getDelSessQueues tSess qs
+
+benchGDSCurrent :: (TSessKey, Current.TRcvQueues) -> IO ([RcvQueue], [ConnId])
+benchGDSCurrent (tSess, qs) = atomically $ Current.getDelSessQueues tSess qs
 
 type TSessKey = (UserId, SMPServer, Maybe ConnId)
 
-prepareWith :: Int -> Int -> Int -> STM qs -> (qs -> RcvQueue -> STM ()) -> IO (TSessKey, qs)
-prepareWith nUsers nServers nQueues initQS addQueue = do
+prepareMaster :: IO (TSessKey, Master.TRcvQueues)
+prepareMaster = prepareWith Master.empty Master.addQueue
+
+prepareCurrent :: IO (TSessKey, Current.TRcvQueues)
+prepareCurrent = prepareWith Current.empty Current.addQueue
+
+prepareWith :: STM qs -> (RcvQueue -> qs -> STM ()) -> IO (TSessKey, qs)
+prepareWith initQS addQueue = do
   let (servers, gen1) = genServers gen0 nServers
   let (qs, _gen2) = genQueues gen1 servers nUsers nQueues
   atomically $ do
     trqs <- initQS
-    mapM_ (addQueue trqs) qs
-    pure (fmap (const Nothing) . Base.qKey $ head qs, trqs)
+    mapM_ (`addQueue` trqs) qs
+    pure (fmap (const Nothing) . Current.qKey $ head qs, trqs)
+  where
+    nUsers = 4
+    nServers = 10
+    nQueues = 10000
 
 genServers :: ChaChaDRG -> Int -> ([SMPServer], ChaChaDRG)
 genServers random nServers =
