@@ -245,21 +245,21 @@ switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 
 -- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
 deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteConnectionAsync c = withAgentEnv c . deleteConnectionAsync' c False
+deleteConnectionAsync c = withAgentEnv c . deleteConnectionAsync' c
 
 -- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
 deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
-deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c False
+deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c
 
 -- | Delete SMP agent connection (DEL command) asynchronously,
 -- waiting for delivery of sent messages to complete. No synchronous response
 deleteConnectionAsyncWaitDelivery :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteConnectionAsyncWaitDelivery c = withAgentEnv c . deleteConnectionAsync' c True
+deleteConnectionAsyncWaitDelivery c = withAgentEnv c . deleteConnectionAsyncWaitDelivery' c
 
 -- | Delete SMP agent connections using batch commands asynchronously,
 -- waiting for delivery of sent messages to complete. No synchronous response
 deleteConnectionsAsyncWaitDelivery :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
-deleteConnectionsAsyncWaitDelivery c = withAgentEnv c . deleteConnectionsAsync' c True
+deleteConnectionsAsyncWaitDelivery c = withAgentEnv c . deleteConnectionsAsyncWaitDelivery' c
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
@@ -625,11 +625,17 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
       (RcvQueue {server}, _) <- withStoreCtx "ackMessageAsync': setMsgUserAck" c $ \db -> setMsgUserAck db connId mId
       enqueueCommand c corrId connId (Just server) . AClientCommand $ APC SAEConn $ ACK msgId rcptInfo_
 
-deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> Bool -> ConnId -> m ()
-deleteConnectionAsync' c waitDelivery connId = deleteConnectionsAsync' c waitDelivery [connId]
+deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+deleteConnectionAsync' c connId = deleteConnectionsAsync' c [connId]
 
-deleteConnectionsAsync' :: AgentMonad m => AgentClient -> Bool -> [ConnId] -> m ()
-deleteConnectionsAsync' = deleteConnectionsAsync_ $ pure ()
+deleteConnectionsAsync' :: AgentMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsync' c = deleteConnectionsAsync_ (pure ()) c False
+
+deleteConnectionAsyncWaitDelivery' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+deleteConnectionAsyncWaitDelivery' c connId = deleteConnectionsAsyncWaitDelivery' c [connId]
+
+deleteConnectionsAsyncWaitDelivery' :: AgentMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsyncWaitDelivery' c = deleteConnectionsAsync_ (pure ()) c True
 
 deleteConnectionsAsync_ :: forall m. AgentMonad m => m () -> AgentClient -> Bool -> [ConnId] -> m ()
 deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
