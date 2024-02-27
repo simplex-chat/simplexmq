@@ -1432,7 +1432,7 @@ testAsyncCommands =
       ]
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
     get alice =##> \case ("7", _, OK) -> True; _ -> False
-    deleteConnectionAsync alice False bobId
+    deleteConnectionAsync alice bobId
     get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1502,7 +1502,7 @@ testDeleteConnectionAsync t = do
     (bId3, _inv) <- createConnection a 1 True SCMInvitation Nothing SMSubscribe
     pure ([bId1, bId2, bId3] :: [ConnId])
   runRight_ $ do
-    deleteConnectionsAsync a False connIds
+    deleteConnectionsAsync a connIds
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
@@ -1529,7 +1529,7 @@ testDeleteConnectionAsyncWaitDeliveryNoPending t = do
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
 
-    deleteConnectionsAsync alice True [bobId]
+    deleteConnectionsAsyncWaitDelivery alice [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == bobId; _ -> False
     get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
 
@@ -1569,7 +1569,7 @@ testDeleteConnectionAsyncWaitDelivery t = do
     ("", "", DOWN _ _) <- nGet bob
     3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
     4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
-    deleteConnectionsAsync alice True [bobId]
+    deleteConnectionsAsyncWaitDelivery alice [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -1808,7 +1808,7 @@ testSwitchDelete servers = do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-    deleteConnectionAsync a False bId
+    deleteConnectionAsync a bId
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False

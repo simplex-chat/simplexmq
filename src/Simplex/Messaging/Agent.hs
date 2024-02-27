@@ -53,6 +53,8 @@ module Simplex.Messaging.Agent
     switchConnectionAsync,
     deleteConnectionAsync,
     deleteConnectionsAsync,
+    deleteConnectionAsyncWaitDelivery,
+    deleteConnectionsAsyncWaitDelivery,
     createConnection,
     joinConnection,
     allowConnection,
@@ -242,12 +244,22 @@ switchConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -
 switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 
 -- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
-deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> Bool -> ConnId -> m ()
-deleteConnectionAsync c waitDelivery = withAgentEnv c . deleteConnectionAsync' c waitDelivery
+deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+deleteConnectionAsync c = withAgentEnv c . deleteConnectionAsync' c False
 
 -- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
-deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> Bool -> [ConnId] -> m ()
-deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync' c waitDelivery
+deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c False
+
+-- | Delete SMP agent connection (DEL command) asynchronously,
+-- waiting for delivery of sent messages to complete. No synchronous response
+deleteConnectionAsyncWaitDelivery :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+deleteConnectionAsyncWaitDelivery c = withAgentEnv c . deleteConnectionAsync' c True
+
+-- | Delete SMP agent connections using batch commands asynchronously,
+-- waiting for delivery of sent messages to complete. No synchronous response
+deleteConnectionsAsyncWaitDelivery :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsyncWaitDelivery c = withAgentEnv c . deleteConnectionsAsync' c True
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
