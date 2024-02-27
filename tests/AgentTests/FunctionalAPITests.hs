@@ -1589,7 +1589,7 @@ testDeleteConnectionAsyncWaitDelivery t = do
     get bob =##> \case ("", c, Msg "message 1") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 4) Nothing
 
-    -- queue wasn't deleted (DEL_RCVQ never reached server), so bob can send message
+    -- queue wasn't deleted (DEL never reached server, see DEL_RCVQ with error), so bob can send message
     5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, SENT $ baseId + 5)
 
