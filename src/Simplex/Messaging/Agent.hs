@@ -1476,17 +1476,19 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
       rqs = concat $ M.elems rcvQs
       connIds' = M.keys rcvQs
   forM_ connIds' $ disableConn c
-  withStore' c $ \db -> forM_ (M.keys delRs) $ deleteConn db waitDelivery
-  -- ! delRs is not used to notify about the result in any calling functions,
-  -- ! it is only used to check result count in deleteConnections_;
+  -- ! delRs is not used to notify about the result in any of the calling functions,
+  -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDelivery) (M.keys delRs))
+  forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure (errs' <> delRs, rqs, connIds')
   where
     rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
     rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
       [] -> Left $ Right ()
       rqs -> Right rqs
+    notify = atomically . writeTBQueue (subQ c)
 
 deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> Bool -> [RcvQueue] -> m (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c waitDelivery ntf rqs = do

@@ -1533,6 +1533,7 @@ testDeleteConnectionAsyncWaitDelivery t = do
     ("", "", DOWN _ _) <- nGet alice
     ("", "", DOWN _ _) <- nGet bob
     3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
     deleteConnectionsAsync alice True [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1540,6 +1541,9 @@ testDeleteConnectionAsyncWaitDelivery t = do
 
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
     get alice ##> ("", bobId, SENT $ baseId + 3)
+    get alice ##> ("", bobId, SENT $ baseId + 4)
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+
     liftIO $
       getInAnyOrder
         bob
@@ -1547,8 +1551,11 @@ testDeleteConnectionAsyncWaitDelivery t = do
           \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
         ]
     ackMessage bob aliceId (baseId + 3) Nothing
+    get bob =##> \case ("", c, Msg "message 1") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 4) Nothing
 
-    liftIO $ threadDelay 3000000
+    -- 5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
+    -- get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
 
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
