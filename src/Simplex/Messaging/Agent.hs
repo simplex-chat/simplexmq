@@ -690,6 +690,7 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
        ) of
     (Just qInfo, Just (Compatible e2eRcvParams@(CR.E2ERatchetParams _ _ rcDHRr _kem)), Just aVersion@(Compatible connAgentVersion)) -> do
       g <- asks random
+      -- TODO PQ KEM
       (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g (version e2eRcvParams) Nothing
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       -- generate KEM keypair if needed

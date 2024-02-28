@@ -30,6 +30,10 @@ newtype KEMCiphertext = KEMCiphertext ByteString
 newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
   deriving (Eq, Show)
 
+unsafeRevealKEMSharedKey :: KEMSharedKey -> String
+unsafeRevealKEMSharedKey (KEMSharedKey scrubbed) = show (BA.convert scrubbed :: ByteString)
+{-# DEPRECATED unsafeRevealKEMSharedKey "unsafeRevealKEMSharedKey left in code" #-}
+
 type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
 
 sntrup761Keypair :: TVar ChaChaDRG -> IO KEMKeyPair

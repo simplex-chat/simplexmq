@@ -1,10 +1,10 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module AgentTests.EqInstances where
 
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 
 instance Eq SomeConn where
