@@ -153,6 +153,7 @@ module Simplex.Messaging.Protocol
     tEncodeBatch1,
     batchTransmissions,
     batchTransmissions',
+    batchCompressed,
     batchTransmissions_,
 
     -- * exports for tests
@@ -184,6 +185,7 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Compression (batchPackZstd)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1327,6 +1329,9 @@ batchTransmissions' batch bSize ts
         | otherwise -> TBError TELargeMsg r
         where
           s = tEncode t
+
+batchCompressed :: Traversable t => Int -> t ByteString -> IO [TransportBatch ()]
+batchCompressed bSize blocks = batchTransmissions_ bSize . fmap (\x -> (Right $ smpEncode x, ())) <$> batchPackZstd (16 * 1024) blocks
 
 -- | Pack encoded transmissions into batches
 batchTransmissions_ :: Foldable t => Int -> t (Either TransportError ByteString, r) -> [TransportBatch r]
