@@ -106,6 +106,7 @@ library
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
+      Simplex.Messaging.Compression
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
@@ -225,6 +226,7 @@ library
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -297,6 +299,7 @@ executable ntf-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -369,6 +372,7 @@ executable smp-agent
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -441,6 +445,7 @@ executable smp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -513,6 +518,7 @@ executable xftp
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -585,6 +591,7 @@ executable xftp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -696,6 +703,7 @@ test-suite simplexmq-test
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
