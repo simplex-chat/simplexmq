@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -152,6 +153,7 @@ module Simplex.Messaging.Protocol
     tEncodeBatch1,
     batchTransmissions,
     batchTransmissions',
+    batchTransmissions_,
 
     -- * exports for tests
     CommandTag (..),
@@ -166,6 +168,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -1309,11 +1312,11 @@ data TransportBatch r = TBTransmissions ByteString Int [r] | TBTransmission Byte
 batchTransmissions :: Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission) -> [TransportBatch ()]
 batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
 
--- | encodes and batches transmissions into blocks,
+-- | encodes and batches transmissions into blocks
 batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
-batchTransmissions' batch bSize
-  | batch = addBatch . foldr addTransmission ([], 0, 0, [], [])
-  | otherwise = map mkBatch1 . L.toList
+batchTransmissions' batch bSize ts
+  | batch = batchTransmissions_ bSize $ L.map (first $ fmap tEncodeForBatch) ts
+  | otherwise = map mkBatch1 $ L.toList ts
   where
     mkBatch1 :: (Either TransportError SentRawTransmission, r) -> TransportBatch r
     mkBatch1 (t_, r) = case t_ of
@@ -1324,17 +1327,21 @@ batchTransmissions' batch bSize
         | otherwise -> TBError TELargeMsg r
         where
           s = tEncode t
+
+-- | Pack encoded transmissions into batches
+batchTransmissions_ :: Foldable t => Int -> t (Either TransportError ByteString, r) -> [TransportBatch r]
+batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
+  where
     -- 3 = 2 bytes reserved for pad size + 1 for transmission count
     bSize' = bSize - 3
-    addTransmission :: (Either TransportError SentRawTransmission, r) -> ([TransportBatch r], Int, Int, [ByteString], [r]) -> ([TransportBatch r], Int, Int, [ByteString], [r])
-    addTransmission (t_, r) acc@(bs, len, n, ss, rs) = case t_ of
+    addTransmission :: (Either TransportError ByteString, r) -> ([TransportBatch r], Int, Int, [ByteString], [r]) -> ([TransportBatch r], Int, Int, [ByteString], [r])
+    addTransmission (t_, r) acc@(bs, !len, !n, ss, rs) = case t_ of
       Left e -> (TBError e r : addBatch acc, 0, 0, [], [])
-      Right t
+      Right s
         | len' <= bSize' && n < 255 -> (bs, len', 1 + n, s : ss, r : rs)
         | sLen <= bSize' -> (addBatch acc, sLen, 1, [s], [r])
         | otherwise -> (TBError TELargeMsg r : addBatch acc, 0, 0, [], [])
         where
-          s = tEncodeForBatch t
           sLen = B.length s
           len' = len + sLen
     addBatch :: ([TransportBatch r], Int, Int, [ByteString], [r]) -> [TransportBatch r]
