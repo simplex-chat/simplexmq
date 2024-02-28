@@ -33,7 +33,7 @@ import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
-import Data.Composition ((.:))
+import Data.Composition ((.:), (.:.))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -264,7 +264,7 @@ type SndE2ERatchetParams a = AE2ERatchetParams a
 
 data PrivRKEMParams (s :: RatchetKEMState) where
   PrivateRKParamsProposed :: KEMKeyPair -> PrivRKEMParams 'RKSProposed
-  PrivateRKParamsAccepted :: KEMSharedKey -> KEMKeyPair -> PrivRKEMParams 'RKSAccepted
+  PrivateRKParamsAccepted :: KEMCiphertext -> KEMSharedKey -> KEMKeyPair -> PrivRKEMParams 'RKSAccepted
 
 data APrivRKEMParams = forall s. RatchetKEMStateI s => APRKP (SRatchetKEMState s) (PrivRKEMParams s)
 
@@ -273,7 +273,7 @@ type RcvPrivRKEMParams = PrivRKEMParams 'RKSProposed
 instance RatchetKEMStateI s => Encoding (PrivRKEMParams s) where
   smpEncode = \case
     PrivateRKParamsProposed k -> smpEncode ('P', k)
-    PrivateRKParamsAccepted shared k -> smpEncode ('A', shared, k)
+    PrivateRKParamsAccepted ct shared k -> smpEncode ('A', ct, shared, k)
   smpP = (\(APRKP _ ps) -> checkRatchetKEMState' ps) <$?> smpP
 
 instance Encoding (APrivRKEMParams) where
@@ -281,7 +281,7 @@ instance Encoding (APrivRKEMParams) where
   smpP =
     smpP >>= \case
       'P' -> APRKP SRKSProposed . PrivateRKParamsProposed <$> smpP
-      'A' -> APRKP SRKSAccepted .: PrivateRKParamsAccepted <$> smpP <*> smpP
+      'A' -> APRKP SRKSAccepted .:. PrivateRKParamsAccepted <$> smpP <*> smpP <*> smpP
       _ -> fail "bad APrivRKEMParams"
 
 instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . smpEncode
@@ -309,12 +309,14 @@ generateE2EParams g v useKEM_ = do
           ProposeKEM -> pure (RKParamsProposed k, PrivateRKParamsProposed ks)
           AcceptKEM k' -> do
             (ct, shared) <- sntrup761Enc g k' 
-            pure (RKParamsAccepted ct k, PrivateRKParamsAccepted shared ks)
+            pure (RKParamsAccepted ct k, PrivateRKParamsAccepted ct shared ks)
       _ -> pure Nothing
 
+-- used by party initiating connection, Bob in double-ratchet spec
 generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> Maybe (UseKEM 'RKSProposed) -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
 generateRcvE2EParams = generateE2EParams
 
+-- used by party accepting connection, Alice in double-ratchet spec
 generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> Maybe AUseKEM -> IO (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams, AE2ERatchetParams a)
 generateSndE2EParams g v = \case
   Nothing -> do
@@ -324,68 +326,52 @@ generateSndE2EParams g v = \case
     (pk1, pk2, pKem, e2eParams) <- generateE2EParams g v (Just useKEM)
     pure (pk1, pk2, APRKP s <$> pKem, AE2ERatchetParams s e2eParams)
 
--- -- if version supports KEM and withKEM is True, the result will include KEMSecretKey and KEMPublicKey in RcvE2ERatchetParams
--- generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> Bool -> IO (PrivateKey a, PrivateKey a, Maybe KEMKeyPair, RcvE2ERatchetParams a)
--- generateRcvE2EParams g v withKEM = do
---   (k1, pk1) <- atomically $ generateKeyPair g
---   (k2, pk2) <- atomically $ generateKeyPair g
---   pKem <- kemPair
---   pure (pk1, pk2, pKem, E2ERatchetParams v k1 k2 (RKParamsProposed . fst <$> pKem))
---   where
---     kemPair
---       | v >= pqRatchetVersion && withKEM = Just <$> sntrup761Keypair g
---       | otherwise = pure Nothing
-
--- data WithKEM = NoKEM | WithKEM (Maybe KEMPublicKey)
-
--- -- if version supports KEM, the result will depend on WithKEM parameter:
--- -- NoKEM: no PrivateE2ERachetKEM, no E2ERachetKEM in SndE2ERatchetParams
--- -- WithKEM Nothing: PrivateE2ERachetKEM without KEMSharedKey, E2ERachetKEM in SndE2ERatchetParams without KEMCiphertext
--- -- WithKEM (Just KEMPublicKey): PrivateE2ERachetKEM with KEMSharedKey, E2ERachetKEM in SndE2ERatchetParams with KEMCiphertext
--- generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> WithKEM -> IO (PrivateKey a, PrivateKey a, Maybe PrivateE2ERachetKEM, SndE2ERatchetParams a)
--- generateSndE2EParams g v withKEM = do
---   (k1, pk1) <- atomically $ generateKeyPair g
---   (k2, pk2) <- atomically $ generateKeyPair g
---   (pKemParams, e2eParams) <- kemParams k1 k2
---   pure (pk1, pk2, pKemParams, e2eParams)
---   where
---     kemParams :: PublicKey a -> PublicKey a -> IO (Maybe PrivateE2ERachetKEM, SndE2ERatchetParams a)
---     kemParams k1 k2 = case withKEM of
---       WithKEM kem_ | v >= pqRatchetVersion -> do
---         pKem@(k', _) <- sntrup761Keypair g
---         (ct_, shared_) <- case kem_ of
---           Just k -> bimap Just Just <$> sntrup761Enc g k
---           Nothing -> pure (Nothing, Nothing)
---         pure (Just $ PrivateE2ERachetKEM pKem shared_, e2eRachetParams $ ratchetKEMParams k' ct_)
---       _ -> pure (Nothing, AE2ERatchetParams SRKSProposed $ E2ERatchetParams v k1 k2 Nothing)
---       where
---         e2eRachetParams :: ARKEMParams -> AE2ERatchetParams a
---         e2eRachetParams (ARKP s kem) = AE2ERatchetParams s $ E2ERatchetParams v k1 k2 (Just kem)
-
 data RatchetInitParams = RatchetInitParams
   { assocData :: Str,
     ratchetKey :: RatchetKey,
     sndHK :: HeaderKey,
-    rcvNextHK :: HeaderKey
+    rcvNextHK :: HeaderKey,
+    kemAccepted :: Maybe RatchetKEMAccepted
   }
   deriving (Show)
 
 -- this is used by the peer joining the connection
-pqX3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe APrivRKEMParams -> E2ERatchetParams 'RKSProposed a -> RatchetInitParams
-pqX3dhSnd spk1 spk2 _ (E2ERatchetParams v rk1 rk2 _) =
-  pqX3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
+pqX3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe APrivRKEMParams -> E2ERatchetParams 'RKSProposed a -> Either CryptoError RatchetInitParams
+--        3. replied       2. received
+pqX3dhSnd spk1 spk2 spKem_ (E2ERatchetParams v rk1 rk2 rKem_) =
+  pqX3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2) <$> sndPq spKem_ rKem_
+  where
+    sndPq :: Maybe APrivRKEMParams -> Maybe (RKEMParams 'RKSProposed) -> Either CryptoError (Maybe RatchetKEMAccepted)
+    sndPq Nothing _ = Right Nothing
+    sndPq (Just (APRKP _ (PrivateRKParamsProposed _))) Nothing = Right Nothing
+    -- include ciphertext in PrivateRKParamsAccepted
+    sndPq (Just (APRKP _ (PrivateRKParamsAccepted ct shared _))) (Just (RKParamsProposed k)) = Right $ Just (RatchetKEMAccepted k shared ct)
+    sndPq _ _ = Left CERatchetKEMState
+
 
 -- this is used by the peer that created new connection, after receiving the reply
-pqX3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe (PrivRKEMParams 'RKSProposed) -> E2ERatchetParams s a -> RatchetInitParams
-pqX3dhRcv rpk1 rpk2 _ (E2ERatchetParams v sk1 sk2 _) =
-  pqX3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
+pqX3dhRcv :: forall s a. (RatchetKEMStateI s, DhAlgorithm a) => PrivateKey a -> PrivateKey a -> Maybe (PrivRKEMParams 'RKSProposed) -> E2ERatchetParams s a -> ExceptT CryptoError IO RatchetInitParams
+--        1. sent          4. received in reply
+pqX3dhRcv rpk1 rpk2 rpKem_ (E2ERatchetParams v sk1 sk2 sKem_) = do
+  kem_ <- rcvPq rpKem_ sKem_
+  pure $ pqX3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2) kem_
+  where
+    rcvPq :: Maybe (PrivRKEMParams 'RKSProposed) -> Maybe (RKEMParams s) -> ExceptT CryptoError IO (Maybe RatchetKEMAccepted)
+    rcvPq _ Nothing = pure Nothing
+    rcvPq Nothing (Just (RKParamsProposed _)) = pure Nothing
+    rcvPq (Just (PrivateRKParamsProposed (_, pk))) (Just (RKParamsAccepted ct k')) = do
+      shared <- liftIO $ sntrup761Dec ct pk
+      pure $ Just (RatchetKEMAccepted k' shared ct)
+    rcvPq _ _ = throwError CERatchetKEMState
+        
 
-pqX3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
-pqX3dh _v (sk1, rk1) dh1 dh2 dh3 =
-  RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk}
+pqX3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> RatchetInitParams
+pqX3dh _v (sk1, rk1) dh1 dh2 dh3 kemAccepted =
+  RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk, kemAccepted}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
-    dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
+    dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3 <> pq
+    pq = maybe "" (\RatchetKEMAccepted {rcPQRss = KEMSharedKey ss} -> BA.convert ss) kemAccepted
     (hk, nhk, sk) =
       let salt = B.replicate 64 '\0'
         in hkdf3 salt dhs "SimpleXX3DH"
@@ -428,9 +414,6 @@ data RatchetKEM = RatchetKEM
     rcKEMs :: Maybe RatchetKEMAccepted
   }
   deriving (Show)
-
-ratchetKEM :: KEMKeyPair -> RatchetKEM
-ratchetKEM rcPQRs = RatchetKEM {rcPQRs, rcKEMs = Nothing}
 
 data RatchetKEMAccepted = RatchetKEMAccepted
   { rcPQRr :: KEMPublicKey, -- received key
@@ -503,7 +486,7 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- @
 initSndRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> Maybe KEMKeyPair -> RatchetInitParams -> Ratchet a
-initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted} = do
   -- TODO PQ
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs Nothing
@@ -512,7 +495,7 @@ initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs_ RatchetInitParams {assocData, rat
           rcAD = assocData,
           rcDHRs,
           -- TODO here we can have accepted KEM state if encapsulation key is passed
-          rcKEM = ratchetKEM <$> rcPQRs_,
+          rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
           rcRK,
           rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK}, -- rcKEMs should be initialized here
           rcRcv = Nothing,
@@ -531,7 +514,7 @@ initSndRatchet rcVersion rcDHRr rcDHRs rcPQRs_ RatchetInitParams {assocData, rat
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> Maybe KEMKeyPair -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcVersion rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
+initRcvRatchet rcVersion rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted} =
   Ratchet
     { rcVersion,
       rcAD = assocData,
@@ -541,7 +524,7 @@ initRcvRatchet rcVersion rcDHRs rcPQRs_ RatchetInitParams {assocData, ratchetKey
       -- state.PQRr = None
       -- state.PQRss = None
       -- state.PQRct = None
-      rcKEM = ratchetKEM <$> rcPQRs_,
+      rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
       rcRK = ratchetKey,
       rcSnd = Nothing,
       rcRcv = Nothing,

@@ -4,6 +4,7 @@
 
 module CoreTests.TRcvQueuesTests where
 
+import AgentTests.EqInstances
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map as M
 import qualified Data.Set as S

@@ -607,6 +607,7 @@ test-suite simplexmq-test
       AgentTests
       AgentTests.ConnectionRequestTests
       AgentTests.DoubleRatchetTests
+      AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
       AgentTests.NotificationTests

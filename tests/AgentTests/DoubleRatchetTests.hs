@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -24,6 +25,7 @@ import qualified Data.Map.Strict as M
 import Data.Type.Equality
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
@@ -34,27 +36,26 @@ doubleRatchetTests :: Spec
 doubleRatchetTests = do
   describe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" testMessageHeader
-    it "should encrypt and decrypt messages" $ do
-      withRatchets @X25519 testEncryptDecrypt
-      withRatchets @X448 testEncryptDecrypt
-    it "should encrypt and decrypt skipped messages" $ do
-      withRatchets @X25519 testSkippedMessages
-      withRatchets @X448 testSkippedMessages
-    it "should encrypt and decrypt many messages" $ do
-      withRatchets @X25519 testManyMessages
-    it "should allow skipped after ratchet advance" $ do
-      withRatchets @X25519 testSkippedAfterRatchetAdvance
+    it "should encrypt and decrypt messages" $ withRatchets testEncryptDecrypt
+    it "should encrypt and decrypt skipped messages" $ withRatchets testSkippedMessages
+    it "should encrypt and decrypt many messages" $ withRatchets testManyMessages
+    it "should allow skipped after ratchet advance" $ withRatchets testSkippedAfterRatchetAdvance
     it "should encode/decode ratchet as JSON" $ do
-      testKeyJSON C.SX25519
-      testKeyJSON C.SX448
-      testRatchetJSON C.SX25519
-      testRatchetJSON C.SX448
-    it "should agree the same ratchet parameters" $ do
-      testX3dh C.SX25519
-      testX3dh C.SX448
-    it "should agree the same ratchet parameters with version 1" $ do
-      testX3dhV1 C.SX25519
-      testX3dhV1 C.SX448
+      testAlgs testKeyJSON
+      testAlgs testRatchetJSON
+    it "should agree the same ratchet parameters" $ testAlgs testX3dh
+    it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
+  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+    describe "hybrid KEM key agreement" $ do
+      it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
+      it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
+      it "should reject proposed KEM in reply" $ testAlgs testPqX3dhProposeReject
+    describe "hybrid KEM key agreement errors" $ do
+      it "should fail if reply contains acceptance without proposal" $ testAlgs testPqX3dhAcceptWithoutProposalError
+      it "should fail if reply contains proposal after proposal was received" $ testAlgs testPqX3dhProposeError
+
+testAlgs :: (forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()) -> IO ()
+testAlgs test = test C.SX25519 >> test C.SX448
 
 paddedMsgLen :: Int
 paddedMsgLen = 100
@@ -204,7 +205,7 @@ testX3dh _ = do
   (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g currentE2EEncryptVersion Nothing
   (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g currentE2EEncryptVersion Nothing
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
-      paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
+  paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
 
 testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
@@ -213,8 +214,83 @@ testX3dhV1 _ = do
   (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g 1 Nothing
   (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g 1 Nothing
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
-      paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
+  paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
+
+testPqX3dhProposeInReply :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhProposeInReply _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  -- initiate (no KEM)
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v Nothing
+  -- propose KEM in reply
+  (pkBob1, pkBob2, Just pKemBob, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSProposed ProposeKEM)
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
+  paramsAlice `compatibleRatchets` paramsBob
+
+testPqX3dhProposeAccept :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhProposeAccept _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  -- initiate (propose KEM)
+  (pkAlice1, pkAlice2, Just pKemAlice, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v (Just ProposeKEM)
+  E2ERatchetParams _ _ _ (Just (RKParamsProposed aliceKem)) <- pure e2eAlice
+  -- accept KEM
+  (pkBob1, pkBob2, Just pKemBob, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSAccepted $ AcceptKEM aliceKem)
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 (Just pKemAlice) e2eBob
+  paramsAlice `compatibleRatchets` paramsBob
+
+testPqX3dhProposeReject :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhProposeReject _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  -- initiate (propose KEM)
+  (pkAlice1, pkAlice2, Just pKemAlice, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v (Just ProposeKEM)
+  E2ERatchetParams _ _ _ (Just (RKParamsProposed _)) <- pure e2eAlice
+  -- reject KEM
+  (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v Nothing
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 (Just pKemAlice) e2eBob
+  paramsAlice `compatibleRatchets` paramsBob
+
+testPqX3dhAcceptWithoutProposalError :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhAcceptWithoutProposalError _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  -- initiate (no KEM)
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v Nothing
+  E2ERatchetParams _ _ _ Nothing <- pure e2eAlice
+  -- incorrectly accept KEM
+  -- we don't have key in proposal, so we just generate it
+  (k, _) <- sntrup761Keypair g
+  (pkBob1, pkBob2, Just pKemBob, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSAccepted $ AcceptKEM k)
+  pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice `shouldBe` Left C.CERatchetKEMState
+  runExceptT (pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob) `shouldReturn` Left C.CERatchetKEMState
+
+testPqX3dhProposeError :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhProposeError _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  -- initiate (propose KEM)
+  (pkAlice1, pkAlice2, Just pKemAlice, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v (Just ProposeKEM)
+  E2ERatchetParams _ _ _ (Just (RKParamsProposed _)) <- pure e2eAlice
+  -- incorrectly propose KEM again in reply
+  (pkBob1, pkBob2, Just pKemBob, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSProposed ProposeKEM)
+  pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice `shouldBe` Left C.CERatchetKEMState
+  runExceptT (pqX3dhRcv pkAlice1 pkAlice2 (Just pKemAlice) e2eBob) `shouldReturn` Left C.CERatchetKEMState
+
+compatibleRatchets :: RatchetInitParams -> RatchetInitParams -> Expectation
+compatibleRatchets
+  RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}
+  RatchetInitParams {assocData = ad, ratchetKey = rk, sndHK = shk, rcvNextHK = rnhk, kemAccepted = ka} = do
+    assocData == ad && ratchetKey == rk && sndHK == shk && rcvNextHK == rnhk `shouldBe` True
+    case (kemAccepted, ka) of
+      (Just RatchetKEMAccepted {rcPQRr, rcPQRss, rcPQRct}, Just RatchetKEMAccepted {rcPQRr = pqk, rcPQRss = pqss, rcPQRct = pqct}) ->
+        pqk /= rcPQRr && pqss == rcPQRss && pqct == rcPQRct `shouldBe` True
+      (Nothing, Nothing) -> pure ()
+      _ -> expectationFailure "RatchetInitParams params are not compatible"
 
 (#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys), ByteString) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> Expectation
 (alice, msg) #> bob = do
@@ -222,8 +298,11 @@ testX3dhV1 _ = do
   Decrypted msg'' <- decrypt bob msg'
   msg'' `shouldBe` msg
 
-withRatchets :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()) -> Expectation
-withRatchets test = do
+withRatchets :: (forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ())) -> Expectation
+withRatchets test = withRatchets_ @X25519 test >> withRatchets_ @X448 test
+
+withRatchets_ :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()) -> Expectation
+withRatchets_ test = do
   ga <- C.newRandom
   gb <- C.newRandom
   (a, b) <- initRatchets @a
@@ -236,8 +315,8 @@ initRatchets = do
   g <- C.newRandom
   (pkBob1, pkBob2, _pKemParams, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g currentE2EEncryptVersion Nothing
   (pkAlice1, pkAlice2, _pKem, e2eAlice) <- liftIO $ generateRcvE2EParams g currentE2EEncryptVersion Nothing
-  let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
-      paramsAlice = pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 Nothing paramsBob
       alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 Nothing paramsAlice
