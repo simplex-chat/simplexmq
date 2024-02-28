@@ -187,6 +187,7 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Debug.Trace
 import Control.Concurrent.STM
 import Control.Exception (Exception)
 import Control.Monad
@@ -1002,7 +1003,7 @@ maxMsgLen = 2 ^ (16 :: Int) - 3
 pad :: ByteString -> Int -> Either CryptoError ByteString
 pad msg paddedLen
   | len <= maxMsgLen && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
-  | otherwise = Left CryptoLargeMsgError
+  | otherwise = traceShow "we are here" $ Left CryptoLargeMsgError
   where
     len = B.length msg
     padLen = paddedLen - len - 2

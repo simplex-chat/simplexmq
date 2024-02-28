@@ -61,16 +61,16 @@ sntrup761Dec (KEMCiphertext c) (KEMSecretKey sk) =
         <$> BA.alloc c_SNTRUP761_SIZE (\kPtr -> c_sntrup761_dec kPtr cPtr skPtr)
 
 instance Encoding KEMSecretKey where
-  smpEncode (KEMSecretKey c) = smpEncode (BA.convert c :: ByteString)
-  smpP = KEMSecretKey . BA.convert <$> smpP @ByteString
+  smpEncode (KEMSecretKey c) = smpEncode . Large $ BA.convert c
+  smpP = KEMSecretKey . BA.convert . unLarge <$> smpP
 
 instance StrEncoding KEMSecretKey where
   strEncode (KEMSecretKey pk) = strEncode (BA.convert pk :: ByteString)
   strP = KEMSecretKey . BA.convert <$> strP @ByteString
 
 instance Encoding KEMPublicKey where
-  smpEncode (KEMPublicKey pk) = smpEncode (BA.convert pk :: ByteString)
-  smpP = KEMPublicKey . BA.convert <$> smpP @ByteString
+  smpEncode (KEMPublicKey pk) = smpEncode . Large $ BA.convert pk
+  smpP = KEMPublicKey . BA.convert . unLarge <$> smpP
 
 instance StrEncoding KEMPublicKey where
   strEncode (KEMPublicKey pk) = strEncode (BA.convert pk :: ByteString)
