@@ -1621,7 +1621,7 @@ testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
 
-    deleteConnectionsAsync bob False [aliceId]
+    deleteConnectionsAsync bob [aliceId]
     get bob =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == aliceId; _ -> False
     get bob =##> \case ("", cId, DEL_CONN) -> cId == aliceId; _ -> False
 
@@ -1631,7 +1631,7 @@ testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
     ("", "", DOWN _ _) <- nGet alice
     3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
     4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
-    deleteConnectionsAsync alice True [bobId]
+    deleteConnectionsAsyncWaitDelivery alice [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
