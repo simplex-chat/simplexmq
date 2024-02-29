@@ -35,7 +35,7 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  fdescribe "double-ratchet encryption/decryption" $ do
+  describe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetVersion currentE2EEncryptVersion
@@ -45,7 +45,7 @@ doubleRatchetTests = do
       testAlgs testRatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
-  fdescribe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
@@ -420,7 +420,7 @@ initRatchetsKEMProposedAgain = do
 
 encrypt_ :: AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ (_, rc, _) msg =
-  runExceptT (rcEncrypt rc paddedMsgLen msg)
+  runExceptT (rcEncrypt rc paddedMsgLen msg Nothing)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
