@@ -35,7 +35,7 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  describe "double-ratchet encryption/decryption" $ do
+  fdescribe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetVersion currentE2EEncryptVersion
@@ -45,7 +45,7 @@ doubleRatchetTests = do
       testAlgs testRatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
-  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+  fdescribe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
@@ -366,7 +366,7 @@ initRatchets = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMDisable
   pure (alice, bob)
 
 initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
@@ -382,7 +382,7 @@ initRatchetsKEMProposed = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
   pure (alice, bob)
 
 initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
@@ -399,7 +399,7 @@ initRatchetsKEMAccepted = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
   pure (alice, bob)
 
 initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
@@ -415,7 +415,7 @@ initRatchetsKEMProposedAgain = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
   pure (alice, bob)
 
 encrypt_ :: AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))

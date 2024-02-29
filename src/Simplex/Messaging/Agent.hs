@@ -2133,12 +2133,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             case status of
               New -> case (conn', e2eEncryption) of
                 -- party initiating connection
-                (RcvConnection {}, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _))) -> do
+                (RcvConnection {}, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ kem_))) -> do
                   unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
                   -- TODO this should also return previously generated KEM keypair rcPQRs
                   (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
                   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
-                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs rcParams
+                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs rcParams $ maybe CR.KEMDisable (const CR.KEMEnable) kem_
                   g <- asks random
                   (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
                   case (agentMsgBody_, skipped) of
@@ -2325,7 +2325,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             _ -> qError $ name <> ": message must be sent to duplex connection"
 
           newRatchetKey :: CR.RcvE2ERatchetParams 'C.X448 -> Connection 'CDuplex -> m ()
-          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv _kem) conn'@(DuplexConnection cData'@ConnData {lastExternalSndId} _ sqs) =
+          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv kem_) conn'@(DuplexConnection cData'@ConnData {lastExternalSndId} _ sqs) =
             unlessM ratchetExists $ do
               AgentConfig {e2eEncryptVRange} <- asks config
               unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
@@ -2380,7 +2380,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
                     -- TODO if KEM was sent in the invitation it should be passed here
                     rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eOtherPartyParams
-                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 rcParams
+                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 rcParams $ maybe CR.KEMDisable (const CR.KEMEnable) kem_
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
                     -- TODO it should check if KEM is already used in ratchet, and if yes generate and pass a new key pair

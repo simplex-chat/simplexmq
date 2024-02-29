@@ -384,7 +384,9 @@ data Ratchet a = Ratchet
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
-    rcEnableKEM :: Bool,
+    rcEnableKEM :: Bool, -- will enable KEM on the next ratchet step
+    rcSndKEM :: Bool, -- used KEM hybrid secret for sending ratchet
+    rcRcvKEM :: Bool, -- used KEM hybrid secret for receiving ratchet
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
     rcRcv :: Maybe RcvRatchet,
@@ -495,6 +497,8 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
           rcDHRs,
           rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
           rcEnableKEM = isJust rcPQRs_,
+          rcSndKEM = isJust kemAccepted,
+          rcRcvKEM = False,
           rcRK,
           rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK},
           rcRcv = Nothing,
@@ -512,8 +516,8 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> Ratchet a
-initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) =
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> EnableKEM -> Ratchet a
+initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) enableKEM =
   Ratchet
     { rcVersion,
       rcAD = assocData,
@@ -524,7 +528,9 @@ initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK
       -- state.PQRss = None
       -- state.PQRct = None
       rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-      rcEnableKEM = isJust rcPQRs_,
+      rcEnableKEM = enableKEM == KEMEnable,
+      rcSndKEM = False,
+      rcRcvKEM = False,
       rcRK = ratchetKey,
       rcSnd = Nothing,
       rcRcv = Nothing,
@@ -740,6 +746,8 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                     rc'
                       { rcDHRs = rcDHRs',
                         rcKEM = rcKEM',
+                        rcSndKEM = isJust kemSS',
+                        rcRcvKEM = isJust kemSS,
                         rcRK = rcRK'',
                         rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
                         rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
