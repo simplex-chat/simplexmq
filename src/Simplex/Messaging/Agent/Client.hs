@@ -124,6 +124,9 @@ module Simplex.Messaging.Agent.Client
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
     getAgentWorkersSummary,
+    SMPTransportSession,
+    NtfTransportSession,
+    XFTPTransportSession,
   )
 where
 
@@ -532,11 +535,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           where
             currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
-              qs <- RQ.getDelSessQueues tSess $ activeSubs c
-              mapM_ (`RQ.addQueue` pendingSubs c) qs
-              let cs = S.fromList $ map qConnId qs
-              cs' <- RQ.getConns $ activeSubs c
-              pure (qs, S.toList $ cs `S.difference` cs')
+              (qs, cs) <- RQ.getDelSessQueues tSess $ activeSubs c
+              RQ.batchAddQueues (pendingSubs c) qs
+              pure (qs, cs)
 
         serverDown :: ([RcvQueue], [ConnId]) -> IO ()
         serverDown (qs, conns) = whenM (readTVarIO active) $ do
@@ -594,16 +595,16 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   where
     resubscribe :: m ()
     resubscribe = do
-      cs <- atomically . RQ.getConns $ activeSubs c
+      cs <- readTVarIO $ RQ.getConnections $ activeSubs c
       rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
       liftIO $ do
-        let conns = S.toList $ S.fromList okConns `S.difference` cs
+        let conns = filter (`M.notMember` cs) okConns
         unless (null conns) $ notifySub "" $ UP srv conns
       let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
-        when (null okConns && S.null cs && null finalErrs) . liftIO $
+        when (null okConns && M.null cs && null finalErrs) . liftIO $
           closeClient c smpClients tSess
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
@@ -1060,9 +1061,9 @@ temporaryOrHostError = \case
 subscribeQueues :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
-  forM_ qs' $ \rq@RcvQueue {connId} -> atomically $ do
-    modifyTVar (subscrConns c) $ S.insert connId
-    RQ.addQueue rq $ pendingSubs c
+  atomically $ do
+    modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
+    RQ.batchAddQueues (pendingSubs c) qs'
   u <- askUnliftIO
   -- only "checked" queues are subscribed
   (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
