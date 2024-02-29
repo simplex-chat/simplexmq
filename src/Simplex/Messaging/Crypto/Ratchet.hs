@@ -67,7 +67,7 @@ currentE2EEncryptVersion :: Version
 currentE2EEncryptVersion = 3
 
 supportedE2EEncryptVRange :: VersionRange
-supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion kdfX3DHE2EEncryptVersion
+supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
 
 data RatchetKEMState
   = RKSProposed -- only KEM encapsulation key
@@ -548,8 +548,9 @@ data AMsgHeader
 -- to allow extension without increasing the size, the actual header length is:
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 -- TODO this must be version-dependent
+-- TODO this is the exact size, some reserve should be added
 paddedHeaderLen :: Int
-paddedHeaderLen = 3088
+paddedHeaderLen = 2284
 
 -- only used in tests to validate correct padding
 -- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)

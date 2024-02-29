@@ -243,11 +243,15 @@ supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentS
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
+-- TODO this should be version-dependent
+-- previously it was 14848, reduced by 2200 (roughly the increase of message ratchet header size)
 e2eEncConnInfoLength :: Int
-e2eEncConnInfoLength = 14848
+e2eEncConnInfoLength = 12648
 
+-- TODO this should be version-dependent
+-- previously it was 15856, reduced by 2200 (roughly the increase of message ratchet header size)
 e2eEncUserMsgLength :: Int
-e2eEncUserMsgLength = 15856
+e2eEncUserMsgLength = 13656
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
