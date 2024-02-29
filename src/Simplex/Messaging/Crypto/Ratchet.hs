@@ -334,34 +334,34 @@ data RatchetInitParams = RatchetInitParams
 pqX3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe APrivRKEMParams -> E2ERatchetParams 'RKSProposed a -> Either CryptoError (RatchetInitParams, Maybe KEMKeyPair)
 --        3. replied       2. received
 pqX3dhSnd spk1 spk2 spKem_ (E2ERatchetParams v rk1 rk2 rKem_) = do
-  (ks_, kem_) <- sndPq spKem_ rKem_
+  (ks_, kem_) <- sndPq
   let initParams = pqX3dh v (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2) kem_
   pure (initParams, ks_)
   where
-    sndPq :: Maybe APrivRKEMParams -> Maybe (RKEMParams 'RKSProposed) -> Either CryptoError (Maybe KEMKeyPair, Maybe RatchetKEMAccepted)
-    sndPq Nothing _ = Right (Nothing, Nothing)
-    sndPq (Just (APRKP _ (PrivateRKParamsProposed ks))) Nothing = Right (Just ks, Nothing)
-    -- include ciphertext in PrivateRKParamsAccepted
-    sndPq (Just (APRKP _ (PrivateRKParamsAccepted ct shared ks))) (Just (RKParamsProposed k)) = Right (Just ks, Just $ RatchetKEMAccepted k shared ct)
-    sndPq _ _ = Left CERatchetKEMState
-
+    sndPq :: Either CryptoError (Maybe KEMKeyPair, Maybe RatchetKEMAccepted)
+    sndPq = case spKem_ of
+      Just (APRKP _ ps) -> case (ps, rKem_) of
+        (PrivateRKParamsAccepted ct shared ks, Just (RKParamsProposed k)) -> Right (Just ks, Just $ RatchetKEMAccepted k shared ct)
+        (PrivateRKParamsProposed ks, _) -> Right (Just ks, Nothing) -- both parties can send "proposal" in case of ratchet renegotiation
+        _ -> Left CERatchetKEMState
+      Nothing -> Right (Nothing, Nothing)
 
 -- this is used by the peer that created new connection, after receiving the reply
 pqX3dhRcv :: forall s a. (RatchetKEMStateI s, DhAlgorithm a) => PrivateKey a -> PrivateKey a -> Maybe (PrivRKEMParams 'RKSProposed) -> E2ERatchetParams s a -> ExceptT CryptoError IO (RatchetInitParams, Maybe KEMKeyPair)
 --        1. sent          4. received in reply
 pqX3dhRcv rpk1 rpk2 rpKem_ (E2ERatchetParams v sk1 sk2 sKem_) = do
-  kem_ <- rcvPq rpKem_ sKem_
+  kem_ <- rcvPq
   let initParams = pqX3dh v (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2) (snd <$> kem_)
   pure (initParams, fst <$> kem_)
   where
-    rcvPq :: Maybe (PrivRKEMParams 'RKSProposed) -> Maybe (RKEMParams s) -> ExceptT CryptoError IO (Maybe (KEMKeyPair, RatchetKEMAccepted))
-    rcvPq _ Nothing = pure Nothing
-    rcvPq Nothing (Just (RKParamsProposed _)) = pure Nothing
-    rcvPq (Just (PrivateRKParamsProposed ks@(_, pk))) (Just (RKParamsAccepted ct k')) = do
-      shared <- liftIO $ sntrup761Dec ct pk
-      pure $ Just (ks, RatchetKEMAccepted k' shared ct)
-    rcvPq _ _ = throwError CERatchetKEMState
-        
+    rcvPq :: ExceptT CryptoError IO (Maybe (KEMKeyPair, RatchetKEMAccepted))
+    rcvPq = case sKem_ of
+      Just (RKParamsAccepted ct k') -> case rpKem_ of
+        Just (PrivateRKParamsProposed ks@(_, pk)) -> do
+          shared <- liftIO $ sntrup761Dec ct pk
+          pure $ Just (ks, RatchetKEMAccepted k' shared ct)
+        Nothing -> throwError CERatchetKEMState
+      _ -> pure Nothing -- both parties can send "proposal" in case of ratchet renegotiation
 
 pqX3dh :: DhAlgorithm a => Version -> (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> RatchetInitParams
 pqX3dh _v (sk1, rk1) dh1 dh2 dh3 kemAccepted =

@@ -50,14 +50,15 @@ doubleRatchetTests = do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
       it "should reject proposed KEM in reply" $ testAlgs testPqX3dhProposeReject
+      it "should allow second proposal in reply" $ testAlgs testPqX3dhProposeAgain
     describe "hybrid KEM key agreement errors" $ do
       it "should fail if reply contains acceptance without proposal" $ testAlgs testPqX3dhAcceptWithoutProposalError
-      it "should fail if reply contains proposal after proposal was received" $ testAlgs testPqX3dhProposeError
     describe "ratchet encryption/decryption" $ do
       it "should serialize and parse public KEM params" testKEMParams
       it "should serialize and parse message header" $ testAlgs testMessageHeaderKEM
       describe "message tests, KEM proposed" $ runMessageTests initRatchetsKEMProposed
       describe "message tests, KEM accepted" $ runMessageTests initRatchetsKEMAccepted
+      describe "message tests, KEM proposed again in reply" $ runMessageTests initRatchetsKEMProposedAgain
 
 runMessageTests :: (forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)) -> Spec
 runMessageTests initRatchets_ = do
@@ -316,17 +317,18 @@ testPqX3dhAcceptWithoutProposalError _ = do
   pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice `shouldBe` Left C.CERatchetKEMState
   runExceptT (pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob) `shouldReturn` Left C.CERatchetKEMState
 
-testPqX3dhProposeError :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
-testPqX3dhProposeError _ = do
+testPqX3dhProposeAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhProposeAgain _ = do
   g <- C.newRandom
   let v = max pqRatchetVersion currentE2EEncryptVersion
   -- initiate (propose KEM)
   (pkAlice1, pkAlice2, Just pKemAlice, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v (Just ProposeKEM)
   E2ERatchetParams _ _ _ (Just (RKParamsProposed _)) <- pure e2eAlice
-  -- incorrectly propose KEM again in reply
+  -- propose KEM again in reply - this is not an error
   (pkBob1, pkBob2, Just pKemBob, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSProposed ProposeKEM)
-  pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice `shouldBe` Left C.CERatchetKEMState
-  runExceptT (pqX3dhRcv pkAlice1 pkAlice2 (Just pKemAlice) e2eBob) `shouldReturn` Left C.CERatchetKEMState
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 (Just pKemAlice) e2eBob
+  paramsAlice `compatibleRatchets` paramsBob
 
 compatibleRatchets :: (RatchetInitParams, x) -> (RatchetInitParams, x) -> Expectation
 compatibleRatchets
@@ -392,6 +394,22 @@ initRatchetsKEMAccepted = do
   E2ERatchetParams _ _ _ (Just (RKParamsProposed aliceKem)) <- pure e2eAlice
   -- accept
   let useKem = AUseKEM SRKSAccepted (AcceptKEM aliceKem)
+  (pkBob1, pkBob2, Just pKemParams, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemParams) e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 (Just pKem) e2eBob
+  (_, pkBob3) <- atomically $ C.generateKeyPair g
+  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+  pure (alice, bob)
+
+initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchetsKEMProposedAgain = do
+  g <- C.newRandom
+  let v = max pqRatchetVersion currentE2EEncryptVersion
+  -- initiate (propose KEM)
+  (pkAlice1, pkAlice2, Just pKem, e2eAlice) <- liftIO $ generateRcvE2EParams g v (Just ProposeKEM)
+  -- propose KEM again in reply
+  let useKem = AUseKEM SRKSProposed ProposeKEM
   (pkBob1, pkBob2, Just pKemParams, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemParams) e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 (Just pKem) e2eBob
