@@ -1656,7 +1656,7 @@ testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
 
 testDeleteConnectionAsyncWaitDeliveryTimeout :: ATransport -> IO ()
 testDeleteConnectionAsyncWaitDeliveryTimeout t = do
-  alice <- getSMPAgentClient' 1 agentCfg {connDeleteWaitDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  alice <- getSMPAgentClient' 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
@@ -1697,7 +1697,7 @@ testDeleteConnectionAsyncWaitDeliveryTimeout t = do
 
 testDeleteConnectionAsyncWaitDeliveryTimeout2 :: ATransport -> IO ()
 testDeleteConnectionAsyncWaitDeliveryTimeout2 t = do
-  alice <- getSMPAgentClient' 1 agentCfg {connDeleteWaitDeliveryTimeout = 2, messageRetryInterval = fastMessageRetryInterval, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  alice <- getSMPAgentClient' 1 agentCfg {connDeleteDeliveryTimeout = 2, messageRetryInterval = fastMessageRetryInterval, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob

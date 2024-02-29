@@ -1480,8 +1480,8 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
-  waitDeliveryTimeout <- if waitDelivery then asks (Just . connDeleteWaitDeliveryTimeout . config) else pure Nothing
-  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDeliveryTimeout) (M.keys delRs))
+  deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure (errs' <> delRs, rqs, connIds')
   where
@@ -1495,8 +1495,8 @@ deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> Bool -> [Rc
 deleteConnQueues c waitDelivery ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
   let connIds = M.keys $ M.filter isRight rs
-  waitDeliveryTimeout <- if waitDelivery then asks (Just . connDeleteWaitDeliveryTimeout . config) else pure Nothing
-  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDeliveryTimeout) connIds)
+  deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure rs
   where
