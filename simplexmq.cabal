@@ -720,6 +720,7 @@ benchmark simplexmq-bench
   type: exitcode-stdio-1.0
   main-is: Bench.hs
   other-modules:
+      Bench.SNTRUP761
       Bench.TRcvQueues
       Paths_simplexmq
   hs-source-dirs:
