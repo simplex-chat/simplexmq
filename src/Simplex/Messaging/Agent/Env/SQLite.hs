@@ -93,6 +93,7 @@ data AgentConfig = AgentConfig
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
+    connDeleteWaitDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int64,
@@ -161,6 +162,7 @@ defaultAgentConfig =
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
+      connDeleteWaitDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       quotaExceededTimeout = 7 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds

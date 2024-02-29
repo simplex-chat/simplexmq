@@ -242,7 +242,7 @@ import Data.List (foldl', intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -604,21 +604,31 @@ getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
   (rq,) <$> ExceptT (getConn db connId)
 
 -- | Deletes connection, optionally checking for pending snd message deliveries; returns connection id if it was deleted
-deleteConn :: DB.Connection -> Bool -> ConnId -> IO (Maybe ConnId)
-deleteConn db waitDelivery connId
-  | waitDelivery = do
-    pending <- checkConnPendingSndDeliveries_ db connId
-    if pending then pure Nothing else delete
-  | otherwise = delete
+deleteConn :: DB.Connection -> Maybe NominalDiffTime -> ConnId -> IO (Maybe ConnId)
+deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
+  Nothing -> delete
+  Just timeout ->
+    ifM
+      checkNoPendingDeliveries_
+      delete
+      ( ifM
+          (checkWaitDeliveryTimeout_ timeout)
+          delete
+          (pure Nothing)
+      )
   where
     delete = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId) $> Just connId
-
-checkConnPendingSndDeliveries_ :: DB.Connection -> ConnId -> IO Bool
-checkConnPendingSndDeliveries_ db connId = do
-  r :: (Maybe Int64) <-
-    maybeFirstRow fromOnly $
-      DB.query db "SELECT 1 FROM snd_message_deliveries WHERE conn_id = ? AND failed = 0 LIMIT 1" (Only connId)
-  pure $ isJust r
+    checkNoPendingDeliveries_ = do
+      r :: (Maybe Int64) <-
+        maybeFirstRow fromOnly $
+          DB.query db "SELECT 1 FROM snd_message_deliveries WHERE conn_id = ? AND failed = 0 LIMIT 1" (Only connId)
+      pure $ isNothing r
+    checkWaitDeliveryTimeout_ timeout = do
+      cutoffTs <- addUTCTime (-timeout) <$> getCurrentTime
+      r :: (Maybe Int64) <-
+        maybeFirstRow fromOnly $
+          DB.query db "SELECT 1 FROM connections WHERE conn_id = ? AND deleted_at_wait_delivery < ? LIMIT 1" (connId, cutoffTs)
+      pure $ isJust r
 
 upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 upgradeRcvConnToDuplex db connId sq =
@@ -1925,10 +1935,11 @@ getConnData db connId' =
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
-  | waitDelivery =
-    DB.execute db "UPDATE connections SET deleted_wait_delivery = ? WHERE conn_id = ?" (True, connId)
+  | waitDelivery = do
+      currentTs <- getCurrentTime
+      DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
   | otherwise =
-    DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+      DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> Version -> IO ()
 setConnAgentVersion db connId aVersion =
@@ -1939,7 +1950,7 @@ getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connect
 
 getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =
-  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted_wait_delivery = ?" (Only True)
+  map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted_at_wait_delivery IS NOT NULL"
 
 setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
 setConnRatchetSync db connId ratchetSyncState =

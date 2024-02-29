@@ -8,11 +8,11 @@ import Database.SQLite.Simple.QQ (sql)
 m20240223_connections_wait_delivery :: Query
 m20240223_connections_wait_delivery =
   [sql|
-ALTER TABLE connections ADD COLUMN deleted_wait_delivery INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN deleted_at_wait_delivery TEXT;
 |]
 
 down_m20240223_connections_wait_delivery :: Query
 down_m20240223_connections_wait_delivery =
   [sql|
-ALTER TABLE connections DROP COLUMN deleted_wait_delivery;
+ALTER TABLE connections DROP COLUMN deleted_at_wait_delivery;
 |]

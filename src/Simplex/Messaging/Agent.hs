@@ -712,7 +712,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv 
       Right _ -> pure connId'
       Left e -> do
         -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
-        void $ withStore' c $ \db -> deleteConn db False connId'
+        void $ withStore' c $ \db -> deleteConn db Nothing connId'
         throwError e
 joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) cInfo subMode srv = do
   aVRange <- asks $ smpAgentVRange . config
@@ -1480,7 +1480,8 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
-  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDelivery) (M.keys delRs))
+  waitDeliveryTimeout <- if waitDelivery then asks (Just . connDeleteWaitDeliveryTimeout . config) else pure Nothing
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDeliveryTimeout) (M.keys delRs))
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure (errs' <> delRs, rqs, connIds')
   where
@@ -1494,7 +1495,8 @@ deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> Bool -> [Rc
 deleteConnQueues c waitDelivery ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
   let connIds = M.keys $ M.filter isRight rs
-  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDelivery) connIds)
+  waitDeliveryTimeout <- if waitDelivery then asks (Just . connDeleteWaitDeliveryTimeout . config) else pure Nothing
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db waitDeliveryTimeout) connIds)
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure rs
   where
