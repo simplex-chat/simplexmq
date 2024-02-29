@@ -9,6 +9,7 @@ import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
+import Data.List.NonEmpty (NonEmpty)
 import Foreign
 import Foreign.C.Types
 import Simplex.Messaging.Encoding
@@ -30,7 +31,7 @@ instance Encoding BatchItem where
       x -> fail $ "unknown BatchItem tag: " <> show x
 
 -- | Efficiently pack a collection of bytes.
-batchPackZstd :: Traversable t => Int -> t ByteString -> IO (t BatchItem)
+batchPackZstd :: Int -> NonEmpty ByteString -> IO (NonEmpty BatchItem)
 batchPackZstd scratchSize blocks = bracket Z.createCCtx Z.freeCCtx $ \cctx ->
   allocaBytes scratchSize $ \scratchBuf ->
     forM blocks $ \bs ->
@@ -41,9 +42,9 @@ batchPackZstd scratchSize blocks = bracket Z.createCCtx Z.freeCCtx $ \cctx ->
           _ -> pure $ Passthrough bs
 
 -- | Defensive unpacking of multiple similar buffers.
----
+--
 -- Can't just use library-provided wrappers as they trust decompressed size from header.
-batchUnpackZstd :: Traversable t => Int -> t BatchItem -> IO (t (Either String ByteString))
+batchUnpackZstd :: Int -> NonEmpty BatchItem -> IO (NonEmpty (Either String ByteString))
 batchUnpackZstd maxUnpackedSize items =
   bracket Z.createDCtx Z.freeDCtx $ \dctx ->
     allocaBytes maxUnpackedSize $ \scratchBuf ->

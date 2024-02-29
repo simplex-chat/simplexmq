@@ -1330,11 +1330,8 @@ batchTransmissions' batch bSize ts
         where
           s = tEncode t
 
-batchCompressed :: Traversable t => Int -> t ByteString -> IO [TransportBatch ()]
-batchCompressed bSize blocks = batchTransmissions_ bSize . fmap (\x -> (Right $ smpEncode x, ())) <$> batchPackZstd (16 * 1024) blocks
-
 -- | Pack encoded transmissions into batches
-batchTransmissions_ :: Foldable t => Int -> t (Either TransportError ByteString, r) -> [TransportBatch r]
+batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
 batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
   where
     -- 3 = 2 bytes reserved for pad size + 1 for transmission count
@@ -1353,6 +1350,10 @@ batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
     addBatch (bs, _len, n, ss, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
       where
         b = B.concat $ B.singleton (lenEncode n) : ss
+
+-- | Shortcut for combining efficient per-block compression with batching according to the compressed block size.
+batchCompressed :: Int -> NonEmpty ByteString -> IO [TransportBatch ()]
+batchCompressed bSize blocks = batchTransmissions_ bSize . fmap (\x -> (Right $ smpEncode x, ())) <$> batchPackZstd (16 * 1024) blocks
 
 tEncode :: SentRawTransmission -> ByteString
 tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
