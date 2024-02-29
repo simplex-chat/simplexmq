@@ -312,8 +312,8 @@ testDeleteRcvConn =
     Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
-    deleteConn db "conn1"
-      `shouldReturn` ()
+    deleteConn db Nothing "conn1"
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -324,8 +324,8 @@ testDeleteSndConn =
     Right (_, sq) <- createSndConn db g cData1 sndQueue1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
-    deleteConn db "conn1"
-      `shouldReturn` ()
+    deleteConn db Nothing "conn1"
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -337,8 +337,8 @@ testDeleteDuplexConn =
     Right sq <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
-    deleteConn db "conn1"
-      `shouldReturn` ()
+    deleteConn db Nothing "conn1"
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
