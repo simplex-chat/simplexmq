@@ -1352,8 +1352,8 @@ batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
         b = B.concat $ B.singleton (lenEncode n) : ss
 
 -- | Shortcut for combining efficient per-block compression with batching according to the compressed block size.
-batchCompressed :: Int -> NonEmpty ByteString -> IO [TransportBatch ()]
-batchCompressed bSize blocks = batchTransmissions_ bSize . fmap (\x -> (Right $ smpEncode x, ())) <$> batchPackZstd (16 * 1024) blocks
+batchCompressed :: Int -> NonEmpty ByteString -> [TransportBatch ()]
+batchCompressed bSize blocks = batchTransmissions_ bSize . fmap (\x -> (Right $ smpEncode x, ())) $ batchPackZstd (16 * 1024) blocks
 
 tEncode :: SentRawTransmission -> ByteString
 tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
