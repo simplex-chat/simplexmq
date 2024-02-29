@@ -35,20 +35,17 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  describe "double-ratchet encryption/decryption" $ do
+  fdescribe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetVersion currentE2EEncryptVersion
-    it "should encrypt and decrypt messages" $ withRatchets testEncryptDecrypt
-    it "should encrypt and decrypt skipped messages" $ withRatchets testSkippedMessages
-    it "should encrypt and decrypt many messages" $ withRatchets testManyMessages
-    it "should allow skipped after ratchet advance" $ withRatchets testSkippedAfterRatchetAdvance
+    describe "message tests" $ runMessageTests initRatchets
     it "should encode/decode ratchet as JSON" $ do
       testAlgs testKeyJSON
       testAlgs testRatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
-  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+  fdescribe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
@@ -59,10 +56,21 @@ doubleRatchetTests = do
     describe "ratchet encryption/decryption" $ do
       it "should serialize and parse public KEM params" testKEMParams
       it "should serialize and parse message header" $ testAlgs testMessageHeaderKEM
-      it "should encrypt and decrypt messages" $ withRatchetsKEM testEncryptDecrypt
-      it "should encrypt and decrypt skipped messages" $ withRatchetsKEM testSkippedMessages
-      it "should encrypt and decrypt many messages" $ withRatchetsKEM testManyMessages
-      it "should allow skipped after ratchet advance" $ withRatchetsKEM testSkippedAfterRatchetAdvance
+      describe "message tests, KEM proposed" $ runMessageTests initRatchetsKEMProposed
+      describe "message tests, KEM accepted" $ runMessageTests initRatchetsKEMAccepted
+
+runMessageTests :: (forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)) -> Spec
+runMessageTests initRatchets_ = do
+  it "should encrypt and decrypt messages" $ run testEncryptDecrypt
+  it "should encrypt and decrypt skipped messages" $ run testSkippedMessages
+  it "should encrypt and decrypt many messages" $ run testManyMessages
+  it "should allow skipped after ratchet advance" $ run testSkippedAfterRatchetAdvance
+  where
+    run :: (forall a. TestRatchets a) -> IO ()
+    run test = do
+      withRatchets_ @X25519 initRatchets_ test
+      withRatchets_ @X448 initRatchets_ test
+
 
 testAlgs :: (forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()) -> IO ()
 testAlgs test = test C.SX25519 >> test C.SX448
@@ -320,10 +328,10 @@ testPqX3dhProposeError _ = do
   pqX3dhSnd pkBob1 pkBob2 (Just pKemBob) e2eAlice `shouldBe` Left C.CERatchetKEMState
   runExceptT (pqX3dhRcv pkAlice1 pkAlice2 (Just pKemAlice) e2eBob) `shouldReturn` Left C.CERatchetKEMState
 
-compatibleRatchets :: RatchetInitParams -> RatchetInitParams -> Expectation
+compatibleRatchets :: (RatchetInitParams, x) -> (RatchetInitParams, x) -> Expectation
 compatibleRatchets
-  RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}
-  RatchetInitParams {assocData = ad, ratchetKey = rk, sndHK = shk, rcvNextHK = rnhk, kemAccepted = ka} = do
+  (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, _)
+  (RatchetInitParams {assocData = ad, ratchetKey = rk, sndHK = shk, rcvNextHK = rnhk, kemAccepted = ka}, _) = do
     assocData == ad && ratchetKey == rk && sndHK == shk && rcvNextHK == rnhk `shouldBe` True
     case (kemAccepted, ka) of
       (Just RatchetKEMAccepted {rcPQRr, rcPQRss, rcPQRct}, Just RatchetKEMAccepted {rcPQRr = pqk, rcPQRss = pqss, rcPQRct = pqct}) ->
@@ -336,16 +344,6 @@ compatibleRatchets
   Right msg' <- encrypt alice msg
   Decrypted msg'' <- decrypt bob msg'
   msg'' `shouldBe` msg
-
-withRatchets :: (forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ())) -> Expectation
-withRatchets test = do
-  withRatchets_ @X25519 initRatchets test
-  withRatchets_ @X448 initRatchets test
-
-withRatchetsKEM :: (forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ())) -> Expectation
-withRatchetsKEM test = do
-  withRatchets_ @X25519 initRatchetsKEM test
-  withRatchets_ @X448 initRatchetsKEM test
 
 withRatchets_ :: IO (Ratchet a, Ratchet a) -> (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()) -> Expectation
 withRatchets_ initRatchets_ test = do
@@ -365,12 +363,28 @@ initRatchets = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 Nothing paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 Nothing paramsAlice
+  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
   pure (alice, bob)
 
-initRatchetsKEM :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
-initRatchetsKEM = do
+initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchetsKEMProposed = do
+  g <- C.newRandom
+  let v = max pqRatchetVersion currentE2EEncryptVersion
+  -- initiate (no KEM)
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams g v Nothing
+  -- propose KEM in reply
+  let useKem = AUseKEM SRKSProposed ProposeKEM
+  (pkBob1, pkBob2, Just pKemParams, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
+  Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemParams) e2eAlice
+  Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
+  (_, pkBob3) <- atomically $ C.generateKeyPair g
+  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
+  pure (alice, bob)
+
+initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchetsKEMAccepted = do
   g <- C.newRandom
   let v = max pqRatchetVersion currentE2EEncryptVersion
   -- initiate (propose)
@@ -382,10 +396,8 @@ initRatchetsKEM = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 (Just pKemParams) e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 (Just pKem) e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let PrivateRKParamsProposed aliceKeys = pKem
-      APRKP _ (PrivateRKParamsAccepted _ _ bobKeys) = pKemParams
-      bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 (Just bobKeys) paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 (Just aliceKeys) paramsAlice
+  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice
   pure (alice, bob)
 
 encrypt_ :: AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))

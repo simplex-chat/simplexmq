@@ -695,7 +695,7 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       -- generate KEM keypair if needed
       rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
-      let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs Nothing rcParams
+      let rc = CR.initSndRatchet e2eEncryptVRange rcDHRr rcDHRs rcParams
       q <- newSndQueue userId "" qInfo
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
       pure (aVersion, cData, q, rc, e2eSndParams)
@@ -2125,7 +2125,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                   -- TODO this should also return previously generated KEM keypair rcPQRs
                   (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
                   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
-                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs Nothing rcParams
+                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs rcParams
                   g <- asks random
                   (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
                   case (agentMsgBody_, skipped) of
@@ -2367,12 +2367,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
                     -- TODO if KEM was sent in the invitation it should be passed here
                     rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eOtherPartyParams
-                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 Nothing rcParams
+                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 rcParams
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
                     -- TODO it should check if KEM is already used in ratchet, and if yes generate and pass a new key pair
                     rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 Nothing e2eOtherPartyParams
-                    recreateRatchet $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs Nothing rcParams
+                    recreateRatchet $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs rcParams
                     void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
