@@ -141,7 +141,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFilesInternal, deleteSndFileRemote, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
@@ -242,12 +242,12 @@ switchConnectionAsync :: AgentErrorMonad m => AgentClient -> ACorrId -> ConnId -
 switchConnectionAsync c = withAgentEnv c .: switchConnectionAsync' c
 
 -- | Delete SMP agent connection (DEL command) asynchronously, no synchronous response
-deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteConnectionAsync c = withAgentEnv c . deleteConnectionAsync' c
+deleteConnectionAsync :: AgentErrorMonad m => AgentClient -> Bool -> ConnId -> m ()
+deleteConnectionAsync c waitDelivery = withAgentEnv c . deleteConnectionAsync' c waitDelivery
 
 -- | Delete SMP agent connections using batch commands asynchronously, no synchronous response
-deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> [ConnId] -> m ()
-deleteConnectionsAsync c = withAgentEnv c . deleteConnectionsAsync' c
+deleteConnectionsAsync :: AgentErrorMonad m => AgentClient -> Bool -> [ConnId] -> m ()
+deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync' c waitDelivery
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
@@ -541,7 +541,7 @@ createUser' c smp xftp = do
 deleteUser' :: AgentMonad m => AgentClient -> UserId -> Bool -> m ()
 deleteUser' c userId delSMPQueues = do
   if delSMPQueues
-    then withStore c (`setUserDeleted` userId) >>= deleteConnectionsAsync_ delUser c
+    then withStore c (`setUserDeleted` userId) >>= deleteConnectionsAsync_ delUser c False
     else withStore c (`deleteUserRecord` userId)
   atomically $ TM.delete userId $ smpServers c
   where
@@ -613,21 +613,21 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
       (RcvQueue {server}, _) <- withStoreCtx "ackMessageAsync': setMsgUserAck" c $ \db -> setMsgUserAck db connId mId
       enqueueCommand c corrId connId (Just server) . AClientCommand $ APC SAEConn $ ACK msgId rcptInfo_
 
-deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-deleteConnectionAsync' c connId = deleteConnectionsAsync' c [connId]
+deleteConnectionAsync' :: forall m. AgentMonad m => AgentClient -> Bool -> ConnId -> m ()
+deleteConnectionAsync' c waitDelivery connId = deleteConnectionsAsync' c waitDelivery [connId]
 
-deleteConnectionsAsync' :: AgentMonad m => AgentClient -> [ConnId] -> m ()
+deleteConnectionsAsync' :: AgentMonad m => AgentClient -> Bool -> [ConnId] -> m ()
 deleteConnectionsAsync' = deleteConnectionsAsync_ $ pure ()
 
-deleteConnectionsAsync_ :: forall m. AgentMonad m => m () -> AgentClient -> [ConnId] -> m ()
-deleteConnectionsAsync_ onSuccess c connIds = case connIds of
+deleteConnectionsAsync_ :: forall m. AgentMonad m => m () -> AgentClient -> Bool -> [ConnId] -> m ()
+deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
   [] -> onSuccess
   _ -> do
-    (_, rqs, connIds') <- prepareDeleteConnections_ getConns c connIds
-    withStore' c $ forM_ connIds' . setConnDeleted
+    (_, rqs, connIds') <- prepareDeleteConnections_ getConns c waitDelivery connIds
+    withStore' c $ \db -> forM_ connIds' $ setConnDeleted db waitDelivery
     void . forkIO $
       withLock (deleteLock c) "deleteConnectionsAsync" $
-        deleteConnQueues c True rqs >> onSuccess
+        deleteConnQueues c waitDelivery True rqs >> onSuccess
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentMonad m => AgentClient -> ACorrId -> ConnId -> m ConnectionStats
@@ -715,7 +715,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo subMode srv 
       Right _ -> pure connId'
       Left e -> do
         -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
-        withStore' c (`deleteConn` connId')
+        void $ withStore' c $ \db -> deleteConn db Nothing connId'
         throwError e
 joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) cInfo subMode srv = do
   aVRange <- asks $ smpAgentVRange . config
@@ -1455,19 +1455,23 @@ disableConn c connId = do
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteConnections' = deleteConnections_ getConns False
+deleteConnections' = deleteConnections_ getConns False False
 
 deleteDeletedConns :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
-deleteDeletedConns = deleteConnections_ getDeletedConns True
+deleteDeletedConns = deleteConnections_ getDeletedConns True False
+
+deleteDeletedWaitingDeliveryConns :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+deleteDeletedWaitingDeliveryConns = deleteConnections_ getConns True True
 
 prepareDeleteConnections_ ::
   forall m.
   AgentMonad m =>
   (DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]) ->
   AgentClient ->
+  Bool ->
   [ConnId] ->
   m (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId])
-prepareDeleteConnections_ getConnections c connIds = do
+prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
@@ -1475,19 +1479,27 @@ prepareDeleteConnections_ getConnections c connIds = do
       rqs = concat $ M.elems rcvQs
       connIds' = M.keys rcvQs
   forM_ connIds' $ disableConn c
-  withStore' c $ forM_ (M.keys delRs) . deleteConn
+  -- ! delRs is not used to notify about the result in any of the calling functions,
+  -- ! it is only used to check results count in deleteConnections_;
+  -- ! if it was used to notify about the result, it might be necessary to differentiate
+  -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
+  deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
+  forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure (errs' <> delRs, rqs, connIds')
   where
     rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
     rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
       [] -> Left $ Right ()
       rqs -> Right rqs
+    notify = atomically . writeTBQueue (subQ c)
 
-deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> [RcvQueue] -> m (Map ConnId (Either AgentErrorType ()))
-deleteConnQueues c ntf rqs = do
+deleteConnQueues :: forall m. AgentMonad m => AgentClient -> Bool -> Bool -> [RcvQueue] -> m (Map ConnId (Either AgentErrorType ()))
+deleteConnQueues c waitDelivery ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
   let connIds = M.keys $ M.filter isRight rs
-  rs' <- rights <$> withStoreBatch' c (\db -> map (\cId -> deleteConn db cId $> cId) connIds)
+  deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
   forM_ rs' $ \cId -> notify ("", cId, APC SAEConn DEL_CONN)
   pure rs
   where
@@ -1530,13 +1542,14 @@ deleteConnections_ ::
   AgentMonad m =>
   (DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]) ->
   Bool ->
+  Bool ->
   AgentClient ->
   [ConnId] ->
   m (Map ConnId (Either AgentErrorType ()))
-deleteConnections_ _ _ _ [] = pure M.empty
-deleteConnections_ getConnections ntf c connIds = do
-  (rs, rqs, _) <- prepareDeleteConnections_ getConnections c connIds
-  rcvRs <- deleteConnQueues c ntf rqs
+deleteConnections_ _ _ _ _ [] = pure M.empty
+deleteConnections_ getConnections ntf waitDelivery c connIds = do
+  (rs, rqs, _) <- prepareDeleteConnections_ getConnections c waitDelivery connIds
+  rcvRs <- deleteConnQueues c waitDelivery ntf rqs
   let rs' = M.union rs rcvRs
   notifyResultError rs'
   pure rs'
@@ -1865,6 +1878,7 @@ cleanupManager c@AgentClient {subQ} = do
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
+        void $ withStore' c getDeletedWaitingDeliveryConnIds >>= deleteDeletedWaitingDeliveryConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config

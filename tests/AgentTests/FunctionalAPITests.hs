@@ -54,7 +54,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
@@ -69,7 +69,7 @@ import Simplex.Messaging.Protocol (AProtocolType (..), BasicAuth, ErrorType (..)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ATransport (..), basicAuthSMPVersion, authCmdsSMPVersion, currentServerSMPRelayVersion)
+import Simplex.Messaging.Transport (ATransport (..), authCmdsSMPVersion, basicAuthSMPVersion, currentServerSMPRelayVersion)
 import Simplex.Messaging.Version
 import System.Directory (copyFile, renameFile)
 import Test.Hspec
@@ -159,7 +159,7 @@ agentCfgVPrev =
     }
 
 agentCfgV7 :: AgentConfig
-agentCfgV7 = 
+agentCfgV7 =
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SX25519,
       smpCfg = smpCfgV7,
@@ -283,6 +283,16 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
+    it "delete waiting for delivery - should delete connection immediately if there are no pending messages" $
+      testDeleteConnectionAsyncWaitDeliveryNoPending t
+    it "delete waiting for delivery - should delete connection after waiting for delivery to complete" $
+      testDeleteConnectionAsyncWaitDelivery t
+    it "delete waiting for delivery - should delete connection if message can't be delivered due to AUTH error" $
+      testDeleteConnectionAsyncWaitDeliveryAUTHErr t
+    it "delete waiting for delivery - should delete connection by timeout even if message wasn't delivered" $
+      testDeleteConnectionAsyncWaitDeliveryTimeout t
+    it "delete waiting for delivery - should delete connection by timeout, message in progress can be delivered" $
+      testDeleteConnectionAsyncWaitDeliveryTimeout2 t
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError t
   describe "Users" $ do
@@ -393,7 +403,7 @@ testRatchetMatrix2 t runTest = do
   pendingV "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
   pendingV "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
   where
-    pendingV = 
+    pendingV =
       let vr = e2eEncryptVRange agentCfg
        in if minVersion vr == maxVersion vr then xit else it
 
@@ -1440,7 +1450,7 @@ testAsyncCommands =
       ]
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
     get alice =##> \case ("7", _, OK) -> True; _ -> False
-    deleteConnectionAsync alice bobId
+    deleteConnectionAsync alice False bobId
     get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1510,7 +1520,7 @@ testDeleteConnectionAsync t = do
     (bId3, _inv) <- createConnection a 1 True SCMInvitation Nothing SMSubscribe
     pure ([bId1, bId2, bId3] :: [ConnId])
   runRight_ $ do
-    deleteConnectionsAsync a connIds
+    deleteConnectionsAsync a False connIds
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
@@ -1519,6 +1529,232 @@ testDeleteConnectionAsync t = do
     get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
   disconnectAgentClient a
+
+testDeleteConnectionAsyncWaitDeliveryNoPending :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDeliveryNoPending t = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == bobId; _ -> False
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
+    get bob ##> ("", aliceId, MERR (baseId + 3) (SMP AUTH))
+
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testDeleteConnectionAsyncWaitDelivery :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDelivery t = do
+  alice <- getSMPAgentClient' 1 agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    pure (aliceId, bobId)
+
+  runRight_ $ do
+    ("", "", DOWN _ _) <- nGet alice
+    ("", "", DOWN _ _) <- nGet bob
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    get alice ##> ("", bobId, SENT $ baseId + 3)
+    get alice ##> ("", bobId, SENT $ baseId + 4)
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+
+    liftIO $
+      getInAnyOrder
+        bob
+        [ \case ("", "", APC SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
+          \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
+        ]
+    ackMessage bob aliceId (baseId + 3) Nothing
+    get bob =##> \case ("", c, Msg "message 1") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 4) Nothing
+
+    -- queue wasn't deleted (DEL never reached server, see DEL_RCVQ with error), so bob can send message
+    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
+    get bob ##> ("", aliceId, SENT $ baseId + 5)
+
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testDeleteConnectionAsyncWaitDeliveryAUTHErr :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
+  alice <- getSMPAgentClient' 1 agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (_aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    deleteConnectionsAsync bob False [aliceId]
+    get bob =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == aliceId; _ -> False
+    get bob =##> \case ("", cId, DEL_CONN) -> cId == aliceId; _ -> False
+
+    pure (aliceId, bobId)
+
+  runRight_ $ do
+    ("", "", DOWN _ _) <- nGet alice
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    get alice ##> ("", bobId, MERR (baseId + 3) (SMP AUTH))
+    get alice ##> ("", bobId, MERR (baseId + 4) (SMP AUTH))
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testDeleteConnectionAsyncWaitDeliveryTimeout :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDeliveryTimeout t = do
+  alice <- getSMPAgentClient' 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    pure (aliceId, bobId)
+
+  runRight_ $ do
+    ("", "", DOWN _ _) <- nGet alice
+    ("", "", DOWN _ _) <- nGet bob
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testDeleteConnectionAsyncWaitDeliveryTimeout2 :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDeliveryTimeout2 t = do
+  alice <- getSMPAgentClient' 1 agentCfg {connDeleteDeliveryTimeout = 2, messageRetryInterval = fastMessageRetryInterval, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    pure (aliceId, bobId)
+
+  runRight_ $ do
+    ("", "", DOWN _ _) <- nGet alice
+    ("", "", DOWN _ _) <- nGet bob
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    get alice ##> ("", bobId, SENT $ baseId + 3)
+    -- "message 1" not delivered
+
+    liftIO $
+      getInAnyOrder
+        bob
+        [ \case ("", "", APC SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
+          \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
+        ]
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
 
 testJoinConnectionAsyncReplyError :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyError t = do
@@ -1726,7 +1962,7 @@ testSwitchDelete servers = do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-    deleteConnectionAsync a bId
+    deleteConnectionAsync a False bId
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
     get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False

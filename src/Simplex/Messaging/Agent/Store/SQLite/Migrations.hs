@@ -69,6 +69,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
@@ -108,6 +109,7 @@ schemaMigrations =
     ("m20231225_failed_work_items", m20231225_failed_work_items, Just down_m20231225_failed_work_items),
     ("m20240121_message_delivery_indexes", m20240121_message_delivery_indexes, Just down_m20240121_message_delivery_indexes),
     ("m20240124_file_redirect", m20240124_file_redirect, Just down_m20240124_file_redirect),
+    ("m20240223_connections_wait_delivery", m20240223_connections_wait_delivery, Just down_m20240223_connections_wait_delivery),
     ("m20240225_ratchet_kem", m20240225_ratchet_kem, Just down_m20240225_ratchet_kem)
   ]
 
