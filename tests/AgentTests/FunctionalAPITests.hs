@@ -52,7 +52,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerV7, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
@@ -67,7 +67,7 @@ import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolS
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ATransport (..), basicAuthSMPVersion, authCmdsSMPVersion, currentServerSMPRelayVersion)
+import Simplex.Messaging.Transport (ATransport (..), authCmdsSMPVersion, basicAuthSMPVersion, currentServerSMPRelayVersion)
 import Simplex.Messaging.Version
 import System.Directory (copyFile, renameFile)
 import Test.Hspec
@@ -147,7 +147,7 @@ agentCfgVPrev =
     }
 
 agentCfgV7 :: AgentConfig
-agentCfgV7 = 
+agentCfgV7 =
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SX25519,
       smpCfg = smpCfgV7,
@@ -279,6 +279,8 @@ functionalAPITests t = do
       testDeleteConnectionAsyncWaitDeliveryAUTHErr t
     it "delete waiting for delivery - should delete connection by timeout even if message wasn't delivered" $
       testDeleteConnectionAsyncWaitDeliveryTimeout t
+    it "delete waiting for delivery - should delete connection by timeout, message in progress can be delivered" $
+      testDeleteConnectionAsyncWaitDeliveryTimeout2 t
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError t
   describe "Users" $ do
@@ -389,7 +391,7 @@ testRatchetMatrix2 t runTest = do
   pendingV "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
   pendingV "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
   where
-    pendingV = 
+    pendingV =
       let vr = e2eEncryptVRange agentCfg
        in if minVersion vr == maxVersion vr then xit else it
 
@@ -1684,6 +1686,55 @@ testDeleteConnectionAsyncWaitDeliveryTimeout t = do
 
   withSmpServerStoreLogOn t testPort $ \_ -> do
     nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testDeleteConnectionAsyncWaitDeliveryTimeout2 :: ATransport -> IO ()
+testDeleteConnectionAsyncWaitDeliveryTimeout2 t = do
+  alice <- getSMPAgentClient' 1 agentCfg {connDeleteWaitDeliveryTimeout = 2, messageRetryInterval = fastMessageRetryInterval, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+    (aliceId, bobId) <- makeConnection alice bob
+
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId (baseId + 1) Nothing
+
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId (baseId + 2) Nothing
+
+    pure (aliceId, bobId)
+
+  runRight_ $ do
+    ("", "", DOWN _ _) <- nGet alice
+    ("", "", DOWN _ _) <- nGet bob
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
+    deleteConnectionsAsync alice True [bobId]
+    get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    get alice ##> ("", bobId, SENT $ baseId + 3)
+    -- "message 1" not delivered
+
+    liftIO $
+      getInAnyOrder
+        bob
+        [ \case ("", "", APC SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
+          \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
+        ]
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
