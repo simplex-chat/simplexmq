@@ -1656,7 +1656,7 @@ testDeleteConnectionAsyncWaitDeliveryTimeout :: ATransport -> IO ()
 testDeleteConnectionAsyncWaitDeliveryTimeout t = do
   alice <- getSMPAgentClient' 1 agentCfg {connDeleteWaitDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  (_aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
 
     1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
@@ -1683,6 +1683,7 @@ testDeleteConnectionAsyncWaitDeliveryTimeout t = do
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
   withSmpServerStoreLogOn t testPort $ \_ -> do
+    nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
