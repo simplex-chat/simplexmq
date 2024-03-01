@@ -651,10 +651,10 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
       rc'' = case enableKEM_ of
         Nothing -> rc'
-        Just enableKEM -> 
-          let rcEnableKEM = enableKEM == KEMEnable
-              rcKEM' = if rcEnableKEM then rcKEM else (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM
-           in rc' {rcEnableKEM, rcKEM = rcKEM'}
+        Just KEMEnable -> rc' {rcEnableKEM = True}
+        Just KEMDisable ->
+          let rcKEM' = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM
+           in rc' {rcEnableKEM = False, rcKEM = rcKEM'}
   pure (msg', rc'')
   where
     -- header = HEADER_PQ2(
