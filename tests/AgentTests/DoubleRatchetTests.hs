@@ -165,8 +165,7 @@ instance Eq ARKEMParams where
 deriving instance Eq (MsgHeader a)
 
 initRatchetKEM :: (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
-initRatchetKEM s r = do
-  encryptDecrypt (Just KEMEnable) (const Nothing) (const Nothing) (s, "initialising ratchet") r
+initRatchetKEM s r = encryptDecrypt (Just KEMEnable) (const ()) (const ()) (s, "initialising ratchet") r
 
 testEncryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
 testEncryptDecrypt agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
@@ -437,7 +436,7 @@ compatibleRatchets
       (Nothing, Nothing) -> pure ()
       _ -> expectationFailure "RatchetInitParams params are not compatible"
 
-encryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Maybe EnableKEM -> (Ratchet a -> Maybe String) -> (Ratchet a -> Maybe String) -> EncryptDecryptSpec a
+encryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Maybe EnableKEM -> (Ratchet a -> ()) -> (Ratchet a -> ()) -> EncryptDecryptSpec a
 encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
   Right msg' <- withTVar (encrypt_ enableKEM) invalidSnd alice msg
   Decrypted msg'' <- decrypt' invalidRcv bob msg'
@@ -447,7 +446,7 @@ encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
 (\#>!) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
 (s, msg) \#>! r = encryptDecrypt (Just KEMEnable) noSndKEM noRcvKEM (s, msg) r
 
--- enable KEM (was enabled)
+-- enable KEM (currently enabled)
 (!#>!) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
 (s, msg) !#>! r = encryptDecrypt (Just KEMEnable) hasSndKEM hasRcvKEM (s, msg) r
 
@@ -459,7 +458,7 @@ encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
 (!#>\) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
 (s, msg) !#>\ r = encryptDecrypt (Just KEMDisable) hasSndKEM hasRcvKEM (s, msg) r
 
--- disable KEM (was disabled)
+-- disable KEM (currently disabled)
 (\#>\) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
 (s, msg) \#>\ r = encryptDecrypt (Just KEMDisable) noSndKEM noSndKEM (s, msg) r
 
@@ -551,38 +550,36 @@ encrypt_ enableKem (_, rc, _) msg =
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
 decrypt_ (g, rc, smks) msg = runExceptT $ rcDecrypt g rc smks msg
 
-encrypt' :: AlgorithmI a => (Ratchet a -> Maybe String) -> Encrypt a
+encrypt' :: AlgorithmI a => (Ratchet a -> ()) -> Encrypt a
 encrypt' = withTVar $ encrypt_ Nothing
 
-decrypt' :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a -> Maybe String) -> Decrypt a
+decrypt' :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a -> ()) -> Decrypt a
 decrypt' = withTVar decrypt_
 
-noSndKEM :: Ratchet a -> Maybe String
-noSndKEM Ratchet {rcSndKEM} = if rcSndKEM then Just "snd ratchet has KEM" else Nothing
+noSndKEM :: Ratchet a -> ()
+noSndKEM Ratchet {rcSndKEM} = if rcSndKEM then error "snd ratchet has KEM" else ()
 
-noRcvKEM :: Ratchet a -> Maybe String
-noRcvKEM Ratchet {rcRcvKEM} = if rcRcvKEM then Just "rcv ratchet has KEM" else Nothing
+noRcvKEM :: Ratchet a -> ()
+noRcvKEM Ratchet {rcRcvKEM} = if rcRcvKEM then error "rcv ratchet has KEM" else ()
 
-hasSndKEM :: Ratchet a -> Maybe String
-hasSndKEM Ratchet {rcSndKEM} = if rcSndKEM then Nothing else Just "snd ratchet has no KEM"
+hasSndKEM :: Ratchet a -> ()
+hasSndKEM Ratchet {rcSndKEM} = if rcSndKEM then () else error "snd ratchet has no KEM"
 
-hasRcvKEM :: Ratchet a -> Maybe String
-hasRcvKEM Ratchet {rcRcvKEM} = if rcRcvKEM then Nothing else Just "rcv ratchet has no KEM"
+hasRcvKEM :: Ratchet a -> ()
+hasRcvKEM Ratchet {rcRcvKEM} = if rcRcvKEM then () else error "rcv ratchet has no KEM"
 
 withTVar ::
   AlgorithmI a =>
   ((TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
-  (Ratchet a -> Maybe String) ->
+  (Ratchet a -> ()) ->
   TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
-withTVar op invalid rcVar msg = do
+withTVar op valid rcVar msg = do
   (g, rc, smks) <- readTVarIO rcVar
   applyDiff smks <$$> (testEncodeDecode rc >> op (g, rc, smks) msg)
     >>= \case
-      Right (res, rc', smks') -> case invalid rc' of
-        Nothing -> atomically (writeTVar rcVar (g, rc', smks')) >> pure (Right res)
-        Just err -> error err
+      Right (res, rc', smks') -> valid rc' `seq` atomically (writeTVar rcVar (g, rc', smks')) >> pure (Right res)
       Left e -> pure $ Left e
   where
     applyDiff smks (res, rc', smDiff) = (res, rc', applySMDiff smks smDiff)
