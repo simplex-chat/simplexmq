@@ -36,7 +36,7 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  fdescribe "double-ratchet encryption/decryption" $ do
+  describe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetVersion currentE2EEncryptVersion
@@ -46,7 +46,7 @@ doubleRatchetTests = do
       testAlgs testRatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
-  fdescribe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
@@ -60,8 +60,10 @@ doubleRatchetTests = do
       describe "message tests, KEM proposed" $ runMessageTests initRatchetsKEMProposed True
       describe "message tests, KEM accepted" $ runMessageTests initRatchetsKEMAccepted False
       describe "message tests, KEM proposed again in reply" $ runMessageTests initRatchetsKEMProposedAgain True
-      it "should disable and re-enable KEM" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableEnableKEM 
-      it "should enable KEM when it was not enabled in handshake" $ withRatchets_ @X25519 initRatchets testEnableKEM 
+      it "should disable and re-enable KEM" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableEnableKEM
+      it "should disable and re-enable KEM (always set EnableKEM)" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableEnableKEMStrict
+      it "should enable KEM when it was not enabled in handshake" $ withRatchets_ @X25519 initRatchets testEnableKEM
+      it "should enable KEM when it was not enabled in handshake (always set EnableKEM)" $ withRatchets_ @X25519 initRatchets testEnableKEMStrict
 
 runMessageTests ::
   (forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)) ->
@@ -258,31 +260,69 @@ testDisableEnableKEM :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets 
 testDisableEnableKEM alice bob _ _ _ = do
   (bob, "hello alice") !#> alice
   (alice, "hello bob") !#> bob
-  (bob, "disabling KEM") \\#> alice
+  (bob, "disabling KEM") !#>\ alice
   (alice, "still disabling KEM") !#> bob
   (bob, "now KEM is disabled") \#> alice
   (alice, "KEM is disabled for both sides") \#> bob
-  (bob, "trying to enable KEM") !!#> alice
+  (bob, "trying to enable KEM") \#>! alice
   (alice, "but unless alice enables it too it won't enable") \#> bob
   (bob, "KEM is disabled") \#> alice
   (alice, "KEM is disabled for both sides") \#> bob
-  (bob, "enabling KEM again") !!#> alice
-  (alice, "and alice accepts it this time") !!#> bob
-  (bob, "still enabling KEM") !!#> alice
+  (bob, "enabling KEM again") \#>! alice
+  (alice, "and alice accepts it this time") \#>! bob
+  (bob, "still enabling KEM") \#>! alice
   (alice, "now KEM is enabled") !#> bob
   (bob, "KEM is enabled for both sides") !#> alice
+
+testDisableEnableKEMStrict :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
+testDisableEnableKEMStrict alice bob _ _ _ = do
+  (bob, "hello alice") !#>! alice
+  (alice, "hello bob") !#>! bob
+  (bob, "disabling KEM") !#>\ alice
+  (alice, "still disabling KEM") !#>! bob
+  (bob, "now KEM is disabled") \#>\ alice
+  (alice, "KEM is disabled for both sides") \#>\ bob
+  (bob, "trying to enable KEM") \#>! alice
+  (alice, "but unless alice enables it too it won't enable") \#>\ bob
+  (bob, "KEM is disabled") \#>! alice
+  (alice, "KEM is disabled for both sides") \#>\ bob
+  (bob, "enabling KEM again") \#>! alice
+  (alice, "and alice accepts it this time") \#>! bob
+  (bob, "still enabling KEM") \#>! alice
+  (alice, "now KEM is enabled") !#>! bob
+  (bob, "KEM is enabled for both sides") !#>! alice
 
 testEnableKEM :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
 testEnableKEM alice bob _ _ _ = do
   (bob, "hello alice") \#> alice
   (alice, "hello bob") \#> bob
-  (bob, "enabling KEM") !!#> alice
-  (bob, "KEM not enabled yet") !!#> alice
-  (alice, "accepting KEM") !!#> bob
-  (alice, "KEM not enabled yet here too") !!#> bob
-  (bob, "KEM is still not enabled") !!#> alice
+  (bob, "enabling KEM") \#>! alice
+  (bob, "KEM not enabled yet") \#>! alice
+  (alice, "accepting KEM") \#>! bob
+  (alice, "KEM not enabled yet here too") \#>! bob
+  (bob, "KEM is still not enabled") \#>! alice
   (alice, "now KEM is enabled") !#> bob
   (bob, "now KEM is enabled for both sides") !#> alice
+  (alice, "disabling KEM") !#>\ bob
+  (bob, "KEM not disabled yet") !#> alice
+  (alice, "KEM disabled") \#> bob
+  (bob, "KEM disabled on both sides") \#> alice
+
+testEnableKEMStrict :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
+testEnableKEMStrict alice bob _ _ _ = do
+  (bob, "hello alice") \#>\ alice
+  (alice, "hello bob") \#>\ bob
+  (bob, "enabling KEM") \#>! alice
+  (bob, "KEM not enabled yet") \#>! alice
+  (alice, "accepting KEM") \#>! bob
+  (alice, "KEM not enabled yet here too") \#>! bob
+  (bob, "KEM is still not enabled") \#>! alice
+  (alice, "now KEM is enabled") !#>! bob
+  (bob, "now KEM is enabled for both sides") !#>! alice
+  (alice, "disabling KEM") !#>\ bob
+  (bob, "KEM not disabled yet") !#>! alice
+  (alice, "KEM disabled") \#>\ bob
+  (bob, "KEM disabled on both sides") \#>! alice
 
 testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
 testKeyJSON _ = do
@@ -403,27 +443,27 @@ encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
   Decrypted msg'' <- decrypt' invalidRcv bob msg'
   msg'' `shouldBe` msg
 
--- enable KEM (was disabled)
-(!!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) !!#> r = encryptDecrypt (Just KEMEnable) noSndKEM noRcvKEM (s, msg) r
+-- enable KEM (currently disabled)
+(\#>!) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) \#>! r = encryptDecrypt (Just KEMEnable) noSndKEM noRcvKEM (s, msg) r
 
 -- enable KEM (was enabled)
-(!!!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) !!!#> r = encryptDecrypt (Just KEMEnable) hasSndKEM hasRcvKEM (s, msg) r
+(!#>!) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) !#>! r = encryptDecrypt (Just KEMEnable) hasSndKEM hasRcvKEM (s, msg) r
 
--- KEM enabled
+-- KEM enabled (no user preference)
 (!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
 (s, msg) !#> r = encryptDecrypt Nothing hasSndKEM hasRcvKEM (s, msg) r
 
--- disable KEM (was enabled)
-(\\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) \\#> r = encryptDecrypt (Just KEMDisable) hasSndKEM hasRcvKEM (s, msg) r
+-- disable KEM (currently enabled)
+(!#>\) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) !#>\ r = encryptDecrypt (Just KEMDisable) hasSndKEM hasRcvKEM (s, msg) r
 
 -- disable KEM (was disabled)
-(\\\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) \\\#> r = encryptDecrypt (Just KEMDisable) noSndKEM noSndKEM (s, msg) r
+(\#>\) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) \#>\ r = encryptDecrypt (Just KEMDisable) noSndKEM noSndKEM (s, msg) r
 
--- KEM disabled
+-- KEM disabled (no user preference)
 (\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
 (s, msg) \#> r = encryptDecrypt Nothing noSndKEM noSndKEM (s, msg) r
 
