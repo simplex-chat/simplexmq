@@ -1229,10 +1229,10 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
       pure r
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnection alice bob = makeConnectionForUsers alice 1 bob 1
+makeConnection = makeConnection_ KEMEnable
 
-makeConnectionNoKEM :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnectionNoKEM alice bob = makeConnectionForUsers_ KEMDisable alice 1 bob 1
+makeConnection_ :: EnableKEM -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnection_ enableKEM alice bob = makeConnectionForUsers_ enableKEM alice 1 bob 1
 
 makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers = makeConnectionForUsers_ KEMEnable
@@ -1368,8 +1368,8 @@ testBatchedSubscriptions nCreate nDel t = do
   a <- getSMPAgentClient' 1 agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- replicateM (nCreate :: Int) $ makeConnectionNoKEM a b
-    forM_ conns $ \(aId, bId) -> exchangeGreetingsNoKEM a bId b aId
+    conns <- replicateM (nCreate :: Int) $ makeConnection_ KEMDisable a b
+    forM_ conns $ \(aId, bId) -> exchangeGreetings_ KEMDisable a bId b aId
     let (aIds', bIds') = unzip $ take nDel conns
     delete a bIds'
     delete b aIds'
@@ -2524,10 +2524,10 @@ testServerMultipleIdentities =
         testE2ERatchetParams12
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetings = exchangeGreetingsMsgId 4
+exchangeGreetings = exchangeGreetings_ KEMEnable
 
-exchangeGreetingsNoKEM :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsNoKEM = exchangeGreetingsMsgId_ KEMDisable 4
+exchangeGreetings_ :: HasCallStack => EnableKEM -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+exchangeGreetings_ enableKEM = exchangeGreetingsMsgId_ enableKEM 4
 
 exchangeGreetingsMsgId :: HasCallStack => Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgId = exchangeGreetingsMsgId_ KEMEnable
