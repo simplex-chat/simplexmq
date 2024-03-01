@@ -293,15 +293,15 @@ resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> CR.EnableKEM -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage c connId enableKem = withAgentEnv c .: sendMessage' c connId (Just enableKem)
+sendMessage c = withAgentEnv c .:: sendMessage' c
 
 type MsgReq = (ConnId, MsgFlags, MsgBody)
 
 -- | Send multiple messages to different connections (SEND command)
-sendMessages :: MonadUnliftIO m => AgentClient -> Maybe CR.EnableKEM -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
+sendMessages :: MonadUnliftIO m => AgentClient -> CR.EnableKEM -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
 sendMessages c = withAgentEnv c .: sendMessages' c
 
-sendMessagesB :: (MonadUnliftIO m, Traversable t) => AgentClient -> Maybe CR.EnableKEM -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB :: (MonadUnliftIO m, Traversable t) => AgentClient -> CR.EnableKEM -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
 sendMessagesB c = withAgentEnv c .: sendMessagesB' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> m ()
@@ -520,7 +520,7 @@ processCommand c (connId, APC e cmd) =
     ACPT invId enableKEM ownCInfo -> (,OK) <$> acceptContact' c connId True invId ownCInfo enableKEM SMSubscribe
     RJCT invId -> rejectContact' c connId invId $> (connId, OK)
     SUB -> subscribeConnection' c connId $> (connId, OK)
-    SEND enableKEM msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId (Just enableKEM) msgFlags msgBody
+    SEND enableKEM msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId enableKEM msgFlags msgBody
     ACK msgId rcptInfo_ -> ackMessage' c connId msgId rcptInfo_ $> (connId, OK)
     SWCH -> switchConnection' c connId $> (connId, OK)
     OFF -> suspendConnection' c connId $> (connId, OK)
@@ -907,18 +907,18 @@ getNotificationMessage' c nonce encNtfInfo = do
           Nothing -> SMP.notification msgFlags
 
 -- | Send message to the connection (SEND command) in Reader monad
-sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> Maybe CR.EnableKEM -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage' c connId enableKem_ msgFlags msg = liftEither . runIdentity =<< sendMessagesB' c enableKem_ (Identity (Right (connId, msgFlags, msg)))
+sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> CR.EnableKEM -> MsgFlags -> MsgBody -> m AgentMsgId
+sendMessage' c connId enableKem msgFlags msg = liftEither . runIdentity =<< sendMessagesB' c enableKem (Identity (Right (connId, msgFlags, msg)))
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
-sendMessages' :: forall m. AgentMonad' m => AgentClient -> Maybe CR.EnableKEM -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
-sendMessages' c enableKem_ = sendMessagesB' c enableKem_ . map Right
+sendMessages' :: forall m. AgentMonad' m => AgentClient -> CR.EnableKEM -> [MsgReq] -> m [Either AgentErrorType AgentMsgId]
+sendMessages' c enableKem = sendMessagesB' c enableKem . map Right
 
-sendMessagesB' :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> Maybe CR.EnableKEM -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
-sendMessagesB' c enableKem_ reqs = withConnLocks c connIds "sendMessages" $ do
+sendMessagesB' :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> CR.EnableKEM -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType AgentMsgId))
+sendMessagesB' c enableKem reqs = withConnLocks c connIds "sendMessages" $ do
   reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   let reqs'' = fmap (>>= prepareConn) reqs'
-  enqueueMessagesB c enableKem_ reqs''
+  enqueueMessagesB c (Just enableKem) reqs''
   where
     prepareConn :: (MsgReq, SomeConn) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
     prepareConn ((_, msgFlags, msg), SomeConn _ conn) = case conn of
