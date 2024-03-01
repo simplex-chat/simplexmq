@@ -292,8 +292,8 @@ resubscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 
 -- | Send message to the connection (SEND command)
-sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> Maybe CR.EnableKEM -> MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage c = withAgentEnv c .:: sendMessage' c
+sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> CR.EnableKEM -> MsgFlags -> MsgBody -> m AgentMsgId
+sendMessage c connId enableKem = withAgentEnv c .: sendMessage' c connId (Just enableKem)
 
 type MsgReq = (ConnId, MsgFlags, MsgBody)
 

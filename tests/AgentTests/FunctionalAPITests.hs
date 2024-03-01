@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -22,6 +23,7 @@ module AgentTests.FunctionalAPITests
     makeConnection,
     exchangeGreetingsMsgId,
     switchComplete,
+    sendMessage,
     runRight,
     runRight_,
     get,
@@ -55,7 +57,8 @@ import Data.Type.Equality
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
-import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent hiding (sendMessage)
+import qualified Simplex.Messaging.Agent as Agent
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol as Agent
@@ -196,6 +199,9 @@ inAnyOrder g rs = do
   where
     expected :: a -> (a -> Bool) -> Bool
     expected r rp = rp r
+
+sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> m AgentMsgId
+sendMessage c connId = Agent.sendMessage c connId KEMEnable
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
@@ -439,24 +445,24 @@ runAgentClientTest alice@AgentClient {} bob baseId =
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
-    2 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
+    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 2) Nothing
-    3 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    4 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 1"
+    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 3) Nothing
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
-    5 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 2"
+    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -472,10 +478,10 @@ testAgentClient3 = do
     (aIdForB, bId) <- makeConnection a b
     (aIdForC, cId) <- makeConnection a c
 
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "b4"
-    4 <- sendMessage a cId Nothing SMP.noMsgFlags "c4"
-    5 <- sendMessage a bId Nothing SMP.noMsgFlags "b5"
-    5 <- sendMessage a cId Nothing SMP.noMsgFlags "c5"
+    4 <- sendMessage a bId SMP.noMsgFlags "b4"
+    4 <- sendMessage a cId SMP.noMsgFlags "c4"
+    5 <- sendMessage a bId SMP.noMsgFlags "b5"
+    5 <- sendMessage a cId SMP.noMsgFlags "c5"
     get a =##> \case ("", connId, SENT 4) -> connId == bId || connId == cId; _ -> False
     get a =##> \case ("", connId, SENT 4) -> connId == bId || connId == cId; _ -> False
     get a =##> \case ("", connId, SENT 5) -> connId == bId || connId == cId; _ -> False
@@ -502,24 +508,24 @@ runAgentClientContactTest alice bob baseId =
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
-    2 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
+    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 2) Nothing
-    3 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    4 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 1"
+    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 3) Nothing
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
-    5 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 2"
+    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -774,7 +780,7 @@ testDeliverClientRestart t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob
 
-  6 <- runRight $ sendMessage bob aliceId Nothing SMP.noMsgFlags "hello"
+  6 <- runRight $ sendMessage bob aliceId SMP.noMsgFlags "hello"
 
   disconnectAgentClient bob
 
@@ -798,7 +804,7 @@ testDuplicateMessage t = do
   (aliceId, bobId, bob1) <- withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ makeConnection alice bob
     runRight_ $ do
-      4 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
       get alice ##> ("", bobId, SENT 4)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     disconnectAgentClient bob
@@ -809,7 +815,7 @@ testDuplicateMessage t = do
       subscribeConnection bob1 aliceId
       get bob1 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
       ackMessage bob1 aliceId 4 Nothing
-      5 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello 2"
+      5 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
       get alice ##> ("", bobId, SENT 5)
       get bob1 =##> \case ("", c, Msg "hello 2") -> c == aliceId; _ -> False
 
@@ -835,7 +841,7 @@ testDuplicateMessage t = do
       -- get bob2 =##> \case ("", c, Msg "hello 2") -> c == aliceId; _ -> False
       -- ackMessage bob2 aliceId 5 Nothing
       -- message 2 is not delivered again, even though it was delivered to the agent
-      6 <- sendMessage alice2 bobId Nothing SMP.noMsgFlags "hello 3"
+      6 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 3"
       get alice2 ##> ("", bobId, SENT 6)
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
   disconnectAgentClient alice2
@@ -848,7 +854,7 @@ testSkippedMessages t = do
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ makeConnection alice bob
     runRight_ $ do
-      4 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
       get alice ##> ("", bobId, SENT 4)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
       ackMessage bob aliceId 4 Nothing
@@ -856,11 +862,11 @@ testSkippedMessages t = do
     disconnectAgentClient bob
 
     runRight_ $ do
-      5 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello 2"
+      5 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
       get alice ##> ("", bobId, SENT 5)
-      6 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello 3"
+      6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
       get alice ##> ("", bobId, SENT 6)
-      7 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello 4"
+      7 <- sendMessage alice bobId SMP.noMsgFlags "hello 4"
       get alice ##> ("", bobId, SENT 7)
 
     pure (aliceId, bobId)
@@ -878,12 +884,12 @@ testSkippedMessages t = do
       subscribeConnection bob2 aliceId
       subscribeConnection alice2 bobId
 
-      8 <- sendMessage alice2 bobId Nothing SMP.noMsgFlags "hello 5"
+      8 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 5"
       get alice2 ##> ("", bobId, SENT 8)
       get bob2 =##> \case ("", c, MSG MsgMeta {integrity = MsgError {errorInfo = MsgSkipped {fromMsgId = 4, toMsgId = 6}}} _ "hello 5") -> c == aliceId; _ -> False
       ackMessage bob2 aliceId 5 Nothing
 
-      9 <- sendMessage alice2 bobId Nothing SMP.noMsgFlags "hello 6"
+      9 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 6"
       get alice2 ##> ("", bobId, SENT 9)
       get bob2 =##> \case ("", c, Msg "hello 6") -> c == aliceId; _ -> False
       ackMessage bob2 aliceId 6 Nothing
@@ -897,9 +903,9 @@ testExpireMessage t = do
   (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ makeConnection a b
   nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
   nGet b =##> \case ("", "", DOWN _ [c]) -> c == aId; _ -> False
-  4 <- runRight $ sendMessage a bId Nothing SMP.noMsgFlags "1"
+  4 <- runRight $ sendMessage a bId SMP.noMsgFlags "1"
   threadDelay 1000000
-  5 <- runRight $ sendMessage a bId Nothing SMP.noMsgFlags "2" -- this won't expire
+  5 <- runRight $ sendMessage a bId SMP.noMsgFlags "2" -- this won't expire
   get a =##> \case ("", c, MERR 4 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
     withUP a bId $ \case ("", _, SENT 5) -> True; _ -> False
@@ -914,11 +920,11 @@ testExpireManyMessages t = do
   runRight_ $ do
     nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
     nGet b =##> \case ("", "", DOWN _ [c]) -> c == aId; _ -> False
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "1"
-    5 <- sendMessage a bId Nothing SMP.noMsgFlags "2"
-    6 <- sendMessage a bId Nothing SMP.noMsgFlags "3"
+    4 <- sendMessage a bId SMP.noMsgFlags "1"
+    5 <- sendMessage a bId SMP.noMsgFlags "2"
+    6 <- sendMessage a bId SMP.noMsgFlags "3"
     liftIO $ threadDelay 1000000
-    7 <- sendMessage a bId Nothing SMP.noMsgFlags "4" -- this won't expire
+    7 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
     get a =##> \case ("", c, MERR 4 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
     get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
@@ -943,11 +949,11 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
     (aId, bId) <- makeConnection a b
     liftIO $ threadDelay 500000
     disconnectAgentClient b
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "1"
+    4 <- sendMessage a bId SMP.noMsgFlags "1"
     get a ##> ("", bId, SENT 4)
-    5 <- sendMessage a bId Nothing SMP.noMsgFlags "2"
+    5 <- sendMessage a bId SMP.noMsgFlags "2"
     liftIO $ threadDelay 1000000
-    6 <- sendMessage a bId Nothing SMP.noMsgFlags "3" -- this won't expire
+    6 <- sendMessage a bId SMP.noMsgFlags "3" -- this won't expire
     get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
     pure (aId, bId)
   b' <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
@@ -967,13 +973,13 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     (aId, bId) <- makeConnection a b
     liftIO $ threadDelay 500000
     disconnectAgentClient b
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "1"
+    4 <- sendMessage a bId SMP.noMsgFlags "1"
     get a ##> ("", bId, SENT 4)
-    5 <- sendMessage a bId Nothing SMP.noMsgFlags "2"
-    6 <- sendMessage a bId Nothing SMP.noMsgFlags "3"
-    7 <- sendMessage a bId Nothing SMP.noMsgFlags "4"
+    5 <- sendMessage a bId SMP.noMsgFlags "2"
+    6 <- sendMessage a bId SMP.noMsgFlags "3"
+    7 <- sendMessage a bId SMP.noMsgFlags "4"
     liftIO $ threadDelay 1000000
-    8 <- sendMessage a bId Nothing SMP.noMsgFlags "5" -- this won't expire
+    8 <- sendMessage a bId SMP.noMsgFlags "5" -- this won't expire
     get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
     get a =##> \case ("", c, MERRS [6, 7] (SMP QUOTA)) -> bId == c; _ -> False
     pure (aId, bId)
@@ -1003,24 +1009,24 @@ setupDesynchronizedRatchet :: HasCallStack => AgentClient -> AgentClient -> IO (
 setupDesynchronizedRatchet alice bob = do
   (aliceId, bobId) <- runRight $ makeConnection alice bob
   runRight_ $ do
-    4 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT 4)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId 4 Nothing
 
-    5 <- sendMessage bob aliceId Nothing SMP.noMsgFlags "hello 2"
+    5 <- sendMessage bob aliceId SMP.noMsgFlags "hello 2"
     get bob ##> ("", aliceId, SENT 5)
     get alice =##> \case ("", c, Msg "hello 2") -> c == bobId; _ -> False
     ackMessage alice bobId 5 Nothing
 
     liftIO $ copyFile testDB2 (testDB2 <> ".bak")
 
-    6 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello 3"
+    6 <- sendMessage alice bobId SMP.noMsgFlags "hello 3"
     get alice ##> ("", bobId, SENT 6)
     get bob =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
     ackMessage bob aliceId 6 Nothing
 
-    7 <- sendMessage bob aliceId Nothing SMP.noMsgFlags "hello 4"
+    7 <- sendMessage bob aliceId SMP.noMsgFlags "hello 4"
     get bob ##> ("", aliceId, SENT 7)
     get alice =##> \case ("", c, Msg "hello 4") -> c == bobId; _ -> False
     ackMessage alice bobId 7 Nothing
@@ -1037,11 +1043,11 @@ setupDesynchronizedRatchet alice bob = do
 
     Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId KEMEnable False
 
-    8 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello 5"
+    8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
     get alice ##> ("", bobId, SENT 8)
     get bob2 =##> ratchetSyncP aliceId RSRequired
 
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId Nothing SMP.noMsgFlags "hello 6"
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
     pure ()
 
   pure (aliceId, bobId, bob2)
@@ -1195,12 +1201,12 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   getMsg bob aliceId $
     get bob ##> ("", aliceId, CON)
   -- exchange messages
-  4 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+  4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   get alice ##> ("", bobId, SENT 4)
   getMsg bob aliceId $
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 4 Nothing
-  5 <- sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+  5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 5)
   getMsg alice bobId $
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
@@ -1288,13 +1294,13 @@ testSuspendingAgent :: IO ()
 testSuspendingAgent =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "hello"
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4 Nothing
     suspendAgent b 1000000
     get' b ##> ("", "", SUSPENDED)
-    5 <- sendMessage a bId Nothing SMP.noMsgFlags "hello 2"
+    5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
     foregroundAgent b
@@ -1304,7 +1310,7 @@ testSuspendingAgentCompleteSending :: ATransport -> IO ()
 testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
   (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aId, bId) <- makeConnection a b
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "hello"
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4 Nothing
@@ -1313,8 +1319,8 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
   runRight_ $ do
     ("", "", DOWN {}) <- nGet a
     ("", "", DOWN {}) <- nGet b
-    5 <- sendMessage b aId Nothing SMP.noMsgFlags "hello too"
-    6 <- sendMessage b aId Nothing SMP.noMsgFlags "how are you?"
+    5 <- sendMessage b aId SMP.noMsgFlags "hello too"
+    6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     liftIO $ threadDelay 100000
     suspendAgent b 5000000
 
@@ -1334,7 +1340,7 @@ testSuspendingAgentTimeout :: ATransport -> IO ()
 testSuspendingAgentTimeout t = withAgentClients2 $ \a b -> do
   (aId, _) <- withSmpServer t . runRight $ do
     (aId, bId) <- makeConnection a b
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "hello"
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4 Nothing
@@ -1343,8 +1349,8 @@ testSuspendingAgentTimeout t = withAgentClients2 $ \a b -> do
   runRight_ $ do
     ("", "", DOWN {}) <- nGet a
     ("", "", DOWN {}) <- nGet b
-    5 <- sendMessage b aId Nothing SMP.noMsgFlags "hello too"
-    6 <- sendMessage b aId Nothing SMP.noMsgFlags "how are you?"
+    5 <- sendMessage b aId SMP.noMsgFlags "hello too"
+    6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     suspendAgent b 100000
     ("", "", SUSPENDED) <- nGet b
     pure ()
@@ -1431,9 +1437,9 @@ testAsyncCommands =
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
-    2 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
+    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessageAsync bob "4" aliceId (baseId + 1) Nothing
@@ -1444,9 +1450,9 @@ testAsyncCommands =
       ]
     ackMessageAsync bob "5" aliceId (baseId + 2) Nothing
     get bob =##> \case ("5", _, OK) -> True; _ -> False
-    3 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    4 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 1"
+    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessageAsync alice "6" bobId (baseId + 3) Nothing
@@ -1493,24 +1499,24 @@ testAcceptContactAsync =
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
-    2 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
+    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 2) Nothing
-    3 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    4 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 1"
+    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 3) Nothing
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
-    5 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 2"
+    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1544,12 +1550,12 @@ testDeleteConnectionAsyncWaitDeliveryNoPending t = do
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
     (aliceId, bobId) <- makeConnection alice bob
 
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
 
-    2 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
@@ -1558,7 +1564,7 @@ testDeleteConnectionAsyncWaitDeliveryNoPending t = do
     get alice =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == bobId; _ -> False
     get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
 
-    3 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 2"
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 3) (SMP AUTH))
 
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1577,12 +1583,12 @@ testDeleteConnectionAsyncWaitDelivery t = do
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
 
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
 
-    2 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
@@ -1592,8 +1598,8 @@ testDeleteConnectionAsyncWaitDelivery t = do
   runRight_ $ do
     ("", "", DOWN _ _) <- nGet alice
     ("", "", DOWN _ _) <- nGet bob
-    3 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
-    4 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "message 1"
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
     deleteConnectionsAsync alice True [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1615,7 +1621,7 @@ testDeleteConnectionAsyncWaitDelivery t = do
     ackMessage bob aliceId (baseId + 4) Nothing
 
     -- queue wasn't deleted (DEL never reached server, see DEL_RCVQ with error), so bob can send message
-    5 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "message 2"
+    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, SENT $ baseId + 5)
 
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1634,12 +1640,12 @@ testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
   (_aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
 
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
 
-    2 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
@@ -1652,8 +1658,8 @@ testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
 
   runRight_ $ do
     ("", "", DOWN _ _) <- nGet alice
-    3 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
-    4 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "message 1"
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
     deleteConnectionsAsync alice True [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -1680,12 +1686,12 @@ testDeleteConnectionAsyncWaitDeliveryTimeout t = do
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
 
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
 
-    2 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
@@ -1695,8 +1701,8 @@ testDeleteConnectionAsyncWaitDeliveryTimeout t = do
   runRight_ $ do
     ("", "", DOWN _ _) <- nGet alice
     ("", "", DOWN _ _) <- nGet bob
-    3 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
-    4 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "message 1"
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
     deleteConnectionsAsync alice True [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
@@ -1721,12 +1727,12 @@ testDeleteConnectionAsyncWaitDeliveryTimeout2 t = do
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
 
-    1 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
 
-    2 <- msgId <$> sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+    2 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId (baseId + 2) Nothing
@@ -1736,8 +1742,8 @@ testDeleteConnectionAsyncWaitDeliveryTimeout2 t = do
   runRight_ $ do
     ("", "", DOWN _ _) <- nGet alice
     ("", "", DOWN _ _) <- nGet bob
-    3 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "how are you?"
-    4 <- msgId <$> sendMessage alice bobId Nothing SMP.noMsgFlags "message 1"
+    3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
     deleteConnectionsAsync alice True [bobId]
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
     get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
@@ -2292,14 +2298,14 @@ testDeliveryReceipts =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     -- a sends, b receives and sends delivery receipt
-    4 <- sendMessage a bId Nothing SMP.noMsgFlags "hello"
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4 $ Just ""
     get a =##> \case ("", c, Rcvd 4) -> c == bId; _ -> False
     ackMessage a bId 5 Nothing
     -- b sends, a receives and sends delivery receipt
-    6 <- sendMessage b aId Nothing SMP.noMsgFlags "hello too"
+    6 <- sendMessage b aId SMP.noMsgFlags "hello too"
     get b ##> ("", aId, SENT 6)
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 6 $ Just ""
@@ -2316,12 +2322,12 @@ testDeliveryReceiptsVersion t = do
       (aId, bId) <- makeConnection a b
       checkVersion a bId 3
       checkVersion b aId 3
-      4 <- sendMessage a bId Nothing SMP.noMsgFlags "hello"
+      4 <- sendMessage a bId SMP.noMsgFlags "hello"
       get a ##> ("", bId, SENT 4)
       get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
       ackMessage b aId 4 $ Just ""
       liftIO $ noMessages a "no delivery receipt (unsupported version)"
-      5 <- sendMessage b aId Nothing SMP.noMsgFlags "hello too"
+      5 <- sendMessage b aId SMP.noMsgFlags "hello too"
       get b ##> ("", aId, SENT 5)
       get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
       ackMessage a bId 5 $ Just ""
@@ -2339,13 +2345,13 @@ testDeliveryReceiptsVersion t = do
       exchangeGreetingsMsgId 6 a' bId b' aId
       checkVersion a' bId 4
       checkVersion b' aId 4
-      8 <- sendMessage a' bId Nothing SMP.noMsgFlags "hello"
+      8 <- sendMessage a' bId SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 8)
       get b' =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
       ackMessage b' aId 8 $ Just ""
       get a' =##> \case ("", c, Rcvd 8) -> c == bId; _ -> False
       ackMessage a' bId 9 Nothing
-      10 <- sendMessage b' aId Nothing SMP.noMsgFlags "hello too"
+      10 <- sendMessage b' aId SMP.noMsgFlags "hello too"
       get b' ##> ("", aId, SENT 10)
       get a' =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
       ackMessage a' bId 10 $ Just ""
@@ -2373,8 +2379,7 @@ testDeliveryReceiptsConcurrent t =
         numMsgs = 100
         send = runRight_ $
           replicateM_ numMsgs $ do
-            -- liftIO $ print $ cName <> ": sendMessage" Nothing
-            void $ sendMessage client connId Nothing SMP.noMsgFlags "hello"
+            void $ sendMessage client connId SMP.noMsgFlags "hello"
         receive =
           runRight_ $
             -- for each sent message: 1 SENT, 1 RCVD, 1 OK for acknowledging RCVD
@@ -2521,12 +2526,12 @@ exchangeGreetingsMsgId = exchangeGreetingsMsgId_ KEMEnable
 
 exchangeGreetingsMsgId_ :: HasCallStack => EnableKEM -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgId_ enableKEM msgId alice bobId bob aliceId = do
-  msgId1 <- sendMessage alice bobId (Just enableKEM) SMP.noMsgFlags "hello"
+  msgId1 <- Agent.sendMessage alice bobId enableKEM SMP.noMsgFlags "hello"
   liftIO $ msgId1 `shouldBe` msgId
   get alice ##> ("", bobId, SENT msgId)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId msgId Nothing
-  msgId2 <- sendMessage bob aliceId (Just enableKEM) SMP.noMsgFlags "hello too"
+  msgId2 <- Agent.sendMessage bob aliceId enableKEM SMP.noMsgFlags "hello too"
   let msgId' = msgId + 1
   liftIO $ msgId2 `shouldBe` msgId'
   get bob ##> ("", aliceId, SENT msgId')
@@ -2535,12 +2540,12 @@ exchangeGreetingsMsgId_ enableKEM msgId alice bobId bob aliceId = do
 
 exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
-  msgId1 <- sendMessage alice bobId Nothing SMP.noMsgFlags "hello"
+  msgId1 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   liftIO $ msgId1 `shouldBe` aliceMsgId
   get alice ##> ("", bobId, SENT aliceMsgId)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId bobMsgId Nothing
-  msgId2 <- sendMessage bob aliceId Nothing SMP.noMsgFlags "hello too"
+  msgId2 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   let aliceMsgId' = aliceMsgId + 1
       bobMsgId' = bobMsgId + 1
   liftIO $ msgId2 `shouldBe` bobMsgId'
