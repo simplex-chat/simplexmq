@@ -12,7 +12,7 @@
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
-import AgentTests.FunctionalAPITests (agentCfgV7, exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, sendMessage, switchComplete, testServerMatrix2, withAgentClientsCfg2, (##>), (=##>), pattern Msg)
+import AgentTests.FunctionalAPITests (agentCfgV7, createConnection, exchangeGreetingsMsgId, get, getSMPAgentClient', joinConnection, makeConnection, nGet, runRight, runRight_, sendMessage, switchComplete, testServerMatrix2, withAgentClientsCfg2, (##>), (=##>), pattern Msg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
@@ -28,13 +28,12 @@ import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer, testNtfServer2)
 import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent hiding (sendMessage)
+import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Protocol
@@ -332,8 +331,8 @@ testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentClient 
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@AgentClient {agentEnv = Env {config = aliceCfg}} bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing KEMEnable SMSubscribe
-    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" KEMEnable SMSubscribe
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -391,9 +390,9 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} alice bob =
     DeviceToken {} <- registerTestToken bob "bcde" NMInstant apnsQ
     -- establish connection
     liftIO $ threadDelay 50000
-    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing KEMEnable SMSubscribe
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     liftIO $ threadDelay 1000000
-    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" KEMEnable SMSubscribe
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ threadDelay 750000
     void $ messageNotificationData alice apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -442,8 +441,8 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   runRight_ $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing KEMEnable SMSubscribe
-    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" KEMEnable SMSubscribe
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -508,8 +507,8 @@ testChangeToken APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aliceId, bobId) <- runRight $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing KEMEnable SMSubscribe
-    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" KEMEnable SMSubscribe
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
