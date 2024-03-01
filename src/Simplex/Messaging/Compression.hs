@@ -35,15 +35,15 @@ instance Encoding Compressed where
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
 
-type PackCtx = (Ptr Z.CCtx, Ptr CChar, Int)
+type CompressCtx = (Ptr Z.CCtx, Ptr CChar, Int)
 
-withPackCtx :: Int -> (PackCtx -> IO a) -> IO a
-withPackCtx scratchSize action =
+withCompressCtx :: Int -> (CompressCtx -> IO a) -> IO a
+withCompressCtx scratchSize action =
   bracket Z.createCCtx Z.freeCCtx $ \cctx ->
     allocaBytes scratchSize $ \scratchPtr ->
       action (cctx, scratchPtr, scratchSize)
 
-compress :: PackCtx -> ByteString -> IO (Either String Compressed)
+compress :: CompressCtx -> ByteString -> IO (Either String Compressed)
 compress (cctx, scratchPtr, scratchSize) bs
   | B.null bs = pure $ Right Empty
   | B.length bs < 192 = pure . Right $ Passthrough bs -- too short to bother
@@ -54,24 +54,23 @@ compress (cctx, scratchPtr, scratchSize) bs
           Left e -> pure $ Left e -- should not happen, unless input buff
           Right dstSize -> Right . Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
 
--- | Defensive unpacking of multiple similar buffers.
---
--- Can't just use library-provided wrappers as they trust decompressed size from header.
-batchUnpackZstd :: Int -> NonEmpty Compressed -> NonEmpty (Either String ByteString)
-batchUnpackZstd maxUnpackedSize items =
-  unsafePerformIO $
-    bracket Z.createDCtx Z.freeDCtx $ \dctx ->
-      allocaBytes maxUnpackedSize $ \scratchBuf ->
-        forM items $ \case
-          Empty -> pure $ Right mempty
-          Passthrough bytes -> pure $ Right bytes
-          Compressed (Large bytes) -> unpackZstd_ dctx scratchBuf bytes
-  where
-    scratchSize :: CSize
-    scratchSize = fromIntegral maxUnpackedSize
-    unpackZstd_ :: Ptr Z.DCtx -> Ptr CChar -> ByteString -> IO (Either String ByteString)
-    unpackZstd_ dctx scratchBuf bs =
-      B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
-        res <- Z.checkError $ Z.decompressDCtx dctx scratchBuf scratchSize sourcePtr (fromIntegral sourceSize)
-        forM res $ \dstSize -> B.packCStringLen (scratchBuf, fromIntegral dstSize)
-{-# NOINLINE batchUnpackZstd #-} -- prevent double-evaluation under unsafePerformIO
+type DecompressCtx = (Ptr Z.DCtx, Ptr CChar, CSize)
+
+withDecompressCtx :: Int -> (DecompressCtx -> IO a) -> IO a
+withDecompressCtx maxUnpackedSize action =
+  bracket Z.createDCtx Z.freeDCtx $ \dctx ->
+    allocaBytes maxUnpackedSize $ \scratchPtr ->
+      action (dctx, scratchPtr, fromIntegral maxUnpackedSize)
+
+decompress :: DecompressCtx -> Compressed -> IO (Either String ByteString)
+decompress (dctx, scratchPtr, scratchSize) = \case
+  Empty -> pure $ Right B.empty
+  Passthrough bs -> pure $ Right bs
+  Compressed (Large bs) ->
+    B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
+      res <- Z.checkError $ Z.decompressDCtx dctx scratchPtr scratchSize sourcePtr (fromIntegral sourceSize)
+      forM res $ \dstSize -> B.packCStringLen (scratchPtr, fromIntegral dstSize)
+
+decompressBatch :: Int -> NonEmpty Compressed -> NonEmpty (Either String ByteString)
+decompressBatch maxUnpackedSize items = unsafePerformIO $ withDecompressCtx maxUnpackedSize $ forM items . decompress
+{-# NOINLINE decompressBatch #-} -- prevent double-evaluation under unsafePerformIO
