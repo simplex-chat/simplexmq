@@ -184,7 +184,6 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Compression (batchPackZstd)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String

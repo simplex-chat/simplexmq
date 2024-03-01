@@ -14,55 +14,50 @@ import Foreign.C.Types
 import GHC.IO (unsafePerformIO)
 import Simplex.Messaging.Encoding
 import UnliftIO.Exception (bracket)
-import Foreign.C (CStringLen)
 
-data BatchItem
-  = Empty
-  | -- | Compressed output can sometimes be larger than the original due to headers etc. Send as-is when that happens.
+data Compressed
+  = -- | Can be used as traversal placeholders to retain structure.
+    Empty
+  | -- | Short messages are left intact to skip copying and FFI festivities.
     Passthrough ByteString
   | -- | Generic compression using no extra context.
-    Compressed ByteString
+    Compressed Large
 
-instance Encoding BatchItem where
+instance Encoding Compressed where
   smpEncode = \case
     Empty -> "_"
     Passthrough bytes -> "0" <> smpEncode bytes
-    Compressed bytes -> "1" <> smpEncode (Large bytes)
+    Compressed bytes -> "1" <> smpEncode bytes
   smpP =
     smpP >>= \case
       '_' -> pure Empty
       '0' -> Passthrough <$> smpP
-      '1' -> Compressed . unLarge <$> smpP
-      x -> fail $ "unknown BatchItem tag: " <> show x
+      '1' -> Compressed <$> smpP
+      x -> fail $ "unknown Compressed tag: " <> show x
 
-withPackCtx :: Int -> (Ptr Z.CCtx -> CStringLen -> IO a) -> IO a
+type PackCtx = (Ptr Z.CCtx, Ptr CChar, Int)
+
+withPackCtx :: Int -> (PackCtx -> IO a) -> IO a
 withPackCtx scratchSize action =
   bracket Z.createCCtx Z.freeCCtx $ \cctx ->
     allocaBytes scratchSize $ \scratchPtr ->
-      action cctx (scratchPtr, scratchSize)
+      action (cctx, scratchPtr, scratchSize)
 
--- | Efficiently pack a collection of bytes.
-batchPackZstd :: Int -> NonEmpty ByteString -> NonEmpty BatchItem
-batchPackZstd scratchSize blocks =
-  unsafePerformIO $
-    withPackCtx scratchSize $ \cctx scratchBuf ->
-      mapM (packZstd cctx scratchBuf) blocks
-{-# NOINLINE batchPackZstd #-}
-
-packZstd :: Ptr Z.CCtx -> CStringLen -> ByteString -> IO BatchItem
-packZstd cctx (scratchPtr, scratchSize) bs
-  | B.null bs = pure Empty
+compress :: PackCtx -> ByteString -> IO (Either String Compressed)
+compress (cctx, scratchPtr, scratchSize) bs
+  | B.null bs = pure $ Right Empty
+  | B.length bs < 192 = pure . Right $ Passthrough bs -- too short to bother
   | otherwise =
       B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
         res <- Z.checkError $ Z.compressCCtx cctx scratchPtr (fromIntegral scratchSize) sourcePtr (fromIntegral sourceSize) 3
         case res of
-          Right dstSize | fromIntegral dstSize < B.length bs -> Compressed <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
-          _ -> pure $ Passthrough bs
+          Left e -> pure $ Left e -- should not happen, unless input buff
+          Right dstSize -> Right . Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
 
 -- | Defensive unpacking of multiple similar buffers.
 --
 -- Can't just use library-provided wrappers as they trust decompressed size from header.
-batchUnpackZstd :: Int -> NonEmpty BatchItem -> NonEmpty (Either String ByteString)
+batchUnpackZstd :: Int -> NonEmpty Compressed -> NonEmpty (Either String ByteString)
 batchUnpackZstd maxUnpackedSize items =
   unsafePerformIO $
     bracket Z.createDCtx Z.freeDCtx $ \dctx ->
@@ -70,7 +65,7 @@ batchUnpackZstd maxUnpackedSize items =
         forM items $ \case
           Empty -> pure $ Right mempty
           Passthrough bytes -> pure $ Right bytes
-          Compressed bytes -> unpackZstd_ dctx scratchBuf bytes
+          Compressed (Large bytes) -> unpackZstd_ dctx scratchBuf bytes
   where
     scratchSize :: CSize
     scratchSize = fromIntegral maxUnpackedSize
@@ -79,4 +74,4 @@ batchUnpackZstd maxUnpackedSize items =
       B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
         res <- Z.checkError $ Z.decompressDCtx dctx scratchBuf scratchSize sourcePtr (fromIntegral sourceSize)
         forM res $ \dstSize -> B.packCStringLen (scratchBuf, fromIntegral dstSize)
-{-# NOINLINE batchUnpackZstd #-}
+{-# NOINLINE batchUnpackZstd #-} -- prevent double-evaluation under unsafePerformIO
