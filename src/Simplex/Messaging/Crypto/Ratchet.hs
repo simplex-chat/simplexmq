@@ -642,7 +642,7 @@ instance StrEncoding EnableKEM where
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe EnableKEM -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion, rcEnableKEM} paddedMsgLen msg enableKEM = do
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg enableKEM_ = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -653,8 +653,13 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
   let msg' = encodeEncRatchetMessage (maxVersion rcVersion) EncRatchetMessage {emHeader, emBody, emAuthTag}
       -- state.Ns += 1
-      rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1, rcEnableKEM = maybe rcEnableKEM (KEMEnable ==) enableKEM}
-  pure (msg', rc')
+      rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
+      rc'' = case enableKEM_ of
+        Nothing -> rc'
+        Just enableKEM -> case rcKEM of
+          Just rck | enableKEM == KEMDisable -> rc' {rcEnableKEM = False, rcKEM = Just rck {rcKEMs = Nothing}}
+          _ -> rc' {rcEnableKEM = enableKEM == KEMEnable}
+  pure (msg', rc'')
   where
     -- header = HEADER_PQ2(
     --   dh = state.DHRs.public,
@@ -742,12 +747,15 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
               let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
                   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
                   (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
+                  rcSndKEM = isJust kemSS'
+                  rcRcvKEM = isJust kemSS
                   rc'' =
                     rc'
                       { rcDHRs = rcDHRs',
                         rcKEM = rcKEM',
-                        rcSndKEM = isJust kemSS',
-                        rcRcvKEM = isJust kemSS,
+                        rcEnableKEM = rcSndKEM || rcRcvKEM,
+                        rcSndKEM,
+                        rcRcvKEM,
                         rcRK = rcRK'',
                         rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
                         rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
@@ -759,7 +767,14 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                       }
               pure (rc'', hmks)
         pqRatchetStep :: Ratchet a -> Maybe ARKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
-        pqRatchetStep _ Nothing = pure (Nothing, Nothing, Nothing)
+        -- this part is used when received message does not have KEM in header,
+        -- but the user enabled KEM when sending previous message
+        pqRatchetStep Ratchet {rcKEM, rcEnableKEM} Nothing = case rcKEM of
+          Nothing | rcEnableKEM -> do
+            rcPQRs <- liftIO $ sntrup761Keypair g
+            pure (Nothing, Nothing, Just RatchetKEM {rcPQRs, rcKEMs = Nothing})
+          _ -> pure (Nothing, Nothing, Nothing)
+        -- this part is used when received message has KEM in header.
         pqRatchetStep Ratchet {rcKEM, rcEnableKEM} (Just (ARKP _ ps)) = do
           -- ss = PQKEM-DEC(state.PQRs.private, header.ct)
           -- state.PQRr = header.kem

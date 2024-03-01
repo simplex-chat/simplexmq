@@ -14,6 +14,7 @@
 module AgentTests.DoubleRatchetTests where
 
 import Control.Concurrent.STM
+import Control.Monad (when)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
@@ -39,7 +40,7 @@ doubleRatchetTests = do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetVersion currentE2EEncryptVersion
-    describe "message tests" $ runMessageTests initRatchets
+    describe "message tests" $ runMessageTests initRatchets False
     it "should encode/decode ratchet as JSON" $ do
       testAlgs testKeyJSON
       testAlgs testRatchetJSON
@@ -56,18 +57,23 @@ doubleRatchetTests = do
     describe "ratchet encryption/decryption" $ do
       it "should serialize and parse public KEM params" testKEMParams
       it "should serialize and parse message header" $ testAlgs testMessageHeaderKEM
-      describe "message tests, KEM proposed" $ runMessageTests initRatchetsKEMProposed
-      describe "message tests, KEM accepted" $ runMessageTests initRatchetsKEMAccepted
-      describe "message tests, KEM proposed again in reply" $ runMessageTests initRatchetsKEMProposedAgain
+      describe "message tests, KEM proposed" $ runMessageTests initRatchetsKEMProposed True
+      describe "message tests, KEM accepted" $ runMessageTests initRatchetsKEMAccepted False
+      describe "message tests, KEM proposed again in reply" $ runMessageTests initRatchetsKEMProposedAgain True
+      it "should disable and re-enable KEM" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableEnableKEM 
+      it "should enable KEM when it was not enabled in handshake" $ withRatchets_ @X25519 initRatchets testEnableKEM 
 
-runMessageTests :: (forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)) -> Spec
-runMessageTests initRatchets_ = do
-  it "should encrypt and decrypt messages" $ run testEncryptDecrypt
-  it "should encrypt and decrypt skipped messages" $ run testSkippedMessages
-  it "should encrypt and decrypt many messages" $ run testManyMessages
-  it "should allow skipped after ratchet advance" $ run testSkippedAfterRatchetAdvance
+runMessageTests ::
+  (forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)) ->
+  Bool ->
+  Spec
+runMessageTests initRatchets_ agreeRatchetKEMs = do
+  it "should encrypt and decrypt messages" $ run $ testEncryptDecrypt agreeRatchetKEMs
+  it "should encrypt and decrypt skipped messages" $ run $ testSkippedMessages agreeRatchetKEMs
+  it "should encrypt and decrypt many messages" $ run $ testManyMessages agreeRatchetKEMs
+  it "should allow skipped after ratchet advance" $ run $ testSkippedAfterRatchetAdvance agreeRatchetKEMs
   where
-    run :: (forall a. TestRatchets a) -> IO ()
+    run :: (forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a) -> IO ()
     run test = do
       withRatchets_ @X25519 initRatchets_ test
       withRatchets_ @X448 initRatchets_ test
@@ -119,7 +125,19 @@ testMessageHeaderKEM _ = do
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
 
-type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
+type Encrypt a = TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
+
+type Decrypt a = TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
+
+type EncryptDecryptSpec a = (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys), ByteString) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> Expectation
+
+type TestRatchets a =
+  TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
+  TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
+  Encrypt a ->
+  Decrypt a ->
+  EncryptDecryptSpec a ->
+  IO ()
 
 deriving instance Eq (Ratchet a)
 
@@ -144,8 +162,13 @@ instance Eq ARKEMParams where
 
 deriving instance Eq (MsgHeader a)
 
-testEncryptDecrypt :: TestRatchets a
-testEncryptDecrypt alice bob = do
+initRatchetKEM :: (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
+initRatchetKEM s r = do
+  encryptDecrypt (Just KEMEnable) (const Nothing) (const Nothing) (s, "initialising ratchet") r
+
+testEncryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
+testEncryptDecrypt agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
+  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
   (bob, "hello alice") #> alice
   (alice, "hello bob") #> bob
   Right b1 <- encrypt bob "how are you, alice?"
@@ -164,8 +187,9 @@ testEncryptDecrypt alice bob = do
   (alice, "I'm here too, same") #> bob
   pure ()
 
-testSkippedMessages :: TestRatchets a
-testSkippedMessages alice bob = do
+testSkippedMessages :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
+testSkippedMessages agreeRatchetKEMs alice bob encrypt decrypt _ = do
+  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
   Right msg1 <- encrypt bob "hello alice"
   Right msg2 <- encrypt bob "hello there again"
   Right msg3 <- encrypt bob "are you there?"
@@ -175,8 +199,9 @@ testSkippedMessages alice bob = do
   Decrypted "hello alice" <- decrypt alice msg1
   pure ()
 
-testManyMessages :: TestRatchets a
-testManyMessages alice bob = do
+testManyMessages :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
+testManyMessages agreeRatchetKEMs alice bob _ _ (#>) = do
+  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
   (bob, "b1") #> alice
   (bob, "b2") #> alice
   (bob, "b3") #> alice
@@ -193,8 +218,9 @@ testManyMessages alice bob = do
   (bob, "b15") #> alice
   (bob, "b16") #> alice
 
-testSkippedAfterRatchetAdvance :: TestRatchets a
-testSkippedAfterRatchetAdvance alice bob = do
+testSkippedAfterRatchetAdvance :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
+testSkippedAfterRatchetAdvance agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
+  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
   (bob, "b1") #> alice
   Right b2 <- encrypt bob "b2"
   Right b3 <- encrypt bob "b3"
@@ -228,6 +254,36 @@ testSkippedAfterRatchetAdvance alice bob = do
   Decrypted "b11" <- decrypt alice b11
   pure ()
 
+testDisableEnableKEM :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
+testDisableEnableKEM alice bob _ _ _ = do
+  (bob, "hello alice") !#> alice
+  (alice, "hello bob") !#> bob
+  (bob, "disabling KEM") \\#> alice
+  (alice, "still disabling KEM") !#> bob
+  (bob, "now KEM is disabled") \#> alice
+  (alice, "KEM is disabled for both sides") \#> bob
+  (bob, "trying to enable KEM") !!#> alice
+  (alice, "but unless alice enables it too it won't enable") \#> bob
+  (bob, "KEM is disabled") \#> alice
+  (alice, "KEM is disabled for both sides") \#> bob
+  (bob, "enabling KEM again") !!#> alice
+  (alice, "and alice accepts it this time") !!#> bob
+  (bob, "still enabling KEM") !!#> alice
+  (alice, "now KEM is enabled") !#> bob
+  (bob, "KEM is enabled for both sides") !#> alice
+
+testEnableKEM :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
+testEnableKEM alice bob _ _ _ = do
+  (bob, "hello alice") \#> alice
+  (alice, "hello bob") \#> bob
+  (bob, "enabling KEM") !!#> alice
+  (bob, "KEM not enabled yet") !!#> alice
+  (alice, "accepting KEM") !!#> bob
+  (alice, "KEM not enabled yet here too") !!#> bob
+  (bob, "KEM is still not enabled") !!#> alice
+  (alice, "now KEM is enabled") !#> bob
+  (bob, "now KEM is enabled for both sides") !#> alice
+
 testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
 testKeyJSON _ = do
   (k, pk) <- atomically . C.generateKeyPair @a =<< C.newRandom
@@ -236,7 +292,7 @@ testKeyJSON _ = do
 
 testRatchetJSON :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testRatchetJSON _ = do
-  (alice, bob) <- initRatchets @a
+  (alice, bob, _, _, _) <- initRatchets @a
   testEncodeDecode alice
   testEncodeDecode bob
 
@@ -341,22 +397,46 @@ compatibleRatchets
       (Nothing, Nothing) -> pure ()
       _ -> expectationFailure "RatchetInitParams params are not compatible"
 
-(#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys), ByteString) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> Expectation
-(alice, msg) #> bob = do
-  Right msg' <- encrypt alice msg
-  Decrypted msg'' <- decrypt bob msg'
+encryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Maybe EnableKEM -> (Ratchet a -> Maybe String) -> (Ratchet a -> Maybe String) -> EncryptDecryptSpec a
+encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
+  Right msg' <- withTVar (encrypt_ enableKEM) invalidSnd alice msg
+  Decrypted msg'' <- decrypt' invalidRcv bob msg'
   msg'' `shouldBe` msg
 
-withRatchets_ :: IO (Ratchet a, Ratchet a) -> (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()) -> Expectation
+-- enable KEM (was disabled)
+(!!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) !!#> r = encryptDecrypt (Just KEMEnable) noSndKEM noRcvKEM (s, msg) r
+
+-- enable KEM (was enabled)
+(!!!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) !!!#> r = encryptDecrypt (Just KEMEnable) hasSndKEM hasRcvKEM (s, msg) r
+
+-- KEM enabled
+(!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) !#> r = encryptDecrypt Nothing hasSndKEM hasRcvKEM (s, msg) r
+
+-- disable KEM (was enabled)
+(\\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) \\#> r = encryptDecrypt (Just KEMDisable) hasSndKEM hasRcvKEM (s, msg) r
+
+-- disable KEM (was disabled)
+(\\\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) \\\#> r = encryptDecrypt (Just KEMDisable) noSndKEM noSndKEM (s, msg) r
+
+-- KEM disabled
+(\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
+(s, msg) \#> r = encryptDecrypt Nothing noSndKEM noSndKEM (s, msg) r
+
+withRatchets_ :: IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a) -> TestRatchets a -> Expectation
 withRatchets_ initRatchets_ test = do
   ga <- C.newRandom
   gb <- C.newRandom
-  (a, b) <- initRatchets_
+  (a, b, encrypt, decrypt, (#>)) <- initRatchets_
   alice <- newTVarIO (ga, a, M.empty)
   bob <- newTVarIO (gb, b, M.empty)
-  test alice bob `shouldReturn` ()
+  test alice bob encrypt decrypt (#>) `shouldReturn` ()
 
-initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
 initRatchets = do
   g <- C.newRandom
   let v = max pqRatchetVersion currentE2EEncryptVersion
@@ -367,9 +447,9 @@ initRatchets = do
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMDisable
-  pure (alice, bob)
+  pure (alice, bob, encrypt' noSndKEM, decrypt' noRcvKEM, (\#>))
 
-initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
 initRatchetsKEMProposed = do
   g <- C.newRandom
   let v = max pqRatchetVersion currentE2EEncryptVersion
@@ -383,9 +463,9 @@ initRatchetsKEMProposed = do
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
-  pure (alice, bob)
+  pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
-initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
 initRatchetsKEMAccepted = do
   g <- C.newRandom
   let v = max pqRatchetVersion currentE2EEncryptVersion
@@ -400,9 +480,9 @@ initRatchetsKEMAccepted = do
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
-  pure (alice, bob)
+  pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
-initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
+initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
 initRatchetsKEMProposedAgain = do
   g <- C.newRandom
   let v = max pqRatchetVersion currentE2EEncryptVersion
@@ -416,11 +496,12 @@ initRatchetsKEMProposedAgain = do
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
-  pure (alice, bob)
+  pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
-encrypt_ :: AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
-encrypt_ (_, rc, _) msg =
-  runExceptT (rcEncrypt rc paddedMsgLen msg Nothing)
+encrypt_ :: AlgorithmI a => Maybe EnableKEM -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
+encrypt_ enableKem (_, rc, _) msg =
+  -- print msg >>
+  runExceptT (rcEncrypt rc paddedMsgLen msg enableKem)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
@@ -430,23 +511,38 @@ encrypt_ (_, rc, _) msg =
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
 decrypt_ (g, rc, smks) msg = runExceptT $ rcDecrypt g rc smks msg
 
-encrypt :: AlgorithmI a => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
-encrypt = withTVar encrypt_
+encrypt' :: AlgorithmI a => (Ratchet a -> Maybe String) -> Encrypt a
+encrypt' = withTVar $ encrypt_ Nothing
 
-decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
-decrypt = withTVar decrypt_
+decrypt' :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a -> Maybe String) -> Decrypt a
+decrypt' = withTVar decrypt_
+
+noSndKEM :: Ratchet a -> Maybe String
+noSndKEM Ratchet {rcSndKEM} = if rcSndKEM then Just "snd ratchet has KEM" else Nothing
+
+noRcvKEM :: Ratchet a -> Maybe String
+noRcvKEM Ratchet {rcRcvKEM} = if rcRcvKEM then Just "rcv ratchet has KEM" else Nothing
+
+hasSndKEM :: Ratchet a -> Maybe String
+hasSndKEM Ratchet {rcSndKEM} = if rcSndKEM then Nothing else Just "snd ratchet has no KEM"
+
+hasRcvKEM :: Ratchet a -> Maybe String
+hasRcvKEM Ratchet {rcRcvKEM} = if rcRcvKEM then Nothing else Just "rcv ratchet has no KEM"
 
 withTVar ::
   AlgorithmI a =>
   ((TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
+  (Ratchet a -> Maybe String) ->
   TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
-withTVar op rcVar msg = do
+withTVar op invalid rcVar msg = do
   (g, rc, smks) <- readTVarIO rcVar
   applyDiff smks <$$> (testEncodeDecode rc >> op (g, rc, smks) msg)
     >>= \case
-      Right (res, rc', smks') -> atomically (writeTVar rcVar (g, rc', smks')) >> pure (Right res)
+      Right (res, rc', smks') -> case invalid rc' of
+        Nothing -> atomically (writeTVar rcVar (g, rc', smks')) >> pure (Right res)
+        Just err -> error err
       Left e -> pure $ Left e
   where
     applyDiff smks (res, rc', smDiff) = (res, rc', applySMDiff smks smDiff)
