@@ -153,7 +153,6 @@ module Simplex.Messaging.Protocol
     tEncodeBatch1,
     batchTransmissions,
     batchTransmissions',
-    batchCompressed,
     batchTransmissions_,
 
     -- * exports for tests
@@ -1350,10 +1349,6 @@ batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
     addBatch (bs, _len, n, ss, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
       where
         b = B.concat $ B.singleton (lenEncode n) : ss
-
--- | Shortcut for combining efficient per-block compression with batching according to the compressed block size.
-batchCompressed :: Int -> NonEmpty ByteString -> [TransportBatch ()]
-batchCompressed bSize blocks = batchTransmissions_ bSize . fmap (\x -> (Right $ smpEncode x, ())) $ batchPackZstd (16 * 1024) blocks
 
 tEncode :: SentRawTransmission -> ByteString
 tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
