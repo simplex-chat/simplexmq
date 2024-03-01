@@ -165,7 +165,7 @@ instance Eq ARKEMParams where
 deriving instance Eq (MsgHeader a)
 
 initRatchetKEM :: (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
-initRatchetKEM s r = encryptDecrypt (Just KEMEnable) (const ()) (const ()) (s, "initialising ratchet") r
+initRatchetKEM s r = encryptDecrypt (Just EnableKEM) (const ()) (const ()) (s, "initialising ratchet") r
 
 testEncryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
 testEncryptDecrypt agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
@@ -444,11 +444,11 @@ encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
 
 -- enable KEM (currently disabled)
 (\#>!) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) \#>! r = encryptDecrypt (Just KEMEnable) noSndKEM noRcvKEM (s, msg) r
+(s, msg) \#>! r = encryptDecrypt (Just EnableKEM) noSndKEM noRcvKEM (s, msg) r
 
 -- enable KEM (currently enabled)
 (!#>!) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) !#>! r = encryptDecrypt (Just KEMEnable) hasSndKEM hasRcvKEM (s, msg) r
+(s, msg) !#>! r = encryptDecrypt (Just EnableKEM) hasSndKEM hasRcvKEM (s, msg) r
 
 -- KEM enabled (no user preference)
 (!#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
@@ -456,11 +456,11 @@ encryptDecrypt enableKEM invalidSnd invalidRcv (alice, msg) bob = do
 
 -- disable KEM (currently enabled)
 (!#>\) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) !#>\ r = encryptDecrypt (Just KEMDisable) hasSndKEM hasRcvKEM (s, msg) r
+(s, msg) !#>\ r = encryptDecrypt (Just DisableKEM) hasSndKEM hasRcvKEM (s, msg) r
 
 -- disable KEM (currently disabled)
 (\#>\) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
-(s, msg) \#>\ r = encryptDecrypt (Just KEMDisable) noSndKEM noSndKEM (s, msg) r
+(s, msg) \#>\ r = encryptDecrypt (Just DisableKEM) noSndKEM noSndKEM (s, msg) r
 
 -- KEM disabled (no user preference)
 (\#>) :: (AlgorithmI a, DhAlgorithm a) => EncryptDecryptSpec a
@@ -485,7 +485,7 @@ initRatchets = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMDisable
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice DisableKEM
   pure (alice, bob, encrypt' noSndKEM, decrypt' noRcvKEM, (\#>))
 
 initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -501,7 +501,7 @@ initRatchetsKEMProposed = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice EnableKEM
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -518,7 +518,7 @@ initRatchetsKEMAccepted = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice EnableKEM
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -534,7 +534,7 @@ initRatchetsKEMProposedAgain = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice KEMEnable
+      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice EnableKEM
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 encrypt_ :: AlgorithmI a => Maybe EnableKEM -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))

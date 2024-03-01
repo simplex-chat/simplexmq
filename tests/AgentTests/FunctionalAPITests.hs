@@ -203,13 +203,13 @@ inAnyOrder g rs = do
     expected r rp = rp r
 
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData KEMDisable
+createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData DisableKEM
 
 joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
-joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId enableNtfs cReq connInfo KEMEnable
+joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId enableNtfs cReq connInfo EnableKEM
 
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> m AgentMsgId
-sendMessage c connId = Agent.sendMessage c connId KEMEnable
+sendMessage c connId = Agent.sendMessage c connId EnableKEM
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
@@ -509,7 +509,7 @@ runAgentClientContactTest alice bob baseId =
     (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContact alice True invId "alice's connInfo" KEMEnable SMSubscribe
+    bobId <- acceptContact alice True invId "alice's connInfo" EnableKEM SMSubscribe
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -1005,7 +1005,7 @@ testRatchetSync t = withAgentClients2 $ \alice bob ->
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId, bob2) <- setupDesynchronizedRatchet alice bob
     runRight $ do
-      ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId KEMEnable False
+      ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId EnableKEM False
       liftIO $ ratchetSyncState `shouldBe` RSStarted
       get alice =##> ratchetSyncP bobId RSAgreed
       get bob2 =##> ratchetSyncP aliceId RSAgreed
@@ -1049,7 +1049,7 @@ setupDesynchronizedRatchet alice bob = do
   runRight_ $ do
     subscribeConnection bob2 aliceId
 
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId KEMEnable False
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId EnableKEM False
 
     8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
     get alice ##> ("", bobId, SENT 8)
@@ -1080,7 +1080,7 @@ testRatchetSyncServerOffline t = withAgentClients2 $ \alice bob -> do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId KEMEnable False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
@@ -1110,7 +1110,7 @@ testRatchetSyncClientRestart t = do
     setupDesynchronizedRatchet alice bob
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId KEMEnable False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
   disconnectAgentClient bob2
   bob3 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
@@ -1137,7 +1137,7 @@ testRatchetSyncSuspendForeground t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId KEMEnable False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   suspendAgent bob2 0
@@ -1171,10 +1171,10 @@ testRatchetSyncSimultaneous t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState = bRSS} <- runRight $ synchronizeRatchet bob2 aliceId KEMEnable False
+  ConnectionStats {ratchetSyncState = bRSS} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
   liftIO $ bRSS `shouldBe` RSStarted
 
-  ConnectionStats {ratchetSyncState = aRSS} <- runRight $ synchronizeRatchet alice bobId KEMEnable True
+  ConnectionStats {ratchetSyncState = aRSS} <- runRight $ synchronizeRatchet alice bobId EnableKEM True
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
@@ -1229,13 +1229,13 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
       pure r
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnection = makeConnection_ KEMEnable
+makeConnection = makeConnection_ EnableKEM
 
 makeConnection_ :: EnableKEM -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection_ enableKEM alice bob = makeConnectionForUsers_ enableKEM alice 1 bob 1
 
 makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnectionForUsers = makeConnectionForUsers_ KEMEnable
+makeConnectionForUsers = makeConnectionForUsers_ EnableKEM
 
 makeConnectionForUsers_ :: EnableKEM -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ enableKEM alice aliceUserId bob bobUserId = do
@@ -1368,8 +1368,8 @@ testBatchedSubscriptions nCreate nDel t = do
   a <- getSMPAgentClient' 1 agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- replicateM (nCreate :: Int) $ makeConnection_ KEMDisable a b
-    forM_ conns $ \(aId, bId) -> exchangeGreetings_ KEMDisable a bId b aId
+    conns <- replicateM (nCreate :: Int) $ makeConnection_ DisableKEM a b
+    forM_ conns $ \(aId, bId) -> exchangeGreetings_ DisableKEM a bId b aId
     let (aIds', bIds') = unzip $ take nDel conns
     delete a bIds'
     delete b aIds'
@@ -1390,10 +1390,10 @@ testBatchedSubscriptions nCreate nDel t = do
         (aIds', bIds') = unzip conns'
     subscribe a bIds
     subscribe b aIds
-    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ KEMDisable 6 a bId b aId
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ DisableKEM 6 a bId b aId
     void $ resubscribeConnections a bIds
     void $ resubscribeConnections b aIds
-    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ KEMDisable 8 a bId b aId
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ DisableKEM 8 a bId b aId
     delete a bIds'
     delete b aIds'
     deleteFail a bIds'
@@ -1432,10 +1432,10 @@ testBatchedSubscriptions nCreate nDel t = do
 testAsyncCommands :: IO ()
 testAsyncCommands =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation KEMEnable SMSubscribe
+    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation EnableKEM SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
-    aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" KEMEnable SMSubscribe
+    aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" EnableKEM SMSubscribe
     ("2", aliceId', OK) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -1482,7 +1482,7 @@ testAsyncCommands =
 testAsyncCommandsRestore :: ATransport -> IO ()
 testAsyncCommandsRestore t = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation KEMEnable SMSubscribe
+  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation EnableKEM SMSubscribe
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disconnectAgentClient alice
   alice' <- liftIO $ getSMPAgentClient' 2 agentCfg initAgentServers testDB
@@ -1499,7 +1499,7 @@ testAcceptContactAsync =
     (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" KEMEnable SMSubscribe
+    bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" EnableKEM SMSubscribe
     get alice =##> \case ("1", c, OK) -> c == bobId; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
@@ -1783,10 +1783,10 @@ testJoinConnectionAsyncReplyError t = do
   a <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
-    bId <- createConnectionAsync a 1 "1" True SCMInvitation KEMEnable SMSubscribe
+    bId <- createConnectionAsync a 1 "1" True SCMInvitation EnableKEM SMSubscribe
     ("1", bId', INV (ACR _ qInfo)) <- get a
     liftIO $ bId' `shouldBe` bId
-    aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" KEMEnable SMSubscribe
+    aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" EnableKEM SMSubscribe
     liftIO $ threadDelay 500000
     ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
     pure (aId, bId)
@@ -2524,13 +2524,13 @@ testServerMultipleIdentities =
         testE2ERatchetParams12
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetings = exchangeGreetings_ KEMEnable
+exchangeGreetings = exchangeGreetings_ EnableKEM
 
 exchangeGreetings_ :: HasCallStack => EnableKEM -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings_ enableKEM = exchangeGreetingsMsgId_ enableKEM 4
 
 exchangeGreetingsMsgId :: HasCallStack => Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsMsgId = exchangeGreetingsMsgId_ KEMEnable
+exchangeGreetingsMsgId = exchangeGreetingsMsgId_ EnableKEM
 
 exchangeGreetingsMsgId_ :: HasCallStack => EnableKEM -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgId_ enableKEM msgId alice bobId bob aliceId = do

@@ -2135,10 +2135,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 -- party initiating connection
                 (RcvConnection {}, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ kem_))) -> do
                   unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwError $ AGENT A_VERSION)
-                  -- TODO this should also return previously generated KEM keypair rcPQRs
                   (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
                   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
-                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs rcParams $ maybe CR.KEMDisable (const CR.KEMEnable) kem_
+                  -- TODO the decision to use KEM should depend on how connection was created (or joined)
+                  let rc = CR.initRcvRatchet e2eEncryptVRange rcDHRs rcParams $ maybe CR.DisableKEM (const CR.EnableKEM) kem_
                   g <- asks random
                   (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
                   case (agentMsgBody_, skipped) of
@@ -2356,7 +2356,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 where
                   sendReplyKey = do
                     g <- asks random
-                    (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g e2eVersion (CR.proposeKEM_ CR.KEMEnable)
+                    -- TODO the decision to use KEM should depend on connection
+                    (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g e2eVersion (CR.proposeKEM_ CR.EnableKEM)
                     enqueueRatchetKeyMsgs c cData' sqs e2eParams
                     pure (pk1, pk2, pKem)
                   notifyRatchetSyncError = do
@@ -2378,13 +2379,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
               initRatchet :: VersionRange -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> m ()
               initRatchet e2eEncryptVRange (pk1, pk2, pKem)
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
-                    -- TODO if KEM was sent in the invitation it should be passed here
                     rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eOtherPartyParams
-                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 rcParams $ maybe CR.KEMDisable (const CR.KEMEnable) kem_
+                    -- TODO the decision to use KEM should either depend on the global setting or on whether it was enabled in connection before
+                    recreateRatchet $ CR.initRcvRatchet e2eEncryptVRange pk2 rcParams $ maybe CR.DisableKEM (const CR.EnableKEM) kem_
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
-                    -- TODO it should check if KEM is already used in ratchet, and if yes generate and pass a new key pair
-                    rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 Nothing e2eOtherPartyParams
+                    rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 (CR.APRKP CR.SRKSProposed <$> pKem) e2eOtherPartyParams
                     recreateRatchet $ CR.initSndRatchet e2eEncryptVRange k2Rcv rcDHRs rcParams
                     void . enqueueMessages' c cData' sqs Nothing SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 

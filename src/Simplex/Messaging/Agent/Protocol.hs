@@ -1737,7 +1737,7 @@ commandP binaryP =
     s :: Parser a -> Parser a
     s p = A.space *> p
     kemP :: Parser EnableKEM
-    kemP = strP_ <|> pure KEMDisable
+    kemP = strP_ <|> pure DisableKEM
     connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
     sfDone :: Text -> Either String (ACommand 'Agent 'AESndFile)

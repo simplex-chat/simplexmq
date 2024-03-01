@@ -523,7 +523,7 @@ initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK
       -- state.PQRss = None
       -- state.PQRct = None
       rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-      rcEnableKEM = enableKEM == KEMEnable,
+      rcEnableKEM = enableKEM == EnableKEM,
       rcSndKEM = False,
       rcRcvKEM = False,
       rcRK = ratchetKey,
@@ -610,30 +610,32 @@ encRatchetMessageP v = do
   (emAuthTag, Tail emBody) <- smpP
   pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
-data EnableKEM = KEMEnable | KEMDisable
+data EnableKEM = EnableKEM | DisableKEM
   deriving (Eq, Show)
 
 proposeKEM_ :: EnableKEM -> Maybe (UseKEM 'RKSProposed)
 proposeKEM_ = \case
-  KEMEnable -> Just ProposeKEM
-  KEMDisable -> Nothing
+  EnableKEM -> Just ProposeKEM
+  DisableKEM -> Nothing
 
 replyKEM_ :: EnableKEM -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
 replyKEM_ enableKEM kem_ = case enableKEM of
-  KEMEnable -> Just $ case kem_ of
+  EnableKEM -> Just $ case kem_ of
     Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
     Nothing -> AUseKEM SRKSProposed ProposeKEM
-  KEMDisable -> Nothing
+  DisableKEM -> Nothing
 
 instance StrEncoding EnableKEM where
   strEncode = \case
-    KEMEnable -> "kem_enable"
-    KEMDisable -> "kem_disable"
+    EnableKEM -> "kem=enable"
+    DisableKEM -> "kem=disable"
   strP =
     A.takeTill (== ' ') >>= \case
-      "kem_enable" -> pure KEMEnable
-      "kem_disable" -> pure KEMDisable
+      "kem=enable" -> pure EnableKEM
+      "kem=disable" -> pure DisableKEM
       _ -> fail "bad EnableKEM"
+
+data E2EEncryptionMode = E2EEDhPQ | E2EEDh
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe EnableKEM -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
@@ -651,8 +653,8 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
       rc'' = case enableKEM_ of
         Nothing -> rc'
-        Just KEMEnable -> rc' {rcEnableKEM = True}
-        Just KEMDisable ->
+        Just EnableKEM -> rc' {rcEnableKEM = True}
+        Just DisableKEM ->
           let rcKEM' = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM
            in rc' {rcEnableKEM = False, rcKEM = rcKEM'}
   pure (msg', rc'')
