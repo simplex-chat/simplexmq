@@ -16,21 +16,21 @@ import Simplex.Messaging.Encoding
 import UnliftIO.Exception (bracket)
 
 data Compressed
-  = -- | Can be used as traversal placeholders to retain structure.
-    Empty
-  | -- | Short messages are left intact to skip copying and FFI festivities.
+  = -- | Short messages are left intact to skip copying and FFI festivities.
     Passthrough ByteString
   | -- | Generic compression using no extra context.
     Compressed Large
 
+-- | Messages below this length are not encoded to avoid compression overhead.
+maxLengthPassthrough :: Int
+maxLengthPassthrough = 181 -- Sampled from real client data. Messages with length >=181 rapidly gain compression ratio.
+
 instance Encoding Compressed where
   smpEncode = \case
-    Empty -> "_"
     Passthrough bytes -> "0" <> smpEncode bytes
     Compressed bytes -> "1" <> smpEncode bytes
   smpP =
     smpP >>= \case
-      '_' -> pure Empty
       '0' -> Passthrough <$> smpP
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
@@ -45,13 +45,12 @@ withCompressCtx scratchSize action =
 
 compress :: CompressCtx -> ByteString -> IO (Either String Compressed)
 compress (cctx, scratchPtr, scratchSize) bs
-  | B.null bs = pure $ Right Empty
-  | B.length bs < 192 = pure . Right $ Passthrough bs -- too short to bother
+  | B.length bs < maxLengthPassthrough = pure . Right $ Passthrough bs
   | otherwise =
       B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
         res <- Z.checkError $ Z.compressCCtx cctx scratchPtr (fromIntegral scratchSize) sourcePtr (fromIntegral sourceSize) 3
         case res of
-          Left e -> pure $ Left e -- should not happen, unless input buff
+          Left e -> pure $ Left e -- should not happen, unless input buffer is too short
           Right dstSize -> Right . Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
 
 type DecompressCtx = (Ptr Z.DCtx, Ptr CChar, CSize)
@@ -64,7 +63,6 @@ withDecompressCtx maxUnpackedSize action =
 
 decompress :: DecompressCtx -> Compressed -> IO (Either String ByteString)
 decompress (dctx, scratchPtr, scratchSize) = \case
-  Empty -> pure $ Right B.empty
   Passthrough bs -> pure $ Right bs
   Compressed (Large bs) ->
     B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
