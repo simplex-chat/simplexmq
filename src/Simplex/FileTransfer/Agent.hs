@@ -393,7 +393,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let CryptoFile {filePath} = srcFile
               fileName = takeFileName filePath
           fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
-          when (fileSize > gb 5) $ throwError $ INTERNAL "max file size exceeded"
+          when (fileSize > maxFileSizeHard) $ throwError $ INTERNAL "max file size exceeded"
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize
               chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
