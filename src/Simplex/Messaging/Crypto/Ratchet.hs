@@ -379,6 +379,7 @@ data Ratchet a = Ratchet
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
+    -- TODO make them optional
     rcEnableKEM :: Bool, -- will enable KEM on the next ratchet step
     rcSndKEM :: Bool, -- used KEM hybrid secret for sending ratchet
     rcRcvKEM :: Bool, -- used KEM hybrid secret for receiving ratchet
@@ -618,6 +619,12 @@ proposeKEM_ = \case
   EnableKEM -> Just ProposeKEM
   DisableKEM -> Nothing
 
+connProposeKEM_ :: PQConnMode -> Maybe (UseKEM 'RKSProposed)
+connProposeKEM_ = \case
+  PQInvitation -> Just ProposeKEM
+  PQEnable -> Nothing
+  PQDisable -> Nothing
+
 replyKEM_ :: EnableKEM -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
 replyKEM_ enableKEM kem_ = case enableKEM of
   EnableKEM -> Just $ case kem_ of
@@ -634,6 +641,37 @@ instance StrEncoding EnableKEM where
       "kem=enable" -> pure EnableKEM
       "kem=disable" -> pure DisableKEM
       _ -> fail "bad EnableKEM"
+
+data PQConnMode = PQInvitation | PQEnable | PQDisable
+  deriving (Show)
+
+instance StrEncoding PQConnMode where
+  strEncode = \case
+    PQInvitation -> "pq=invitation"
+    PQEnable -> "pq=enable"
+    PQDisable -> "pq=disable"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "pq=invitation" -> pure PQInvitation
+      "pq=enable" -> pure PQEnable
+      "pq=disable" -> pure PQDisable
+      _ -> fail "bad PQConnMode"
+
+connEnableKEM :: PQConnMode -> EnableKEM
+connEnableKEM = \case
+  PQInvitation -> EnableKEM
+  PQEnable -> EnableKEM
+  PQDisable -> DisableKEM
+
+joinContactEnableKEM :: EnableKEM -> PQConnMode
+joinContactEnableKEM = \case
+  EnableKEM -> PQInvitation
+  DisableKEM -> PQDisable
+
+createConnEnableKEM :: EnableKEM -> PQConnMode
+createConnEnableKEM = \case
+  EnableKEM -> PQEnable
+  DisableKEM -> PQDisable
 
 type PQEncryption = Bool
 

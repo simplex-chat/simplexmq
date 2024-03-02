@@ -71,7 +71,8 @@ import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteS
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQEncryption)
+import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQConnMode (..), PQEncryption)
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (authBatchCmdsNTFVersion)
 import Simplex.Messaging.Protocol (AProtocolType (..), BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
@@ -87,6 +88,8 @@ import Util
 import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
+
+deriving instance Eq (PQConnMode)
 
 deriving instance Eq (ACommand p e)
 
@@ -213,7 +216,7 @@ inAnyOrder g rs = do
     expected r rp = rp r
 
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData DisableKEM
+createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData PQEnable
 
 joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
 joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId enableNtfs cReq connInfo EnableKEM
@@ -1254,11 +1257,11 @@ makeConnectionForUsers = makeConnectionForUsers_ EnableKEM
 
 makeConnectionForUsers_ :: EnableKEM -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ enableKEM alice aliceUserId bob bobUserId = do
-  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing enableKEM SMSubscribe
+  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing (CR.createConnEnableKEM enableKEM) SMSubscribe
   aliceId <- Agent.joinConnection bob bobUserId True qInfo "bob's connInfo" enableKEM SMSubscribe
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
-  let pqEnabled = enableKEM == EnableKEM
+  let pqEnabled = enableKEM /= DisableKEM
   get alice ##> ("", bobId, Agent.CON pqEnabled)
   get bob ##> ("", aliceId, INFO "alice's connInfo")
   get bob ##> ("", aliceId, Agent.CON pqEnabled)
@@ -1448,7 +1451,7 @@ testBatchedSubscriptions nCreate nDel t = do
 testAsyncCommands :: IO ()
 testAsyncCommands =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation EnableKEM SMSubscribe
+    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation PQEnable SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" EnableKEM SMSubscribe
@@ -1498,7 +1501,7 @@ testAsyncCommands =
 testAsyncCommandsRestore :: ATransport -> IO ()
 testAsyncCommandsRestore t = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation EnableKEM SMSubscribe
+  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation PQEnable SMSubscribe
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disconnectAgentClient alice
   alice' <- liftIO $ getSMPAgentClient' 2 agentCfg initAgentServers testDB
@@ -1799,7 +1802,7 @@ testJoinConnectionAsyncReplyError t = do
   a <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
-    bId <- createConnectionAsync a 1 "1" True SCMInvitation EnableKEM SMSubscribe
+    bId <- createConnectionAsync a 1 "1" True SCMInvitation PQEnable SMSubscribe
     ("1", bId', INV (ACR _ qInfo)) <- get a
     liftIO $ bId' `shouldBe` bId
     aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" EnableKEM SMSubscribe
@@ -2550,7 +2553,7 @@ exchangeGreetingsMsgId = exchangeGreetingsMsgId_ EnableKEM
 
 exchangeGreetingsMsgId_ :: HasCallStack => EnableKEM -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgId_ enableKEM msgId alice bobId bob aliceId = do
-  let pqEnabled = enableKEM == EnableKEM
+  let pqEnabled = enableKEM /= DisableKEM
   msgId1 <- Agent.sendMessage alice bobId enableKEM SMP.noMsgFlags "hello"
   liftIO $ msgId1 `shouldBe` (msgId, pqEnabled)
   get alice ##> ("", bobId, SENT msgId)

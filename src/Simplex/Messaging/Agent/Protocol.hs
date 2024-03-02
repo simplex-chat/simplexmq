@@ -182,7 +182,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQEncryption, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
+import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQConnMode (..), PQEncryption, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -328,7 +328,7 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (e :: AEntity) where
-  NEW :: Bool -> AConnectionMode -> EnableKEM -> SubscriptionMode -> ACommand Client AEConn -- response INV
+  NEW :: Bool -> AConnectionMode -> PQConnMode -> SubscriptionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
   JOIN :: Bool -> AConnectionRequestUri -> EnableKEM -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
@@ -1690,13 +1690,13 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient e cmd ->
         ACmd SClient e <$> case cmd of
-          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> kemP <*> (strP <|> pure SMP.SMSubscribe))
-          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> kemP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
+          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqConnP <*> (strP <|> pure SMP.SMSubscribe))
+          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqEncP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
-          ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> kemP <*> binaryP)
+          ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> pqEncP <*> binaryP)
           RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
-          SEND_ -> s (SEND <$> kemP <*> smpP <* A.space <*> binaryP)
+          SEND_ -> s (SEND <$> pqEncP <*> smpP <* A.space <*> binaryP)
           ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
           SWCH_ -> pure SWCH
           OFF_ -> pure OFF
@@ -1739,8 +1739,10 @@ commandP binaryP =
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
-    kemP :: Parser EnableKEM
-    kemP = strP_ <|> pure DisableKEM
+    pqConnP :: Parser PQConnMode
+    pqConnP = strP_ <|> pure PQDisable
+    pqEncP :: Parser EnableKEM
+    pqEncP = strP_ <|> pure DisableKEM
     connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
     sfDone :: Text -> Either String (ACommand 'Agent 'AESndFile)
@@ -1756,13 +1758,13 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode kem subMode -> s (NEW_, ntfs, cMode, kem, subMode)
+  NEW ntfs cMode pqConn subMode -> s (NEW_, ntfs, cMode, pqConn, subMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs cReq kem subMode cInfo -> s (JOIN_, ntfs, cReq, kem, subMode, Str $ serializeBinary cInfo)
+  JOIN ntfs cReq pqEnc subMode cInfo -> s (JOIN_, ntfs, cReq, pqEnc, subMode, Str $ serializeBinary cInfo)
   CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
-  ACPT invId kem cInfo -> B.unwords [s ACPT_, invId, s kem, serializeBinary cInfo]
+  ACPT invId pqEnc cInfo -> B.unwords [s ACPT_, invId, s pqEnc, serializeBinary cInfo]
   RJCT invId -> B.unwords [s RJCT_, invId]
   INFO cInfo -> B.unwords [s INFO_, serializeBinary cInfo]
   SUB -> s SUB_
@@ -1773,7 +1775,7 @@ serializeCommand = \case
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
-  SEND kem msgFlags msgBody -> B.unwords [s SEND_, s kem, smpEncode msgFlags, serializeBinary msgBody]
+  SEND pqEnc msgFlags msgBody -> B.unwords [s SEND_, s pqEnc, smpEncode msgFlags, serializeBinary msgBody]
   MID mId pqEnc -> s (MID_, mId, pqEnc)
   SENT mId -> s (SENT_, mId)
   MERR mId e -> s (MERR_, mId, e)

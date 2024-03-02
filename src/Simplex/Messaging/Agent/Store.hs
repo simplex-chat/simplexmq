@@ -308,7 +308,8 @@ data ConnData = ConnData
     enableNtfs :: Bool,
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
-    ratchetSyncState :: RatchetSyncState
+    ratchetSyncState :: RatchetSyncState,
+    pqEnable :: Bool
   }
   deriving (Eq, Show)
 

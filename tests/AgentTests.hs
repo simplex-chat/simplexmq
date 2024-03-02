@@ -29,6 +29,7 @@ import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol hiding (MID)
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQConnMode (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..))
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
@@ -175,15 +176,9 @@ pqMatrix2 ::
   Spec
 pqMatrix2 _ smpTest test = do
   it "dh handshake" $ smpTest $ \a b -> test (a, False) (b, False)
-  -- TODO this test fails because we don't preserve enableKEM option to use it when processing SMP confirmation.
-  -- it needs to be stored with connection based on NEW/JOIN enableKEM parameters.
-  -- but it only needs to be used during automatic handshake, not when sending messages.
-  -- resynchronising the ratchet requires further thinking.
-  skip "TODO store enableKEM option for connection handshake (fails for invitation)" $
-    it "dh/pq handshake" $ smpTest $ \a b -> test (a, False) (b, True)
+  it "dh/pq handshake" $ smpTest $ \a b -> test (a, False) (b, True)
   it "pq/dh handshake" $ smpTest $ \a b -> test (a, True) (b, False)
-  skip "TODO store enableKEM option for connection handshake (fails for contact)" $
-    it "pq handshake" $ smpTest $ \a b -> test (a, True) (b, True)
+  it "pq handshake" $ smpTest $ \a b -> test (a, True) (b, True)
 
 pqMatrix3 ::
   HasCallStack =>
@@ -197,11 +192,9 @@ pqMatrix3 _ smpTest test = do
   it "dh/pq/dh" $ smpTest $ \a b c -> test (a, False) (b, True) (c, False)
   it "dh/pq/pq" $ smpTest $ \a b c -> test (a, False) (b, True) (c, True)
   it "pq/dh/dh" $ smpTest $ \a b c -> test (a, True) (b, False) (c, False)
-  skip "TODO fails for contact address" $
-    describe "TODO store enableKEM option for connection handshake" $ do
-      it "pq/dh/pq" $ smpTest $ \a b c -> test (a, True) (b, False) (c, True)
-      it "pq/pq/dh" $ smpTest $ \a b c -> test (a, True) (b, True) (c, False)
-      it "pq" $ smpTest $ \a b c -> test (a, True) (b, True) (c, True)
+  it "pq/dh/pq" $ smpTest $ \a b c -> test (a, True) (b, False) (c, True)
+  it "pq/pq/dh" $ smpTest $ \a b c -> test (a, True) (b, True) (c, False)
+  it "pq" $ smpTest $ \a b c -> test (a, True) (b, True) (c, True)
 
 testDuplexConnection :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = testDuplexConnection' (alice, True) (bob, True)
@@ -209,7 +202,7 @@ testDuplexConnection _ alice bob = testDuplexConnection' (alice, True) (bob, Tru
 testDuplexConnection' :: (HasCallStack, Transport c) => (c, Bool) -> (c, Bool) -> IO ()
 testDuplexConnection' (alice, aUsePQ) (bob, bUsePQ) = do
   let pqEnabled = aUsePQ && bUsePQ
-  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV" <> enableKEMStr aUsePQ <> " subscribe")
+  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV" <> pqConnModeStr aUsePQ <> " subscribe")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bUsePQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
@@ -246,7 +239,7 @@ testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, True) (bo
 testDuplexConnRandomIds' :: (HasCallStack, Transport c) => (c, Bool) -> (c, Bool) -> IO ()
 testDuplexConnRandomIds' (alice, aUsePQ) (bob, bUsePQ) = do
   let pqEnabled = aUsePQ && bUsePQ
-  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV" <> enableKEMStr aUsePQ <> " subscribe")
+  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV" <> pqConnModeStr aUsePQ <> " subscribe")
   let cReq' = strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bUsePQ <> " subscribe 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
@@ -279,13 +272,13 @@ testDuplexConnRandomIds' (alice, aUsePQ) (bob, bUsePQ) = do
 
 testContactConnection :: Transport c => (c, Bool) -> (c, Bool) -> (c, Bool) -> IO ()
 testContactConnection (alice, aUsePQ) (bob, bUsePQ) (tom, tUsePQ) = do
-  ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON" <> enableKEMStr aUsePQ <> " subscribe")
+  ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON" <> pqConnModeStr aUsePQ <> " subscribe")
   let cReq' = strEncode cReq
   let abPQ = aUsePQ && bUsePQ
 
   bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bUsePQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT " <> aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  alice #: ("2", "bob", "ACPT " <> aInvId <> enableKEMStr aUsePQ <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   ("", "alice", Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", INFO "bob's connInfo 2")
@@ -299,7 +292,7 @@ testContactConnection (alice, aUsePQ) (bob, bUsePQ) (tom, tUsePQ) = do
   let atPQ = aUsePQ && tUsePQ
   tom #: ("21", "alice", "JOIN T " <> cReq' <> enableKEMStr tUsePQ <> " subscribe 14\ntom's connInfo") #> ("21", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId' _ "tom's connInfo")) <- (alice <#:)
-  alice #: ("4", "tom", "ACPT " <> aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
+  alice #: ("4", "tom", "ACPT " <> aInvId' <> enableKEMStr aUsePQ <> " 16\nalice's connInfo") #> ("4", "tom", OK)
   ("", "alice", Right (CONF tConfId _ "alice's connInfo")) <- (tom <#:)
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", INFO "tom's connInfo 2")
@@ -313,14 +306,14 @@ testContactConnection (alice, aUsePQ) (bob, bUsePQ) (tom, tUsePQ) = do
 testContactConnRandomIds :: Transport c => (c, Bool) -> (c, Bool) -> IO ()
 testContactConnRandomIds (alice, aUsePQ) (bob, bUsePQ) = do
   let pqEnabled = aUsePQ && bUsePQ
-  ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON" <> enableKEMStr aUsePQ <> " subscribe")
+  ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON" <> pqConnModeStr aUsePQ <> " subscribe")
   let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bUsePQ <> " subscribe 14\nbob's connInfo")
   ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
-  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> " 16\nalice's connInfo")
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> enableKEMStr aUsePQ <> " 16\nalice's connInfo")
   ("", aliceConn', Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   aliceConn' `shouldBe` aliceConn
 
@@ -544,20 +537,24 @@ connect :: Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = connect' (h1, name1, True) (h2, name2, True)
 
 connect' :: forall c. Transport c => (c, ByteString, Bool) -> (c, ByteString, Bool) -> IO ()
-connect' (h1, name1, enableKem1) (h2, name2, enableKem2) = do
-  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV" <> enableKEMStr enableKem1 <> " subscribe")
+connect' (h1, name1, enableKEM1) (h2, name2, enableKEM2) = do
+  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV" <> pqConnModeStr enableKEM1 <> " subscribe")
   let cReq' = strEncode cReq
-  h2 #: ("c2", name1, "JOIN T " <> cReq' <> enableKEMStr enableKem2 <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
+  h2 #: ("c2", name1, "JOIN T " <> cReq' <> enableKEMStr enableKEM2 <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
-  let pqEnabled = enableKem1 && enableKem2
+  let pqEnabled = enableKEM1 && enableKEM2
   h2 <# ("", name1, CON pqEnabled)
   h1 <# ("", name2, CON pqEnabled)
 
 enableKEMStr :: Bool -> ByteString
-enableKEMStr True = " kem=enable"
+enableKEMStr True = " " <> strEncode EnableKEM
 enableKEMStr False = ""
+
+pqConnModeStr :: Bool -> ByteString
+pqConnModeStr True = " " <> strEncode PQEnable
+pqConnModeStr False = ""
 
 sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
 sendMessage (h1, name1) (h2, name2) msg = do
