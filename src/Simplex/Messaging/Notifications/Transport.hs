@@ -29,7 +29,7 @@ currentClientNTFVersion :: Version
 currentClientNTFVersion = 1
 
 currentServerNTFVersion :: Version
-currentServerNTFVersion = 1
+currentServerNTFVersion = 2
 
 supportedClientNTFVRange :: VersionRange
 supportedClientNTFVRange = mkVersionRange 1 currentClientNTFVersion
