@@ -635,7 +635,7 @@ instance StrEncoding EnableKEM where
       "kem=disable" -> pure DisableKEM
       _ -> fail "bad EnableKEM"
 
-data E2EEncryptionMode = E2EEDhPQ | E2EEDh
+type PQEncryption = Bool
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe EnableKEM -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState

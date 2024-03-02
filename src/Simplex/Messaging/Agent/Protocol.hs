@@ -182,7 +182,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
+import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQEncryption, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -337,7 +337,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   ACPT :: InvitationId -> EnableKEM -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client AEConn
   INFO :: ConnInfo -> ACommand Agent AEConn
-  CON :: ACommand Agent AEConn -- notification that connection is established
+  CON :: PQEncryption -> ACommand Agent AEConn -- notification that connection is established
   SUB :: ACommand Client AEConn
   END :: ACommand Agent AEConn
   CONNECT :: AProtocolType -> TransportHost -> ACommand Agent AENone
@@ -347,7 +347,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: EnableKEM -> MsgFlags -> MsgBody -> ACommand Client AEConn
-  MID :: AgentMsgId -> ACommand Agent AEConn
+  MID :: AgentMsgId -> PQEncryption -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
@@ -444,8 +444,8 @@ aCommandTag = \case
   REQ {} -> REQ_
   ACPT {} -> ACPT_
   RJCT _ -> RJCT_
-  INFO _ -> INFO_
-  CON -> CON_
+  INFO {} -> INFO_
+  CON _ -> CON_
   SUB -> SUB_
   END -> END_
   CONNECT {} -> CONNECT_
@@ -455,7 +455,7 @@ aCommandTag = \case
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
   SEND {} -> SEND_
-  MID _ -> MID_
+  MID {} -> MID_
   SENT _ -> SENT_
   MERR {} -> MERR_
   MERRS {} -> MERRS_
@@ -750,17 +750,19 @@ data MsgMeta = MsgMeta
   { integrity :: MsgIntegrity,
     recipient :: (AgentMsgId, UTCTime),
     broker :: (MsgId, UTCTime),
-    sndMsgId :: AgentMsgId
+    sndMsgId :: AgentMsgId,
+    pqEncryption :: PQEncryption
   }
   deriving (Eq, Show)
 
 instance StrEncoding MsgMeta where
-  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
+  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
     B.unwords
       [ strEncode integrity,
         "R=" <> bshow rmId <> "," <> showTs rTs,
         "B=" <> encode bmId <> "," <> showTs bTs,
-        "S=" <> bshow sndMsgId
+        "S=" <> bshow sndMsgId,
+        "PQ=" <> strEncode pqEncryption
       ]
     where
       showTs = B.pack . formatISO8601Millis
@@ -769,7 +771,8 @@ instance StrEncoding MsgMeta where
     recipient <- " R=" *> partyMeta A.decimal
     broker <- " B=" *> partyMeta base64P
     sndMsgId <- " S=" *> A.decimal
-    pure MsgMeta {integrity, recipient, broker, sndMsgId}
+    pqEncryption <- " PQ=" *> strP
+    pure MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
     where
       partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
 
@@ -1705,7 +1708,7 @@ commandP binaryP =
           CONF_ -> s (CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> binaryP)
           REQ_ -> s (REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> binaryP)
           INFO_ -> s (INFO <$> binaryP)
-          CON_ -> pure CON
+          CON_ -> s (CON <$> strP)
           END_ -> pure END
           CONNECT_ -> s (CONNECT <$> strP_ <*> strP)
           DISCONNECT_ -> s (DISCONNECT <$> strP_ <*> strP)
@@ -1713,7 +1716,7 @@ commandP binaryP =
           UP_ -> s (UP <$> strP_ <*> connections)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
           RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
-          MID_ -> s (MID <$> A.decimal)
+          MID_ -> s (MID <$> A.decimal <*> _strP)
           SENT_ -> s (SENT <$> A.decimal)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MERRS_ -> s (MERRS <$> strP_ <*> strP)
@@ -1771,7 +1774,7 @@ serializeCommand = \case
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND kem msgFlags msgBody -> B.unwords [s SEND_, s kem, smpEncode msgFlags, serializeBinary msgBody]
-  MID mId -> s (MID_, mId)
+  MID mId pqEnc -> s (MID_, mId, pqEnc)
   SENT mId -> s (SENT_, mId)
   MERR mId e -> s (MERR_, mId, e)
   MERRS mIds e -> s (MERRS_, mIds, e)
@@ -1787,7 +1790,7 @@ serializeCommand = \case
   DEL_USER userId -> s (DEL_USER_, userId)
   CHK -> s CHK_
   STAT srvs -> s (STAT_, srvs)
-  CON -> s CON_
+  CON pqEnc -> s (CON_, pqEnc)
   ERR e -> s (ERR_, e)
   OK -> s OK_
   SUSPENDED -> s SUSPENDED_

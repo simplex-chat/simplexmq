@@ -90,6 +90,7 @@ CREATE TABLE messages(
   msg_type BLOB NOT NULL, --(H)ELLO,(R)EPLY,(D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
   msg_flags TEXT NULL,
+  pq_encryption INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(conn_id, internal_id),
   FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,

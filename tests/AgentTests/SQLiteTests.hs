@@ -464,7 +464,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (brokerId, ts)
+            broker = (brokerId, ts),
+            pqEncryption = True
           },
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
@@ -502,6 +503,7 @@ mkSndMsgData internalId internalSndId internalHash =
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
+      pqEncryption = True,
       internalHash,
       prevMsgHash = internalHash
     }

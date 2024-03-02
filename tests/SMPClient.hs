@@ -34,6 +34,7 @@ import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
 import UnliftIO.Timeout (timeout)
+import Util
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -60,12 +61,12 @@ testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
 xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
-xit' = if os == "linux" then xit else it
+xit' d = if os == "linux" then skip "skipped on Linux" . it d else it d
 
 xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 xit'' d t = do
   ci <- runIO $ lookupEnv "CI"
-  (if ci == Just "true" then xit else it) d t
+  (if ci == Just "true" then skip "skipped on CI" . it d else it d) t
 
 testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange

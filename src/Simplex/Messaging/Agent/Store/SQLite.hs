@@ -1030,18 +1030,18 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
           DB.query
             db
             [sql|
-              SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts, s.retry_int_slow, s.retry_int_fast
+              SELECT m.msg_type, m.msg_flags, m.msg_body, m.pq_encryption, m.internal_ts, s.retry_int_slow, s.retry_int_fast
               FROM messages m
               JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
               WHERE m.conn_id = ? AND m.internal_id = ?
             |]
             (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
-        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
-        pendingMsgData (msgType, msgFlags_, msgBody, internalTs, riSlow_, riFast_) =
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, CR.PQEncryption, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
+        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, riSlow_, riFast_) =
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
-           in PendingMsgData {msgId, msgType, msgFlags, msgBody, msgRetryState, internalTs}
+           in PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs}
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
@@ -1110,7 +1110,7 @@ getRcvMsg db connId agentMsgId =
       [sql|
         SELECT
           r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity, r.internal_hash,
-          m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
+          m.msg_type, m.msg_body, m.pq_encryption, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
         LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
@@ -1126,7 +1126,7 @@ getLastMsg db connId msgId =
       [sql|
         SELECT
           r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity, r.internal_hash,
-          m.msg_type, m.msg_body, s.internal_id, s.rcpt_status, r.user_ack
+          m.msg_type, m.msg_body, m.pq_encryption, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
         JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
@@ -1135,9 +1135,9 @@ getLastMsg db connId msgId =
       |]
       (connId, msgId)
 
-toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs, AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
-toRcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, internalHash, msgType, msgBody, rcptInternalId_, rcptStatus_, userAck) =
-  let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
+toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, CR.PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
+toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, userAck)) =
+  let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
 
@@ -2094,23 +2094,15 @@ updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
 
 insertRcvMsgBase_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
 insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody, internalRcvId} = do
-  let MsgMeta {recipient = (internalId, internalTs)} = msgMeta
-  DB.executeNamed
+  let MsgMeta {recipient = (internalId, internalTs), pqEncryption} = msgMeta
+  DB.execute
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body)
-      VALUES
-        (:conn_id,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_type,:msg_flags,:msg_body);
+        (conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body, pq_encryption)
+        VALUES (?,?,?,?,?,?,?,?,?);
     |]
-    [ ":conn_id" := connId,
-      ":internal_id" := internalId,
-      ":internal_ts" := internalTs,
-      ":internal_rcv_id" := internalRcvId,
-      ":msg_type" := msgType,
-      ":msg_flags" := msgFlags,
-      ":msg_body" := msgBody
-    ]
+    (connId, internalId, internalTs, internalRcvId, Nothing :: Maybe Int64, msgType, msgFlags, msgBody, pqEncryption)
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
 insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash, encryptedMsgHash} = do
@@ -2191,23 +2183,16 @@ updateLastIdsSnd_ dbConn connId newInternalId newInternalSndId =
 -- * createSndMsg helpers
 
 insertSndMsgBase_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
-insertSndMsgBase_ dbConn connId SndMsgData {..} = do
-  DB.executeNamed
-    dbConn
+insertSndMsgBase_ db connId SndMsgData {internalId, internalTs, internalSndId, msgType, msgFlags, msgBody, pqEncryption} = do
+  DB.execute
+    db
     [sql|
       INSERT INTO messages
-        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body)
+        (conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body, pq_encryption)
       VALUES
-        (:conn_id,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_type,:msg_flags,:msg_body);
+        (?,?,?,?,?,?,?,?,?);
     |]
-    [ ":conn_id" := connId,
-      ":internal_id" := internalId,
-      ":internal_ts" := internalTs,
-      ":internal_snd_id" := internalSndId,
-      ":msg_type" := msgType,
-      ":msg_flags" := msgFlags,
-      ":msg_body" := msgBody
-    ]
+    (connId, internalId, internalTs, Nothing :: Maybe Int64, internalSndId, msgType, msgFlags, msgBody, pqEncryption)
 
 insertSndMsgDetails_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
 insertSndMsgDetails_ dbConn connId SndMsgData {..} =
