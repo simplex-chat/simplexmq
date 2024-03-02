@@ -19,6 +19,8 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
+import Control.Monad.Trans.Except
+import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
@@ -96,7 +98,7 @@ storeTests = do
       testForeignKeysEnabled
     describe "db methods" $ do
       describe "Queue and Connection management" $ do
-        describe "createRcvConn" $ do
+        describe "create Rcv connection" $ do
           testCreateRcvConn
           testCreateRcvConnRandomId
           testCreateRcvConnDuplicate
@@ -231,6 +233,12 @@ sndQueue1 =
       sndSwchStatus = Nothing,
       smpClientVersion = 1
     }
+
+createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
+createRcvConn db g cData rq cMode = runExceptT $ do
+  connId <- ExceptT $ createNewConn db g cData cMode
+  rq' <- ExceptT $ updateNewConnRcv db connId rq
+  pure (connId, rq')
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn =

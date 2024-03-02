@@ -50,7 +50,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
-    createRcvConn, -- no longer used
     createSndConn,
     getConn,
     getDeletedConn,
@@ -544,11 +543,8 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId} -> Right . (connId,) <$> create connId
 
 createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
-createNewConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs} cMode = do
-  fst <$$> createConn_ gVar cData create
-  where
-    create connId =
-      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, True)
+createNewConn db gVar cData cMode = do
+  fst <$$> createConn_ gVar cData (\connId -> createConnRecord db connId cData cMode)
 
 updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 updateNewConnRcv db connId rq =
@@ -570,21 +566,24 @@ updateNewConnSnd db connId sq =
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
-createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
-createRcvConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs} q@RcvQueue {server} cMode =
-  createConn_ gVar cData $ \connId -> do
-    serverKeyHash_ <- createServer_ db server
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, cMode, connAgentVersion, enableNtfs, True)
-    insertRcvQueue_ db connId q serverKeyHash_
-
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
-createSndConn db gVar cData@ConnData {userId, connAgentVersion, enableNtfs} q@SndQueue {server} =
+createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
     createConn_ gVar cData $ \connId -> do
       serverKeyHash_ <- createServer_ db server
-      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)" (userId, connId, SCMInvitation, connAgentVersion, enableNtfs, True)
+      createConnRecord db connId cData SCMInvitation
       insertSndQueue_ db connId q serverKeyHash_
+
+createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
+createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs} cMode =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO connections
+        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?,?,?,?,?,?)
+    |]
+    (userId, connId, cMode, connAgentVersion, enableNtfs, True)
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
