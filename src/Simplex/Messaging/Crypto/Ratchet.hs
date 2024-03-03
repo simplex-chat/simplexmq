@@ -164,7 +164,9 @@ instance AlgorithmI a => Encoding (AE2ERatchetParams a) where
 instance Encoding AnyE2ERatchetParams where
   smpEncode (AnyE2ERatchetParams _ _ ps) = smpEncode ps
   smpP = do
-    (v :: Version, APublicDhKey a k1, APublicDhKey a' k2) <- smpP
+    v :: Version <- smpP
+    APublicDhKey a k1 <- smpP
+    APublicDhKey a' k2 <- smpP
     case testEquality a a' of
       Nothing -> fail "bad e2e params: different key algorithms"
       Just Refl ->
