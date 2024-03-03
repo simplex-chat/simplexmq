@@ -44,6 +44,7 @@ doubleRatchetTests = do
     it "should encode/decode ratchet as JSON" $ do
       testAlgs testKeyJSON
       testAlgs testRatchetJSON
+    it "should decode v2 Ratchet with default field values" $ testDecodeV2RatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
   describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
@@ -334,6 +335,14 @@ testRatchetJSON _ = do
   (alice, bob, _, _, _) <- initRatchets @a
   testEncodeDecode alice
   testEncodeDecode bob
+
+testDecodeV2RatchetJSON :: IO ()
+testDecodeV2RatchetJSON = do
+  let v2RatchetJSON = "{\"rcVersion\":[2,2],\"rcAD\":\"2GEJrq48TmQse6NR16I-hrI0tSySZQ57E_g46nDceAPRAiF6j0drq26RTE7be6X7uiB4RaGJGf4QRXzcYuVtWw==\",\"rcDHRs\":\"TUM0Q0FRQXdCUVlESzJWdUJDSUVJRkNYbUxtSHQ3SUNfeHpGTi1Qb3ZqTVQ3S2p6XzZlZlBjOG9fRFY2RWxKOQ==\",\"rcRK\":\"BOX2X7YW5qDSp2XknY_lqacSrtDqQNPvS6iJlZIs3G0=\",\"rcNs\":0,\"rcNr\":0,\"rcPN\":0,\"rcNHKs\":\"IMouSkXUvzT_mo0WM-pqEUK09-HTLk9WOTCFQglyQxU=\",\"rcNHKr\":\"g-tus1clYPV0rGlzkf5a959tUqDYQVZ1FpcPeXdKwxI=\"}"
+  Right (r :: Ratchet X25519) <- pure $ J.eitherDecodeStrict' v2RatchetJSON
+  rcEnableKEM r `shouldBe` PQEncOff
+  rcSndKEM r `shouldBe` PQEncOff
+  rcRcvKEM r `shouldBe` PQEncOff
 
 testEncodeDecode :: (Eq a, Show a, ToJSON a, FromJSON a) => a -> Expectation
 testEncodeDecode x = do

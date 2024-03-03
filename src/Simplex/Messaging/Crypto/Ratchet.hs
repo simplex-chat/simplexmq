@@ -14,7 +14,6 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
--- {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
 module Simplex.Messaging.Crypto.Ratchet where
@@ -639,6 +638,7 @@ instance ToJSON PQEncryption where
 
 instance FromJSON PQEncryption where
   parseJSON v = PQEncryption <$> parseJSON v
+  omittedField = Just PQEncOff
 
 replyKEM_ :: PQEncryption -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
 replyKEM_ pqEnc kem_ = case pqEnc of
