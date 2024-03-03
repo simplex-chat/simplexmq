@@ -28,7 +28,7 @@ CREATE TABLE connections(
   REFERENCES users ON DELETE CASCADE,
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
   deleted_at_wait_delivery TEXT,
-  pq_conn_mode INTEGER NOT NULL DEFAULT 0
+  pq_encryption INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -91,7 +91,7 @@ CREATE TABLE messages(
   msg_type BLOB NOT NULL, --(H)ELLO,(R)EPLY,(D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
   msg_flags TEXT NULL,
-  pq_mode INTEGER NOT NULL DEFAULT 0,
+  pq_encryption INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(conn_id, internal_id),
   FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,

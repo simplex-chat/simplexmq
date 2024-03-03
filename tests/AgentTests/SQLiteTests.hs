@@ -190,7 +190,7 @@ cData1 =
       lastExternalSndId = 0,
       deleted = False,
       ratchetSyncState = RSOk,
-      pqConnMode = CR.PQEncOn
+      pqEncryption = CR.PQEncOn
     }
 
 testPrivateAuthKey :: C.APrivateAuthKey
@@ -485,7 +485,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
             broker = (brokerId, ts),
-            pqMode = CR.PQEncOn
+            pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
@@ -523,7 +523,7 @@ mkSndMsgData internalId internalSndId internalHash =
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
-      pqMode = CR.PQEncOn,
+      pqEncryption = CR.PQEncOn,
       internalHash,
       prevMsgHash = internalHash
     }

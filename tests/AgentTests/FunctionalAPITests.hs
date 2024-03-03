@@ -145,10 +145,10 @@ pattern CON :: ACommand 'Agent 'AEConn
 pattern CON = Agent.CON PQEncOn
 
 pattern Msg :: MsgBody -> ACommand 'Agent e
-pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqMode = PQEncOn} _ msgBody
+pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = PQEncOn} _ msgBody
 
 pattern Msg' :: AgentMsgId -> PQEncryption -> MsgBody -> ACommand 'Agent e
-pattern Msg' aMsgId pqMode msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqMode} _ msgBody
+pattern Msg' aMsgId pqEncryption msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption} _ msgBody
 
 pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> ACommand 'Agent 'AEConn
 pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} _ msgBody
@@ -221,8 +221,8 @@ joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId
 
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c connId msgFlags msgBody = do
-  (msgId, pqMode) <- Agent.sendMessage c connId PQEncOn msgFlags msgBody
-  liftIO $ pqMode `shouldBe` PQEncOn
+  (msgId, pqEnc) <- Agent.sendMessage c connId PQEncOn msgFlags msgBody
+  liftIO $ pqEnc `shouldBe` PQEncOn
   pure msgId
 
 functionalAPITests :: ATransport -> Spec
@@ -422,7 +422,7 @@ testMatrix2 t runTest = do
   it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
   it "current with v7 server" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfg 3 runTest
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  skip "TODO versioning" $ describe "TODO fails with previous version" $ do
+  skip "TODO PQ versioning" $ describe "TODO fails with previous version" $ do
     it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
     it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
     it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
@@ -430,7 +430,7 @@ testMatrix2 t runTest = do
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
   it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  skip "TODO versioning" $ describe "TODO fails with previous version" $ do
+  skip "TODO PQ versioning" $ describe "TODO fails with previous version" $ do
     pendingV "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
     pendingV "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
     pendingV "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
@@ -1249,20 +1249,20 @@ makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnI
 makeConnection = makeConnection_ PQEncOn
 
 makeConnection_ :: PQEncryption -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnection_ enableKEM alice bob = makeConnectionForUsers_ enableKEM alice 1 bob 1
+makeConnection_ pqEnc alice bob = makeConnectionForUsers_ pqEnc alice 1 bob 1
 
 makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers = makeConnectionForUsers_ PQEncOn
 
 makeConnectionForUsers_ :: PQEncryption -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnectionForUsers_ pqMode alice aliceUserId bob bobUserId = do
-  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqMode) SMSubscribe
-  aliceId <- Agent.joinConnection bob bobUserId True qInfo "bob's connInfo" pqMode SMSubscribe
+makeConnectionForUsers_ pqEnc alice aliceUserId bob bobUserId = do
+  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqEnc) SMSubscribe
+  aliceId <- Agent.joinConnection bob bobUserId True qInfo "bob's connInfo" pqEnc SMSubscribe
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
-  get alice ##> ("", bobId, Agent.CON pqMode)
+  get alice ##> ("", bobId, Agent.CON pqEnc)
   get bob ##> ("", aliceId, INFO "alice's connInfo")
-  get bob ##> ("", aliceId, Agent.CON pqMode)
+  get bob ##> ("", aliceId, Agent.CON pqEnc)
   pure (aliceId, bobId)
 
 testInactiveNoSubs :: ATransport -> IO ()
@@ -2544,23 +2544,23 @@ exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> Con
 exchangeGreetings = exchangeGreetings_ PQEncOn
 
 exchangeGreetings_ :: HasCallStack => PQEncryption -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetings_ enableKEM = exchangeGreetingsMsgId_ enableKEM 4
+exchangeGreetings_ pqEnc = exchangeGreetingsMsgId_ pqEnc 4
 
 exchangeGreetingsMsgId :: HasCallStack => Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgId = exchangeGreetingsMsgId_ PQEncOn
 
 exchangeGreetingsMsgId_ :: HasCallStack => PQEncryption -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsMsgId_ pqMode msgId alice bobId bob aliceId = do
-  msgId1 <- Agent.sendMessage alice bobId pqMode SMP.noMsgFlags "hello"
-  liftIO $ msgId1 `shouldBe` (msgId, pqMode)
+exchangeGreetingsMsgId_ pqEnc msgId alice bobId bob aliceId = do
+  msgId1 <- Agent.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
+  liftIO $ msgId1 `shouldBe` (msgId, pqEnc)
   get alice ##> ("", bobId, SENT msgId)
-  get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqMode; _ -> False
+  get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqEnc; _ -> False
   ackMessage bob aliceId msgId Nothing
-  msgId2 <- Agent.sendMessage bob aliceId pqMode SMP.noMsgFlags "hello too"
+  msgId2 <- Agent.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
   let msgId' = msgId + 1
-  liftIO $ msgId2 `shouldBe` (msgId', pqMode)
+  liftIO $ msgId2 `shouldBe` (msgId', pqEnc)
   get bob ##> ("", aliceId, SENT msgId')
-  get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == msgId' && pq == pqMode; _ -> False
+  get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == msgId' && pq == pqEnc; _ -> False
   ackMessage alice bobId msgId' Nothing
 
 exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()

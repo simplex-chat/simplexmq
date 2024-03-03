@@ -243,12 +243,12 @@ supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentS
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
--- TODO this should be version-dependent
+-- TODO PQ this should be version-dependent
 -- previously it was 14848, reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
 e2eEncConnInfoLength :: Int
 e2eEncConnInfoLength = 11148
 
--- TODO this should be version-dependent
+-- TODO PQ this should be version-dependent
 -- previously it was 15856, reduced by 2200 (roughly the increase of message ratchet header size)
 e2eEncUserMsgLength :: Int
 e2eEncUserMsgLength = 13656
@@ -751,18 +751,18 @@ data MsgMeta = MsgMeta
     recipient :: (AgentMsgId, UTCTime),
     broker :: (MsgId, UTCTime),
     sndMsgId :: AgentMsgId,
-    pqMode :: PQEncryption
+    pqEncryption :: PQEncryption
   }
   deriving (Eq, Show)
 
 instance StrEncoding MsgMeta where
-  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqMode} =
+  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
     B.unwords
       [ strEncode integrity,
         "R=" <> bshow rmId <> "," <> showTs rTs,
         "B=" <> encode bmId <> "," <> showTs bTs,
         "S=" <> bshow sndMsgId,
-        "PQ=" <> strEncode pqMode
+        "PQ=" <> strEncode pqEncryption
       ]
     where
       showTs = B.pack . formatISO8601Millis
@@ -771,8 +771,8 @@ instance StrEncoding MsgMeta where
     recipient <- " R=" *> partyMeta A.decimal
     broker <- " B=" *> partyMeta base64P
     sndMsgId <- " S=" *> A.decimal
-    pqMode <- " PQ=" *> strP
-    pure MsgMeta {integrity, recipient, broker, sndMsgId, pqMode}
+    pqEncryption <- " PQ=" *> strP
+    pure MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
     where
       partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
 

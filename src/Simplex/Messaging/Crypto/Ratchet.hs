@@ -307,8 +307,14 @@ generateE2EParams g v useKEM_ = do
       _ -> pure Nothing
 
 -- used by party initiating connection, Bob in double-ratchet spec
-generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> Maybe (UseKEM 'RKSProposed) -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
-generateRcvE2EParams = generateE2EParams
+generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> PQEncryption -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
+generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
+  where
+    proposeKEM_ :: PQEncryption -> Maybe (UseKEM 'RKSProposed)
+    proposeKEM_ = \case
+      PQEncOn -> Just ProposeKEM
+      PQEncOff -> Nothing
+
 
 -- used by party accepting connection, Alice in double-ratchet spec
 generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> Maybe AUseKEM -> IO (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams, AE2ERatchetParams a)
@@ -382,7 +388,7 @@ data Ratchet a = Ratchet
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
-    -- TODO make them optional
+    -- TODO PQ make them optional via JSON parser for PQEncryption
     rcEnableKEM :: PQEncryption, -- will enable KEM on the next ratchet step
     rcSndKEM :: PQEncryption, -- used KEM hybrid secret for sending ratchet
     rcRcvKEM :: PQEncryption, -- used KEM hybrid secret for receiving ratchet
@@ -559,7 +565,7 @@ data AMsgHeader
 
 -- to allow extension without increasing the size, the actual header length is:
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
--- TODO this must be version-dependent
+-- TODO PQ this must be version-dependent
 -- TODO this is the exact size, some reserve should be added
 paddedHeaderLen :: Int
 paddedHeaderLen = 2284
@@ -632,22 +638,12 @@ instance ToJSON PQEncryption where
 instance FromJSON PQEncryption where
   parseJSON v = PQEncryption <$> parseJSON v
 
-proposeKEM_ :: PQEncryption -> Maybe (UseKEM 'RKSProposed)
-proposeKEM_ pqMode
-  | enablePQ pqMode = Just ProposeKEM
-  | otherwise = Nothing
-
-connProposeKEM_ :: InitialKeys -> Maybe (UseKEM 'RKSProposed)
-connProposeKEM_ = \case
-  IKUsePQ -> Just ProposeKEM
-  IKNoPQ _ -> Nothing
-
 replyKEM_ :: PQEncryption -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
-replyKEM_ pqMode kem_
-  | enablePQ pqMode = Just $ case kem_ of
-      Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
-      Nothing -> AUseKEM SRKSProposed ProposeKEM
-  | otherwise = Nothing
+replyKEM_ pqEnc kem_ = case pqEnc of
+  PQEncOn -> Just $ case kem_ of
+    Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
+    Nothing -> AUseKEM SRKSProposed ProposeKEM
+  PQEncOff -> Nothing
 
 instance StrEncoding PQEncryption where
   strEncode pqMode
@@ -670,14 +666,22 @@ instance StrEncoding InitialKeys where
     IKNoPQ pq -> strEncode pq
   strP = IKNoPQ <$> strP <|> "pq=invitation" $> IKUsePQ
 
+-- determines whether PQ key should be included in invitation link
+initialPQEncryption :: InitialKeys -> PQEncryption
+initialPQEncryption = \case
+  IKUsePQ -> PQEncOn
+  IKNoPQ _ -> PQEncOff -- default
+
+-- determines whether PQ encryption should be used in connection
 connPQEncryption :: InitialKeys -> PQEncryption
 connPQEncryption = \case
   IKUsePQ -> PQEncOn
-  IKNoPQ pq -> pq
+  IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
 
+-- determines whether PQ key should be included in invitation link sent to contact address
 joinContactInitialKeys :: PQEncryption -> InitialKeys
 joinContactInitialKeys = \case
-  PQEncOn -> IKUsePQ
+  PQEncOn -> IKUsePQ -- default
   PQEncOff -> IKNoPQ PQEncOff
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
@@ -688,7 +692,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV paddedHeaderLen rcAD msgHeader
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  -- TODO versioning in Ratchet should change somehow
+  -- TODO PQ versioning in Ratchet should change somehow
   let emHeader = smpEncode EncMessageHeader {ehVersion = maxVersion rcVersion, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
   let msg' = encodeEncRatchetMessage (maxVersion rcVersion) EncRatchetMessage {emHeader, emBody, emAuthTag}
@@ -745,7 +749,7 @@ rcDecrypt ::
   ByteString ->
   ExceptT CryptoError IO (DecryptResult a)
 rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
-  -- TODO versioning should change
+  -- TODO PQ versioning should change
   encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError (encRatchetMessageP $ maxVersion rcVersion) msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, cipher-text, AD)
@@ -812,17 +816,17 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                       }
               pure (rc'', hmks)
         pqRatchetStep :: Ratchet a -> Maybe ARKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
-        pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption enableKEM} = \case
+        pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption pqEnc} = \case
           -- received message does not have KEM in header,
           -- but the user enabled KEM when sending previous message
           Nothing -> case rcKEM of
-            Nothing | enableKEM -> do
+            Nothing | pqEnc -> do
               rcPQRs <- liftIO $ sntrup761Keypair g
               pure (Nothing, Nothing, Just RatchetKEM {rcPQRs, rcKEMs = Nothing})
             _ -> pure (Nothing, Nothing, Nothing)
           -- received message has KEM in header.
           Just (ARKP _ ps)
-            | enableKEM -> do
+            | pqEnc -> do
                 -- state.PQRr = header.kem
                 (ss, rcPQRr) <- sharedSecret
                 -- state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret KEM #1
