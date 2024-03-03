@@ -12,7 +12,26 @@
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
-import AgentTests.FunctionalAPITests (agentCfgV7, exchangeGreetingsMsgId, get, getSMPAgentClient', makeConnection, nGet, runRight, runRight_, switchComplete, testServerMatrix2, withAgentClientsCfg2, (##>), (=##>), pattern Msg)
+import AgentTests.FunctionalAPITests
+  ( agentCfgV7,
+    createConnection,
+    exchangeGreetingsMsgId,
+    get,
+    getSMPAgentClient',
+    joinConnection,
+    makeConnection,
+    nGet,
+    runRight,
+    runRight_,
+    sendMessage,
+    switchComplete,
+    testServerMatrix2,
+    withAgentClientsCfg2,
+    (##>),
+    (=##>),
+    pattern CON,
+    pattern Msg,
+  )
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
@@ -28,10 +47,10 @@ import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testDB3, testNtfServer, testNtfServer2)
 import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
-import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.Protocol hiding (CON)
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -46,6 +65,7 @@ import Simplex.Messaging.Transport (ATransport)
 import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
+import Util
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists filePath = do
@@ -125,8 +145,8 @@ testNtfMatrix t runTest = do
     it "next servers: SMP v7, NTF v2; next clients: v7/v2" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfgV7 agentCfgV7 runTest
     it "next servers: SMP v7, NTF v2; curr clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfg runTest
     it "curr servers: SMP v6, NTF v1; curr clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
-    -- this case will cannot be supported - see RFC
-    xit "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
+    skip "this case cannot be supported - see RFC" $
+      it "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
     -- servers can be migrated in any order
     it "servers: next SMP v7, curr NTF v1; curr clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfg agentCfg agentCfg runTest
     it "servers: curr SMP v6, next NTF v2; curr clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfgV2 agentCfg agentCfg runTest

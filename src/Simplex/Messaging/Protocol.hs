@@ -175,7 +175,7 @@ import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
@@ -272,7 +272,7 @@ data RawTransmission = RawTransmission
 data TransmissionAuth
   = TASignature C.ASignature
   | TAAuthenticator C.CbAuthenticator
-  deriving (Eq, Show)
+  deriving (Show)
 
 -- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TAuthorization
 tAuthBytes :: Maybe TransmissionAuth -> ByteString
@@ -337,8 +337,6 @@ data Command (p :: Party) where
   NSUB :: Command Notifier
 
 deriving instance Show (Command p)
-
-deriving instance Eq (Command p)
 
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
@@ -745,9 +743,6 @@ deriving instance Show (SProtocolType p)
 data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
 
 deriving instance Show AProtocolType
-
-instance Eq AProtocolType where
-  AProtocolType p == AProtocolType p' = isJust $ testEquality p p'
 
 instance TestEquality SProtocolType where
   testEquality SPSMP SPSMP = Just Refl

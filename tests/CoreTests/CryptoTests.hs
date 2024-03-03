@@ -1,5 +1,7 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.CryptoTests (cryptoTests) where
 
@@ -13,6 +15,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
+import Data.Type.Equality
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
@@ -90,6 +93,16 @@ cryptoTests = do
     describe "X448" $ testEncoding C.SX448
   describe "sntrup761" $
     it "should enc/dec key" testSNTRUP761
+
+instance Eq C.APublicKey where
+  C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+instance Eq C.APrivateKey where
+  C.APrivateKey a k == C.APrivateKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
 
 testPadUnpadFile :: IO ()
 testPadUnpadFile = do

@@ -55,7 +55,7 @@ data RcvFile = RcvFile
     status :: RcvFileStatus,
     deleted :: Bool
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data RcvFileStatus
   = RFSReceiving
@@ -96,7 +96,7 @@ data RcvFileChunk = RcvFileChunk
     fileTmpPath :: FilePath,
     chunkTmpPath :: Maybe FilePath
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data RcvFileChunkReplica = RcvFileChunkReplica
   { rcvChunkReplicaId :: Int64,
@@ -107,14 +107,14 @@ data RcvFileChunkReplica = RcvFileChunkReplica
     delay :: Maybe Int64,
     retries :: Int
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data RcvFileRedirect = RcvFileRedirect
   { redirectDbId :: DBRcvFileId,
     redirectEntityId :: RcvFileId,
     redirectFileInfo :: RedirectFileInfo
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 -- Sending files
 
@@ -135,7 +135,7 @@ data SndFile = SndFile
     deleted :: Bool,
     redirect :: Maybe RedirectFileInfo
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 sndFileEncPath :: FilePath -> FilePath
 sndFileEncPath prefixPath = prefixPath </> "xftp.encrypted"
@@ -182,7 +182,7 @@ data SndFileChunk = SndFileChunk
     digest :: FileDigest,
     replicas :: [SndFileChunkReplica]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 sndChunkSize :: SndFileChunk -> Word32
 sndChunkSize SndFileChunk {chunkSpec = XFTPChunkSpec {chunkSize}} = chunkSize
@@ -193,7 +193,7 @@ data NewSndChunkReplica = NewSndChunkReplica
     replicaKey :: C.APrivateAuthKey,
     rcvIdsKeys :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SndFileChunkReplica = SndFileChunkReplica
   { sndChunkReplicaId :: Int64,
@@ -205,7 +205,7 @@ data SndFileChunkReplica = SndFileChunkReplica
     delay :: Maybe Int64,
     retries :: Int
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SndFileReplicaStatus
   = SFRSCreated
@@ -235,4 +235,4 @@ data DeletedSndChunkReplica = DeletedSndChunkReplica
     delay :: Maybe Int64,
     retries :: Int
   }
-  deriving (Eq, Show)
+  deriving (Show)

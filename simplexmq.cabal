@@ -104,6 +104,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -607,6 +608,7 @@ test-suite simplexmq-test
       AgentTests
       AgentTests.ConnectionRequestTests
       AgentTests.DoubleRatchetTests
+      AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
       AgentTests.NotificationTests
@@ -629,6 +631,7 @@ test-suite simplexmq-test
       ServerTests
       SMPAgentClient
       SMPClient
+      Util
       XFTPAgent
       XFTPCLI
       XFTPClient
