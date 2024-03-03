@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -18,6 +19,7 @@
 
 module Simplex.Messaging.Crypto.Ratchet where
 
+import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
@@ -35,6 +37,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Composition ((.:), (.:.))
+import Data.Functor (($>))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -380,9 +383,9 @@ data Ratchet a = Ratchet
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
     -- TODO make them optional
-    rcEnableKEM :: Bool, -- will enable KEM on the next ratchet step
-    rcSndKEM :: Bool, -- used KEM hybrid secret for sending ratchet
-    rcRcvKEM :: Bool, -- used KEM hybrid secret for receiving ratchet
+    rcEnableKEM :: PQEncryption, -- will enable KEM on the next ratchet step
+    rcSndKEM :: PQEncryption, -- used KEM hybrid secret for sending ratchet
+    rcRcvKEM :: PQEncryption, -- used KEM hybrid secret for receiving ratchet
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
     rcRcv :: Maybe RcvRatchet,
@@ -492,9 +495,9 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
           rcAD = assocData,
           rcDHRs,
           rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-          rcEnableKEM = isJust rcPQRs_,
-          rcSndKEM = isJust kemAccepted,
-          rcRcvKEM = False,
+          rcEnableKEM = PQEncryption $ isJust rcPQRs_,
+          rcSndKEM = PQEncryption $ isJust kemAccepted,
+          rcRcvKEM = PQEncOff,
           rcRK,
           rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK},
           rcRcv = Nothing,
@@ -512,8 +515,8 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> EnableKEM -> Ratchet a
-initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) enableKEM =
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQEncryption -> Ratchet a
+initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) rcEnableKEM =
   Ratchet
     { rcVersion,
       rcAD = assocData,
@@ -524,9 +527,9 @@ initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK
       -- state.PQRss = None
       -- state.PQRct = None
       rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-      rcEnableKEM = enableKEM == EnableKEM,
-      rcSndKEM = False,
-      rcRcvKEM = False,
+      rcEnableKEM,
+      rcSndKEM = PQEncOff,
+      rcRcvKEM = PQEncOff,
       rcRK = ratchetKey,
       rcSnd = Nothing,
       rcRcv = Nothing,
@@ -611,73 +614,75 @@ encRatchetMessageP v = do
   (emAuthTag, Tail emBody) <- smpP
   pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
-data EnableKEM = EnableKEM | DisableKEM
+newtype PQEncryption = PQEncryption {enablePQ :: Bool}
   deriving (Eq, Show)
 
-proposeKEM_ :: EnableKEM -> Maybe (UseKEM 'RKSProposed)
-proposeKEM_ = \case
-  EnableKEM -> Just ProposeKEM
-  DisableKEM -> Nothing
+pattern PQEncOn :: PQEncryption
+pattern PQEncOn = PQEncryption True
 
-connProposeKEM_ :: PQConnMode -> Maybe (UseKEM 'RKSProposed)
+pattern PQEncOff :: PQEncryption
+pattern PQEncOff = PQEncryption False
+
+{-# COMPLETE PQEncOn, PQEncOff #-}
+
+instance ToJSON PQEncryption where
+  toEncoding (PQEncryption pq) = toEncoding pq
+  toJSON (PQEncryption pq) = toJSON pq
+
+instance FromJSON PQEncryption where
+  parseJSON v = PQEncryption <$> parseJSON v
+
+proposeKEM_ :: PQEncryption -> Maybe (UseKEM 'RKSProposed)
+proposeKEM_ pqMode
+  | enablePQ pqMode = Just ProposeKEM
+  | otherwise = Nothing
+
+connProposeKEM_ :: InitialKeys -> Maybe (UseKEM 'RKSProposed)
 connProposeKEM_ = \case
-  PQInvitation -> Just ProposeKEM
-  PQEnable -> Nothing
-  PQDisable -> Nothing
+  IKUsePQ -> Just ProposeKEM
+  IKNoPQ _ -> Nothing
 
-replyKEM_ :: EnableKEM -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
-replyKEM_ enableKEM kem_ = case enableKEM of
-  EnableKEM -> Just $ case kem_ of
-    Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
-    Nothing -> AUseKEM SRKSProposed ProposeKEM
-  DisableKEM -> Nothing
+replyKEM_ :: PQEncryption -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
+replyKEM_ pqMode kem_
+  | enablePQ pqMode = Just $ case kem_ of
+      Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
+      Nothing -> AUseKEM SRKSProposed ProposeKEM
+  | otherwise = Nothing
 
-instance StrEncoding EnableKEM where
-  strEncode = \case
-    EnableKEM -> "kem=enable"
-    DisableKEM -> "kem=disable"
+instance StrEncoding PQEncryption where
+  strEncode pqMode
+    | enablePQ pqMode = "pq=enable"
+    | otherwise = "pq=disable"
   strP =
     A.takeTill (== ' ') >>= \case
-      "kem=enable" -> pure EnableKEM
-      "kem=disable" -> pure DisableKEM
-      _ -> fail "bad EnableKEM"
+      "pq=enable" -> pq True
+      "pq=disable" -> pq False
+      _ -> fail "bad PQEncryption"
+    where
+      pq = pure . PQEncryption
 
-data PQConnMode = PQInvitation | PQEnable | PQDisable
-  deriving (Show)
+data InitialKeys = IKUsePQ | IKNoPQ PQEncryption
+  deriving (Eq, Show)
 
-instance StrEncoding PQConnMode where
+instance StrEncoding InitialKeys where
   strEncode = \case
-    PQInvitation -> "pq=invitation"
-    PQEnable -> "pq=enable"
-    PQDisable -> "pq=disable"
-  strP =
-    A.takeTill (== ' ') >>= \case
-      "pq=invitation" -> pure PQInvitation
-      "pq=enable" -> pure PQEnable
-      "pq=disable" -> pure PQDisable
-      _ -> fail "bad PQConnMode"
+    IKUsePQ -> "pq=invitation"
+    IKNoPQ pq -> strEncode pq
+  strP = IKNoPQ <$> strP <|> "pq=invitation" $> IKUsePQ
 
-connEnableKEM :: PQConnMode -> EnableKEM
-connEnableKEM = \case
-  PQInvitation -> EnableKEM
-  PQEnable -> EnableKEM
-  PQDisable -> DisableKEM
+connPQEncryption :: InitialKeys -> PQEncryption
+connPQEncryption = \case
+  IKUsePQ -> PQEncOn
+  IKNoPQ pq -> pq
 
-joinContactEnableKEM :: EnableKEM -> PQConnMode
-joinContactEnableKEM = \case
-  EnableKEM -> PQInvitation
-  DisableKEM -> PQDisable
+joinContactInitialKeys :: PQEncryption -> InitialKeys
+joinContactInitialKeys = \case
+  PQEncOn -> IKUsePQ
+  PQEncOff -> IKNoPQ PQEncOff
 
-createConnEnableKEM :: EnableKEM -> PQConnMode
-createConnEnableKEM = \case
-  EnableKEM -> PQEnable
-  DisableKEM -> PQDisable
-
-type PQEncryption = Bool
-
-rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe EnableKEM -> ExceptT CryptoError IO (ByteString, Ratchet a)
+rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg enableKEM_ = do
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg pqMode_ = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -689,12 +694,13 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
   let msg' = encodeEncRatchetMessage (maxVersion rcVersion) EncRatchetMessage {emHeader, emBody, emAuthTag}
       -- state.Ns += 1
       rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
-      rc'' = case enableKEM_ of
+      rc'' = case pqMode_ of
         Nothing -> rc'
-        Just EnableKEM -> rc' {rcEnableKEM = True}
-        Just DisableKEM ->
-          let rcKEM' = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM
-           in rc' {rcEnableKEM = False, rcKEM = rcKEM'}
+        Just rcEnableKEM
+          | enablePQ rcEnableKEM -> rc' {rcEnableKEM}
+          | otherwise ->
+              let rcKEM' = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM
+               in rc' {rcEnableKEM, rcKEM = rcKEM'}
   pure (msg', rc'')
   where
     -- header = HEADER_PQ2(
@@ -786,15 +792,15 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
               let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
                   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
                   (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
-                  rcSndKEM = isJust kemSS'
-                  rcRcvKEM = isJust kemSS
+                  sndKEM = isJust kemSS'
+                  rcvKEM = isJust kemSS
                   rc'' =
                     rc'
                       { rcDHRs = rcDHRs',
                         rcKEM = rcKEM',
-                        rcEnableKEM = rcSndKEM || rcRcvKEM,
-                        rcSndKEM,
-                        rcRcvKEM,
+                        rcEnableKEM = PQEncryption $ sndKEM || rcvKEM,
+                        rcSndKEM = PQEncryption sndKEM,
+                        rcRcvKEM = PQEncryption rcvKEM,
                         rcRK = rcRK'',
                         rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
                         rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
@@ -806,17 +812,17 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                       }
               pure (rc'', hmks)
         pqRatchetStep :: Ratchet a -> Maybe ARKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
-        pqRatchetStep Ratchet {rcKEM, rcEnableKEM} = \case
+        pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption enableKEM} = \case
           -- received message does not have KEM in header,
           -- but the user enabled KEM when sending previous message
           Nothing -> case rcKEM of
-            Nothing | rcEnableKEM -> do
+            Nothing | enableKEM -> do
               rcPQRs <- liftIO $ sntrup761Keypair g
               pure (Nothing, Nothing, Just RatchetKEM {rcPQRs, rcKEMs = Nothing})
             _ -> pure (Nothing, Nothing, Nothing)
           -- received message has KEM in header.
           Just (ARKP _ ps)
-            | rcEnableKEM -> do
+            | enableKEM -> do
                 -- state.PQRr = header.kem
                 (ss, rcPQRr) <- sharedSecret
                 -- state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret KEM #1

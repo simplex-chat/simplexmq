@@ -71,7 +71,7 @@ import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteS
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQConnMode (..), PQEncryption)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern PQEncOn, pattern PQEncOff)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (authBatchCmdsNTFVersion)
@@ -88,8 +88,6 @@ import Util
 import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
-
-deriving instance Eq (PQConnMode)
 
 deriving instance Eq (ACommand p e)
 
@@ -144,13 +142,13 @@ pGet c = do
     _ -> pure t
 
 pattern CON :: ACommand 'Agent 'AEConn
-pattern CON = Agent.CON True
+pattern CON = Agent.CON PQEncOn
 
 pattern Msg :: MsgBody -> ACommand 'Agent e
-pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = True} _ msgBody
+pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqMode = PQEncOn} _ msgBody
 
 pattern Msg' :: AgentMsgId -> PQEncryption -> MsgBody -> ACommand 'Agent e
-pattern Msg' aMsgId pqEncryption msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption} _ msgBody
+pattern Msg' aMsgId pqMode msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqMode} _ msgBody
 
 pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> ACommand 'Agent 'AEConn
 pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} _ msgBody
@@ -216,15 +214,15 @@ inAnyOrder g rs = do
     expected r rp = rp r
 
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData PQEnable
+createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQEncOn)
 
 joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
-joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId enableNtfs cReq connInfo EnableKEM
+joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId enableNtfs cReq connInfo PQEncOn
 
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c connId msgFlags msgBody = do
-  (msgId, pqSecr) <- Agent.sendMessage c connId EnableKEM msgFlags msgBody
-  liftIO $ pqSecr `shouldBe` True
+  (msgId, pqMode) <- Agent.sendMessage c connId PQEncOn msgFlags msgBody
+  liftIO $ pqMode `shouldBe` PQEncOn
   pure msgId
 
 functionalAPITests :: ATransport -> Spec
@@ -527,7 +525,7 @@ runAgentClientContactTest alice bob baseId =
     (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContact alice True invId "alice's connInfo" EnableKEM SMSubscribe
+    bobId <- acceptContact alice True invId "alice's connInfo" PQEncOn SMSubscribe
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -1023,7 +1021,7 @@ testRatchetSync t = withAgentClients2 $ \alice bob ->
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId, bob2) <- setupDesynchronizedRatchet alice bob
     runRight $ do
-      ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId EnableKEM False
+      ConnectionStats {ratchetSyncState} <- synchronizeRatchet bob2 aliceId PQEncOn False
       liftIO $ ratchetSyncState `shouldBe` RSStarted
       get alice =##> ratchetSyncP bobId RSAgreed
       get bob2 =##> ratchetSyncP aliceId RSAgreed
@@ -1067,7 +1065,7 @@ setupDesynchronizedRatchet alice bob = do
   runRight_ $ do
     subscribeConnection bob2 aliceId
 
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId EnableKEM False
+    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId PQEncOn False
 
     8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
     get alice ##> ("", bobId, SENT 8)
@@ -1098,7 +1096,7 @@ testRatchetSyncServerOffline t = withAgentClients2 $ \alice bob -> do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQEncOn False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
@@ -1128,7 +1126,7 @@ testRatchetSyncClientRestart t = do
     setupDesynchronizedRatchet alice bob
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQEncOn False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
   disconnectAgentClient bob2
   bob3 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
@@ -1155,7 +1153,7 @@ testRatchetSyncSuspendForeground t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQEncOn False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   suspendAgent bob2 0
@@ -1189,10 +1187,10 @@ testRatchetSyncSimultaneous t = do
   ("", "", DOWN _ _) <- nGet alice
   ("", "", DOWN _ _) <- nGet bob2
 
-  ConnectionStats {ratchetSyncState = bRSS} <- runRight $ synchronizeRatchet bob2 aliceId EnableKEM False
+  ConnectionStats {ratchetSyncState = bRSS} <- runRight $ synchronizeRatchet bob2 aliceId PQEncOn False
   liftIO $ bRSS `shouldBe` RSStarted
 
-  ConnectionStats {ratchetSyncState = aRSS} <- runRight $ synchronizeRatchet alice bobId EnableKEM True
+  ConnectionStats {ratchetSyncState = aRSS} <- runRight $ synchronizeRatchet alice bobId PQEncOn True
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
@@ -1247,24 +1245,23 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
       pure r
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnection = makeConnection_ EnableKEM
+makeConnection = makeConnection_ PQEncOn
 
-makeConnection_ :: EnableKEM -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnection_ :: PQEncryption -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection_ enableKEM alice bob = makeConnectionForUsers_ enableKEM alice 1 bob 1
 
 makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnectionForUsers = makeConnectionForUsers_ EnableKEM
+makeConnectionForUsers = makeConnectionForUsers_ PQEncOn
 
-makeConnectionForUsers_ :: EnableKEM -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
-makeConnectionForUsers_ enableKEM alice aliceUserId bob bobUserId = do
-  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing (CR.createConnEnableKEM enableKEM) SMSubscribe
-  aliceId <- Agent.joinConnection bob bobUserId True qInfo "bob's connInfo" enableKEM SMSubscribe
+makeConnectionForUsers_ :: PQEncryption -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnectionForUsers_ pqMode alice aliceUserId bob bobUserId = do
+  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqMode) SMSubscribe
+  aliceId <- Agent.joinConnection bob bobUserId True qInfo "bob's connInfo" pqMode SMSubscribe
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
-  let pqEnabled = enableKEM /= DisableKEM
-  get alice ##> ("", bobId, Agent.CON pqEnabled)
+  get alice ##> ("", bobId, Agent.CON pqMode)
   get bob ##> ("", aliceId, INFO "alice's connInfo")
-  get bob ##> ("", aliceId, Agent.CON pqEnabled)
+  get bob ##> ("", aliceId, Agent.CON pqMode)
   pure (aliceId, bobId)
 
 testInactiveNoSubs :: ATransport -> IO ()
@@ -1387,8 +1384,8 @@ testBatchedSubscriptions nCreate nDel t = do
   a <- getSMPAgentClient' 1 agentCfg initAgentServers2 testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers2 testDB2
   conns <- runServers $ do
-    conns <- replicateM (nCreate :: Int) $ makeConnection_ DisableKEM a b
-    forM_ conns $ \(aId, bId) -> exchangeGreetings_ DisableKEM a bId b aId
+    conns <- replicateM (nCreate :: Int) $ makeConnection_ PQEncOff a b
+    forM_ conns $ \(aId, bId) -> exchangeGreetings_ PQEncOff a bId b aId
     let (aIds', bIds') = unzip $ take nDel conns
     delete a bIds'
     delete b aIds'
@@ -1409,10 +1406,10 @@ testBatchedSubscriptions nCreate nDel t = do
         (aIds', bIds') = unzip conns'
     subscribe a bIds
     subscribe b aIds
-    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ DisableKEM 6 a bId b aId
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 6 a bId b aId
     void $ resubscribeConnections a bIds
     void $ resubscribeConnections b aIds
-    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ DisableKEM 8 a bId b aId
+    forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 8 a bId b aId
     delete a bIds'
     delete b aIds'
     deleteFail a bIds'
@@ -1451,10 +1448,10 @@ testBatchedSubscriptions nCreate nDel t = do
 testAsyncCommands :: IO ()
 testAsyncCommands =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation PQEnable SMSubscribe
+    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation (IKNoPQ PQEncOn) SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
-    aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" EnableKEM SMSubscribe
+    aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQEncOn SMSubscribe
     ("2", aliceId', OK) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -1501,7 +1498,7 @@ testAsyncCommands =
 testAsyncCommandsRestore :: ATransport -> IO ()
 testAsyncCommandsRestore t = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation PQEnable SMSubscribe
+  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation (IKNoPQ PQEncOn) SMSubscribe
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disconnectAgentClient alice
   alice' <- liftIO $ getSMPAgentClient' 2 agentCfg initAgentServers testDB
@@ -1518,7 +1515,7 @@ testAcceptContactAsync =
     (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" EnableKEM SMSubscribe
+    bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" PQEncOn SMSubscribe
     get alice =##> \case ("1", c, OK) -> c == bobId; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
@@ -1802,10 +1799,10 @@ testJoinConnectionAsyncReplyError t = do
   a <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
-    bId <- createConnectionAsync a 1 "1" True SCMInvitation PQEnable SMSubscribe
+    bId <- createConnectionAsync a 1 "1" True SCMInvitation (IKNoPQ PQEncOn) SMSubscribe
     ("1", bId', INV (ACR _ qInfo)) <- get a
     liftIO $ bId' `shouldBe` bId
-    aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" EnableKEM SMSubscribe
+    aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" PQEncOn SMSubscribe
     liftIO $ threadDelay 500000
     ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
     pure (aId, bId)
@@ -2543,27 +2540,26 @@ testServerMultipleIdentities =
         testE2ERatchetParams12
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetings = exchangeGreetings_ EnableKEM
+exchangeGreetings = exchangeGreetings_ PQEncOn
 
-exchangeGreetings_ :: HasCallStack => EnableKEM -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+exchangeGreetings_ :: HasCallStack => PQEncryption -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings_ enableKEM = exchangeGreetingsMsgId_ enableKEM 4
 
 exchangeGreetingsMsgId :: HasCallStack => Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsMsgId = exchangeGreetingsMsgId_ EnableKEM
+exchangeGreetingsMsgId = exchangeGreetingsMsgId_ PQEncOn
 
-exchangeGreetingsMsgId_ :: HasCallStack => EnableKEM -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsMsgId_ enableKEM msgId alice bobId bob aliceId = do
-  let pqEnabled = enableKEM /= DisableKEM
-  msgId1 <- Agent.sendMessage alice bobId enableKEM SMP.noMsgFlags "hello"
-  liftIO $ msgId1 `shouldBe` (msgId, pqEnabled)
+exchangeGreetingsMsgId_ :: HasCallStack => PQEncryption -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+exchangeGreetingsMsgId_ pqMode msgId alice bobId bob aliceId = do
+  msgId1 <- Agent.sendMessage alice bobId pqMode SMP.noMsgFlags "hello"
+  liftIO $ msgId1 `shouldBe` (msgId, pqMode)
   get alice ##> ("", bobId, SENT msgId)
-  get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqEnabled; _ -> False
+  get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqMode; _ -> False
   ackMessage bob aliceId msgId Nothing
-  msgId2 <- Agent.sendMessage bob aliceId enableKEM SMP.noMsgFlags "hello too"
+  msgId2 <- Agent.sendMessage bob aliceId pqMode SMP.noMsgFlags "hello too"
   let msgId' = msgId + 1
-  liftIO $ msgId2 `shouldBe` (msgId', pqEnabled)
+  liftIO $ msgId2 `shouldBe` (msgId', pqMode)
   get bob ##> ("", aliceId, SENT msgId')
-  get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == msgId' && pq == pqEnabled; _ -> False
+  get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == msgId' && pq == pqMode; _ -> False
   ackMessage alice bobId msgId' Nothing
 
 exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()

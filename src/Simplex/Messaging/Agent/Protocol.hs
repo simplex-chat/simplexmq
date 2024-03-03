@@ -182,7 +182,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (EnableKEM (..), PQConnMode (..), PQEncryption, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern PQEncOff, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -328,13 +328,13 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (e :: AEntity) where
-  NEW :: Bool -> AConnectionMode -> PQConnMode -> SubscriptionMode -> ACommand Client AEConn -- response INV
+  NEW :: Bool -> AConnectionMode -> InitialKeys -> SubscriptionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
-  JOIN :: Bool -> AConnectionRequestUri -> EnableKEM -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
+  JOIN :: Bool -> AConnectionRequestUri -> PQEncryption -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
-  ACPT :: InvitationId -> EnableKEM -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
+  ACPT :: InvitationId -> PQEncryption -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client AEConn
   INFO :: ConnInfo -> ACommand Agent AEConn
   CON :: PQEncryption -> ACommand Agent AEConn -- notification that connection is established
@@ -346,7 +346,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
-  SEND :: EnableKEM -> MsgFlags -> MsgBody -> ACommand Client AEConn
+  SEND :: PQEncryption -> MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> PQEncryption -> ACommand Agent AEConn
   SENT :: AgentMsgId -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
@@ -751,18 +751,18 @@ data MsgMeta = MsgMeta
     recipient :: (AgentMsgId, UTCTime),
     broker :: (MsgId, UTCTime),
     sndMsgId :: AgentMsgId,
-    pqEncryption :: PQEncryption
+    pqMode :: PQEncryption
   }
   deriving (Eq, Show)
 
 instance StrEncoding MsgMeta where
-  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
+  strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqMode} =
     B.unwords
       [ strEncode integrity,
         "R=" <> bshow rmId <> "," <> showTs rTs,
         "B=" <> encode bmId <> "," <> showTs bTs,
         "S=" <> bshow sndMsgId,
-        "PQ=" <> strEncode pqEncryption
+        "PQ=" <> strEncode pqMode
       ]
     where
       showTs = B.pack . formatISO8601Millis
@@ -771,8 +771,8 @@ instance StrEncoding MsgMeta where
     recipient <- " R=" *> partyMeta A.decimal
     broker <- " B=" *> partyMeta base64P
     sndMsgId <- " S=" *> A.decimal
-    pqEncryption <- " PQ=" *> strP
-    pure MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
+    pqMode <- " PQ=" *> strP
+    pure MsgMeta {integrity, recipient, broker, sndMsgId, pqMode}
     where
       partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
 
@@ -1690,7 +1690,7 @@ commandP binaryP =
     >>= \case
       ACmdTag SClient e cmd ->
         ACmd SClient e <$> case cmd of
-          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqConnP <*> (strP <|> pure SMP.SMSubscribe))
+          NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
           JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqEncP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
           ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> pqEncP <*> binaryP)
@@ -1739,10 +1739,10 @@ commandP binaryP =
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
-    pqConnP :: Parser PQConnMode
-    pqConnP = strP_ <|> pure PQDisable
-    pqEncP :: Parser EnableKEM
-    pqEncP = strP_ <|> pure DisableKEM
+    pqIKP :: Parser InitialKeys
+    pqIKP = strP_ <|> pure (IKNoPQ PQEncOff)
+    pqEncP :: Parser PQEncryption
+    pqEncP = strP_ <|> pure PQEncOff
     connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
     sfDone :: Text -> Either String (ACommand 'Agent 'AESndFile)
@@ -1758,7 +1758,7 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode pqConn subMode -> s (NEW_, ntfs, cMode, pqConn, subMode)
+  NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
   INV cReq -> s (INV_, cReq)
   JOIN ntfs cReq pqEnc subMode cInfo -> s (JOIN_, ntfs, cReq, pqEnc, subMode, Str $ serializeBinary cInfo)
   CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]

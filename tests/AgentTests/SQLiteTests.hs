@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -44,7 +45,8 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (PQConnMode (..))
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQEncOn)
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SubscriptionMode (..))
@@ -188,7 +190,7 @@ cData1 =
       lastExternalSndId = 0,
       deleted = False,
       ratchetSyncState = RSOk,
-      pqEnable = True
+      pqConnMode = CR.PQEncOn
     }
 
 testPrivateAuthKey :: C.APrivateAuthKey
@@ -483,7 +485,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
             broker = (brokerId, ts),
-            pqEncryption = True
+            pqMode = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
@@ -521,7 +523,7 @@ mkSndMsgData internalId internalSndId internalHash =
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
-      pqEncryption = True,
+      pqMode = CR.PQEncOn,
       internalHash,
       prevMsgHash = internalHash
     }
@@ -660,7 +662,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) PQEnable SMSubscribe
+    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQEncOn) SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 

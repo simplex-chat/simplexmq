@@ -9,14 +9,14 @@ m20240225_ratchet_kem :: Query
 m20240225_ratchet_kem =
     [sql|
 ALTER TABLE ratchets ADD COLUMN pq_priv_kem BLOB;
-ALTER TABLE connections ADD COLUMN pq_enable INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE messages ADD COLUMN pq_encryption INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN pq_conn_mode INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN pq_mode INTEGER NOT NULL DEFAULT 0;
 |]
 
 down_m20240225_ratchet_kem :: Query
 down_m20240225_ratchet_kem =
     [sql|
 ALTER TABLE ratchets DROP COLUMN pq_priv_kem;
-ALTER TABLE connections DROP COLUMN pq_enable;
-ALTER TABLE messages DROP COLUMN pq_encryption;
+ALTER TABLE connections DROP COLUMN pq_conn_mode;
+ALTER TABLE messages DROP COLUMN pq_mode;
 |]

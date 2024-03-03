@@ -309,7 +309,7 @@ data ConnData = ConnData
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
-    pqEnable :: Bool
+    pqConnMode :: PQEncryption
   }
   deriving (Eq, Show)
 
@@ -524,7 +524,7 @@ data SndMsgData = SndMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
-    pqEncryption :: PQEncryption,
+    pqMode :: PQEncryption,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
   }
@@ -542,7 +542,7 @@ data PendingMsgData = PendingMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
-    pqEncryption :: PQEncryption,
+    pqMode :: PQEncryption,
     msgRetryState :: Maybe RI2State,
     internalTs :: InternalTs
   }
