@@ -312,18 +312,19 @@ functionalAPITests t = do
       withSmpServer t testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
-    it "delete waiting for delivery - should delete connection immediately if there are no pending messages" $
-      testDeleteConnectionAsyncWaitDeliveryNoPending t
-    it "delete waiting for delivery - should delete connection after waiting for delivery to complete" $
-      testDeleteConnectionAsyncWaitDelivery t
-    it "delete waiting for delivery - should delete connection if message can't be delivered due to AUTH error" $
-      testDeleteConnectionAsyncWaitDeliveryAUTHErr t
-    it "delete waiting for delivery - should delete connection by timeout even if message wasn't delivered" $
-      testDeleteConnectionAsyncWaitDeliveryTimeout t
-    it "delete waiting for delivery - should delete connection by timeout, message in progress can be delivered" $
-      testDeleteConnectionAsyncWaitDeliveryTimeout2 t
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError t
+    describe "delete connection waiting for delivery" $ do
+      it "should delete connection immediately if there are no pending messages" $
+        testWaitDeliveryNoPending t
+      it "should delete connection after waiting for delivery to complete" $
+        testWaitDelivery t
+      it "should delete connection if message can't be delivered due to AUTH error" $
+        testWaitDeliveryAUTHErr t
+      it "should delete connection by timeout even if message wasn't delivered" $
+        testWaitDeliveryTimeout t
+      it "should delete connection by timeout, message in progress can be delivered" $
+        testWaitDeliveryTimeout2 t
   describe "Users" $ do
     it "should create and delete user with connections" $
       withSmpServer t testUsers
@@ -1567,8 +1568,8 @@ testDeleteConnectionAsync t = do
     liftIO $ noMessages a "nothing else should be delivered to alice"
   disconnectAgentClient a
 
-testDeleteConnectionAsyncWaitDeliveryNoPending :: ATransport -> IO ()
-testDeleteConnectionAsyncWaitDeliveryNoPending t = do
+testWaitDeliveryNoPending :: ATransport -> IO ()
+testWaitDeliveryNoPending t = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
@@ -1600,8 +1601,8 @@ testDeleteConnectionAsyncWaitDeliveryNoPending t = do
     baseId = 3
     msgId = subtract baseId
 
-testDeleteConnectionAsyncWaitDelivery :: ATransport -> IO ()
-testDeleteConnectionAsyncWaitDelivery t = do
+testWaitDelivery :: ATransport -> IO ()
+testWaitDelivery t = do
   alice <- getSMPAgentClient' 1 agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -1657,8 +1658,8 @@ testDeleteConnectionAsyncWaitDelivery t = do
     baseId = 3
     msgId = subtract baseId
 
-testDeleteConnectionAsyncWaitDeliveryAUTHErr :: ATransport -> IO ()
-testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
+testWaitDeliveryAUTHErr :: ATransport -> IO ()
+testWaitDeliveryAUTHErr t = do
   alice <- getSMPAgentClient' 1 agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (_aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -1703,8 +1704,8 @@ testDeleteConnectionAsyncWaitDeliveryAUTHErr t = do
     baseId = 3
     msgId = subtract baseId
 
-testDeleteConnectionAsyncWaitDeliveryTimeout :: ATransport -> IO ()
-testDeleteConnectionAsyncWaitDeliveryTimeout t = do
+testWaitDeliveryTimeout :: ATransport -> IO ()
+testWaitDeliveryTimeout t = do
   alice <- getSMPAgentClient' 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -1744,8 +1745,8 @@ testDeleteConnectionAsyncWaitDeliveryTimeout t = do
     baseId = 3
     msgId = subtract baseId
 
-testDeleteConnectionAsyncWaitDeliveryTimeout2 :: ATransport -> IO ()
-testDeleteConnectionAsyncWaitDeliveryTimeout2 t = do
+testWaitDeliveryTimeout2 :: ATransport -> IO ()
+testWaitDeliveryTimeout2 t = do
   alice <- getSMPAgentClient' 1 agentCfg {connDeleteDeliveryTimeout = 2, messageRetryInterval = fastMessageRetryInterval, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do

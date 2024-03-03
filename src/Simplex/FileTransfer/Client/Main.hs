@@ -19,6 +19,7 @@ module Simplex.FileTransfer.Client.Main
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
+    maxFileSizeHard,
     fileSizeLen,
     getChunkDigest,
     SentRecipientReplica (..),
@@ -76,11 +77,16 @@ import UnliftIO.Directory
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
 
+-- | Soft limit for XFTP clients. Should be checked and reported to user.
 maxFileSize :: Int64
 maxFileSize = gb 1
 
 maxFileSizeStr :: String
 maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+
+-- | Hard internal limit for XFTP agent after which it refuses to prepare chunks.
+maxFileSizeHard :: Int64
+maxFileSizeHard = gb 5
 
 fileSizeLen :: Int64
 fileSizeLen = 8
