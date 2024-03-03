@@ -738,7 +738,7 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqEnc s
     liftIO $ createRatchet db connId rc
     ExceptT $ updateNewConnSnd db connId q
   confirmQueueAsync c cData q' srv cInfo (Just e2eSndParams) pqEnc subMode
-joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _enableKem _srv = do
+joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqEnc _srv = do
   throwError $ CMD PROHIBITED
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> m SMPQueueInfo
