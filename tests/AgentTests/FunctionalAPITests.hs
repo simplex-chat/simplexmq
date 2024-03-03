@@ -1734,6 +1734,8 @@ testWaitDeliveryTimeout t = do
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
+  liftIO $ threadDelay 100000
+
   withSmpServerStoreLogOn t testPort $ \_ -> do
     nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
