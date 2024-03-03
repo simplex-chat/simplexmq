@@ -677,12 +677,12 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
       pure (connId, CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange)
 
 joinConn :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> CR.PQEncryption -> SubscriptionMode -> m ConnId
-joinConn c userId connId enableNtfs cReq cInfo enableKem subMode = do
+joinConn c userId connId enableNtfs cReq cInfo pqEnc subMode = do
   srv <- case cReq of
     CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ ->
       getNextServer c userId [qServer q]
     _ -> getSMPServer c userId
-  joinConnSrv c userId connId enableNtfs cReq cInfo enableKem subMode srv
+  joinConnSrv c userId connId enableNtfs cReq cInfo pqEnc subMode srv
 
 startJoinInvitation :: AgentMonad m => UserId -> ConnId -> Bool -> ConnectionRequestUri 'CMInvitation -> CR.PQEncryption -> m (Compatible Version, ConnData, NewSndQueue, CR.Ratchet 'C.X448, CR.SndE2ERatchetParams 'C.X448)
 startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) pqEncryption = do
@@ -704,16 +704,16 @@ startJoinInvitation userId connId enableNtfs (CRInvitationUri ConnReqUriData {cr
     _ -> throwError $ AGENT A_VERSION
 
 joinConnSrv :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> CR.PQEncryption -> SubscriptionMode -> SMPServerWithAuth -> m ConnId
-joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo enableKem subMode srv =
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqEnc subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
-    (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv enableKem
+    (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv pqEnc
     g <- asks random
     (connId', sq) <- withStore c $ \db -> runExceptT $ do
       r@(connId', _) <- ExceptT $ createSndConn db g cData q
       liftIO $ createRatchet db connId' rc
       pure r
     let cData' = (cData :: ConnData) {connId = connId'}
-    tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) (Just enableKem) subMode) >>= \case
+    tryError (confirmQueue aVersion c cData' sq srv cInfo (Just e2eSndParams) (Just pqEnc) subMode) >>= \case
       Right _ -> pure connId'
       Left e -> do
         -- possible improvement: recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
@@ -732,12 +732,12 @@ joinConnSrv c userId connId enableNtfs (CRContactUri ConnReqUriData {crAgentVRan
     _ -> throwError $ AGENT A_VERSION
 
 joinConnSrvAsync :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> CR.PQEncryption -> SubscriptionMode -> SMPServerWithAuth -> m ()
-joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo enableKem subMode srv = do
-  (_aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv enableKem
+joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqEnc subMode srv = do
+  (_aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv pqEnc
   q' <- withStore c $ \db -> runExceptT $ do
     liftIO $ createRatchet db connId rc
     ExceptT $ updateNewConnSnd db connId q
-  confirmQueueAsync c cData q' srv cInfo (Just e2eSndParams) enableKem subMode
+  confirmQueueAsync c cData q' srv cInfo (Just e2eSndParams) pqEnc subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _enableKem _srv = do
   throwError $ CMD PROHIBITED
 
@@ -770,12 +770,12 @@ allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConne
 
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentMonad m => AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> CR.PQEncryption -> SubscriptionMode -> m ConnId
-acceptContact' c connId enableNtfs invId ownConnInfo enableKem subMode = withConnLock c connId "acceptContact" $ do
+acceptContact' c connId enableNtfs invId ownConnInfo pqEnc subMode = withConnLock c connId "acceptContact" $ do
   Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConn c userId connId enableNtfs connReq ownConnInfo enableKem subMode `catchAgentError` \err -> do
+      joinConn c userId connId enableNtfs connReq ownConnInfo pqEnc subMode `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
     _ -> throwError $ CMD PROHIBITED
@@ -911,17 +911,17 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> CR.PQEncryption -> MsgFlags -> MsgBody -> m (AgentMsgId, CR.PQEncryption)
-sendMessage' c connId enableKem msgFlags msg = liftEither . runIdentity =<< sendMessagesB' c enableKem (Identity (Right (connId, msgFlags, msg)))
+sendMessage' c connId pqEnc msgFlags msg = liftEither . runIdentity =<< sendMessagesB' c pqEnc (Identity (Right (connId, msgFlags, msg)))
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
 sendMessages' :: forall m. AgentMonad' m => AgentClient -> CR.PQEncryption -> [MsgReq] -> m [Either AgentErrorType (AgentMsgId, CR.PQEncryption)]
-sendMessages' c enableKem = sendMessagesB' c enableKem . map Right
+sendMessages' c pqEnc = sendMessagesB' c pqEnc . map Right
 
 sendMessagesB' :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> CR.PQEncryption -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType (AgentMsgId, CR.PQEncryption)))
-sendMessagesB' c enableKem reqs = withConnLocks c connIds "sendMessages" $ do
+sendMessagesB' c pqEnc reqs = withConnLocks c connIds "sendMessages" $ do
   reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   let reqs'' = fmap (>>= prepareConn) reqs'
-  enqueueMessagesB c (Just enableKem) reqs''
+  enqueueMessagesB c (Just pqEnc) reqs''
   where
     prepareConn :: (MsgReq, SomeConn) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, MsgFlags, AMessage)
     prepareConn ((_, msgFlags, msg), SomeConn _ conn) = case conn of
@@ -2427,8 +2427,8 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = 
       enqueueConfirmation c cData sq' ownConnInfo Nothing Nothing
 
 confirmQueueAsync :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> CR.PQEncryption -> SubscriptionMode -> m ()
-confirmQueueAsync c cData sq srv connInfo e2eEncryption_ enableKem subMode = do
-  storeConfirmation c cData sq e2eEncryption_ (Just enableKem) =<< mkAgentConfirmation c cData sq srv connInfo subMode
+confirmQueueAsync c cData sq srv connInfo e2eEncryption_ pqEnc subMode = do
+  storeConfirmation c cData sq e2eEncryption_ (Just pqEnc) =<< mkAgentConfirmation c cData sq srv connInfo subMode
   submitPendingMsg c cData sq
 
 confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> Maybe CR.PQEncryption -> SubscriptionMode -> m ()
