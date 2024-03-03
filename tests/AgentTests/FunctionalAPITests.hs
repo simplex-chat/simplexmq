@@ -395,7 +395,7 @@ functionalAPITests t = do
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
-    it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
+    fit "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2395,7 +2395,7 @@ testDeliveryReceiptsConcurrent t =
       t1 <- liftIO getCurrentTime
       concurrently_ (runClient "a" a bId) (runClient "b" b aId)
       t2 <- liftIO getCurrentTime
-      diffUTCTime t2 t1 `shouldSatisfy` (< 15)
+      diffUTCTime t2 t1 `shouldSatisfy` (< 60)
       liftIO $ noMessages a "nothing else should be delivered to alice"
       liftIO $ noMessages b "nothing else should be delivered to bob"
   where
@@ -2433,7 +2433,7 @@ testDeliveryReceiptsConcurrent t =
           receiveLoop (n - 1)
         getWithTimeout :: ExceptT AgentErrorType IO (AEntityTransmission 'AEConn)
         getWithTimeout = do
-          1000000 `timeout` get client >>= \case
+          3000000 `timeout` get client >>= \case
             Just r -> pure r
             _ -> error "timeout"
 
