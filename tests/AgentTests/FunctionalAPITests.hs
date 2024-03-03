@@ -280,7 +280,7 @@ functionalAPITests t = do
         testWaitDelivery t
       it "should delete connection if message can't be delivered due to AUTH error" $
         testWaitDeliveryAUTHErr t
-      it "should delete connection by timeout even if message wasn't delivered" $
+      fit "should delete connection by timeout even if message wasn't delivered" $
         testWaitDeliveryTimeout t
       it "should delete connection by timeout, message in progress can be delivered" $
         testWaitDeliveryTimeout2 t
@@ -1675,19 +1675,31 @@ testWaitDeliveryTimeout t = do
     pure (aliceId, bobId)
 
   runRight_ $ do
+    liftIO $ print 1
     ("", "", DOWN _ _) <- nGet alice
+    liftIO $ print 2
     ("", "", DOWN _ _) <- nGet bob
+    liftIO $ print 3
     3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    liftIO $ print 4
     4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
+    liftIO $ print 5
     deleteConnectionsAsync alice True [bobId]
+    liftIO $ print 6
     get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+    liftIO $ print 7
     get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+    liftIO $ print 8
     liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ print 9
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
   withSmpServerStoreLogOn t testPort $ \_ -> do
+    liftIO $ print 10
     nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
+    liftIO $ print 11
     liftIO $ noMessages alice "nothing else should be delivered to alice"
+    liftIO $ print 12
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
   disconnectAgentClient alice
