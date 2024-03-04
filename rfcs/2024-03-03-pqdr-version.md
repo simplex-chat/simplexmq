@@ -67,3 +67,26 @@ class Ord v => EncodingV v a where
 ```
 
 The version will be passed from currently agreed version, it may only change when message is received, not when message is sent. The version will not be extracted from the encoding itself as it happens now in ratchet encodings.
+
+## Various options how the problem can be simplified
+
+1. Do not support connection downgrade once both devices upgraded. If applied to all existing connections then it is a bad option, as it would disrupt some important conversations.
+
+2. Do not provide ability to opt-in into PQ encryption until v5.7 where it will be rolled out automatically. That is also suboptimal, as it won't allow announcing technology design and have testing outside of the team devices.
+
+3. The logic explained above where connection upgrade and downgrade is possible and applied to all existing connections if both parties consent to it. There are these important downsides:
+  - complexity of this logic
+  - regression risks when this logic is removed.
+  - some non-coordinated upgrades of existing, potentially important conversations, simply because two users opt-in into the experiment without any expectation that another side also opts-in.
+
+4. Apply upgrade/downgrade logic and enable PQ encryption as opt-in, based on the toggle in the UX, only for the new connections. This seems the least risky, and also simpler than option 3, as it would only apply to the new connections, and both users will have to enable experimental toggle prior to connecting.
+
+Option 4 seems the best trade-off, and has these sub-options regarding where it is controlled:
+a) in chat based on connection flag. Chat will pass PQ options only to connections that were created when experimental option was enabled.
+b) in agent - there will be additional logic to ignore PQ option for existing connections.
+c) both in chat and in agent.
+
+Option 4a seems better, as it would:
+- simplify agent code
+- minimise required changes when releasing v5.7 (as we do want that all direct and small groups connections migrate to PQ encryption at the time, without any toggles)
+- allow tests for connection upgrade in the currect code.
