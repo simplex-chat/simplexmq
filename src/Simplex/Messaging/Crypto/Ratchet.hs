@@ -3,8 +3,10 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
@@ -12,15 +14,42 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
-module Simplex.Messaging.Crypto.Ratchet where
+module Simplex.Messaging.Crypto.Ratchet
+  ( Ratchet (..),
+    RatchetX448,
+    SkippedMsgDiff (..),
+    SkippedMsgKeys,
+    E2ERatchetParamsUri (..),
+    E2ERatchetParams (..),
+    VersionE2E,
+    VersionRangeE2E,
+    pattern VersionE2E,
+    currentE2EEncryptVersion,
+    supportedE2EEncryptVRange,
+    generateE2EParams,
+    x3dhSnd,
+    x3dhRcv,
+    initSndRatchet,
+    initRcvRatchet,
+    rcEncrypt,
+    rcDecrypt,
+    -- used in tests
+    MsgHeader (..),
+    RatchetVersions,
+    ratchetVersions,
+    fullHeaderLen,
+    applySMDiff,
+  )
+where
 
+import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
 import Crypto.Random (ChaChaDRG)
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import Data.ByteString.Char8 (ByteString)
@@ -31,7 +60,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Typeable (Typeable)
-import Data.Word (Word32)
+import Data.Word (Word16, Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.QueryString
@@ -40,41 +69,53 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
 
 -- e2e encryption headers version history:
 -- 1 - binary protocol encoding (1/1/2022)
 -- 2 - use KDF in x3dh (10/20/2022)
 
-kdfX3DHE2EEncryptVersion :: Version
-kdfX3DHE2EEncryptVersion = 2
+data E2EVersion
 
-currentE2EEncryptVersion :: Version
-currentE2EEncryptVersion = 2
+instance VersionScope E2EVersion
 
-supportedE2EEncryptVRange :: VersionRange
+type VersionE2E = Version E2EVersion
+
+type VersionRangeE2E = VersionRange E2EVersion
+
+pattern VersionE2E :: Word16 -> VersionE2E
+pattern VersionE2E v = Version v
+
+kdfX3DHE2EEncryptVersion :: VersionE2E
+kdfX3DHE2EEncryptVersion = VersionE2E 2
+
+currentE2EEncryptVersion :: VersionE2E
+currentE2EEncryptVersion = VersionE2E 2
+
+supportedE2EEncryptVRange :: VersionRangeE2E
 supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
 
 data E2ERatchetParams (a :: Algorithm)
-  = E2ERatchetParams Version (PublicKey a) (PublicKey a)
+  = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
 
 instance AlgorithmI a => Encoding (E2ERatchetParams a) where
   smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
   smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
 
-instance VersionI (E2ERatchetParams a) where
-  type VersionRangeT (E2ERatchetParams a) = E2ERatchetParamsUri a
+instance VersionI E2EVersion (E2ERatchetParams a) where
+  type VersionRangeT E2EVersion (E2ERatchetParams a) = E2ERatchetParamsUri a
   version (E2ERatchetParams v _ _) = v
   toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
 
-instance VersionRangeI (E2ERatchetParamsUri a) where
-  type VersionT (E2ERatchetParamsUri a) = (E2ERatchetParams a)
+instance VersionRangeI E2EVersion (E2ERatchetParamsUri a) where
+  type VersionT E2EVersion (E2ERatchetParamsUri a) = (E2ERatchetParams a)
   versionRange (E2ERatchetParamsUri vr _ _) = vr
   toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
 
 data E2ERatchetParamsUri (a :: Algorithm)
-  = E2ERatchetParamsUri VersionRange (PublicKey a) (PublicKey a)
+  = E2ERatchetParamsUri VersionRangeE2E (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
 
 instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
@@ -89,7 +130,7 @@ instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"
 
-generateE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> Version -> STM (PrivateKey a, PrivateKey a, E2ERatchetParams a)
+generateE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> STM (PrivateKey a, PrivateKey a, E2ERatchetParams a)
 generateE2EParams g v = do
   (k1, pk1) <- generateKeyPair g
   (k2, pk2) <- generateKeyPair g
@@ -125,7 +166,7 @@ type RatchetX448 = Ratchet 'X448
 
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
-    rcVersion :: VersionRange,
+    rcVersion :: RatchetVersions,
     -- associated data - must be the same in both parties ratchets
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
@@ -139,6 +180,29 @@ data Ratchet a = Ratchet
     rcNHKr :: HeaderKey
   }
   deriving (Eq, Show)
+
+data RatchetVersions = RVersions
+  { current :: VersionE2E,
+    maxSupported :: VersionE2E
+  }
+  deriving (Eq, Show)
+
+instance ToJSON RatchetVersions where
+  -- TODO v5.7 or v5.8 change to the default record encoding
+  toJSON (RVersions v1 v2) = toJSON (v1, v2)
+  toEncoding (RVersions v1 v2) = toEncoding (v1, v2)
+
+instance FromJSON RatchetVersions where
+  -- TODO v6.0 replace with the default record parser
+  -- this parser supports JSON record encoding for forward compatibility
+  parseJSON v = (tupleP <|> recordP v) >>= toRV
+    where
+      tupleP = parseJSON v
+      recordP = J.withObject "RatchetVersions" $ \o -> ((,) <$> o .: "current" <*> o .: "maxSupported")
+      toRV (v1, v2) = maybe (fail "bad version range") (pure . ratchetVersions) $ safeVersionRange v1 v2
+
+ratchetVersions :: VersionRangeE2E -> RatchetVersions
+ratchetVersions (VersionRange v1 v2) = RVersions {current = v1,  maxSupported = v2}
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
@@ -207,12 +271,12 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initSndRatchet rcVersion rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRangeE2E -> PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initSndRatchet v rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs
    in Ratchet
-        { rcVersion,
+        { rcVersion = ratchetVersions v,
           rcAD = assocData,
           rcDHRs,
           rcRK,
@@ -230,10 +294,10 @@ initSndRatchet rcVersion rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey,
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRange -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcVersion rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
+  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRangeE2E -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initRcvRatchet v rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
   Ratchet
-    { rcVersion,
+    { rcVersion = ratchetVersions v,
       rcAD = assocData,
       rcDHRs,
       rcRK = ratchetKey,
@@ -248,17 +312,12 @@ initRcvRatchet rcVersion rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK,
 
 data MsgHeader a = MsgHeader
   { -- | max supported ratchet version
-    msgMaxVersion :: Version,
+    msgMaxVersion :: VersionE2E,
     msgDHRs :: PublicKey a,
     msgPN :: Word32,
     msgNs :: Word32
   }
   deriving (Eq, Show)
-
-data AMsgHeader
-  = forall a.
-    (AlgorithmI a, DhAlgorithm a) =>
-    AMsgHeader (SAlgorithm a) (MsgHeader a)
 
 -- to allow extension without increasing the size, the actual header length is:
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
@@ -281,7 +340,7 @@ instance AlgorithmI a => Encoding (MsgHeader a) where
     pure MsgHeader {msgMaxVersion, msgDHRs, msgPN, msgNs}
 
 data EncMessageHeader = EncMessageHeader
-  { ehVersion :: Version,
+  { ehVersion :: VersionE2E,
     ehIV :: IV,
     ehAuthTag :: AuthTag,
     ehBody :: ByteString
@@ -315,7 +374,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, r
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV paddedHeaderLen rcAD msgHeader
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  let emHeader = smpEncode EncMessageHeader {ehVersion = minVersion rcVersion, ehBody, ehAuthTag, ehIV}
+  let emHeader = smpEncode EncMessageHeader {ehVersion = current rcVersion, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
   let msg' = smpEncode EncRatchetMessage {emHeader, emBody, emAuthTag}
       -- state.Ns += 1
@@ -326,7 +385,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, r
     msgHeader =
       smpEncode
         MsgHeader
-          { msgMaxVersion = maxVersion rcVersion,
+          { msgMaxVersion = maxSupported rcVersion,
             msgDHRs = publicKey rcDHRs,
             msgPN = rcPN,
             msgNs = rcNs

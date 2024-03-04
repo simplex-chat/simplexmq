@@ -65,7 +65,7 @@ type SMPSub = (SMPSubParty, QueueId)
 -- type SMPServerSub = (SMPServer, SMPSub)
 
 data SMPClientAgentConfig = SMPClientAgentConfig
-  { smpCfg :: ProtocolClientConfig,
+  { smpCfg :: ProtocolClientConfig SMPVersion,
     reconnectInterval :: RetryInterval,
     msgQSize :: Natural,
     agentQSize :: Natural,
@@ -91,7 +91,7 @@ defaultSMPClientAgentConfig =
 
 data SMPClientAgent = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
-    msgQ :: TBQueue (ServerTransmission BrokerMsg),
+    msgQ :: TBQueue (ServerTransmission SMPVersion BrokerMsg),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,

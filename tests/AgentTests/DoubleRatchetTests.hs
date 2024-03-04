@@ -12,7 +12,7 @@ module AgentTests.DoubleRatchetTests where
 import Control.Concurrent.STM
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -23,6 +23,7 @@ import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$$>))
+import Simplex.Messaging.Version
 import Test.Hspec
 
 doubleRatchetTests :: Spec
@@ -44,6 +45,7 @@ doubleRatchetTests = do
       testKeyJSON C.SX448
       testRatchetJSON C.SX25519
       testRatchetJSON C.SX448
+      testVersionJSON
     it "should agree the same ratchet parameters" $ do
       testX3dh C.SX25519
       testX3dh C.SX448
@@ -164,6 +166,20 @@ testRatchetJSON _ = do
   testEncodeDecode alice
   testEncodeDecode bob
 
+testVersionJSON :: IO ()
+testVersionJSON = do
+  testEncodeDecode $ rv 1 1
+  testEncodeDecode $ rv 1 2
+  -- let bad = RVersions 2 1
+  -- Left err <- pure $ J.eitherDecode' @RatchetVersions (J.encode bad)
+  -- err `shouldContain` "bad version range"
+  testDecodeRV $ (1 :: Int, 2 :: Int)
+  testDecodeRV $ J.object ["current" .= (1 :: Int), "maxSupported" .= (2 :: Int)]
+  where
+    rv v1 v2 = ratchetVersions $ mkVersionRange (VersionE2E v1) (VersionE2E v2)
+    testDecodeRV :: ToJSON a => a -> Expectation
+    testDecodeRV a = J.eitherDecode' (J.encode a) `shouldBe` Right (rv 1 2)
+
 testEncodeDecode :: (Eq a, Show a, ToJSON a, FromJSON a) => a -> Expectation
 testEncodeDecode x = do
   let j = J.encode x
@@ -182,8 +198,8 @@ testX3dh _ = do
 testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dhV1 _ = do
   g <- C.newRandom
-  (pkBob1, pkBob2, e2eBob) <- atomically $ generateE2EParams @a g 1
-  (pkAlice1, pkAlice2, e2eAlice) <- atomically $ generateE2EParams @a g 1
+  (pkBob1, pkBob2, e2eBob) <- atomically $ generateE2EParams @a g (VersionE2E 1)
+  (pkAlice1, pkAlice2, e2eAlice) <- atomically $ generateE2EParams @a g (VersionE2E 1)
   let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
       paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
   paramsAlice `shouldBe` paramsBob
