@@ -9,6 +9,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
@@ -44,7 +45,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
-import Data.Time.Clock.System (SystemTime (..))
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
@@ -64,11 +65,22 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors)
+import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors, tshow)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
 import UnliftIO.STM
+import Data.IntPSQ (IntPSQ)
+import qualified Data.IntPSQ as IP
+import UnliftIO.Concurrent (forkIO)
+import Control.Concurrent.Async (async)
+import UnliftIO (cancel)
+import Control.Concurrent (threadDelay)
+import Control.Logger.Simple (logError, logNote)
+import Data.OrdPSQ (OrdPSQ)
+import qualified Simplex.Messaging.Protocol as SMP
+import Data.Text (Text)
+import qualified Data.OrdPSQ as OP
 
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
 
@@ -201,8 +213,11 @@ data Env = Env
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,
-    multicastSubscribers :: TMVar Int
+    multicastSubscribers :: TMVar Int,
+    acks :: TVar Acks
   }
+
+type Acks = OrdPSQ (SMP.EntityId, SMP.MsgId) SystemTime (Maybe Text)
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config store = do
@@ -211,7 +226,23 @@ newSMPAgentEnv config store = do
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
-  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
+  acks <- newTVarIO OP.empty
+  ackMonPid <- async $ ackMonitor acks
+  void $! mkWeakTVar acks (cancel ackMonPid >> putStrLn "monitor begone!")
+  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers, acks}
+
+ackMonitor :: TVar Acks -> IO ()
+ackMonitor acksVar = do
+  putStrLn "ackMonitor: started"
+  forever $ do
+    MkSystemTime now _ns <- getSystemTime
+    -- logNote "tick-tock, mf'rs"
+    late <- atomically $ do
+      (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acksVar
+      late <$ writeTVar acksVar later
+    forM_ late $ \(p, k, v) -> do
+      logError $ "ACK didn't get ACKd: " <> tshow (p, k, v)
+    threadDelay 1000000
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app

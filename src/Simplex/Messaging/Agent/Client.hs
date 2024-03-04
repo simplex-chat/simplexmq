@@ -229,6 +229,8 @@ import UnliftIO.Async (async)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import GHC.Stack (HasCallStack, withFrozenCallStack)
+import qualified Data.OrdPSQ as OP
 
 data SessionVar a = SessionVar
   { sessionVar :: TMVar a,
@@ -810,8 +812,8 @@ withClient_ c tSess@(userId, srv, _) statCmd action = do
       stat cl $ strEncode e
       throwError e
 
-withLogClient_ :: (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> m a) -> m a
-withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
+withLogClient_ :: (AgentMonad m, ProtocolServerClient err msg, HasCallStack) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> m a) -> m a
+withLogClient_ c tSess@(_, srv, _) entId cmdStr action = withFrozenCallStack $ do
   logServer "-->" c srv entId cmdStr
   res <- withClient_ c tSess cmdStr action
   logServer "<--" c srv entId "OK"
@@ -820,18 +822,18 @@ withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
 withClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> m a
 withClient c tSess statKey action = withClient_ c tSess statKey $ \client -> liftClient (clientProtocolError @err @msg) (clientServer client) $ action client
 
-withLogClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> m a
-withLogClient c tSess entId cmdStr action = withLogClient_ c tSess entId cmdStr $ \client -> liftClient (clientProtocolError @err @msg) (clientServer client) $ action client
+withLogClient :: forall m err msg a. (AgentMonad m, ProtocolServerClient err msg, HasCallStack) => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> m a
+withLogClient c tSess entId cmdStr action = withFrozenCallStack $ withLogClient_ c tSess entId cmdStr $ \client -> liftClient (clientProtocolError @err @msg) (clientServer client) $ action client
 
-withSMPClient :: (AgentMonad m, SMPQueueRec q) => AgentClient -> q -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withSMPClient :: (AgentMonad m, SMPQueueRec q, HasCallStack) => AgentClient -> q -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withSMPClient c q cmdStr action = do
   tSess <- mkSMPTransportSession c q
-  withLogClient c tSess (queueId q) cmdStr action
+  withFrozenCallStack $ withLogClient c tSess (queueId q) cmdStr action
 
-withSMPClient_ :: (AgentMonad m, SMPQueueRec q) => AgentClient -> q -> ByteString -> (SMPClient -> m a) -> m a
+withSMPClient_ :: (AgentMonad m, SMPQueueRec q, HasCallStack) => AgentClient -> q -> ByteString -> (SMPClient -> m a) -> m a
 withSMPClient_ c q cmdStr action = do
   tSess <- mkSMPTransportSession c q
-  withLogClient_ c tSess (queueId q) cmdStr action
+  withFrozenCallStack $ withLogClient_ c tSess (queueId q) cmdStr action
 
 withNtfClient :: forall m a. AgentMonad m => AgentClient -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> m a
 withNtfClient c srv = withLogClient c (0, srv, Nothing)
@@ -1132,9 +1134,9 @@ removeSubscription c connId = do
 getSubscriptions :: AgentClient -> STM (Set ConnId)
 getSubscriptions = readTVar . subscrConns
 
-logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
+logServer :: (HasCallStack, MonadIO m) => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+  withFrozenCallStack $ logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
@@ -1215,7 +1217,9 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueue
 
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp ->
+  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp -> do
+    logWarn $ "sendAck: " <> tshow (logSecret rcvId, logSecret msgId)
+    atomically $ modifyTVar' (acks $ agentEnv c) $ OP.delete (rcvId, msgId)
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq
 

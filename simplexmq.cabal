@@ -212,6 +212,7 @@ library
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , socks ==0.6.*
@@ -283,6 +284,7 @@ executable ntf-server
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
@@ -355,6 +357,7 @@ executable smp-agent
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
@@ -427,6 +430,7 @@ executable smp-server
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
@@ -499,6 +503,7 @@ executable xftp
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
@@ -571,6 +576,7 @@ executable xftp-server
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
@@ -680,6 +686,7 @@ test-suite simplexmq-test
     , network-udp ==0.0.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
+    , psqueues ==0.2.8.*
     , random >=1.1 && <1.3
     , silently ==1.2.*
     , simple-logger ==0.1.*
