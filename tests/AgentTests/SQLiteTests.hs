@@ -49,7 +49,7 @@ import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQEncOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (SubscriptionMode (..))
+import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
@@ -185,7 +185,7 @@ cData1 =
   ConnData
     { userId = 1,
       connId = "conn1",
-      connAgentVersion = 1,
+      connAgentVersion = VersionSMPA 1,
       enableNtfs = True,
       lastExternalSndId = 0,
       deleted = False,
@@ -222,7 +222,7 @@ rcvQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,
-      smpClientVersion = 1,
+      smpClientVersion = VersionSMPC 1,
       clientNtfCreds = Nothing,
       deleteErrors = 0
     }
@@ -243,7 +243,7 @@ sndQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       sndSwchStatus = Nothing,
-      smpClientVersion = 1
+      smpClientVersion = VersionSMPC 1
     }
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
@@ -387,7 +387,7 @@ testUpgradeRcvConnToDuplex =
               sndSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
-              smpClientVersion = 1
+              smpClientVersion = VersionSMPC 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CSnd)
@@ -416,7 +416,7 @@ testUpgradeSndConnToDuplex =
               rcvSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
-              smpClientVersion = 1,
+              smpClientVersion = VersionSMPC 1,
               clientNtfCreds = Nothing,
               deleteErrors = 0
             }

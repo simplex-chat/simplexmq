@@ -279,7 +279,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
-import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
@@ -702,7 +702,7 @@ setRcvQueueDeleted db RcvQueue {rcvId, server = ProtocolServer {host, port}} = d
     |]
     (host, port, rcvId)
 
-setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
+setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> VersionSMPC -> IO ()
 setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
   DB.executeNamed
     db
@@ -803,7 +803,7 @@ setRcvQueueNtfCreds db connId clientNtfCreds =
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
       Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
-type SMPConfirmationRow = (SndPublicAuthKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
+type SMPConfirmationRow = (SndPublicAuthKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe VersionSMPC)
 
 smpConfirmation :: SMPConfirmationRow -> SMPConfirmation
 smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersion_) =
@@ -812,7 +812,7 @@ smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersi
       e2ePubKey,
       connInfo,
       smpReplyQueues = fromMaybe [] smpReplyQueues_,
-      smpClientVersion = fromMaybe 1 smpClientVersion_
+      smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
     }
 
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
@@ -889,7 +889,7 @@ removeConfirmations db connId =
     |]
     [":conn_id" := connId]
 
-setConnectionVersion :: DB.Connection -> ConnId -> Version -> IO ()
+setConnectionVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnectionVersion db connId aVersion =
   DB.execute db "UPDATE connections SET smp_agent_version = ? WHERE conn_id = ?" (aVersion, connId)
 
@@ -1776,6 +1776,10 @@ instance ToField MsgReceiptStatus where toField = toField . decodeLatin1 . strEn
 
 instance FromField MsgReceiptStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
+instance ToField (Version v) where toField (Version v) = toField v
+
+instance FromField (Version v) where fromField f = Version <$> fromField f
+
 instance ToField CR.PQEncryption where toField (CR.PQEncryption pqEnc) = toField pqEnc
 
 instance FromField CR.PQEncryption where fromField f = CR.PQEncryption <$> fromField f
@@ -1948,7 +1952,7 @@ setConnDeleted db waitDelivery connId
   | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
-setConnAgentVersion :: DB.Connection -> ConnId -> Version -> IO ()
+setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =
   DB.execute db "UPDATE connections SET smp_agent_version = ? WHERE conn_id = ?" (aVersion, connId)
 
@@ -2007,12 +2011,12 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
-    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe Version, Int)
+    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
 toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
-      smpClientVersion = fromMaybe 1 smpClientVersion_
+      smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
@@ -2048,7 +2052,7 @@ sndQueueQuery =
 toSndQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId)
     :. (Maybe SndPublicAuthKey, SndPrivateAuthKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
-    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe SndSwitchStatus, Version) ->
+    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
   SndQueue
 toSndQueue
   ( (userId, keyHash, connId, host, port, sndId)

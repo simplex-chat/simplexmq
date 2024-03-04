@@ -68,12 +68,6 @@ import Simplex.RemoteControl.Types
 import UnliftIO
 import UnliftIO.Concurrent
 
-currentRCVersion :: Version
-currentRCVersion = 1
-
-supportedRCVRange :: VersionRange
-supportedRCVRange = mkVersionRange 1 currentRCVersion
-
 xrcpBlockSize :: Int
 xrcpBlockSize = 16384
 
@@ -181,7 +175,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               { ca = certFingerprint caCert,
                 host,
                 port = fromIntegral portNum,
-                v = supportedRCVRange,
+                v = supportedRCPVRange,
                 app = ctrlAppInfo,
                 ts,
                 skey = fst sessKeys,
@@ -220,7 +214,7 @@ prepareHostSession
     unless (ca == tlsHostFingerprint) $ throwError RCEIdentity
     (kemCiphertext, kemSharedKey) <- liftIO $ sntrup761Enc drg kemPubKey
     let hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
-    unless (isCompatible v supportedRCVRange) $ throwError RCEVersion
+    unless (isCompatible v supportedRCPVRange) $ throwError RCEVersion
     let keys = HostSessKeys {hybridKey, idPrivKey, sessPrivKey}
     knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
@@ -334,7 +328,7 @@ prepareHostHello
   RCInvitation {v, dh = dhPubKey}
   hostAppInfo = do
     logDebug "Preparing session"
-    case compatibleVersion v supportedRCVRange of
+    case compatibleVersion v supportedRCPVRange of
       Nothing -> throwError RCEVersion
       Just (Compatible v') -> do
         nonce <- liftIO . atomically $ C.randomCbNonce drg
