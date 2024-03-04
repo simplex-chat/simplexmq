@@ -52,8 +52,8 @@ import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
-import qualified Simplex.FileTransfer.Protocol as XFTP
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
 import Simplex.Messaging.Agent.Client

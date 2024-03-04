@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
@@ -42,7 +43,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (SubscriptionMode (..))
+import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
@@ -174,7 +175,7 @@ testForeignKeysEnabled =
       `shouldThrow` (\e -> SQL.sqlError e == SQL.ErrorConstraint)
 
 cData1 :: ConnData
-cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
+cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = VersionSMPA 1, enableNtfs = True, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
 
 testPrivateAuthKey :: C.APrivateAuthKey
 testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
@@ -205,7 +206,7 @@ rcvQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,
-      smpClientVersion = 1,
+      smpClientVersion = VersionSMPC 1,
       clientNtfCreds = Nothing,
       deleteErrors = 0
     }
@@ -226,7 +227,7 @@ sndQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       sndSwchStatus = Nothing,
-      smpClientVersion = 1
+      smpClientVersion = VersionSMPC 1
     }
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
@@ -370,7 +371,7 @@ testUpgradeRcvConnToDuplex =
               sndSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
-              smpClientVersion = 1
+              smpClientVersion = VersionSMPC 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CSnd)
@@ -399,7 +400,7 @@ testUpgradeSndConnToDuplex =
               rcvSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
-              smpClientVersion = 1,
+              smpClientVersion = VersionSMPC 1,
               clientNtfCreds = Nothing,
               deleteErrors = 0
             }

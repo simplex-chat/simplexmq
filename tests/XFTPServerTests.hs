@@ -20,9 +20,9 @@ import Data.List (isInfixOf)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPErrorType (..))
+import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..), XFTPErrorType (..))
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC

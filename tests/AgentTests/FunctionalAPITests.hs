@@ -50,6 +50,7 @@ import qualified Data.Set as S
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
+import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
@@ -62,13 +63,14 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (authBatchCmdsNTFVersion)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF, authBatchCmdsNTFVersion)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ATransport (..), authCmdsSMPVersion, basicAuthSMPVersion, currentServerSMPRelayVersion)
-import Simplex.Messaging.Version
+import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, batchCmdsSMPVersion, basicAuthSMPVersion, currentServerSMPRelayVersion)
+import Simplex.Messaging.Version (Version (..), VersionRange (..))
+import qualified Simplex.Messaging.Version as V
 import System.Directory (copyFile, renameFile)
 import Test.Hspec
 import UnliftIO
@@ -127,14 +129,14 @@ pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integri
 pattern Rcvd :: AgentMsgId -> ACommand 'Agent e
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
 
-smpCfgVPrev :: ProtocolClientConfig
+smpCfgVPrev :: ProtocolClientConfig SMPVersion
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-smpCfgV7 :: ProtocolClientConfig
-smpCfgV7 = (smpCfg agentCfg) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}
+smpCfgV7 :: ProtocolClientConfig SMPVersion
+smpCfgV7 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
 
-ntfCfgV2 :: ProtocolClientConfig
-ntfCfgV2 = (smpCfg agentCfg) {serverVRange = mkVersionRange 1 authBatchCmdsNTFVersion}
+ntfCfgV2 :: ProtocolClientConfig NTFVersion
+ntfCfgV2 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange (VersionNTF 1) authBatchCmdsNTFVersion}
 
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
@@ -157,8 +159,14 @@ agentCfgV7 =
 agentCfgRatchetVPrev :: AgentConfig
 agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
 
-prevRange :: VersionRange -> VersionRange
-prevRange vr = vr {maxVersion = max (minVersion vr) (maxVersion vr - 1)}
+prevRange :: VersionRange v -> VersionRange v
+prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
+
+prevVersion :: Version v -> Version v
+prevVersion (Version v) = Version (v - 1)
+
+mkVersionRange :: Word16 -> Word16 -> VersionRange v
+mkVersionRange v1 v2 = V.mkVersionRange (Version v1) (Version v2)
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
 runRight_ action = runExceptT action `shouldReturn` Right ()
@@ -311,8 +319,8 @@ functionalAPITests t = do
     describe "should switch two connections simultaneously, abort one" $
       testServerMatrix2 t testSwitch2ConnectionsAbort1
   describe "SMP basic auth" $ do
-    let v4 = basicAuthSMPVersion - 1
-    forM_ (nub [authCmdsSMPVersion - 1, authCmdsSMPVersion, currentServerSMPRelayVersion]) $ \v -> do
+    let v4 = prevVersion basicAuthSMPVersion
+    forM_ (nub [prevVersion authCmdsSMPVersion, authCmdsSMPVersion, currentServerSMPRelayVersion]) $ \v -> do
       describe ("v" <> show v <> ": with server auth") $ do
         --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
         it "success                " $ testBasicAuth t True (Just "abcd", v) (Just "abcd", v) (Just "abcd", v) `shouldReturn` 2
@@ -356,9 +364,9 @@ functionalAPITests t = do
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
 
-testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
+testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
-  let testCfg = cfg {allowNewQueues, newQueueBasicAuth = srvAuth, smpServerVRange = mkVersionRange 4 srvVersion}
+  let testCfg = cfg {allowNewQueues, newQueueBasicAuth = srvAuth, smpServerVRange = V.mkVersionRange batchCmdsSMPVersion srvVersion}
       canCreate1 = canCreateQueue allowNewQueues srv clnt1
       canCreate2 = canCreateQueue allowNewQueues srv clnt2
       expected
@@ -369,7 +377,7 @@ testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
   created `shouldBe` expected
   pure created
 
-canCreateQueue :: Bool -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> Bool
+canCreateQueue :: Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> Bool
 canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
   let v = basicAuthSMPVersion
    in allowNew && (isNothing srvAuth || (srvVersion >= v && clntVersion >= v && srvAuth == clntAuth))
@@ -690,10 +698,10 @@ testIncreaseConnAgentVersion t = do
     disconnectAgentClient alice3
     disconnectAgentClient bob3
 
-checkVersion :: AgentClient -> ConnId -> Version -> ExceptT AgentErrorType IO ()
+checkVersion :: AgentClient -> ConnId -> Word16 -> ExceptT AgentErrorType IO ()
 checkVersion c connId v = do
   ConnectionStats {connAgentVersion} <- getConnectionServers c connId
-  liftIO $ connAgentVersion `shouldBe` v
+  liftIO $ connAgentVersion `shouldBe` VersionSMPA v
 
 testIncreaseConnAgentVersionMaxCompatible :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersionMaxCompatible t = do
@@ -2225,7 +2233,7 @@ testSwitch2ConnectionsAbort1 servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent 2 agentCfg servers testDB2
 
-testCreateQueueAuth :: HasCallStack => Version -> (Maybe BasicAuth, Version) -> (Maybe BasicAuth, Version) -> IO Int
+testCreateQueueAuth :: HasCallStack => VersionSMP -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testCreateQueueAuth srvVersion clnt1 clnt2 = do
   a <- getClient 1 clnt1 testDB
   b <- getClient 2 clnt2 testDB2
@@ -2251,7 +2259,7 @@ testCreateQueueAuth srvVersion clnt1 clnt2 = do
   where
     getClient clientId (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
-          smpCfg = (defaultSMPClientConfig :: ProtocolClientConfig) {serverVRange = mkVersionRange (basicAuthSMPVersion - 1) clntVersion}
+          smpCfg = (defaultSMPClientConfig :: ProtocolClientConfig SMPVersion) {serverVRange = V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion}
           sndAuthAlg = if srvVersion >= authCmdsSMPVersion && clntVersion >= authCmdsSMPVersion then C.AuthAlg C.SX25519 else C.AuthAlg C.SEd25519
        in getSMPAgentClient' clientId agentCfg {smpCfg, sndAuthAlg} servers db
 

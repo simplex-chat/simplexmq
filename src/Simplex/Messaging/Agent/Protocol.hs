@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -33,6 +34,9 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
+    VersionSMPA,
+    VersionRangeSMPA,
+    pattern VersionSMPA,
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
     supportedSMPAgentVRange,
@@ -175,11 +179,12 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
-import Data.Word (Word32)
+import Data.Word (Word16, Word32)
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), XFTPErrorType)
+import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
@@ -200,6 +205,10 @@ import Simplex.Messaging.Protocol
     SMPServerWithAuth,
     SndPublicAuthKey,
     SubscriptionMode,
+    SMPClientVersion,
+    VersionSMPC,
+    VersionRangeSMPC,
+    initialSMPClientVersion,
     legacyEncodeServer,
     legacyServerP,
     legacyStrEncodeServer,
@@ -225,19 +234,30 @@ import UnliftIO.Exception (Exception)
 -- 3 - support ratchet renegotiation (6/30/2023)
 -- 4 - delivery receipts (7/13/2023)
 
-duplexHandshakeSMPAgentVersion :: Version
-duplexHandshakeSMPAgentVersion = 2
+data SMPAgentVersion
 
-ratchetSyncSMPAgentVersion :: Version
-ratchetSyncSMPAgentVersion = 3
+instance VersionScope SMPAgentVersion
 
-deliveryRcptsSMPAgentVersion :: Version
-deliveryRcptsSMPAgentVersion = 4
+type VersionSMPA = Version SMPAgentVersion
 
-currentSMPAgentVersion :: Version
-currentSMPAgentVersion = 4
+type VersionRangeSMPA = VersionRange SMPAgentVersion
 
-supportedSMPAgentVRange :: VersionRange
+pattern VersionSMPA :: Word16 -> VersionSMPA
+pattern VersionSMPA v = Version v
+
+duplexHandshakeSMPAgentVersion :: VersionSMPA
+duplexHandshakeSMPAgentVersion = VersionSMPA 2
+
+ratchetSyncSMPAgentVersion :: VersionSMPA
+ratchetSyncSMPAgentVersion = VersionSMPA 3
+
+deliveryRcptsSMPAgentVersion :: VersionSMPA
+deliveryRcptsSMPAgentVersion = VersionSMPA 4
+
+currentSMPAgentVersion :: VersionSMPA
+currentSMPAgentVersion = VersionSMPA 4
+
+supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
@@ -665,7 +685,7 @@ instance StrEncoding SndQueueInfo where
     pure SndQueueInfo {sndServer, sndSwitchStatus}
 
 data ConnectionStats = ConnectionStats
-  { connAgentVersion :: Version,
+  { connAgentVersion :: VersionSMPA,
     rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
@@ -802,27 +822,27 @@ data SMPConfirmation = SMPConfirmation
     -- | optional reply queues included in confirmation (added in agent protocol v2)
     smpReplyQueues :: [SMPQueueInfo],
     -- | SMP client version
-    smpClientVersion :: Version
+    smpClientVersion :: VersionSMPC
   }
   deriving (Show)
 
 data AgentMsgEnvelope
   = AgentConfirmation
-      { agentVersion :: Version,
+      { agentVersion :: VersionSMPA,
         e2eEncryption_ :: Maybe (E2ERatchetParams 'C.X448),
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
-      { agentVersion :: Version,
+      { agentVersion :: VersionSMPA,
         encAgentMessage :: ByteString
       }
   | AgentInvitation -- the connInfo in contactInvite is only encrypted with per-queue E2E, not with double ratchet,
-      { agentVersion :: Version,
+      { agentVersion :: VersionSMPA,
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
   | AgentRatchetKey
-      { agentVersion :: Version,
+      { agentVersion :: VersionSMPA,
         e2eEncryption :: E2ERatchetParams 'C.X448,
         info :: ByteString
       }
@@ -1228,16 +1248,16 @@ sameQueue :: SMPQueue q => (SMPServer, SMP.QueueId) -> q -> Bool
 sameQueue addr q = sameQAddress addr (qAddress q)
 {-# INLINE sameQueue #-}
 
-data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQueueAddress}
+data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
   smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey})
-    | clientVersion > 1 = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+    | clientVersion > initialSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
   smpP = do
     clientVersion <- smpP
-    smpServer <- if clientVersion > 1 then smpP else updateSMPServerHosts <$> legacyServerP
+    smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
     pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
@@ -1245,20 +1265,20 @@ instance Encoding SMPQueueInfo where
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
 -- could have more fields to convert to different versions of SMPQueueInfo in a different way,
 -- and this instance would become non-trivial.
-instance VersionI SMPQueueInfo where
-  type VersionRangeT SMPQueueInfo = SMPQueueUri
+instance VersionI SMPClientVersion SMPQueueInfo where
+  type VersionRangeT SMPClientVersion SMPQueueInfo = SMPQueueUri
   version = clientVersion
   toVersionRangeT (SMPQueueInfo _v addr) vr = SMPQueueUri vr addr
 
-instance VersionRangeI SMPQueueUri where
-  type VersionT SMPQueueUri = SMPQueueInfo
+instance VersionRangeI SMPClientVersion SMPQueueUri where
+  type VersionT SMPClientVersion SMPQueueUri = SMPQueueInfo
   versionRange = clientVRange
   toVersionT (SMPQueueUri _vr addr) v = SMPQueueInfo v addr
 
 -- | SMP queue information sent out-of-band.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
-data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRange, queueAddress :: SMPQueueAddress}
+data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRangeSMPC, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
 data SMPQueueAddress = SMPQueueAddress
@@ -1307,7 +1327,7 @@ instance StrEncoding SMPQueueUri where
         smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
     pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
     where
-      unversioned = (versionToRange 1,[],) <$> strP <* A.endOfInput
+      unversioned = (versionToRange initialSMPClientVersion,[],) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
@@ -1344,7 +1364,7 @@ deriving instance Show AConnectionRequestUri
 
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ServiceScheme,
-    crAgentVRange :: VersionRange,
+    crAgentVRange :: VersionRangeSMPA,
     crSmpQueues :: NonEmpty SMPQueueUri,
     crClientData :: Maybe CRClientData
   }
