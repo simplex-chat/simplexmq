@@ -97,7 +97,7 @@ supportedE2EEncryptVRange :: VersionRangeE2E
 supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
 
 data E2ERatchetParams (a :: Algorithm)
-  = E2ERatchetParams (VersionE2E) (PublicKey a) (PublicKey a)
+  = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
 
 instance AlgorithmI a => Encoding (E2ERatchetParams a) where
@@ -115,7 +115,7 @@ instance VersionRangeI E2EVersion (E2ERatchetParamsUri a) where
   toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
 
 data E2ERatchetParamsUri (a :: Algorithm)
-  = E2ERatchetParamsUri (VersionRangeE2E) (PublicKey a) (PublicKey a)
+  = E2ERatchetParamsUri VersionRangeE2E (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
 
 instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
