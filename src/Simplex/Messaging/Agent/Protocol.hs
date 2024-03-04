@@ -256,8 +256,8 @@ ratchetSyncSMPAgentVersion = VersionSMPA 3
 deliveryRcptsSMPAgentVersion :: VersionSMPA
 deliveryRcptsSMPAgentVersion = VersionSMPA 4
 
-pqE2EEncryptionVersion :: VersionSMPA
-pqE2EEncryptionVersion = VersionSMPA 5
+pqdrSMPAgentVersion :: VersionSMPA
+pqdrSMPAgentVersion = VersionSMPA 5
 
 currentSMPAgentVersion :: VersionSMPA
 currentSMPAgentVersion = VersionSMPA 5
@@ -271,13 +271,13 @@ supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentS
 e2eEncConnInfoLength :: VersionSMPA -> Int
 e2eEncConnInfoLength v
   -- reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  | v >= pqE2EEncryptionVersion = 11148
+  | v >= pqdrSMPAgentVersion = 11148
   | otherwise = 14848
 
 e2eEncUserMsgLength :: VersionSMPA -> Int
 e2eEncUserMsgLength v
   -- reduced by 2200 (roughly the increase of message ratchet header size)
-  | v >= pqE2EEncryptionVersion = 13656
+  | v >= pqdrSMPAgentVersion = 13656
   | otherwise = 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.

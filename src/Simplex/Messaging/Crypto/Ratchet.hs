@@ -41,7 +41,7 @@ module Simplex.Messaging.Crypto.Ratchet
     VersionRangeE2E,
     pattern VersionE2E,
     kdfX3DHE2EEncryptVersion,
-    pqRatchetVersion,
+    pqRatchetE2EEncryptVersion,
     currentE2EEncryptVersion,
     supportedE2EEncryptVRange,
     generateRcvE2EParams,
@@ -131,8 +131,8 @@ pattern VersionE2E v = Version v
 kdfX3DHE2EEncryptVersion :: VersionE2E
 kdfX3DHE2EEncryptVersion = VersionE2E 2
 
-pqRatchetVersion :: VersionE2E
-pqRatchetVersion = VersionE2E 3
+pqRatchetE2EEncryptVersion :: VersionE2E
+pqRatchetE2EEncryptVersion = VersionE2E 3
 
 currentE2EEncryptVersion :: VersionE2E
 currentE2EEncryptVersion = VersionE2E 3
@@ -215,7 +215,7 @@ deriving instance Show AnyE2ERatchetParams
 
 instance (RatchetKEMStateI s, AlgorithmI a) => Encoding (E2ERatchetParams s a) where
   smpEncode (E2ERatchetParams v k1 k2 kem_)
-    | v >= pqRatchetVersion = smpEncode (v, k1, k2, kem_)
+    | v >= pqRatchetE2EEncryptVersion = smpEncode (v, k1, k2, kem_)
     | otherwise = smpEncode (v, k1, k2)
   smpP = toParams <$?> smpP
     where
@@ -243,7 +243,7 @@ instance Encoding AnyE2ERatchetParams where
     where
       kemP :: VersionE2E -> Parser (Maybe ARKEMParams)
       kemP v
-        | v >= pqRatchetVersion = smpP
+        | v >= pqRatchetE2EEncryptVersion = smpP
         | otherwise = pure Nothing
 
 instance VersionI E2EVersion (E2ERatchetParams s a) where
@@ -283,7 +283,7 @@ instance (RatchetKEMStateI s, AlgorithmI a) => StrEncoding (E2ERatchetParamsUri 
         <> maybe [] encodeKem kem_
     where
       encodeKem kem
-        | maxVersion vs < pqRatchetVersion = []
+        | maxVersion vs < pqRatchetE2EEncryptVersion = []
         | otherwise = case kem of
             RKParamsProposed k -> [("kem_key", strEncode k)]
             RKParamsAccepted ct k -> [("kem_ct", strEncode ct), ("kem_key", strEncode k)]
@@ -313,7 +313,7 @@ instance StrEncoding AnyE2ERatchetParamsUri where
       _ -> fail "bad e2e params"
     where
       kemP vr query
-        | maxVersion vr >= pqRatchetVersion =
+        | maxVersion vr >= pqRatchetE2EEncryptVersion =
             queryParam_ "kem_key" query
               $>>= \k -> Just . kemParams k <$> queryParam_ "kem_ct" query
         | otherwise = pure Nothing
@@ -366,7 +366,7 @@ generateE2EParams g v useKEM_ = do
   where
     kemParams :: IO (Maybe (RKEMParams s, PrivRKEMParams s))
     kemParams = case useKEM_ of
-      Just useKem | v >= pqRatchetVersion -> Just <$> do
+      Just useKem | v >= pqRatchetE2EEncryptVersion -> Just <$> do
         ks@(k, _) <- sntrup761Keypair g
         case useKem of
           ProposeKEM -> pure (RKParamsProposed k, PrivateRKParamsProposed ks)
@@ -414,7 +414,7 @@ pqX3dhSnd spk1 spk2 spKem_ (E2ERatchetParams v rk1 rk2 rKem_) = do
   where
     sndPq :: Either CryptoError (Maybe KEMKeyPair, Maybe RatchetKEMAccepted)
     sndPq = case spKem_ of
-      Just (APRKP _ ps) | v >= pqRatchetVersion -> case (ps, rKem_) of
+      Just (APRKP _ ps) | v >= pqRatchetE2EEncryptVersion -> case (ps, rKem_) of
         (PrivateRKParamsAccepted ct shared ks, Just (RKParamsProposed k)) -> Right (Just ks, Just $ RatchetKEMAccepted k shared ct)
         (PrivateRKParamsProposed ks, _) -> Right (Just ks, Nothing) -- both parties can send "proposal" in case of ratchet renegotiation
         _ -> Left CERatchetKEMState
@@ -430,7 +430,7 @@ pqX3dhRcv rpk1 rpk2 rpKem_ (E2ERatchetParams v sk1 sk2 sKem_) = do
   where
     rcvPq :: ExceptT CryptoError IO (Maybe (KEMKeyPair, RatchetKEMAccepted))
     rcvPq = case sKem_ of
-      Just (RKParamsAccepted ct k') | v >= pqRatchetVersion -> case rpKem_ of
+      Just (RKParamsAccepted ct k') | v >= pqRatchetE2EEncryptVersion -> case rpKem_ of
         Just (PrivateRKParamsProposed ks@(_, pk)) -> do
           shared <- liftIO $ sntrup761Dec ct pk
           pure $ Just (ks, RatchetKEMAccepted k' shared ct)
@@ -664,12 +664,12 @@ fullHeaderLen = 2 + 1 + paddedHeaderLen + authTagSize + ivSize @AES256
 
 instance AlgorithmI a => Encoding (MsgHeader a) where
   smpEncode MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
-    | msgMaxVersion >= pqRatchetVersion = smpEncode (msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs)
+    | msgMaxVersion >= pqRatchetE2EEncryptVersion = smpEncode (msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs)
     | otherwise = smpEncode (msgMaxVersion, msgDHRs, msgPN, msgNs)
   smpP = do
     msgMaxVersion <- smpP
     msgDHRs <- smpP
-    msgKEM <- if msgMaxVersion >= pqRatchetVersion then smpP else pure Nothing
+    msgKEM <- if msgMaxVersion >= pqRatchetE2EEncryptVersion then smpP else pure Nothing
     msgPN <- smpP
     msgNs <- smpP
     pure MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
@@ -683,11 +683,11 @@ data EncMessageHeader = EncMessageHeader
 
 instance Encoding EncMessageHeader where
   smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
-    | ehVersion >= pqRatchetVersion = smpEncode (ehVersion, ehIV, ehAuthTag, Large ehBody)
+    | ehVersion >= pqRatchetE2EEncryptVersion = smpEncode (ehVersion, ehIV, ehAuthTag, Large ehBody)
     | otherwise = smpEncode (ehVersion, ehIV, ehAuthTag, ehBody)
   smpP = do
     (ehVersion, ehIV, ehAuthTag) <- smpP
-    ehBody <- if ehVersion >= pqRatchetVersion then unLarge <$> smpP else smpP
+    ehBody <- if ehVersion >= pqRatchetE2EEncryptVersion then unLarge <$> smpP else smpP
     pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
 
 data EncRatchetMessage = EncRatchetMessage
@@ -698,12 +698,12 @@ data EncRatchetMessage = EncRatchetMessage
 
 encodeEncRatchetMessage :: VersionE2E -> EncRatchetMessage -> ByteString
 encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-  | v >= pqRatchetVersion = smpEncode (Large emHeader, emAuthTag, Tail emBody)
+  | v >= pqRatchetE2EEncryptVersion = smpEncode (Large emHeader, emAuthTag, Tail emBody)
   | otherwise = smpEncode (emHeader, emAuthTag, Tail emBody)
 
 encRatchetMessageP :: VersionE2E -> Parser EncRatchetMessage
 encRatchetMessageP v = do
-  emHeader <- if v >= pqRatchetVersion then unLarge <$> smpP else smpP
+  emHeader <- if v >= pqRatchetE2EEncryptVersion then unLarge <$> smpP else smpP
   (emAuthTag, Tail emBody) <- smpP
   pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
