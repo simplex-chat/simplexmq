@@ -231,6 +231,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 import GHC.Stack (HasCallStack, withFrozenCallStack)
 import qualified Data.OrdPSQ as OP
+import Debug.Trace
 
 data SessionVar a = SessionVar
   { sessionVar :: TMVar a,
@@ -1218,7 +1219,7 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueue
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
   withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp -> do
-    logWarn $ "sendAck: " <> tshow (logSecret rcvId, logSecret msgId)
+    traceM $ "sendAck: " <> show (logSecret rcvId, logSecret msgId)
     atomically $ modifyTVar' (acks $ agentEnv c) $ OP.delete (rcvId, msgId)
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq

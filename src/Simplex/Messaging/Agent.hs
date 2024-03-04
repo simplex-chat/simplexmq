@@ -179,6 +179,7 @@ import UnliftIO.Async (race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import UnliftIO.STM
 import qualified Data.OrdPSQ as OP
+import Debug.Trace
 
 -- import GHC.Conc (unsafeIOToSTM)
 
@@ -991,11 +992,11 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
         ICAckDel rId srvMsgId msgId -> do
           withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
           found <- atomically $ stateTVar (acks $ agentEnv c) $ \acks -> maybe (False, acks) (\(_p, _v, acks') -> (True, acks')) $ OP.deleteView (rId, srvMsgId) acks
-          if found then logWarn $ "ACK fulfilled: " <> tshow (logSecret rId, logSecret srvMsgId) else logError $ "bad ICAckDel key: " <> tshow (logSecret rId, logSecret srvMsgId)
+          if found then traceM $ "ACK fulfilled: " <> show (logSecret rId, logSecret srvMsgId) else traceM $ "bad ICAckDel key: " <> show (logSecret rId, logSecret srvMsgId)
         ICAck rId srvMsgId -> do
           withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
           found <- atomically $ stateTVar (acks $ agentEnv c) $ \acks -> maybe (False, acks) (\(_p, _v, acks') -> (True, acks')) $ OP.deleteView (rId, srvMsgId) acks
-          if found then logWarn $ "ACK fulfilled: " <> tshow (logSecret rId, logSecret srvMsgId) else logError $ "bad ICAck key: " <> tshow (logSecret rId, logSecret srvMsgId)
+          if found then traceM $ "ACK fulfilled: " <> show (logSecret rId, logSecret srvMsgId) else traceM $ "bad ICAck key: " <> show (logSecret rId, logSecret srvMsgId)
         ICAllowSecure _rId senderKey -> withServer' . tryWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -1936,11 +1937,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
     AckNow rId' srvMsgId -> do
       now <- liftIO getSystemTime
       atomically $ modifyTVar' (acks $ agentEnv c) $ OP.insert (rId', srvMsgId) now Nothing
-      logNote $ "Ack: " <> tshow (logSecret rId', logSecret srvMsgId)
+      traceM $ "Ack: " <> show (logSecret rId', logSecret srvMsgId)
     AckLater label rId' srvMsgId -> do
       now <- liftIO getSystemTime
       atomically $ modifyTVar' (acks $ agentEnv c) $ OP.insert (rId', srvMsgId) now (Just label)
-      logNote $ "AckLater: " <> tshow (label, logSecret rId', logSecret srvMsgId)
+      traceM $ "AckLater: " <> show (label, logSecret rId', logSecret srvMsgId)
     DontAck -> logDebug "DontAck"
   where
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> m ACKd

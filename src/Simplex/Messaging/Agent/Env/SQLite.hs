@@ -81,6 +81,7 @@ import Data.OrdPSQ (OrdPSQ)
 import qualified Simplex.Messaging.Protocol as SMP
 import Data.Text (Text)
 import qualified Data.OrdPSQ as OP
+import Debug.Trace (traceM)
 
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
 
@@ -241,7 +242,7 @@ ackMonitor acksVar = do
       (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acksVar
       late <$ writeTVar acksVar later
     forM_ late $ \(p, k, v) -> do
-      logError $ "ACK didn't get ACKd: " <> tshow (p, k, v)
+      traceM $ "Missed ACK: " <> show (p, k, v)
     threadDelay 1000000
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
