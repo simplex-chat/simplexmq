@@ -105,6 +105,7 @@ import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM

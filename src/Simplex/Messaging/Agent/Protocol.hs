@@ -224,6 +224,7 @@ import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTra
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import Simplex.RemoteControl.Types
 import Text.Read
 import UnliftIO.Exception (Exception)

@@ -69,8 +69,9 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, batchCmdsSMPVersion, basicAuthSMPVersion, currentServerSMPRelayVersion)
-import Simplex.Messaging.Version (Version (..), VersionRange (..))
+import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
+import Simplex.Messaging.Version.Internal (Version (..))
 import System.Directory (copyFile, renameFile)
 import Test.Hspec
 import UnliftIO

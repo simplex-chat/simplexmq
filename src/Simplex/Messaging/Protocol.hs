@@ -196,6 +196,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 
 -- SMP client protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)

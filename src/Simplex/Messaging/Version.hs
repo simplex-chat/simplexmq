@@ -4,12 +4,10 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Simplex.Messaging.Version
-  ( Version (..),
+  ( Version,
     VersionRange (minVersion, maxVersion),
     VersionScope,
     pattern VersionRange,
@@ -28,19 +26,15 @@ module Simplex.Messaging.Version
 where
 
 import Control.Applicative (optional)
-import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Word (Word16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Version.Internal (Version (..))
 
 pattern VersionRange :: Version v -> Version v -> VersionRange v
 pattern VersionRange v1 v2 <- VRange v1 v2
 
 {-# COMPLETE VersionRange #-}
-
-newtype Version v = Version Word16
-  deriving (Eq, Ord, Show)
 
 data VersionRange v = VRange
   { minVersion :: Version v,
@@ -63,21 +57,6 @@ safeVersionRange v1 v2
 
 versionToRange :: Version v -> VersionRange v
 versionToRange v = VRange v v
-
-instance Encoding (Version v) where
-  smpEncode (Version v) = smpEncode v
-  smpP = Version <$> smpP
-
-instance StrEncoding (Version v) where
-  strEncode (Version v) = strEncode v
-  strP = Version <$> strP
-
-instance ToJSON (Version v) where
-  toEncoding (Version v) = toEncoding v
-  toJSON (Version v) = toJSON v
-
-instance FromJSON (Version v) where
-  parseJSON v = Version <$> parseJSON v
 
 instance VersionScope v => Encoding (VersionRange v) where
   smpEncode (VRange v1 v2) = smpEncode (v1, v2)

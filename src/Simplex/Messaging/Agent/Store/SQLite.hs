@@ -278,7 +278,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
-import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)

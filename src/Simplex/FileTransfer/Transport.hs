@@ -47,6 +47,7 @@ import Simplex.Messaging.Transport (HandshakeError (..), THandle, TransportError
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import System.IO (Handle, IOMode (..), withFile)
 
 data XFTPRcvChunkSpec = XFTPRcvChunkSpec

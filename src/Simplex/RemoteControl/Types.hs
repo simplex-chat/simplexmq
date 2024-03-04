@@ -28,7 +28,8 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport (TLS)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (safeDecodeUtf8)
-import Simplex.Messaging.Version (Version (..), VersionRange, VersionScope, mkVersionRange)
+import Simplex.Messaging.Version (VersionRange, VersionScope, mkVersionRange)
+import Simplex.Messaging.Version.Internal
 import UnliftIO
 
 data RCErrorType

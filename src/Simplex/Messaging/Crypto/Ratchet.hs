@@ -69,6 +69,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
 
 -- e2e encryption headers version history:

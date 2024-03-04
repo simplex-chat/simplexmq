@@ -19,6 +19,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import Simplex.Messaging.Util (liftEitherWith)
 
 ntfBlockSize :: Int

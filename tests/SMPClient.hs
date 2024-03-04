@@ -26,7 +26,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version (VersionRange, mkVersionRange)
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec

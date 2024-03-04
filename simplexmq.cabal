@@ -159,6 +159,7 @@ library
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
       Simplex.Messaging.Version
+      Simplex.Messaging.Version.Internal
       Simplex.RemoteControl.Client
       Simplex.RemoteControl.Discovery
       Simplex.RemoteControl.Discovery.Multicast

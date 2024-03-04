@@ -9,6 +9,7 @@ module CoreTests.VersionRangeTests where
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
