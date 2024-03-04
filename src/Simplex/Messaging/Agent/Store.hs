@@ -44,10 +44,10 @@ import Simplex.Messaging.Protocol
     RcvPrivateAuthKey,
     SndPrivateAuthKey,
     SndPublicAuthKey,
+    VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util ((<$?>))
-import Simplex.Messaging.Version
 
 -- * Queue types
 
@@ -94,7 +94,7 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     dbReplaceQueueId :: Maybe Int64,
     rcvSwchStatus :: Maybe RcvSwitchStatus,
     -- | SMP client version
-    smpClientVersion :: Version,
+    smpClientVersion :: VersionSMPC,
     -- | credentials used in context of notifications
     clientNtfCreds :: Maybe ClientNtfCreds,
     deleteErrors :: Int
@@ -157,7 +157,7 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     dbReplaceQueueId :: Maybe Int64,
     sndSwchStatus :: Maybe SndSwitchStatus,
     -- | SMP client version
-    smpClientVersion :: Version
+    smpClientVersion :: VersionSMPC
   }
   deriving (Show)
 
@@ -304,7 +304,7 @@ deriving instance Show SomeConn
 data ConnData = ConnData
   { connId :: ConnId,
     userId :: UserId,
-    connAgentVersion :: Version,
+    connAgentVersion :: VersionSMPA,
     enableNtfs :: Bool,
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,

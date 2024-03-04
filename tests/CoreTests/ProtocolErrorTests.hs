@@ -12,7 +12,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Simplex.FileTransfer.Protocol (XFTPErrorType (..))
+import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String

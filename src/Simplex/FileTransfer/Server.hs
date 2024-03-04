@@ -69,7 +69,7 @@ type M a = ReaderT XFTPEnv IO a
 
 data XFTPTransportRequest =
   XFTPTransportRequest
-    { thParams :: THandleParams,
+    { thParams :: THandleParams XFTPVersion,
       reqBody :: HTTP2Body,
       request :: H.Request,
       sendResponse :: H.Response -> IO ()

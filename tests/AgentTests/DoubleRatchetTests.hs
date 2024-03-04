@@ -18,7 +18,7 @@ import Control.Monad (when)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -44,6 +44,7 @@ doubleRatchetTests = do
     it "should encode/decode ratchet as JSON" $ do
       testAlgs testKeyJSON
       testAlgs testRatchetJSON
+      testVersionJSON
     it "should decode v2 Ratchet with default field values" $ testDecodeV2RatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
@@ -88,12 +89,12 @@ testAlgs test = test C.SX25519 >> test C.SX448
 paddedMsgLen :: Int
 paddedMsgLen = 100
 
-fullMsgLen :: Version -> Int
+fullMsgLen :: VersionE2E -> Int
 fullMsgLen v = headerLenLength + fullHeaderLen + C.authTagSize + paddedMsgLen
   where
     headerLenLength = if v < pqRatchetVersion then 1 else 3 -- two bytes are added because of two Large used in new encoding
 
-testMessageHeader :: forall a. AlgorithmI a => Version -> C.SAlgorithm a -> Expectation
+testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
   (k, _) <- atomically . C.generateKeyPair @a =<< C.newRandom
   let hdr = MsgHeader {msgMaxVersion = v, msgDHRs = k, msgKEM = Nothing, msgPN = 0, msgNs = 0}
@@ -336,6 +337,20 @@ testRatchetJSON _ = do
   testEncodeDecode alice
   testEncodeDecode bob
 
+testVersionJSON :: IO ()
+testVersionJSON = do
+  testEncodeDecode $ rv 1 1
+  testEncodeDecode $ rv 1 2
+  -- let bad = RVersions 2 1
+  -- Left err <- pure $ J.eitherDecode' @RatchetVersions (J.encode bad)
+  -- err `shouldContain` "bad version range"
+  testDecodeRV $ (1 :: Int, 2 :: Int)
+  testDecodeRV $ J.object ["current" .= (1 :: Int), "maxSupported" .= (2 :: Int)]
+  where
+    rv v1 v2 = ratchetVersions $ mkVersionRange (VersionE2E v1) (VersionE2E v2)
+    testDecodeRV :: ToJSON a => a -> Expectation
+    testDecodeRV a = J.eitherDecode' (J.encode a) `shouldBe` Right (rv 1 2)
+
 testDecodeV2RatchetJSON :: IO ()
 testDecodeV2RatchetJSON = do
   let v2RatchetJSON = "{\"rcVersion\":[2,2],\"rcAD\":\"2GEJrq48TmQse6NR16I-hrI0tSySZQ57E_g46nDceAPRAiF6j0drq26RTE7be6X7uiB4RaGJGf4QRXzcYuVtWw==\",\"rcDHRs\":\"TUM0Q0FRQXdCUVlESzJWdUJDSUVJRkNYbUxtSHQ3SUNfeHpGTi1Qb3ZqTVQ3S2p6XzZlZlBjOG9fRFY2RWxKOQ==\",\"rcRK\":\"BOX2X7YW5qDSp2XknY_lqacSrtDqQNPvS6iJlZIs3G0=\",\"rcNs\":0,\"rcNr\":0,\"rcPN\":0,\"rcNHKs\":\"IMouSkXUvzT_mo0WM-pqEUK09-HTLk9WOTCFQglyQxU=\",\"rcNHKr\":\"g-tus1clYPV0rGlzkf5a959tUqDYQVZ1FpcPeXdKwxI=\"}"
@@ -363,8 +378,8 @@ testX3dh _ = do
 testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dhV1 _ = do
   g <- C.newRandom
-  (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g 1 Nothing
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g 1 PQEncOff
+  (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g (VersionE2E 1) Nothing
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g (VersionE2E 1) PQEncOff
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
@@ -553,7 +568,7 @@ encrypt_ enableKem (_, rc, _) msg =
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
-      B.length msg' `shouldBe` fullMsgLen (maxVersion $ rcVersion rc)
+      B.length msg' `shouldBe` fullMsgLen (maxSupported $ rcVersion rc)
       pure $ Right (msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
