@@ -224,6 +224,7 @@ import UnliftIO.Exception (Exception)
 -- 2 - "duplex" (more efficient) connection handshake (6/9/2022)
 -- 3 - support ratchet renegotiation (6/30/2023)
 -- 4 - delivery receipts (7/13/2023)
+-- 5 - post-quantum double ratchet (3/14/2024)
 
 duplexHandshakeSMPAgentVersion :: Version
 duplexHandshakeSMPAgentVersion = 2
@@ -234,8 +235,11 @@ ratchetSyncSMPAgentVersion = 3
 deliveryRcptsSMPAgentVersion :: Version
 deliveryRcptsSMPAgentVersion = 4
 
+pqE2EEncryptionVersion :: Version
+pqE2EEncryptionVersion = 5
+
 currentSMPAgentVersion :: Version
-currentSMPAgentVersion = 4
+currentSMPAgentVersion = 5
 
 supportedSMPAgentVRange :: VersionRange
 supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
@@ -243,15 +247,17 @@ supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentS
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
--- TODO PQ this should be version-dependent
--- previously it was 14848, reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-e2eEncConnInfoLength :: Int
-e2eEncConnInfoLength = 11148
+e2eEncConnInfoLength :: Version -> Int
+e2eEncConnInfoLength v
+  -- reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
+  | v >= pqE2EEncryptionVersion = 11148
+  | otherwise = 14848
 
--- TODO PQ this should be version-dependent
--- previously it was 15856, reduced by 2200 (roughly the increase of message ratchet header size)
-e2eEncUserMsgLength :: Int
-e2eEncUserMsgLength = 13656
+e2eEncUserMsgLength :: Version -> Int
+e2eEncUserMsgLength v
+  -- reduced by 2200 (roughly the increase of message ratchet header size)
+  | v >= pqE2EEncryptionVersion = 13656
+  | otherwise = 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
