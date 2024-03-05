@@ -93,7 +93,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     getAcceptedConfirmation,
     removeConfirmations,
     -- Invitations - sent via Contact connections
-    setConnectionVersion,
     createInvitation,
     getInvitation,
     acceptInvitation,
@@ -888,10 +887,6 @@ removeConfirmations db connId =
       WHERE conn_id = :conn_id;
     |]
     [":conn_id" := connId]
-
-setConnectionVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
-setConnectionVersion db connId aVersion =
-  DB.execute db "UPDATE connections SET smp_agent_version = ? WHERE conn_id = ?" (aVersion, connId)
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
 createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =

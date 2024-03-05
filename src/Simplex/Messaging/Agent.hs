@@ -2164,7 +2164,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                         processConf connInfo senderConf = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
                           confId <- withStore c $ \db -> do
-                            setConnectionVersion db connId agentVersion
+                            setConnAgentVersion db connId agentVersion
                             createConfirmation db g newConfirmation
                           let srvs = map qServer $ smpReplyQueues senderConf
                           notify $ CONF confId srvs connInfo
