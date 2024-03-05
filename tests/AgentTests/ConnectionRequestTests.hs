@@ -1,21 +1,37 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module AgentTests.ConnectionRequestTests where
 
 import Data.ByteString (ByteString)
+import Data.Type.Equality
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ProtocolServer (..), supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (ProtocolServer (..), pattern VersionSMPC, supportedSMPClientVRange)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec
+
+deriving instance Eq (ConnectionRequestUri m)
+
+deriving instance Eq (E2ERatchetParamsUri s a)
+
+deriving instance Eq (RKEMParams s)
+
+instance Eq AConnectionRequestUri where
+  ACR m cr == ACR m' cr' = case testEquality m m' of
+    Just Refl -> cr == cr'
+    _ -> False
 
 uri :: String
 uri = "smp.simplex.im"
@@ -38,7 +54,7 @@ queue :: SMPQueueUri
 queue = SMPQueueUri supportedSMPClientVRange queueAddr
 
 queueV1 :: SMPQueueUri
-queueV1 = SMPQueueUri (mkVersionRange 1 1) queueAddr
+queueV1 = SMPQueueUri (mkVersionRange (VersionSMPC 1) (VersionSMPC 1)) queueAddr
 
 testDhKey :: C.PublicKeyX25519
 testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
@@ -53,7 +69,7 @@ connReqData :: ConnReqUriData
 connReqData =
   ConnReqUriData
     { crScheme = SSSimplex,
-      crAgentVRange = mkVersionRange 2 2,
+      crAgentVRange = mkVersionRange (VersionSMPA 2) (VersionSMPA 2),
       crSmpQueues = [queueV1],
       crClientData = Nothing
     }
@@ -61,11 +77,11 @@ connReqData =
 testDhPubKey :: C.PublicKeyX448
 testDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
 
-testE2ERatchetParams :: E2ERatchetParamsUri 'C.X448
-testE2ERatchetParams = E2ERatchetParamsUri (mkVersionRange 1 1) testDhPubKey testDhPubKey
+testE2ERatchetParams :: RcvE2ERatchetParamsUri 'C.X448
+testE2ERatchetParams = E2ERatchetParamsUri (mkVersionRange (VersionE2E 1) (VersionE2E 1)) testDhPubKey testDhPubKey Nothing
 
-testE2ERatchetParams12 :: E2ERatchetParamsUri 'C.X448
-testE2ERatchetParams12 = E2ERatchetParamsUri supportedE2EEncryptVRange testDhPubKey testDhPubKey
+testE2ERatchetParams12 :: RcvE2ERatchetParamsUri 'C.X448
+testE2ERatchetParams12 = E2ERatchetParamsUri (supportedE2EEncryptVRange PQEncOn) testDhPubKey testDhPubKey Nothing
 
 connectionRequest :: AConnectionRequestUri
 connectionRequest =
@@ -79,7 +95,7 @@ connectionRequestCurrentRange :: AConnectionRequestUri
 connectionRequestCurrentRange =
   ACR SCMInvitation $
     CRInvitationUri
-      connReqData {crAgentVRange = supportedSMPAgentVRange, crSmpQueues = [queueV1, queueV1]}
+      connReqData {crAgentVRange = supportedSMPAgentVRange PQEncOn, crSmpQueues = [queueV1, queueV1]}
       testE2ERatchetParams12
 
 connectionRequestClientDataEmpty :: AConnectionRequestUri
@@ -98,7 +114,7 @@ connectionRequestTests =
     it "should serialize SMP queue URIs" $ do
       strEncode (queue :: SMPQueueUri) {queueAddress = queueAddrNoPort}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri
-      strEncode queue {clientVRange = mkVersionRange 1 2}
+      strEncode queue {clientVRange = mkVersionRange (VersionSMPC 1) (VersionSMPC 2)}
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri
     it "should parse SMP queue URIs" $ do
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStr)
@@ -119,11 +135,11 @@ connectionRequestTests =
           <> urlEncode True testDhKeyStrUri
           <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
       strEncode connectionRequestCurrentRange
-        `shouldBe` "simplex:/invitation#/?v=2-4&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        `shouldBe` "simplex:/invitation#/?v=2-5&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
           <> urlEncode True testDhKeyStrUri
           <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
           <> urlEncode True testDhKeyStrUri
-          <> "&e2e=v%3D2%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+          <> "&e2e=v%3D2-3%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
       strEncode connectionRequestClientDataEmpty
         `shouldBe` "simplex:/invitation#/?v=2&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
           <> urlEncode True testDhKeyStrUri
@@ -167,9 +183,9 @@ connectionRequestTests =
             <> testDhKeyStrUri
             <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
             <> testDhKeyStrUri
-            <> "&e2e=extra_key%3Dnew%26v%3D2%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&e2e=extra_key%3Dnew%26v%3D2-3%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> "&some_new_param=abc"
-            <> "&v=2-4"
+            <> "&v=2-5"
         )
         `shouldBe` Right connectionRequestCurrentRange
       strDecode

@@ -338,7 +338,7 @@ updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
   old <- atomically $ stateTVar tknStatus (,status)
   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
-runNtfClientTransport :: Transport c => THandle c -> M ()
+runNtfClientTransport :: Transport c => THandleNTF c -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
@@ -355,7 +355,7 @@ runNtfClientTransport th@THandle {params} = do
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
-receive :: Transport c => THandle c -> NtfServerClient -> M ()
+receive :: Transport c => THandleNTF c -> NtfServerClient -> M ()
 receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
@@ -370,7 +370,7 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
   where
     write q t = atomically $ writeTBQueue q t
 
-send :: Transport c => THandle c -> NtfServerClient -> IO ()
+send :: Transport c => THandleNTF c -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]

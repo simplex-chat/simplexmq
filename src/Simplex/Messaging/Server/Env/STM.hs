@@ -33,9 +33,8 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, VersionSMP, VersionRangeSMP)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
-import Simplex.Messaging.Version
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -73,7 +72,7 @@ data ServerConfig = ServerConfig
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
     -- | SMP client-server protocol version range
-    smpServerVRange :: VersionRange,
+    smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
@@ -128,7 +127,7 @@ data Client = Client
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
-    thVersion :: Version,
+    thVersion :: VersionSMP,
     sessionId :: ByteString,
     connected :: TVar Bool,
     createdAt :: SystemTime,
@@ -152,7 +151,7 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar Int -> Natural -> Version -> ByteString -> SystemTime -> STM Client
+newClient :: TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
 newClient nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty

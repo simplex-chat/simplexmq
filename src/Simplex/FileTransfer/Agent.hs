@@ -52,8 +52,8 @@ import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
-import qualified Simplex.FileTransfer.Protocol as XFTP
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
 import Simplex.Messaging.Agent.Client
@@ -393,7 +393,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let CryptoFile {filePath} = srcFile
               fileName = takeFileName filePath
           fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
-          when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
+          when (fileSize > maxFileSizeHard) $ throwError $ INTERNAL "max file size exceeded"
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize
               chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize

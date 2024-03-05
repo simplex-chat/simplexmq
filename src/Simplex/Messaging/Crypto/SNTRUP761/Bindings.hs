@@ -19,16 +19,20 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 
 newtype KEMPublicKey = KEMPublicKey ByteString
-  deriving (Show)
+  deriving (Eq, Show)
 
 newtype KEMSecretKey = KEMSecretKey ScrubbedBytes
-  deriving (Show)
+  deriving (Eq, Show)
 
 newtype KEMCiphertext = KEMCiphertext ByteString
-  deriving (Show)
+  deriving (Eq, Show)
 
 newtype KEMSharedKey = KEMSharedKey ScrubbedBytes
-  deriving (Show)
+  deriving (Eq, Show)
+
+unsafeRevealKEMSharedKey :: KEMSharedKey -> String
+unsafeRevealKEMSharedKey (KEMSharedKey scrubbed) = show (BA.convert scrubbed :: ByteString)
+{-# DEPRECATED unsafeRevealKEMSharedKey "unsafeRevealKEMSharedKey left in code" #-}
 
 type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
 
@@ -60,6 +64,18 @@ sntrup761Dec (KEMCiphertext c) (KEMSecretKey sk) =
       KEMSharedKey
         <$> BA.alloc c_SNTRUP761_SIZE (\kPtr -> c_sntrup761_dec kPtr cPtr skPtr)
 
+instance Encoding KEMSecretKey where
+  smpEncode (KEMSecretKey c) = smpEncode . Large $ BA.convert c
+  smpP = KEMSecretKey . BA.convert . unLarge <$> smpP
+
+instance StrEncoding KEMSecretKey where
+  strEncode (KEMSecretKey pk) = strEncode (BA.convert pk :: ByteString)
+  strP = KEMSecretKey . BA.convert <$> strP @ByteString
+
+instance Encoding KEMPublicKey where
+  smpEncode (KEMPublicKey pk) = smpEncode . Large $ BA.convert pk
+  smpP = KEMPublicKey . BA.convert . unLarge <$> smpP
+
 instance StrEncoding KEMPublicKey where
   strEncode (KEMPublicKey pk) = strEncode (BA.convert pk :: ByteString)
   strP = KEMPublicKey . BA.convert <$> strP @ByteString
@@ -68,6 +84,25 @@ instance Encoding KEMCiphertext where
   smpEncode (KEMCiphertext c) = smpEncode . Large $ BA.convert c
   smpP = KEMCiphertext . BA.convert . unLarge <$> smpP
 
+instance Encoding KEMSharedKey where
+  smpEncode (KEMSharedKey c) = smpEncode (BA.convert c :: ByteString)
+  smpP = KEMSharedKey . BA.convert <$> smpP @ByteString
+
+instance StrEncoding KEMCiphertext where
+  strEncode (KEMCiphertext pk) = strEncode (BA.convert pk :: ByteString)
+  strP = KEMCiphertext . BA.convert <$> strP @ByteString
+
+instance StrEncoding KEMSharedKey where
+  strEncode (KEMSharedKey pk) = strEncode (BA.convert pk :: ByteString)
+  strP = KEMSharedKey . BA.convert <$> strP @ByteString
+
+instance ToJSON KEMSecretKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON KEMSecretKey where
+  parseJSON = strParseJSON "KEMSecretKey"
+
 instance ToJSON KEMPublicKey where
   toJSON = strToJSON
   toEncoding = strToJEncoding
@@ -75,8 +110,22 @@ instance ToJSON KEMPublicKey where
 instance FromJSON KEMPublicKey where
   parseJSON = strParseJSON "KEMPublicKey"
 
+instance ToJSON KEMCiphertext where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON KEMCiphertext where
+  parseJSON = strParseJSON "KEMCiphertext"
+
 instance ToField KEMSharedKey where
   toField (KEMSharedKey k) = toField (BA.convert k :: ByteString)
 
 instance FromField KEMSharedKey where
   fromField f = KEMSharedKey . BA.convert @ByteString <$> fromField f
+
+instance ToJSON KEMSharedKey where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON KEMSharedKey where
+  parseJSON = strParseJSON "KEMSharedKey"

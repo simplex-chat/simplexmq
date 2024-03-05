@@ -1,9 +1,11 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
 module CoreTests.TRcvQueuesTests where
 
+import AgentTests.EqInstances ()
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -11,7 +13,7 @@ import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (SMPServer)
+import Simplex.Messaging.Protocol (SMPServer, pattern VersionSMPC)
 import Test.Hspec
 import UnliftIO
 
@@ -136,7 +138,7 @@ dummyRQ userId server connId =
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,
-      smpClientVersion = 123,
+      smpClientVersion = VersionSMPC 123,
       clientNtfCreds = Nothing,
       deleteErrors = 0
     }
