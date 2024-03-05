@@ -464,7 +464,6 @@ data Ratchet a = Ratchet
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
-    -- TODO PQ make them optional via JSON parser for PQEncryption
     rcEnableKEM :: PQEncryption, -- will enable KEM on the next ratchet step
     rcSndKEM :: PQEncryption, -- used KEM hybrid secret for sending ratchet
     rcRcvKEM :: PQEncryption, -- used KEM hybrid secret for receiving ratchet
@@ -877,62 +876,61 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
     SMMessage r -> pure r
   where
     decryptRcMessage :: RatchetStep -> MsgHeader a -> EncRatchetMessage -> ExceptT CryptoError IO (DecryptResult a)
-    decryptRcMessage rcStep MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs} encMsg = do
-      let rc1 = upgradeRatchetVersion
+    decryptRcMessage rcStep hdr@MsgHeader {msgMaxVersion, msgPN, msgNs} encMsg = do
       -- if dh_ratchet:
-      (rc2, smks1) <- ratchetStep rc1 rcStep
-      case skipMessageKeys msgNs rc2 of
-        Left e -> pure (Left e, rc2, smkDiff smks1)
-        Right (rc3@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, smks2) -> do
+      (rc', smks1) <- case rcStep of
+        SameRatchet -> pure (upgradedRatchet, M.empty)
+        AdvanceRatchet -> do
+          -- SkipMessageKeysHE(state, header.pn)
+          (rc', hmks) <- liftEither $ skipMessageKeys msgPN upgradedRatchet
+          -- DHRatchetPQ2HE(state, header)
+          (,hmks) <$> ratchetStep rc' hdr
+      -- SkipMessageKeysHE(state, header.n)
+      case skipMessageKeys msgNs rc' of
+        Left e -> pure (Left e, rc', smkDiff smks1)
+        Right (rc''@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, smks2) -> do
           -- state.CKr, mk = KDF_CK(state.CKr)
           let (rcCKr', mk, iv, _) = chainKdf rcCKr
           -- return DECRYPT (mk, cipher-text, CONCAT (AD, enc_header))
           msg <- decryptMessage (MessageKey mk iv) encMsg
           -- state . Nr += 1
-          pure (msg, rc3 {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, smkDiff $ smks1 <> smks2)
-        Right (rc3, smks2) -> do
-          pure (Left CERatchetState, rc3, smkDiff $ smks1 <> smks2)
+          pure (msg, rc'' {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, smkDiff $ smks1 <> smks2)
+        Right (rc'', smks2) ->
+          pure (Left CERatchetState, rc'', smkDiff $ smks1 <> smks2)
       where
-        upgradeRatchetVersion :: Ratchet a
-        upgradeRatchetVersion
+        upgradedRatchet :: Ratchet a
+        upgradedRatchet
           | msgMaxVersion > current rcVersion = rc {rcVersion = rcVersion {current = min msgMaxVersion $ maxSupported rcVersion}}
           | otherwise = rc
         smkDiff :: SkippedMsgKeys -> SkippedMsgDiff
         smkDiff smks = if M.null smks then SMDNoChange else SMDAdd smks
-        ratchetStep :: Ratchet a -> RatchetStep -> ExceptT CryptoError IO (Ratchet a, SkippedMsgKeys)
-        ratchetStep rc1 SameRatchet = pure (rc1, M.empty)
-        ratchetStep rc1 AdvanceRatchet =
-          -- SkipMessageKeysHE(state, header.pn)
-          case skipMessageKeys msgPN rc1 of
-            Left e -> throwE e
-            Right (rc2@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
-              -- DHRatchetPQ2HE(state, header)
-              (kemSS, kemSS', rcKEM') <- pqRatchetStep rc2 msgKEM
-              -- state.DHRs = GENERATE_DH()
-              (_, rcDHRs') <- atomically $ generateKeyPair @a g
-              -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || ss)
-              let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
-                  -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
-                  (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
-                  sndKEM = isJust kemSS'
-                  rcvKEM = isJust kemSS
-                  rc3 =
-                    rc2
-                      { rcDHRs = rcDHRs',
-                        rcKEM = rcKEM',
-                        rcEnableKEM = PQEncryption $ sndKEM || rcvKEM,
-                        rcSndKEM = PQEncryption sndKEM,
-                        rcRcvKEM = PQEncryption rcvKEM,
-                        rcRK = rcRK'',
-                        rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
-                        rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
-                        rcPN = rcNs rc,
-                        rcNs = 0,
-                        rcNr = 0,
-                        rcNHKs = rcNHKs',
-                        rcNHKr = rcNHKr'
-                      }
-              pure (rc3, hmks)
+        ratchetStep :: Ratchet a -> MsgHeader a -> ExceptT CryptoError IO (Ratchet a)
+        ratchetStep rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr} MsgHeader {msgDHRs, msgKEM} = do
+          (kemSS, kemSS', rcKEM') <- pqRatchetStep rc' msgKEM
+          -- state.DHRs = GENERATE_DH()
+          (_, rcDHRs') <- atomically $ generateKeyPair @a g
+          -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || ss)
+          let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
+              -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
+              (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
+              sndKEM = isJust kemSS'
+              rcvKEM = isJust kemSS
+          pure
+            rc'
+              { rcDHRs = rcDHRs',
+                rcKEM = rcKEM',
+                rcEnableKEM = PQEncryption $ sndKEM || rcvKEM,
+                rcSndKEM = PQEncryption sndKEM,
+                rcRcvKEM = PQEncryption rcvKEM,
+                rcRK = rcRK'',
+                rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
+                rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
+                rcPN = rcNs rc,
+                rcNs = 0,
+                rcNr = 0,
+                rcNHKs = rcNHKs',
+                rcNHKr = rcNHKr'
+              }
         pqRatchetStep :: Ratchet a -> Maybe ARKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
         pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption pqEnc, rcVersion = rv} = \case
           -- received message does not have KEM in header,

@@ -39,6 +39,7 @@ module Simplex.Messaging.Agent.Protocol
     pattern VersionSMPA,
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
+    pqdrSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,

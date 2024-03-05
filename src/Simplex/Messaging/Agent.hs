@@ -1403,22 +1403,22 @@ abortConnectionSwitch' c connId =
         _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD PROHIBITED
 
--- TODO PQ update pqEncryption in connection based on pqEnc parameter
 synchronizeRatchet' :: AgentMonad m => AgentClient -> ConnId -> CR.PQEncryption -> Bool -> m ConnectionStats
 synchronizeRatchet' c connId pqEnc force = withConnLock c connId "synchronizeRatchet" $ do
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData rqs sqs)
+    SomeConn _ (DuplexConnection cData@ConnData {pqEncryption} rqs sqs)
       | ratchetSyncAllowed cData || force -> do
           -- check queues are not switching?
+          cData' <- if pqEncryption == pqEnc then pure cData else withStore' c $ \db -> setConnPQEncryption db cData pqEnc
           AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
           (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion $ e2eEncryptVRange pqEnc) pqEnc
-          enqueueRatchetKeyMsgs c cData sqs e2eParams
+          enqueueRatchetKeyMsgs c cData' sqs e2eParams
           withStore' c $ \db -> do
             setConnRatchetSync db connId RSStarted
             setRatchetX3dhKeys db connId pk1 pk2 pKem
-          let cData' = cData {ratchetSyncState = RSStarted} :: ConnData
-              conn' = DuplexConnection cData' rqs sqs
+          let cData'' = cData' {ratchetSyncState = RSStarted} :: ConnData
+              conn' = DuplexConnection cData'' rqs sqs
           pure $ connectionStats conn'
       | otherwise -> throwError $ CMD PROHIBITED
     _ -> throwError $ CMD PROHIBITED
@@ -2193,8 +2193,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                     -- `sndStatus == Active` when HELLO was previously sent, and this is the reply HELLO
                     -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                     -- (was executed by initiating party in v1 that is no longer supported)
-                    --
-                    -- TODO PQ encryption mode
                     | sndStatus == Active -> notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
@@ -2341,13 +2339,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
 
           -- TODO PQ make sure pqEncryption is set correctly here
           newRatchetKey :: CR.RcvE2ERatchetParams 'C.X448 -> Connection 'CDuplex -> m ()
-          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv kem_) conn'@(DuplexConnection cData'@ConnData {lastExternalSndId, pqEncryption} _ sqs) =
+          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv _) conn'@(DuplexConnection cData'@ConnData {lastExternalSndId, pqEncryption} _ sqs) =
             unlessM ratchetExists $ do
               AgentConfig {e2eEncryptVRange} <- asks config
               let connE2EVRange = e2eEncryptVRange pqEncryption
               unless (e2eVersion `isCompatible` connE2EVRange) (throwError $ AGENT A_VERSION)
               keys <- getSendRatchetKeys
-              initRatchet connE2EVRange keys
+              -- TODO PQ combine with `isCompatible` check above
+              let rcVs = CR.RVersions {current = e2eVersion, maxSupported = maxVersion connE2EVRange}
+              initRatchet rcVs keys
               notifyAgreed
             where
               rkHashRcv = rkHash k1Rcv k2Rcv
@@ -2373,8 +2373,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 where
                   sendReplyKey = do
                     g <- asks random
-                    -- TODO PQ the decision to use KEM should depend on connection
-                    (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g e2eVersion CR.PQEncOn
+                    (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g e2eVersion pqEncryption
                     enqueueRatchetKeyMsgs c cData' sqs e2eParams
                     pure (pk1, pk2, pKem)
                   notifyRatchetSyncError = do
@@ -2393,18 +2392,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 createRatchet db connId rc
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: CR.VersionRangeE2E -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> m ()
-              initRatchet e2eEncryptVRange (pk1, pk2, pKem)
+              initRatchet :: CR.RatchetVersions -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> m ()
+              initRatchet rcVs (pk1, pk2, pKem)
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
                     rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eOtherPartyParams
-                    -- TODO PQ the decision to use KEM should either depend on the global setting or on whether it was enabled in connection before
-                    -- TODO PQ the passed version should be RatchetVersions with current = agreed version and maxVersion = max supported version
-                    recreateRatchet $ CR.initRcvRatchet (CR.ratchetVersions e2eEncryptVRange) pk2 rcParams $ CR.PQEncryption (isJust kem_)
+                    recreateRatchet $ CR.initRcvRatchet rcVs pk2 rcParams pqEncryption
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
                     rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 (CR.APRKP CR.SRKSProposed <$> pKem) e2eOtherPartyParams
-                    -- TODO PQ the passed version should be RatchetVersions with current = agreed version and maxVersion = max supported version
-                    recreateRatchet $ CR.initSndRatchet (CR.ratchetVersions e2eEncryptVRange) k2Rcv rcDHRs rcParams
+                    recreateRatchet $ CR.initSndRatchet rcVs k2Rcv rcDHRs rcParams
                     void . enqueueMessages' c cData' sqs Nothing SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
@@ -2486,7 +2482,6 @@ enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
   msgId <- enqueueRatchetKey c cData sq e2eEncryption
   mapM_ (enqueueSavedMessage c cData msgId) $ filter isActiveSndQ sqs
 
-  -- TODO PQ make sure pqEncryption is set correctly here
 enqueueRatchetKey :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> CR.RcvE2ERatchetParams 'C.X448 -> m AgentMsgId
 enqueueRatchetKey c cData@ConnData {connId, pqEncryption} sq e2eEncryption = do
   aVRange <- asks $ ($ pqEncryption) . smpAgentVRange . config
@@ -2503,8 +2498,7 @@ enqueueRatchetKey c cData@ConnData {connId, pqEncryption} sq e2eEncryption = do
           internalHash = C.sha256Hash agentMsgStr
       let msgBody = smpEncode $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
           msgType = agentMessageType agentMsg
-          -- TODO PQ set pqEncryption based on connection mode
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = CR.PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
       liftIO $ createSndMsgDelivery db connId sq internalId
       pure internalId

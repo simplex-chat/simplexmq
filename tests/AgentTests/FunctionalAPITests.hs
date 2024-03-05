@@ -268,6 +268,7 @@ functionalAPITests t = do
         testIncreaseConnAgentVersionMaxCompatible t
       it "should increase when connection was negotiated on different versions" $
         testIncreaseConnAgentVersionStartDifferentVersion t
+      -- TODO PQ tests for upgrading connection to PQ encryption
     it "should deliver message after client restart" $
       testDeliverClientRestart t
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
@@ -695,8 +696,8 @@ testIncreaseConnAgentVersion t = do
   bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
-      (aliceId, bobId) <- makeConnection alice bob
-      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      (aliceId, bobId) <- makeConnection_ PQEncOff alice bob
+      exchangeGreetingsMsgId_ PQEncOff 4 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
@@ -708,7 +709,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection alice2 bobId
-      exchangeGreetingsMsgId 6 alice2 bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob aliceId
       checkVersion alice2 bobId 2
       checkVersion bob aliceId 2
 
@@ -719,7 +720,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection bob2 aliceId
-      exchangeGreetingsMsgId 8 alice2 bobId bob2 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 8 alice2 bobId bob2 aliceId
       checkVersion alice2 bobId 3
       checkVersion bob2 aliceId 3
 
@@ -730,7 +731,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection alice3 bobId
-      exchangeGreetingsMsgId 10 alice3 bobId bob2 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 10 alice3 bobId bob2 aliceId
       checkVersion alice3 bobId 3
       checkVersion bob2 aliceId 3
 
@@ -739,7 +740,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection bob3 aliceId
-      exchangeGreetingsMsgId 12 alice3 bobId bob3 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 12 alice3 bobId bob3 aliceId
       checkVersion alice3 bobId 3
       checkVersion bob3 aliceId 3
     disconnectAgentClient alice3
@@ -756,8 +757,8 @@ testIncreaseConnAgentVersionMaxCompatible t = do
   bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
-      (aliceId, bobId) <- makeConnection alice bob
-      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      (aliceId, bobId) <- makeConnection_ PQEncOff alice bob
+      exchangeGreetingsMsgId_ PQEncOff 4 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
@@ -772,7 +773,7 @@ testIncreaseConnAgentVersionMaxCompatible t = do
     runRight_ $ do
       subscribeConnection alice2 bobId
       subscribeConnection bob2 aliceId
-      exchangeGreetingsMsgId 6 alice2 bobId bob2 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob2 aliceId
       checkVersion alice2 bobId 3
       checkVersion bob2 aliceId 3
     disconnectAgentClient alice2
@@ -784,8 +785,8 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
   bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
-      (aliceId, bobId) <- makeConnection alice bob
-      exchangeGreetingsMsgId 4 alice bobId bob aliceId
+      (aliceId, bobId) <- makeConnection_ PQEncOff alice bob
+      exchangeGreetingsMsgId_ PQEncOff 4 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
@@ -797,7 +798,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
 
     runRight_ $ do
       subscribeConnection alice2 bobId
-      exchangeGreetingsMsgId 6 alice2 bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob aliceId
       checkVersion alice2 bobId 3
       checkVersion bob aliceId 3
     disconnectAgentClient alice2
@@ -2358,17 +2359,17 @@ testDeliveryReceiptsVersion t = do
   b <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aId, bId) <- runRight $ do
-      (aId, bId) <- makeConnection a b
+      (aId, bId) <- makeConnection_ PQEncOff a b
       checkVersion a bId 3
       checkVersion b aId 3
-      4 <- sendMessage a bId SMP.noMsgFlags "hello"
+      (4, _) <- Agent.sendMessage a bId PQEncOff SMP.noMsgFlags "hello"
       get a ##> ("", bId, SENT 4)
-      get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+      get b =##> \case ("", c, Msg' 4 PQEncOff "hello") -> c == aId; _ -> False
       ackMessage b aId 4 $ Just ""
       liftIO $ noMessages a "no delivery receipt (unsupported version)"
-      5 <- sendMessage b aId SMP.noMsgFlags "hello too"
+      (5, _) <- Agent.sendMessage b aId PQEncOff SMP.noMsgFlags "hello too"
       get b ##> ("", aId, SENT 5)
-      get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+      get a =##> \case ("", c, Msg' 5 PQEncOff "hello too") -> c == bId; _ -> False
       ackMessage a bId 5 $ Just ""
       liftIO $ noMessages b "no delivery receipt (unsupported version)"
       pure (aId, bId)
@@ -2381,21 +2382,29 @@ testDeliveryReceiptsVersion t = do
     runRight_ $ do
       subscribeConnection a' bId
       subscribeConnection b' aId
-      exchangeGreetingsMsgId 6 a' bId b' aId
+      exchangeGreetingsMsgId_ PQEncOff 6 a' bId b' aId
       checkVersion a' bId 4
       checkVersion b' aId 4
-      8 <- sendMessage a' bId SMP.noMsgFlags "hello"
+      (8, PQEncOff) <- Agent.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 8)
-      get b' =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+      get b' =##> \case ("", c, Msg' 8 PQEncOff "hello") -> c == aId; _ -> False
       ackMessage b' aId 8 $ Just ""
       get a' =##> \case ("", c, Rcvd 8) -> c == bId; _ -> False
       ackMessage a' bId 9 Nothing
-      10 <- sendMessage b' aId SMP.noMsgFlags "hello too"
+      (10, PQEncOff) <- Agent.sendMessage b' aId PQEncOn SMP.noMsgFlags "hello too"
       get b' ##> ("", aId, SENT 10)
-      get a' =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+      get a' =##> \case ("", c, Msg' 10 PQEncOff "hello too") -> c == bId; _ -> False
       ackMessage a' bId 10 $ Just ""
       get b' =##> \case ("", c, Rcvd 10) -> c == aId; _ -> False
       ackMessage b' aId 11 Nothing
+      -- TODO PQ this part hangs when waiting for Rcvd, because connection tries to upgrade to PQ encryption.
+      -- replacing 2 PQEncOn with PQEncOff above prevents hanging.
+      -- (12, _) <- Agent.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
+      -- get a' ##> ("", bId, SENT 12)
+      -- get b' =##> \case ("", c, Msg' 12 PQEncOff "hello 2") -> c == aId; _ -> False
+      -- ackMessage b' aId 12 $ Just ""
+      -- get a' =##> \case ("", c, Rcvd 12) -> c == bId; _ -> False
+      -- ackMessage a' bId 13 Nothing
     disconnectAgentClient a'
     disconnectAgentClient b'
 
