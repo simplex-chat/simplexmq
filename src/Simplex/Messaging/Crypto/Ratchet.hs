@@ -703,6 +703,7 @@ instance Encoding EncMessageHeader where
     ehBody <- if ehVersion >= pqRatchetE2EEncryptVersion then unLarge <$> smpP else smpP
     pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
 
+-- the header is length-prefixed to parse it as string and use as part of associated data for authenticated encryption
 data EncRatchetMessage = EncRatchetMessage
   { emHeader :: ByteString,
     emAuthTag :: AuthTag,
@@ -715,9 +716,9 @@ encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
   | v >= pqRatchetE2EEncryptVersion = smpEncode (Large emHeader, emAuthTag, Tail emBody)
   | otherwise = smpEncode (emHeader, emAuthTag, Tail emBody)
 
--- This parser relies on the fact that header cannot be shorter than 32 bytes,
+-- This parser relies on the fact that header cannot be shorter than 32 bytes (it is ~69 bytes without PQ KEM),
 -- therefore if the first byte is less or equal to 31 (x1F), then we have 2 byte-length limited to 8191.
--- This allows to awoid current version upgrade in one message (as version does not precede this length in the encoding).
+-- This allows upgrading the current version in one message.
 encRatchetMessageP :: Parser EncRatchetMessage
 encRatchetMessageP = do
   len1 <- peekWord8'
