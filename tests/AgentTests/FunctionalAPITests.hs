@@ -63,11 +63,11 @@ import qualified Database.SQLite.Simple as SQL
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
-import qualified Simplex.Messaging.Agent as Agent
+import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON)
-import qualified Simplex.Messaging.Agent.Protocol as Agent
+import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
@@ -145,7 +145,7 @@ pGet c = do
     _ -> pure t
 
 pattern CON :: ACommand 'Agent 'AEConn
-pattern CON = Agent.CON PQEncOn
+pattern CON = A.CON PQEncOn
 
 pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = PQEncOn} _ msgBody
@@ -224,14 +224,14 @@ inAnyOrder g rs = do
     expected r rp = rp r
 
 createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs cMode clientData = Agent.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQEncOn)
+createConnection c userId enableNtfs cMode clientData = A.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQEncOn)
 
 joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
-joinConnection c userId enableNtfs cReq connInfo = Agent.joinConnection c userId enableNtfs cReq connInfo PQEncOn
+joinConnection c userId enableNtfs cReq connInfo = A.joinConnection c userId enableNtfs cReq connInfo PQEncOn
 
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage c connId msgFlags msgBody = do
-  (msgId, pqEnc) <- Agent.sendMessage c connId PQEncOn msgFlags msgBody
+  (msgId, pqEnc) <- A.sendMessage c connId PQEncOn msgFlags msgBody
   liftIO $ pqEnc `shouldBe` PQEncOn
   pure msgId
 
@@ -427,30 +427,24 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
    in allowNew && (isNothing srvAuth || (srvVersion >= v && clntVersion >= v && srvAuth == clntAuth))
 
 -- TODO PQ test next version with PQ
-testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2 :: ATransport -> (PQEncryption -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 runTest
-  it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 runTest
-  it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 runTest
-  it "current with v7 server" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  skip "TODO PQ versioning" $ describe "TODO fails with previous version" $ do
-    it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 runTest
-    it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
-    it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
+  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQEncOn 
+  it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 $ runTest PQEncOn
+  it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 $ runTest PQEncOn
+  it "current with v7 server" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQEncOn
+  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQEncOn
+  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 $ runTest PQEncOff
+  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQEncOff
+  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQEncOff
 
 -- TODO PQ test next version with PQ
-testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testRatchetMatrix2 :: ATransport -> (PQEncryption -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
-  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
-  skip "TODO PQ versioning" $ describe "TODO fails with previous version" $ do
-    pendingV "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 runTest
-    pendingV "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 runTest
-    pendingV "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
-  where
-    pendingV d =
-      let vr = e2eEncryptVRange agentCfg PQEncOff
-       in if minVersion vr == maxVersion vr then skip "previous version is not supported" . it d else it d
+  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQEncOn 
+  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 $ runTest PQEncOff
+  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 $ runTest PQEncOff
+  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 $ runTest PQEncOff
 
 testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -472,40 +466,40 @@ withAgentClientsCfg2 aCfg bCfg runTest = do
 withAgentClients2 :: (AgentClient -> AgentClient -> IO ()) -> IO ()
 withAgentClients2 = withAgentClientsCfg2 agentCfg agentCfg
 
-runAgentClientTest :: HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientTest alice@AgentClient {} bob baseId =
+runAgentClientTest :: HasCallStack => PQEncryption -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+runAgentClientTest pqEnc alice@AgentClient {} bob baseId =
   runRight_ $ do
-    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+    (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (IKNoPQ pqEnc) SMSubscribe
+    aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqEnc SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
-    get alice ##> ("", bobId, CON)
+    get alice ##> ("", bobId, A.CON pqEnc)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
-    get bob ##> ("", aliceId, CON)
+    get bob ##> ("", aliceId, A.CON pqEnc)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
-    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    1 <- msgId <$> A.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
-    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    2 <- msgId <$> A.sendMessage alice bobId pqEnc SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT $ baseId + 2)
-    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    get bob =##> \case ("", c, Msg' _ pq "hello") -> c == aliceId && pq == pqEnc; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
-    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    get bob =##> \case ("", c, Msg' _ pq "how are you?") -> c == aliceId && pq == pqEnc; _ -> False
     ackMessage bob aliceId (baseId + 2) Nothing
-    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    3 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
+    4 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
-    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    get alice =##> \case ("", c, Msg' _ pq "hello too") -> c == bobId && pq == pqEnc; _ -> False
     ackMessage alice bobId (baseId + 3) Nothing
-    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    get alice =##> \case ("", c, Msg' _ pq "message 1") -> c == bobId && pq == pqEnc; _ -> False
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
-    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
+    5 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
-    msgId = subtract baseId
+    msgId = subtract baseId . fst
 
 testAgentClient3 :: HasCallStack => IO ()
 testAgentClient3 = do
@@ -533,42 +527,42 @@ testAgentClient3 = do
     get c =##> \case ("", connId, Msg "c5") -> connId == aIdForC; _ -> False
     ackMessage c aIdForC 5 Nothing
 
-runAgentClientContactTest :: HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientContactTest alice bob baseId =
+runAgentClientContactTest :: HasCallStack => PQEncryption -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+runAgentClientContactTest pqEnc alice bob baseId =
   runRight_ $ do
-    (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
-    aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+    (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing (IKNoPQ pqEnc) SMSubscribe
+    aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqEnc SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContact alice True invId "alice's connInfo" PQEncOn SMSubscribe
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
-    get alice ##> ("", bobId, CON)
-    get bob ##> ("", aliceId, CON)
+    get alice ##> ("", bobId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.CON pqEnc)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
-    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    1 <- msgId <$> A.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT $ baseId + 1)
-    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    2 <- msgId <$> A.sendMessage alice bobId pqEnc SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT $ baseId + 2)
-    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    get bob =##> \case ("", c, Msg' _ pq "hello") -> c == aliceId && pq == pqEnc; _ -> False
     ackMessage bob aliceId (baseId + 1) Nothing
-    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    get bob =##> \case ("", c, Msg' _ pq "how are you?") -> c == aliceId && pq == pqEnc; _ -> False
     ackMessage bob aliceId (baseId + 2) Nothing
-    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    3 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
-    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
+    4 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
-    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    get alice =##> \case ("", c, Msg' _ pq "hello too") -> c == bobId && pq == pqEnc; _ -> False
     ackMessage alice bobId (baseId + 3) Nothing
-    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    get alice =##> \case ("", c, Msg' _ pq "message 1") -> c == bobId && pq == pqEnc; _ -> False
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
-    5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
+    5 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
-    msgId = subtract baseId
+    msgId = subtract baseId . fst
 
 noMessages :: HasCallStack => AgentClient -> String -> Expectation
 noMessages c err = tryGet `shouldReturn` ()
@@ -1079,13 +1073,13 @@ setupDesynchronizedRatchet alice bob = do
   runRight_ $ do
     subscribeConnection bob2 aliceId
 
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId PQEncOn False
+    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId PQEncOn False
 
     8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
     get alice ##> ("", bobId, SENT 8)
     get bob2 =##> ratchetSyncP aliceId RSRequired
 
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
+    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
     pure ()
 
   pure (aliceId, bobId, bob2)
@@ -1269,13 +1263,13 @@ makeConnectionForUsers = makeConnectionForUsers_ PQEncOn
 
 makeConnectionForUsers_ :: PQEncryption -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqEnc alice aliceUserId bob bobUserId = do
-  (bobId, qInfo) <- Agent.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqEnc) SMSubscribe
-  aliceId <- Agent.joinConnection bob bobUserId True qInfo "bob's connInfo" pqEnc SMSubscribe
+  (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqEnc) SMSubscribe
+  aliceId <- A.joinConnection bob bobUserId True qInfo "bob's connInfo" pqEnc SMSubscribe
   ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
-  get alice ##> ("", bobId, Agent.CON pqEnc)
+  get alice ##> ("", bobId, A.CON pqEnc)
   get bob ##> ("", aliceId, INFO "alice's connInfo")
-  get bob ##> ("", aliceId, Agent.CON pqEnc)
+  get bob ##> ("", aliceId, A.CON pqEnc)
   pure (aliceId, bobId)
 
 testInactiveNoSubs :: ATransport -> IO ()
@@ -2036,7 +2030,7 @@ testAbortSwitchStarted servers = do
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     -- repeat switch is prohibited
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ switchConnectionAsync a "" bId
+    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ switchConnectionAsync a "" bId
     -- abort current switch
     stats' <- abortConnectionSwitch a bId
     liftIO $ rcvSwchStatuses' stats' `shouldMatchList` [Nothing]
@@ -2158,7 +2152,7 @@ testCannotAbortSwitchSecured servers = do
   withA' $ \a -> do
     phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
     phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
-    Left Agent.CMD {cmdErr = PROHIBITED} <- runExceptT $ abortConnectionSwitch a bId
+    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ abortConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
@@ -2350,7 +2344,7 @@ testDeliveryReceipts =
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 6 $ Just ""
     get b =##> \case ("", c, Rcvd 6) -> c == aId; _ -> False
-    ackMessage b aId 7 (Just "") `catchError` \e -> liftIO $ e `shouldBe` Agent.CMD PROHIBITED
+    ackMessage b aId 7 (Just "") `catchError` \e -> liftIO $ e `shouldBe` A.CMD PROHIBITED
     ackMessage b aId 7 Nothing
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
@@ -2362,12 +2356,12 @@ testDeliveryReceiptsVersion t = do
       (aId, bId) <- makeConnection_ PQEncOff a b
       checkVersion a bId 3
       checkVersion b aId 3
-      (4, _) <- Agent.sendMessage a bId PQEncOff SMP.noMsgFlags "hello"
+      (4, _) <- A.sendMessage a bId PQEncOff SMP.noMsgFlags "hello"
       get a ##> ("", bId, SENT 4)
       get b =##> \case ("", c, Msg' 4 PQEncOff "hello") -> c == aId; _ -> False
       ackMessage b aId 4 $ Just ""
       liftIO $ noMessages a "no delivery receipt (unsupported version)"
-      (5, _) <- Agent.sendMessage b aId PQEncOff SMP.noMsgFlags "hello too"
+      (5, _) <- A.sendMessage b aId PQEncOff SMP.noMsgFlags "hello too"
       get b ##> ("", aId, SENT 5)
       get a =##> \case ("", c, Msg' 5 PQEncOff "hello too") -> c == bId; _ -> False
       ackMessage a bId 5 $ Just ""
@@ -2385,13 +2379,13 @@ testDeliveryReceiptsVersion t = do
       exchangeGreetingsMsgId_ PQEncOff 6 a' bId b' aId
       checkVersion a' bId 4
       checkVersion b' aId 4
-      (8, PQEncOff) <- Agent.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
+      (8, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 8)
       get b' =##> \case ("", c, Msg' 8 PQEncOff "hello") -> c == aId; _ -> False
       ackMessage b' aId 8 $ Just ""
       get a' =##> \case ("", c, Rcvd 8) -> c == bId; _ -> False
       ackMessage a' bId 9 Nothing
-      (10, PQEncOff) <- Agent.sendMessage b' aId PQEncOn SMP.noMsgFlags "hello too"
+      (10, PQEncOff) <- A.sendMessage b' aId PQEncOn SMP.noMsgFlags "hello too"
       get b' ##> ("", aId, SENT 10)
       get a' =##> \case ("", c, Msg' 10 PQEncOff "hello too") -> c == bId; _ -> False
       ackMessage a' bId 10 $ Just ""
@@ -2399,7 +2393,7 @@ testDeliveryReceiptsVersion t = do
       ackMessage b' aId 11 Nothing
       -- TODO PQ this part hangs when waiting for Rcvd, because connection tries to upgrade to PQ encryption.
       -- replacing 2 PQEncOn with PQEncOff above prevents hanging.
-      -- (12, _) <- Agent.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
+      -- (12, _) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
       -- get a' ##> ("", bId, SENT 12)
       -- get b' =##> \case ("", c, Msg' 12 PQEncOff "hello 2") -> c == aId; _ -> False
       -- ackMessage b' aId 12 $ Just ""
@@ -2574,12 +2568,12 @@ exchangeGreetingsMsgId = exchangeGreetingsMsgId_ PQEncOn
 
 exchangeGreetingsMsgId_ :: HasCallStack => PQEncryption -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgId_ pqEnc msgId alice bobId bob aliceId = do
-  msgId1 <- Agent.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
+  msgId1 <- A.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
   liftIO $ msgId1 `shouldBe` (msgId, pqEnc)
   get alice ##> ("", bobId, SENT msgId)
   get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqEnc; _ -> False
   ackMessage bob aliceId msgId Nothing
-  msgId2 <- Agent.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
+  msgId2 <- A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
   let msgId' = msgId + 1
   liftIO $ msgId2 `shouldBe` (msgId', pqEnc)
   get bob ##> ("", aliceId, SENT msgId')
