@@ -198,6 +198,8 @@ library
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
@@ -270,6 +272,8 @@ executable ntf-server
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
@@ -343,6 +347,8 @@ executable smp-agent
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
@@ -416,6 +422,8 @@ executable smp-server
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
@@ -489,6 +497,8 @@ executable xftp
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
@@ -562,6 +572,8 @@ executable xftp-server
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
@@ -669,6 +681,8 @@ test-suite simplexmq-test
     , directory ==1.3.*
     , filepath ==1.4.*
     , generic-random ==1.5.*
+    , ghc-trace-events >=0.1.2.7 && <1.3
+    , hashable ==1.4.*
     , hourglass ==0.2.*
     , hspec ==2.11.*
     , hspec-core ==2.11.*

@@ -10,6 +10,7 @@ import Control.Monad.IO.Unlift
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Hashable (Hashable, hash)
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
@@ -18,6 +19,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
+import Debug.Trace.ByteString (traceEventIO, unsafeTraceEventIO)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
 import UnliftIO
 import qualified UnliftIO.Exception as UE
@@ -167,3 +169,18 @@ diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
+
+traceEvent :: MonadIO m => B.ByteString -> m ()
+traceEvent = liftIO . traceEventIO
+
+traceStart :: MonadIO m => ByteString -> m ()
+traceStart section = liftIO . unsafeTraceEventIO $ B.concat ["START ", section, "\0"]
+
+traceStop :: MonadIO m => ByteString -> m ()
+traceStop section = liftIO . unsafeTraceEventIO $ B.concat ["STOP ", section, "\0"]
+
+traceGroupStart :: (Hashable a, MonadIO m) => a -> ByteString -> m ()
+traceGroupStart sub section = liftIO . unsafeTraceEventIO $ B.concat ["START ", bshow $ hash sub, " ", section, "\0"]
+
+traceGroupStop :: (Hashable a, MonadIO m) => a -> ByteString -> m ()
+traceGroupStop sub section = liftIO . unsafeTraceEventIO $ B.concat ["STOP ", bshow $ hash sub, " ", section, "\0"]

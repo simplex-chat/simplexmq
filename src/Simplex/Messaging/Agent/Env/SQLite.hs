@@ -5,11 +5,11 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
-{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentMonad,
@@ -35,15 +35,21 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteArray (ScrubbedBytes)
+import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
+import Data.OrdPSQ (OrdPSQ)
+import qualified Data.OrdPSQ as OP
+import Data.Text (Text)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Word (Word16)
@@ -61,27 +67,17 @@ import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors, tshow)
+import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors, traceEvent, bshow)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
-import UnliftIO (Async, SomeException)
+import UnliftIO (Async, SomeException, cancel)
 import UnliftIO.STM
-import Data.IntPSQ (IntPSQ)
-import qualified Data.IntPSQ as IP
-import UnliftIO.Concurrent (forkIO)
-import Control.Concurrent.Async (async)
-import UnliftIO (cancel)
-import Control.Concurrent (threadDelay)
-import Control.Logger.Simple (logError, logNote)
-import Data.OrdPSQ (OrdPSQ)
-import qualified Simplex.Messaging.Protocol as SMP
-import Data.Text (Text)
-import qualified Data.OrdPSQ as OP
-import Debug.Trace (traceM)
+import qualified Data.ByteString.Base64.URL as B64
 
 type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
 
@@ -233,17 +229,15 @@ newSMPAgentEnv config store = do
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers, acks}
 
 ackMonitor :: TVar Acks -> IO ()
-ackMonitor acksVar = do
-  putStrLn "ackMonitor: started"
-  forever $ do
-    MkSystemTime now _ns <- getSystemTime
-    -- logNote "tick-tock, mf'rs"
-    late <- atomically $ do
-      (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acksVar
-      late <$ writeTVar acksVar later
-    forM_ late $ \(p, k, v) -> do
-      traceM $ "Missed ACK: " <> show (p, k, v)
-    threadDelay 1000000
+ackMonitor acksVar = forever $ do
+  MkSystemTime now _ns <- getSystemTime
+  late <- atomically $ do
+    (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acksVar
+    late <$ writeTVar acksVar later
+  forM_ late $ \((rId, msgId), time, label_) -> traceEvent $ B.concat ["ACK-MISS ", logEntity rId, "/", logEntity msgId, " ", bshow time, " ", bshow label_, "\0"]
+  threadDelay 1000000
+  where
+    logEntity bs = B64.encode $ B.take 3 bs
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
