@@ -156,6 +156,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing, listToMaybe)
+import qualified Data.OrdPSQ as OP
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -163,6 +164,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -196,6 +198,7 @@ import Simplex.Messaging.Protocol
     ErrorType,
     MsgFlags (..),
     MsgId,
+    NtfPublicAuthKey,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -207,7 +210,6 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
-    NtfPublicAuthKey,
     SMPMsgMeta (..),
     SProtocolType (..),
     SndPublicAuthKey,
@@ -229,9 +231,6 @@ import UnliftIO.Async (async)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import GHC.Stack (HasCallStack, withFrozenCallStack)
-import qualified Data.OrdPSQ as OP
-import Debug.Trace
 
 data SessionVar a = SessionVar
   { sessionVar :: TMVar a,
@@ -1217,9 +1216,9 @@ disableQueuesNtfs :: forall m. AgentMonad' m => AgentClient -> [RcvQueue] -> m [
 disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueuesNtfs
 
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
-sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
+sendAck c rq@RcvQueue {rcvId, rcvPrivateKey, server = ProtocolServer {host}} msgId = do
   withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp -> do
-    traceM $ "sendAck: " <> show (logSecret rcvId, logSecret msgId)
+    traceGroupStop (rcvId, msgId) $ "ACK|" <> strEncode (L.head host)
     atomically $ modifyTVar' (acks $ agentEnv c) $ OP.delete (rcvId, msgId)
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq

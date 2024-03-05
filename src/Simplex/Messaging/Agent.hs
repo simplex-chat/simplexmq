@@ -1939,7 +1939,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv@SMP.Proto
       now <- liftIO getSystemTime
       atomically $ modifyTVar' (acks $ agentEnv c) $ OP.insert (rId', srvMsgId) now (Just label)
       traceGroupStart (rId', srvMsgId) $ "ACK|" <> strEncode (L.head host)
-    DontAck -> logDebug "DontAck"
+    DontAck -> pure ()
   where
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> m ACKd
     processSMP
