@@ -39,6 +39,7 @@ module Simplex.Messaging.Agent.Protocol
     pattern VersionSMPA,
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
+    pqdrSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,
@@ -187,7 +188,15 @@ import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern PQEncOff, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
+import Simplex.Messaging.Crypto.Ratchet
+  ( InitialKeys (..),
+    PQEncryption (..),
+    pattern PQEncOff,
+    pattern PQEncOn,
+    RcvE2ERatchetParams,
+    RcvE2ERatchetParamsUri,
+    SndE2ERatchetParams
+  )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -234,6 +243,7 @@ import UnliftIO.Exception (Exception)
 -- 2 - "duplex" (more efficient) connection handshake (6/9/2022)
 -- 3 - support ratchet renegotiation (6/30/2023)
 -- 4 - delivery receipts (7/13/2023)
+-- 5 - post-quantum double ratchet (3/14/2024)
 
 data SMPAgentVersion
 
@@ -255,24 +265,34 @@ ratchetSyncSMPAgentVersion = VersionSMPA 3
 deliveryRcptsSMPAgentVersion :: VersionSMPA
 deliveryRcptsSMPAgentVersion = VersionSMPA 4
 
+pqdrSMPAgentVersion :: VersionSMPA
+pqdrSMPAgentVersion = VersionSMPA 5
+
+-- TODO v5.7 increase to 5
 currentSMPAgentVersion :: VersionSMPA
 currentSMPAgentVersion = VersionSMPA 4
 
-supportedSMPAgentVRange :: VersionRangeSMPA
-supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
+-- TODO v5.7 remove dependency of version range on whether PQ encryption is used
+supportedSMPAgentVRange :: PQEncryption -> VersionRangeSMPA
+supportedSMPAgentVRange pq =
+  mkVersionRange duplexHandshakeSMPAgentVersion $ case pq of
+    PQEncOn -> pqdrSMPAgentVersion
+    PQEncOff -> currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
--- TODO PQ this should be version-dependent
--- previously it was 14848, reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-e2eEncConnInfoLength :: Int
-e2eEncConnInfoLength = 11148
+e2eEncConnInfoLength :: VersionSMPA -> Int
+e2eEncConnInfoLength v
+  -- reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
+  | v >= pqdrSMPAgentVersion = 11148
+  | otherwise = 14848
 
--- TODO PQ this should be version-dependent
--- previously it was 15856, reduced by 2200 (roughly the increase of message ratchet header size)
-e2eEncUserMsgLength :: Int
-e2eEncUserMsgLength = 13656
+e2eEncUserMsgLength :: VersionSMPA -> Int
+e2eEncUserMsgLength v
+  -- reduced by 2200 (roughly the increase of message ratchet header size)
+  | v >= pqdrSMPAgentVersion = 13656
+  | otherwise = 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
