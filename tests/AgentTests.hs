@@ -29,7 +29,7 @@ import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol hiding (MID)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern PQEncOn, pattern PQEncOff)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQEncOff)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..))
@@ -184,10 +184,10 @@ pqMatrix2NoInv = pqMatrix2_ False
 
 pqMatrix2_ :: Bool -> PQMatrix2 c
 pqMatrix2_ pqInv _ smpTest test = do
-  it "dh/dh handshake" $ smpTest $ \a b -> test (a, ikPQOff) (b, PQEncOff)
-  it "dh/pq handshake" $ smpTest $ \a b -> test (a, ikPQOff) (b, PQEncOn)
-  it "pq/dh handshake" $ smpTest $ \a b -> test (a, ikPQOn) (b, PQEncOff)
-  it "pq/pq handshake" $ smpTest $ \a b -> test (a, ikPQOn) (b, PQEncOn)
+  it "dh/dh handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQEncOff)
+  it "dh/pq handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQEncOn)
+  it "pq/dh handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQEncOff)
+  it "pq/pq handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQEncOn)
   when pqInv $ do
     it "pq-inv/dh handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQEncOff)
     it "pq-inv/pq handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQEncOn)
@@ -199,17 +199,17 @@ pqMatrix3 ::
   (HasCallStack => (c, InitialKeys) -> (c, PQEncryption) -> (c, PQEncryption) -> IO ()) ->
   Spec
 pqMatrix3 _ smpTest test = do
-  it "dh" $ smpTest $ \a b c -> test (a, ikPQOff) (b, PQEncOff) (c, PQEncOff)
-  it "dh/dh/pq" $ smpTest $ \a b c -> test (a, ikPQOff) (b, PQEncOff) (c, PQEncOn)
-  it "dh/pq/dh" $ smpTest $ \a b c -> test (a, ikPQOff) (b, PQEncOn) (c, PQEncOff)
-  it "dh/pq/pq" $ smpTest $ \a b c -> test (a, ikPQOff) (b, PQEncOn) (c, PQEncOn)
-  it "pq/dh/dh" $ smpTest $ \a b c -> test (a, ikPQOn) (b, PQEncOff) (c, PQEncOff)
-  it "pq/dh/pq" $ smpTest $ \a b c -> test (a, ikPQOn) (b, PQEncOff) (c, PQEncOn)
-  it "pq/pq/dh" $ smpTest $ \a b c -> test (a, ikPQOn) (b, PQEncOn) (c, PQEncOff)
-  it "pq" $ smpTest $ \a b c -> test (a, ikPQOn) (b, PQEncOn) (c, PQEncOn)
+  it "dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOff) (c, PQEncOff)
+  it "dh/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOff) (c, PQEncOn)
+  it "dh/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOn) (c, PQEncOff)
+  it "dh/pq/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOn) (c, PQEncOn)
+  it "pq/dh/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOff) (c, PQEncOff)
+  it "pq/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOff) (c, PQEncOn)
+  it "pq/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOn) (c, PQEncOff)
+  it "pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOn) (c, PQEncOn)
 
 testDuplexConnection :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
-testDuplexConnection _ alice bob = testDuplexConnection' (alice, ikPQOn) (bob, PQEncOn)
+testDuplexConnection _ alice bob = testDuplexConnection' (alice, IKPQOn) (bob, PQEncOn)
 
 testDuplexConnection' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQEncryption) -> IO ()
 testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
@@ -246,7 +246,7 @@ testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   alice #:# "nothing else should be delivered to alice"
 
 testDuplexConnRandomIds :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
-testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, ikPQOn) (bob, PQEncOn)
+testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, IKPQOn) (bob, PQEncOn)
 
 testDuplexConnRandomIds' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQEncryption) -> IO ()
 testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
@@ -546,14 +546,8 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   -- message 8 is skipped because of alice agent sending "QCONT" message
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
 
-ikPQOn :: InitialKeys
-ikPQOn = IKNoPQ PQEncOn
-
-ikPQOff :: InitialKeys
-ikPQOff = IKNoPQ PQEncOff
-
 connect :: Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
-connect (h1, name1) (h2, name2) = connect' (h1, name1, ikPQOn) (h2, name2, PQEncOn)
+connect (h1, name1) (h2, name2) = connect' (h1, name1, IKPQOn) (h2, name2, PQEncOn)
 
 connect' :: forall c. Transport c => (c, ByteString, InitialKeys) -> (c, ByteString, PQEncryption) -> IO ()
 connect' (h1, name1, pqMode1) (h2, name2, pqMode2) = do

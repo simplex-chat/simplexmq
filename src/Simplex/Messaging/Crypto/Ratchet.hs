@@ -23,6 +23,8 @@ module Simplex.Messaging.Crypto.Ratchet
     SkippedMsgDiff (..),
     SkippedMsgKeys,
     InitialKeys (..),
+    pattern IKPQOn,
+    pattern IKPQOff,
     PQEncryption (..),
     pattern PQEncOn,
     pattern PQEncOff,
@@ -766,6 +768,12 @@ instance StrEncoding PQEncryption where
 
 data InitialKeys = IKUsePQ | IKNoPQ PQEncryption
   deriving (Eq, Show)
+
+pattern IKPQOn :: InitialKeys
+pattern IKPQOn = IKNoPQ PQEncOn
+
+pattern IKPQOff :: InitialKeys
+pattern IKPQOff = IKNoPQ PQEncOff
 
 instance StrEncoding InitialKeys where
   strEncode = \case
