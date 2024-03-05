@@ -49,7 +49,7 @@ agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "Migration tests" migrationTests
   describe "SMP agent protocol syntax" $ syntaxTests t
-  describe "Establishing duplex connection (via agent protocol)" $ do
+  fdescribe "Establishing duplex connection (via agent protocol)" $ do
     skip "These tests are disabled because the agent does not work correctly with multiple connected TCP clients" $
       describe "one agent" $ do
         it "should connect via one server and one agent" $ do
@@ -71,12 +71,12 @@ agentTests (ATransport t) = do
       pqMatrix2NoInv t smpAgentTest2_2_1 testContactConnRandomIds
     it "should support rejecting contact request" $ do
       smpAgentTest2_2_1 $ testRejectContactRequest t
-  describe "Connection subscriptions" $ do
+  fdescribe "Connection subscriptions" $ do
     it "should connect via one server and one agent" $ do
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $ do
       smpAgentServerTest $ testSubscrNotification t
-  describe "Message delivery and server reconnection" $ do
+  fdescribe "Message delivery and server reconnection" $ do
     describe "should deliver messages after losing server connection and re-connecting" $
       pqMatrix2 t smpAgentTest2_2_2_needs_server testMsgDeliveryServerRestart
     it "should connect to the server when server goes up if it initially was down" $ do

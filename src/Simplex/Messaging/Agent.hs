@@ -1118,14 +1118,14 @@ enqueueMessageB c reqs = do
     pure $ Right ((msgId, pqSecr), if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
     storeSentMsg :: DB.Connection -> (CR.PQEncryption -> VersionRangeSMPA) -> (ConnData, NonEmpty SndQueue, Maybe CR.PQEncryption, MsgFlags, AMessage) -> IO (Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe CR.PQEncryption, MsgFlags, AMessage), InternalId, CR.PQEncryption))
-    storeSentMsg db getAVRange req@(ConnData {connId, connAgentVersion = v}, sq :| _, pqEnc_, msgFlags, aMessage) = fmap (first storeError) $ runExceptT $ do
+    storeSentMsg db getAVRange req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, aMessage) = fmap (first storeError) $ runExceptT $ do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
           agentMsg = AgentMessage privHeader aMessage
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
-      (encAgentMessage, pqEncryption) <- agentRatchetEncrypt db connId agentMsgStr (e2eEncUserMsgLength v) pqEnc_
+      (encAgentMessage, pqEncryption) <- agentRatchetEncrypt db cData agentMsgStr e2eEncUserMsgLength pqEnc_
       let agentVersion = maxVersion . getAVRange $ fromMaybe CR.PQEncOff pqEnc_
           msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
           msgType = agentMessageType agentMsg
@@ -2443,7 +2443,7 @@ confirmQueueAsync c cData sq srv connInfo e2eEncryption_ pqEnc subMode = do
   submitPendingMsg c cData sq
 
 confirmQueue :: forall m. AgentMonad m => Compatible VersionSMPA -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> Maybe CR.PQEncryption -> SubscriptionMode -> m ()
-confirmQueue (Compatible agentVersion) c cData@ConnData {connId, connAgentVersion = v} sq srv connInfo e2eEncryption_ pqEnc_ subMode = do
+confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq srv connInfo e2eEncryption_ pqEnc_ subMode = do
   msg <- mkConfirmation =<< mkAgentConfirmation c cData sq srv connInfo subMode
   sendConfirmation c sq msg
   withStore' c $ \db -> setSndQueueStatus db sq Confirmed
@@ -2451,7 +2451,7 @@ confirmQueue (Compatible agentVersion) c cData@ConnData {connId, connAgentVersio
     mkConfirmation :: AgentMessage -> m MsgBody
     mkConfirmation aMessage = withStore c $ \db -> runExceptT $ do
       void . liftIO $ updateSndIds db connId
-      (encConnInfo, _) <- agentRatchetEncrypt db connId (smpEncode aMessage) (e2eEncConnInfoLength v) pqEnc_
+      (encConnInfo, _) <- agentRatchetEncrypt db cData (smpEncode aMessage) e2eEncConnInfoLength pqEnc_
       pure . smpEncode $ AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
 
 mkAgentConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> m AgentMessage
@@ -2465,12 +2465,12 @@ enqueueConfirmation c cData sq connInfo e2eEncryption_ pqEnc_ = do
   submitPendingMsg c cData sq
 
 storeConfirmation :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> Maybe CR.PQEncryption -> AgentMessage -> m ()
-storeConfirmation c ConnData {connId, connAgentVersion = v} sq e2eEncryption_ pqEnc_ agentMsg = withStore c $ \db -> runExceptT $ do
+storeConfirmation c cData@ConnData {connId, connAgentVersion = v} sq e2eEncryption_ pqEnc_ agentMsg = withStore c $ \db -> runExceptT $ do
   internalTs <- liftIO getCurrentTime
   (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
   let agentMsgStr = smpEncode agentMsg
       internalHash = C.sha256Hash agentMsgStr
-  (encConnInfo, pqEncryption) <- agentRatchetEncrypt db connId agentMsgStr (e2eEncConnInfoLength v) pqEnc_
+  (encConnInfo, pqEncryption) <- agentRatchetEncrypt db cData agentMsgStr e2eEncConnInfoLength pqEnc_
   let msgBody = smpEncode $ AgentConfirmation {agentVersion = v, e2eEncryption_, encConnInfo}
       msgType = agentMessageType agentMsg
       msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
@@ -2504,9 +2504,10 @@ enqueueRatchetKey c cData@ConnData {connId, pqEncryption} sq e2eEncryption = do
       pure internalId
 
 -- encoded AgentMessage -> encoded EncAgentMessage
-agentRatchetEncrypt :: DB.Connection -> ConnId -> ByteString -> Int -> Maybe CR.PQEncryption -> ExceptT StoreError IO (ByteString, CR.PQEncryption)
-agentRatchetEncrypt db connId msg paddedLen pqEnc_ = do
+agentRatchetEncrypt :: DB.Connection -> ConnData -> ByteString -> (CR.PQEncryption -> Int) -> Maybe CR.PQEncryption -> ExceptT StoreError IO (ByteString, CR.PQEncryption)
+agentRatchetEncrypt db ConnData {connId, pqEncryption} msg getPaddedLen pqEnc_ = do
   rc <- ExceptT $ getRatchet db connId
+  let paddedLen = getPaddedLen pqEncryption
   (encMsg, rc') <- liftE (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg pqEnc_
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
   pure (encMsg, CR.rcSndKEM rc')

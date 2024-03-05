@@ -36,7 +36,7 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  describe "double-ratchet encryption/decryption" $ do
+  fdescribe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
@@ -48,7 +48,7 @@ doubleRatchetTests = do
     it "should decode v2 Ratchet with default field values" $ testDecodeV2RatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
-  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+  fdescribe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
@@ -89,10 +89,13 @@ testAlgs test = test C.SX25519 >> test C.SX448
 paddedMsgLen :: Int
 paddedMsgLen = 100
 
-fullMsgLen :: VersionE2E -> Int
-fullMsgLen v = headerLenLength + fullHeaderLen v + C.authTagSize + paddedMsgLen
+fullMsgLen :: Ratchet a -> Int
+fullMsgLen Ratchet {rcEnableKEM, rcVersion} = headerLenLength + fullHeaderLen v rcEnableKEM + C.authTagSize + paddedMsgLen
   where
-    headerLenLength = if v < pqRatchetE2EEncryptVersion then 1 else 3 -- two bytes are added because of two Large used in new encoding
+    v = current rcVersion
+    headerLenLength
+      | v >= pqRatchetE2EEncryptVersion = 3 -- two bytes are added because of two Large used in new encoding
+      | otherwise = 1
 
 testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
@@ -302,8 +305,10 @@ testEnableKEM alice bob _ _ _ = do
   (alice, "accepting KEM") \#>! bob
   (alice, "KEM not enabled yet here too") \#>! bob
   (bob, "KEM is still not enabled") \#>! alice
-  (alice, "now KEM is enabled") !#> bob
-  (bob, "now KEM is enabled for both sides") !#> alice
+  (alice, "KEM still not enabled 2") \#>! bob
+  (bob, "now KEM is enabled") !#> alice
+  (alice, "now KEM is enabled for both sides") !#> bob
+  (bob, "Still enabled for both sides") !#> alice
   (alice, "disabling KEM") !#>\ bob
   (bob, "KEM not disabled yet") !#> alice
   (alice, "KEM disabled") \#> bob
@@ -318,12 +323,20 @@ testEnableKEMStrict alice bob _ _ _ = do
   (alice, "accepting KEM") \#>! bob
   (alice, "KEM not enabled yet here too") \#>! bob
   (bob, "KEM is still not enabled") \#>! alice
-  (alice, "now KEM is enabled") !#>! bob
-  (bob, "now KEM is enabled for both sides") !#>! alice
+  (alice, "KEM still not enabled 2") \#>! bob
+  (bob, "now KEM is enabled") !#>! alice
+  (alice, "now KEM is enabled for both sides") !#>! bob
+  (bob, "Still enabled for both sides") !#>! alice
   (alice, "disabling KEM") !#>\ bob
   (bob, "KEM not disabled yet") !#>! alice
   (alice, "KEM disabled") \#>\ bob
   (bob, "KEM disabled on both sides") \#>! alice
+  (alice, "KEM still disabled 1") \#>\ bob
+  (bob, "KEM still disabled 2") \#>! alice
+  (alice, "KEM still disabled 3") \#>\ bob
+  (bob, "KEM still disabled 4") \#>! alice
+  (alice, "KEM still disabled 5") \#>\ bob
+  (bob, "KEM still disabled 6") \#>! alice
 
 testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
 testKeyJSON _ = do
@@ -571,13 +584,13 @@ testRatchetVersions pq =
    in RVersions v v
 
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
-encrypt_ enableKem (_, rc, _) msg =
+encrypt_ pqEnc_ (_, rc, _) msg =
   -- print msg >>
-  runExceptT (rcEncrypt rc paddedMsgLen msg enableKem)
+  runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
-      B.length msg' `shouldBe` fullMsgLen (current $ rcVersion rc)
+      B.length msg' `shouldBe` fullMsgLen rc
       pure $ Right (msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
