@@ -40,6 +40,7 @@ module Simplex.Messaging.Crypto.Ratchet
     VersionE2E,
     VersionRangeE2E,
     pattern VersionE2E,
+    RatchetVersions (..),
     kdfX3DHE2EEncryptVersion,
     pqRatchetE2EEncryptVersion,
     currentE2EEncryptVersion,
@@ -58,7 +59,6 @@ module Simplex.Messaging.Crypto.Ratchet
     rcDecrypt,
     -- used in tests
     MsgHeader (..),
-    RatchetVersions (..),
     RatchetInitParams (..),
     UseKEM (..),
     RKEMParams (..),
@@ -71,6 +71,8 @@ module Simplex.Messaging.Crypto.Ratchet
     ratchetVersions,
     fullHeaderLen,
     applySMDiff,
+    encodeMsgHeader,
+    msgHeaderP,
   )
 where
 
@@ -85,7 +87,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
-import Data.Attoparsec.ByteString (Parser)
+import Data.Attoparsec.ByteString (Parser, peekWord8')
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
@@ -134,11 +136,16 @@ kdfX3DHE2EEncryptVersion = VersionE2E 2
 pqRatchetE2EEncryptVersion :: VersionE2E
 pqRatchetE2EEncryptVersion = VersionE2E 3
 
+-- TODO v5.7 increase to 3
 currentE2EEncryptVersion :: VersionE2E
-currentE2EEncryptVersion = VersionE2E 3
+currentE2EEncryptVersion = VersionE2E 2
 
-supportedE2EEncryptVRange :: VersionRangeE2E
-supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
+-- TODO v5.7 remove dependency of version range on whether PQ encryption is used
+supportedE2EEncryptVRange :: PQEncryption -> VersionRangeE2E
+supportedE2EEncryptVRange pq =
+  mkVersionRange kdfX3DHE2EEncryptVersion $ case pq of 
+    PQEncOn -> pqRatchetE2EEncryptVersion
+    PQEncOff -> currentE2EEncryptVersion
 
 data RatchetKEMState
   = RKSProposed -- only KEM encapsulation key
@@ -584,12 +591,12 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- // above added for KEM
 -- @
 initSndRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRangeE2E -> PublicKey a -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> Ratchet a
-initSndRatchet v rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PublicKey a -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> Ratchet a
+initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs (rcPQRss <$> kemAccepted)
    in Ratchet
-        { rcVersion = ratchetVersions v,
+        { rcVersion,
           rcAD = assocData,
           rcDHRs,
           rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
@@ -613,10 +620,10 @@ initSndRatchet v rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK,
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => VersionRangeE2E -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQEncryption -> Ratchet a
-initRcvRatchet v rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) rcEnableKEM =
+  forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQEncryption -> Ratchet a
+initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) rcEnableKEM =
   Ratchet
-    { rcVersion = ratchetVersions v,
+    { rcVersion,
       rcAD = assocData,
       rcDHRs,
       -- rcKEM:
@@ -654,33 +661,40 @@ data MsgHeader a = MsgHeader
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 -- TODO PQ this must be version-dependent
 -- TODO this is the exact size, some reserve should be added
-paddedHeaderLen :: Int
-paddedHeaderLen = 2284
+paddedHeaderLen :: VersionE2E -> Int
+paddedHeaderLen v
+  | v >= pqRatchetE2EEncryptVersion = 2284
+  | otherwise = 88
 
 -- only used in tests to validate correct padding
 -- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)
-fullHeaderLen :: Int
-fullHeaderLen = 2 + 1 + paddedHeaderLen + authTagSize + ivSize @AES256
+fullHeaderLen :: VersionE2E -> Int
+fullHeaderLen v = 2 + 1 + paddedHeaderLen v + authTagSize + ivSize @AES256
 
-instance AlgorithmI a => Encoding (MsgHeader a) where
-  smpEncode MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
-    | msgMaxVersion >= pqRatchetE2EEncryptVersion = smpEncode (msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs)
-    | otherwise = smpEncode (msgMaxVersion, msgDHRs, msgPN, msgNs)
-  smpP = do
-    msgMaxVersion <- smpP
-    msgDHRs <- smpP
-    msgKEM <- if msgMaxVersion >= pqRatchetE2EEncryptVersion then smpP else pure Nothing
-    msgPN <- smpP
-    msgNs <- smpP
-    pure MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
+-- pass the current version, as MsgHeader only includes the max supported version that can be different from the current
+encodeMsgHeader :: AlgorithmI a => VersionE2E -> MsgHeader a -> ByteString
+encodeMsgHeader v MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
+  | v >= pqRatchetE2EEncryptVersion = smpEncode (msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs)
+  | otherwise = smpEncode (msgMaxVersion, msgDHRs, msgPN, msgNs)
+
+-- pass the current version, as MsgHeader only includes the max supported version that can be different from the current
+msgHeaderP :: AlgorithmI a => VersionE2E -> Parser (MsgHeader a)
+msgHeaderP v = do
+  msgMaxVersion <- smpP
+  msgDHRs <- smpP
+  msgKEM <- if v >= pqRatchetE2EEncryptVersion then smpP else pure Nothing
+  msgPN <- smpP
+  msgNs <- smpP
+  pure MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
 
 data EncMessageHeader = EncMessageHeader
-  { ehVersion :: VersionE2E,
+  { ehVersion :: VersionE2E, -- this is current ratchet version
     ehIV :: IV,
     ehAuthTag :: AuthTag,
     ehBody :: ByteString
   }
 
+-- this encoding depends on version in EncMessageHeader because it is "current" ratchet version
 instance Encoding EncMessageHeader where
   smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
     | ehVersion >= pqRatchetE2EEncryptVersion = smpEncode (ehVersion, ehIV, ehAuthTag, Large ehBody)
@@ -696,14 +710,19 @@ data EncRatchetMessage = EncRatchetMessage
     emBody :: ByteString
   }
 
+-- the encoder always uses 2-byte lengths for the new version, even for short headers without PQ keys.
 encodeEncRatchetMessage :: VersionE2E -> EncRatchetMessage -> ByteString
 encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
   | v >= pqRatchetE2EEncryptVersion = smpEncode (Large emHeader, emAuthTag, Tail emBody)
   | otherwise = smpEncode (emHeader, emAuthTag, Tail emBody)
 
-encRatchetMessageP :: VersionE2E -> Parser EncRatchetMessage
-encRatchetMessageP v = do
-  emHeader <- if v >= pqRatchetE2EEncryptVersion then unLarge <$> smpP else smpP
+-- This parser relies on the fact that header cannot be shorter than 32 bytes,
+-- therefore if the first byte is less or equal to 31 (x1F), then we have 2 byte-length limited to 8191.
+-- This allows to awoid current version upgrade in one message (as version does not precede this length in the encoding).
+encRatchetMessageP :: Parser EncRatchetMessage
+encRatchetMessageP = do
+  len1 <- peekWord8'
+  emHeader <- if len1 < 32 then unLarge <$> smpP else smpP
   (emAuthTag, Tail emBody) <- smpP
   pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
@@ -774,25 +793,30 @@ joinContactInitialKeys = \case
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg pqMode_ = do
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg pqEnc_ = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
-  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV paddedHeaderLen rcAD msgHeader
+  let v = current rcVersion
+  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen v) rcAD (msgHeader v)
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  -- TODO PQ versioning in Ratchet should change: we should use "current" version here
-  let emHeader = smpEncode EncMessageHeader {ehVersion = maxSupported rcVersion, ehBody, ehAuthTag, ehIV}
+  let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
-  let msg' = encodeEncRatchetMessage (maxSupported rcVersion) EncRatchetMessage {emHeader, emBody, emAuthTag}
+  let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
       -- state.Ns += 1
-      rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
-      rc'' = case pqMode_ of
+      -- TODO v5.8 remove comments below
+      -- Note that maxSupported will not downgrade here below current.
+      -- TODO v5.7 remove comments below
+      -- It will downgrade when decrypting the message when the current version downgrades to remove support for PQ encryption.
+      -- TODO v5.8 replace `max v currentE2EEncryptVersion` with `v` (to allow downgrade when app downgraded)
+      rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1, rcVersion = rcVersion {maxSupported = max v currentE2EEncryptVersion}}
+      rc'' = case pqEnc_ of
         Nothing -> rc'
-        Just rcEnableKEM
-          | enablePQ rcEnableKEM -> rc' {rcEnableKEM}
-          | otherwise ->
-              let rcKEM' = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM
-               in rc' {rcEnableKEM, rcKEM = rcKEM'}
+        -- This sets max version to support PQ encryption.
+        -- Current version upgrade happens when peer decrypts the message.
+        -- TODO v5.7 remove version upgrade here, as it's already upgraded above
+        Just PQEncOn -> rc' {rcEnableKEM = PQEncOn, rcVersion = rcVersion {maxSupported = pqRatchetE2EEncryptVersion}}
+        Just PQEncOff -> rc' {rcEnableKEM = PQEncOff, rcKEM = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM}
   pure (msg', rc'')
   where
     -- header = HEADER_PQ2(
@@ -802,8 +826,9 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
     --   pn = state.PN,
     --   n = state.Ns
     -- )
-    msgHeader =
-      smpEncode
+    msgHeader v =
+      encodeMsgHeader
+        v 
         MsgHeader
           { msgMaxVersion = maxSupported rcVersion,
             msgDHRs = publicKey rcDHRs,
@@ -838,7 +863,7 @@ rcDecrypt ::
   ExceptT CryptoError IO (DecryptResult a)
 rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
   -- TODO PQ versioning should change
-  encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError (encRatchetMessageP $ maxSupported rcVersion) msg'
+  encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError encRatchetMessageP msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, cipher-text, AD)
   decryptSkipped encHdr encMsg >>= \case
@@ -852,32 +877,37 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
     SMMessage r -> pure r
   where
     decryptRcMessage :: RatchetStep -> MsgHeader a -> EncRatchetMessage -> ExceptT CryptoError IO (DecryptResult a)
-    decryptRcMessage rcStep MsgHeader {msgDHRs, msgKEM, msgPN, msgNs} encMsg = do
+    decryptRcMessage rcStep MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs} encMsg = do
+      let rc1 = upgradeRatchetVersion
       -- if dh_ratchet:
-      (rc', smks1) <- ratchetStep rcStep
-      case skipMessageKeys msgNs rc' of
-        Left e -> pure (Left e, rc', smkDiff smks1)
-        Right (rc''@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, smks2) -> do
+      (rc2, smks1) <- ratchetStep rc1 rcStep
+      case skipMessageKeys msgNs rc2 of
+        Left e -> pure (Left e, rc2, smkDiff smks1)
+        Right (rc3@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, smks2) -> do
           -- state.CKr, mk = KDF_CK(state.CKr)
           let (rcCKr', mk, iv, _) = chainKdf rcCKr
           -- return DECRYPT (mk, cipher-text, CONCAT (AD, enc_header))
           msg <- decryptMessage (MessageKey mk iv) encMsg
           -- state . Nr += 1
-          pure (msg, rc'' {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, smkDiff $ smks1 <> smks2)
-        Right (rc'', smks2) -> do
-          pure (Left CERatchetState, rc'', smkDiff $ smks1 <> smks2)
+          pure (msg, rc3 {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, smkDiff $ smks1 <> smks2)
+        Right (rc3, smks2) -> do
+          pure (Left CERatchetState, rc3, smkDiff $ smks1 <> smks2)
       where
+        upgradeRatchetVersion :: Ratchet a
+        upgradeRatchetVersion
+          | msgMaxVersion > current rcVersion = rc {rcVersion = rcVersion {current = min msgMaxVersion $ maxSupported rcVersion}}
+          | otherwise = rc
         smkDiff :: SkippedMsgKeys -> SkippedMsgDiff
         smkDiff smks = if M.null smks then SMDNoChange else SMDAdd smks
-        ratchetStep :: RatchetStep -> ExceptT CryptoError IO (Ratchet a, SkippedMsgKeys)
-        ratchetStep SameRatchet = pure (rc, M.empty)
-        ratchetStep AdvanceRatchet =
+        ratchetStep :: Ratchet a -> RatchetStep -> ExceptT CryptoError IO (Ratchet a, SkippedMsgKeys)
+        ratchetStep rc1 SameRatchet = pure (rc1, M.empty)
+        ratchetStep rc1 AdvanceRatchet =
           -- SkipMessageKeysHE(state, header.pn)
-          case skipMessageKeys msgPN rc of
+          case skipMessageKeys msgPN rc1 of
             Left e -> throwE e
-            Right (rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
+            Right (rc2@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
               -- DHRatchetPQ2HE(state, header)
-              (kemSS, kemSS', rcKEM') <- pqRatchetStep rc' msgKEM
+              (kemSS, kemSS', rcKEM') <- pqRatchetStep rc2 msgKEM
               -- state.DHRs = GENERATE_DH()
               (_, rcDHRs') <- atomically $ generateKeyPair @a g
               -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || ss)
@@ -886,8 +916,8 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                   (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
                   sndKEM = isJust kemSS'
                   rcvKEM = isJust kemSS
-                  rc'' =
-                    rc'
+                  rc3 =
+                    rc2
                       { rcDHRs = rcDHRs',
                         rcKEM = rcKEM',
                         rcEnableKEM = PQEncryption $ sndKEM || rcvKEM,
@@ -902,9 +932,9 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                         rcNHKs = rcNHKs',
                         rcNHKr = rcNHKr'
                       }
-              pure (rc'', hmks)
+              pure (rc3, hmks)
         pqRatchetStep :: Ratchet a -> Maybe ARKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
-        pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption pqEnc} = \case
+        pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption pqEnc, rcVersion = rv} = \case
           -- received message does not have KEM in header,
           -- but the user enabled KEM when sending previous message
           Nothing -> case rcKEM of
@@ -914,7 +944,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
             _ -> pure (Nothing, Nothing, Nothing)
           -- received message has KEM in header.
           Just (ARKP _ ps)
-            | pqEnc -> do
+            | pqEnc && current rv >= pqRatchetE2EEncryptVersion -> do
                 -- state.PQRr = header.kem
                 (ss, rcPQRr) <- sharedSecret
                 -- state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret KEM #1
@@ -982,9 +1012,9 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
         e -> throwE e
     -- header = HDECRYPT(state.NHKr, enc_header)
     decryptNextHeader hdr = (AdvanceRatchet,) <$> decryptHeader (rcNHKr rc) hdr
-    decryptHeader k EncMessageHeader {ehBody, ehAuthTag, ehIV} = do
+    decryptHeader k EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV} = do
       header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
-      parseE' CryptoHeaderError smpP header
+      parseE' CryptoHeaderError (msgHeaderP ehVersion) header
     decryptMessage :: MessageKey -> EncRatchetMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))

@@ -168,13 +168,14 @@ smpCfgV7 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange batchCmdsSMPVersio
 ntfCfgV2 :: ProtocolClientConfig NTFVersion
 ntfCfgV2 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange (VersionNTF 1) authBatchCmdsNTFVersion}
 
+-- TODO PQ test next version with PQ
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SEd25519,
-      smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
+      smpAgentVRange = \_ -> prevRange $ smpAgentVRange agentCfg PQEncOff,
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
-      e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
+      e2eEncryptVRange = \_ -> prevRange $ e2eEncryptVRange agentCfg PQEncOff,
       smpCfg = smpCfgVPrev
     }
 
@@ -187,7 +188,7 @@ agentCfgV7 =
     }
 
 agentCfgRatchetVPrev :: AgentConfig
-agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
+agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = \_ -> prevRange $ e2eEncryptVRange agentCfg PQEncOff}
 
 prevRange :: VersionRange v -> VersionRange v
 prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
@@ -424,6 +425,7 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
   let v = basicAuthSMPVersion
    in allowNew && (isNothing srvAuth || (srvVersion >= v && clntVersion >= v && srvAuth == clntAuth))
 
+-- TODO PQ test next version with PQ
 testMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
   it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 runTest
@@ -436,6 +438,7 @@ testMatrix2 t runTest = do
     it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 runTest
     it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 runTest
 
+-- TODO PQ test next version with PQ
 testRatchetMatrix2 :: ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
   it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 runTest
@@ -445,7 +448,7 @@ testRatchetMatrix2 t runTest = do
     pendingV "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 runTest
   where
     pendingV d =
-      let vr = e2eEncryptVRange agentCfg
+      let vr = e2eEncryptVRange agentCfg PQEncOff
        in if minVersion vr == maxVersion vr then skip "previous version is not supported" . it d else it d
 
 testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
@@ -688,8 +691,8 @@ testAllowConnectionClientRestart t = do
 
 testIncreaseConnAgentVersion :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersion t = do
-  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection alice bob
@@ -701,7 +704,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't increase if incompatible
 
     disconnectAgentClient alice
-    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
 
     runRight_ $ do
       subscribeConnection alice2 bobId
@@ -712,7 +715,7 @@ testIncreaseConnAgentVersion t = do
     -- version increases if compatible
 
     disconnectAgentClient bob
-    bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+    bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection bob2 aliceId
@@ -723,7 +726,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't decrease, even if incompatible
 
     disconnectAgentClient alice2
-    alice3 <- getSMPAgentClient' 5 agentCfg {smpAgentVRange = mkVersionRange 2 2} initAgentServers testDB
+    alice3 <- getSMPAgentClient' 5 agentCfg {smpAgentVRange = \_ -> mkVersionRange 2 2} initAgentServers testDB
 
     runRight_ $ do
       subscribeConnection alice3 bobId
@@ -732,7 +735,7 @@ testIncreaseConnAgentVersion t = do
       checkVersion bob2 aliceId 3
 
     disconnectAgentClient bob2
-    bob3 <- getSMPAgentClient' 6 agentCfg {smpAgentVRange = mkVersionRange 1 1} initAgentServers testDB2
+    bob3 <- getSMPAgentClient' 6 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 1} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection bob3 aliceId
@@ -749,8 +752,8 @@ checkVersion c connId v = do
 
 testIncreaseConnAgentVersionMaxCompatible :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersionMaxCompatible t = do
-  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
+  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection alice bob
@@ -762,9 +765,9 @@ testIncreaseConnAgentVersionMaxCompatible t = do
     -- version increases to max compatible
 
     disconnectAgentClient alice
-    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
     disconnectAgentClient bob
-    bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB2
+    bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = supportedSMPAgentVRange} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection alice2 bobId
@@ -777,8 +780,8 @@ testIncreaseConnAgentVersionMaxCompatible t = do
 
 testIncreaseConnAgentVersionStartDifferentVersion :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersionStartDifferentVersion t = do
-  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection alice bob
@@ -790,7 +793,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
     -- version increases to max compatible
 
     disconnectAgentClient alice
-    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
 
     runRight_ $ do
       subscribeConnection alice2 bobId
@@ -2351,8 +2354,8 @@ testDeliveryReceipts =
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsVersion t = do
-  a <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
-  b <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
+  a <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
+  b <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aId, bId) <- runRight $ do
       (aId, bId) <- makeConnection a b
@@ -2372,8 +2375,8 @@ testDeliveryReceiptsVersion t = do
 
     disconnectAgentClient a
     disconnectAgentClient b
-    a' <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB
-    b' <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = mkVersionRange 1 4} initAgentServers testDB2
+    a' <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = supportedSMPAgentVRange} initAgentServers testDB
+    b' <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = supportedSMPAgentVRange} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection a' bId

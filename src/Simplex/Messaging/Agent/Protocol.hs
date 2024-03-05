@@ -187,7 +187,15 @@ import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern PQEncOff, RcvE2ERatchetParams, RcvE2ERatchetParamsUri, SndE2ERatchetParams)
+import Simplex.Messaging.Crypto.Ratchet
+  ( InitialKeys (..),
+    PQEncryption (..),
+    pattern PQEncOff,
+    pattern PQEncOn,
+    RcvE2ERatchetParams,
+    RcvE2ERatchetParamsUri,
+    SndE2ERatchetParams
+  )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -259,11 +267,16 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
+-- TODO v5.7 increase to 5
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 5
+currentSMPAgentVersion = VersionSMPA 4
 
-supportedSMPAgentVRange :: VersionRangeSMPA
-supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
+-- TODO v5.7 remove dependency of version range on whether PQ encryption is used
+supportedSMPAgentVRange :: PQEncryption -> VersionRangeSMPA
+supportedSMPAgentVRange pq =
+  mkVersionRange duplexHandshakeSMPAgentVersion $ case pq of
+    PQEncOn -> pqdrSMPAgentVersion
+    PQEncOff -> currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and

@@ -90,7 +90,7 @@ paddedMsgLen :: Int
 paddedMsgLen = 100
 
 fullMsgLen :: VersionE2E -> Int
-fullMsgLen v = headerLenLength + fullHeaderLen + C.authTagSize + paddedMsgLen
+fullMsgLen v = headerLenLength + fullHeaderLen v + C.authTagSize + paddedMsgLen
   where
     headerLenLength = if v < pqRatchetE2EEncryptVersion then 1 else 3 -- two bytes are added because of two Large used in new encoding
 
@@ -98,7 +98,7 @@ testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> E
 testMessageHeader v _ = do
   (k, _) <- atomically . C.generateKeyPair @a =<< C.newRandom
   let hdr = MsgHeader {msgMaxVersion = v, msgDHRs = k, msgKEM = Nothing, msgPN = 0, msgNs = 0}
-  parseAll (smpP @(MsgHeader a)) (smpEncode hdr) `shouldBe` Right hdr
+  parseAll (msgHeaderP v) (encodeMsgHeader v hdr) `shouldBe` Right hdr
 
 testKEMParams :: Expectation
 testKEMParams = do
@@ -119,12 +119,12 @@ testMessageHeaderKEM _ = do
   let msgMaxVersion = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
       msgKEM = Just . ARKP SRKSProposed $ RKParamsProposed kem
       hdr = MsgHeader {msgMaxVersion, msgDHRs = k, msgKEM, msgPN = 0, msgNs = 0}
-  parseAll (smpP @(MsgHeader a)) (smpEncode hdr) `shouldBe` Right hdr
+  parseAll (msgHeaderP msgMaxVersion) (encodeMsgHeader msgMaxVersion hdr) `shouldBe` Right hdr
   (kem', _) <- sntrup761Keypair g
   (ct, _) <- sntrup761Enc g kem
   let msgKEM' = Just . ARKP SRKSAccepted $ RKParamsAccepted ct kem'
       hdr' = MsgHeader {msgMaxVersion, msgDHRs = k, msgKEM = msgKEM', msgPN = 0, msgNs = 0}
-  parseAll (smpP @(MsgHeader a)) (smpEncode hdr') `shouldBe` Right hdr'
+  parseAll (msgHeaderP msgMaxVersion) (encodeMsgHeader msgMaxVersion hdr') `shouldBe` Right hdr'
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
@@ -461,9 +461,9 @@ compatibleRatchets
       _ -> expectationFailure "RatchetInitParams params are not compatible"
 
 encryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Maybe PQEncryption -> (Ratchet a -> ()) -> (Ratchet a -> ()) -> EncryptDecryptSpec a
-encryptDecrypt pqEnc invalidSnd invalidRcv (alice, msg) bob = do
-  Right msg' <- withTVar (encrypt_ pqEnc) invalidSnd alice msg
-  Decrypted msg'' <- decrypt' invalidRcv bob msg'
+encryptDecrypt pqEnc validSnd validRcv (alice, msg) bob = do
+  Right msg' <- withTVar (encrypt_ pqEnc) validSnd alice msg
+  Decrypted msg'' <- decrypt' validRcv bob msg'
   msg'' `shouldBe` msg
 
 -- enable KEM (currently disabled)
@@ -508,8 +508,9 @@ initRatchets = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice PQEncOff
+  let vs = testRatchetVersions PQEncOff
+      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOff
   pure (alice, bob, encrypt' noSndKEM, decrypt' noRcvKEM, (\#>))
 
 initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -524,8 +525,9 @@ initRatchetsKEMProposed = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice PQEncOn
+  let vs = testRatchetVersions PQEncOn
+      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -541,8 +543,9 @@ initRatchetsKEMAccepted = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice PQEncOn
+  let vs = testRatchetVersions PQEncOn
+      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -557,9 +560,15 @@ initRatchetsKEMProposedAgain = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let bob = initSndRatchet supportedE2EEncryptVRange (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet supportedE2EEncryptVRange pkAlice2 paramsAlice PQEncOn
+  let vs = testRatchetVersions PQEncOn
+      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
+
+testRatchetVersions :: PQEncryption -> RatchetVersions
+testRatchetVersions pq =
+  let v = maxVersion $ supportedE2EEncryptVRange pq
+   in RVersions v v
 
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ enableKem (_, rc, _) msg =
@@ -568,7 +577,7 @@ encrypt_ enableKem (_, rc, _) msg =
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
-      B.length msg' `shouldBe` fullMsgLen (maxSupported $ rcVersion rc)
+      B.length msg' `shouldBe` fullMsgLen (current $ rcVersion rc)
       pure $ Right (msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
