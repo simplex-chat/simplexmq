@@ -1359,9 +1359,9 @@ batchTransmissions' batch bSize
           sLen = B.length s
           len' = len + sLen
     addBatch :: ([TransportBatch r], Int, Int, [ByteString], [r]) -> [TransportBatch r]
-    addBatch (bs, _len, n, ss, rs) = if n == 0 then bs else TBTransmissions b n rs : bs
-      where
-        b = B.concat $ B.singleton (lenEncode n) : ss
+    addBatch (bs, _len, n, c : cs, rs) = TBTransmissions (smpEncode $ Tail c :| map Tail cs) n rs : bs
+    addBatch (bs, _len, 0, [], []) = bs
+    addBatch (bs, _len, _, _, _) = bs -- should not happen: no chunks collected, however some elements got stored anyway
 
 tEncode :: SentRawTransmission -> ByteString
 tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
