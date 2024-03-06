@@ -817,7 +817,9 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
       v = current rcVersion
+      -- PQ encryption can be enabled or disabled
       rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
+      -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
       rcSupportKEM' = PQEncryption $ enablePQ rcSupportKEM || enablePQ rcEnableKEM'
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader v)

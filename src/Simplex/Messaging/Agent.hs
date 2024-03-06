@@ -940,6 +940,8 @@ sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
         prepareMsg :: ConnData -> NonEmpty SndQueue -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
         prepareMsg cData@ConnData {connId, pqEncryption} sqs
           | ratchetSyncSendProhibited cData = (acc, Left $ CMD PROHIBITED)
+          -- connection is only updated if PQ encryption was disabled, and now it has to be enabled.
+          -- support for PQ encryption (small message envelopes) will not be disabled when message is sent.
           | pqEnc == PQEncOn && pqEncryption == PQEncOff =
               let cData' = cData {pqEncryption = pqEnc} :: ConnData
                in (connId : acc, Right (cData', sqs, Just pqEnc, msgFlags, A_MSG msg))
@@ -1133,9 +1135,9 @@ enqueueMessageB c reqs = do
           agentMsg = AgentMessage privHeader aMessage
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
-          pqEnc' = fromMaybe pqEncryption pqEnc_
       (encAgentMessage, pqEnc) <- agentRatchetEncrypt db cData agentMsgStr e2eEncUserMsgLength pqEnc_
-      let agentVersion = maxVersion $ getAVRange pqEnc'
+      -- agent version range is determined by the connection suppport of PQ encryption, that is may be enabled when message is sent
+      let agentVersion = maxVersion $ getAVRange pqEncryption
           msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
           msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, pqEncryption = pqEnc, internalHash, prevMsgHash}
