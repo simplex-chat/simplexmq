@@ -1420,9 +1420,10 @@ synchronizeRatchet' c connId pqEnc force = withConnLock c connId "synchronizeRat
     SomeConn _ (DuplexConnection cData@ConnData {pqEncryption} rqs sqs)
       | ratchetSyncAllowed cData || force -> do
           -- check queues are not switching?
-          pqEnc' <- case (pqEnc, pqEncryption) of
-            (PQEncOn, PQEncOff) -> PQEncOn <$ withStore' c (`enableConnPQEncryption` connId)
-            _ -> pure pqEncryption
+          pqEnc' <-
+            if pqEnc == PQEncOn && pqEncryption == PQEncOff
+              then PQEncOn <$ withStore' c (`enableConnPQEncryption` connId)
+              else pure pqEncryption
           let cData' = cData {pqEncryption = pqEnc'} :: ConnData
           AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
