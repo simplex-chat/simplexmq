@@ -31,6 +31,7 @@ module Simplex.Messaging.Crypto.Ratchet
     PQSupport (..),
     pattern PQSupportOn,
     pattern PQSupportOff,
+    PQSupported (..),
     AUseKEM (..),
     RatchetKEMState (..),
     SRatchetKEMState (..),
@@ -338,6 +339,11 @@ instance StrEncoding AnyE2ERatchetParamsUri where
 type RcvE2ERatchetParams a = E2ERatchetParams 'RKSProposed a
 
 type SndE2ERatchetParams a = AE2ERatchetParams a
+
+class PQSupported a where pqSupported :: a -> PQSupport
+
+instance PQSupported (E2ERatchetParamsUri s a) where
+  pqSupported (E2ERatchetParamsUri _ _ _ kem_) = PQSupport $ isJust kem_
 
 data PrivRKEMParams (s :: RatchetKEMState) where
   PrivateRKParamsProposed :: KEMKeyPair -> PrivRKEMParams 'RKSProposed

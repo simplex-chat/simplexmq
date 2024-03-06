@@ -13,7 +13,7 @@ module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
-import AgentTests.FunctionalAPITests (functionalAPITests, pattern Msg, pattern Msg')
+import AgentTests.FunctionalAPITests (functionalAPITests, pattern CONF, pattern REQ, pattern Msg, pattern Msg')
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
@@ -27,7 +27,7 @@ import GHC.Stack (withFrozenCallStack)
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Protocol hiding (MID)
+import Simplex.Messaging.Agent.Protocol hiding (MID, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQSupportOn, pattern PQSupportOff)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -219,7 +219,7 @@ testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  bob <# ("", "alice", INFO "alice's connInfo")
+  bob <# ("", "alice", A.INFO (CR.pqEncToSupport pq) "alice's connInfo")
   bob <# ("", "alice", CON pq)
   alice <# ("", "bob", CON pq)
   -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
@@ -257,7 +257,7 @@ testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
   alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
-  bob <# ("", aliceConn, INFO "alice's connInfo")
+  bob <# ("", aliceConn, A.INFO (CR.pqEncToSupport pq) "alice's connInfo")
   bob <# ("", aliceConn, CON pq)
   alice <# ("", bobConn, CON pq)
   alice #: ("2", bobConn, "SEND F :hello") #> ("2", bobConn, A.MID 4 pq)
@@ -294,7 +294,7 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   alice #: ("2", "bob", "ACPT " <> aInvId <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   ("", "alice", Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
-  alice <# ("", "bob", INFO "bob's connInfo 2")
+  alice <# ("", "bob", A.INFO (CR.pqEncToSupport abPQ) "bob's connInfo 2")
   alice <# ("", "bob", CON abPQ)
   bob <# ("", "alice", CON abPQ)
   alice #: ("3", "bob", "SEND F :hi") #> ("3", "bob", A.MID 4 abPQ)
@@ -308,7 +308,7 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   alice #: ("4", "tom", "ACPT " <> aInvId' <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("4", "tom", OK)
   ("", "alice", Right (CONF tConfId _ "alice's connInfo")) <- (tom <#:)
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
-  alice <# ("", "tom", INFO "tom's connInfo 2")
+  alice <# ("", "tom", A.INFO (CR.pqEncToSupport atPQ) "tom's connInfo 2")
   alice <# ("", "tom", CON atPQ)
   tom <# ("", "alice", CON atPQ)
   alice #: ("5", "tom", "SEND F :hi there") #> ("5", "tom", A.MID 4 atPQ)
@@ -331,7 +331,7 @@ testContactConnRandomIds (alice, aPQ) (bob, bPQ) = do
   aliceConn' `shouldBe` aliceConn
 
   bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
-  alice <# ("", bobConn, INFO "bob's connInfo 2")
+  alice <# ("", bobConn, A.INFO (CR.pqEncToSupport pq) "bob's connInfo 2")
   alice <# ("", bobConn, CON pq)
   bob <# ("", aliceConn, CON pq)
 
@@ -556,8 +556,8 @@ connect' (h1, name1, pqMode1) (h2, name2, pqMode2) = do
   h2 #: ("c2", name1, "JOIN T " <> cReq' <> enableKEMStr pqMode2 <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
-  h2 <# ("", name1, INFO "info1")
   let pq = pqConnectionMode pqMode1 pqMode2
+  h2 <# ("", name1, A.INFO (CR.pqEncToSupport pq) "info1")
   h2 <# ("", name1, CON pq)
   h1 <# ("", name2, CON pq)
 
