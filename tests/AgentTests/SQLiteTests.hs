@@ -45,7 +45,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQEncOn)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -190,7 +190,7 @@ cData1 =
       lastExternalSndId = 0,
       deleted = False,
       ratchetSyncState = RSOk,
-      pqEncryption = CR.PQEncOn
+      pqSupport = CR.PQSupportOn
     }
 
 testPrivateAuthKey :: C.APrivateAuthKey
@@ -662,7 +662,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQEncOn) SMSubscribe
+    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 

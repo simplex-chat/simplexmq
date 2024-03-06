@@ -29,7 +29,7 @@ import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol hiding (MID)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQEncOff)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQSupportOn, pattern PQSupportOff)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..))
@@ -173,7 +173,7 @@ type PQMatrix2 c =
   HasCallStack =>
   TProxy c ->
   (HasCallStack => (c -> c -> IO ()) -> Expectation) ->
-  (HasCallStack => (c, InitialKeys) -> (c, PQEncryption) -> IO ()) ->
+  (HasCallStack => (c, InitialKeys) -> (c, PQSupport) -> IO ()) ->
   Spec
 
 pqMatrix2 :: PQMatrix2 c
@@ -184,34 +184,34 @@ pqMatrix2NoInv = pqMatrix2_ False
 
 pqMatrix2_ :: Bool -> PQMatrix2 c
 pqMatrix2_ pqInv _ smpTest test = do
-  it "dh/dh handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQEncOff)
-  it "dh/pq handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQEncOn)
-  it "pq/dh handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQEncOff)
-  it "pq/pq handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQEncOn)
+  it "dh/dh handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQSupportOff)
+  it "dh/pq handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQSupportOn)
+  it "pq/dh handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQSupportOff)
+  it "pq/pq handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQSupportOn)
   when pqInv $ do
-    it "pq-inv/dh handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQEncOff)
-    it "pq-inv/pq handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQEncOn)
+    it "pq-inv/dh handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOff)
+    it "pq-inv/pq handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOn)
 
 pqMatrix3 ::
   HasCallStack =>
   TProxy c -> 
   (HasCallStack => (c -> c -> c -> IO ()) -> Expectation) -> 
-  (HasCallStack => (c, InitialKeys) -> (c, PQEncryption) -> (c, PQEncryption) -> IO ()) ->
+  (HasCallStack => (c, InitialKeys) -> (c, PQSupport) -> (c, PQSupport) -> IO ()) ->
   Spec
 pqMatrix3 _ smpTest test = do
-  it "dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOff) (c, PQEncOff)
-  it "dh/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOff) (c, PQEncOn)
-  it "dh/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOn) (c, PQEncOff)
-  it "dh/pq/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQEncOn) (c, PQEncOn)
-  it "pq/dh/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOff) (c, PQEncOff)
-  it "pq/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOff) (c, PQEncOn)
-  it "pq/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOn) (c, PQEncOff)
-  it "pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQEncOn) (c, PQEncOn)
+  it "dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOff) (c, PQSupportOff)
+  it "dh/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOff) (c, PQSupportOn)
+  it "dh/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOn) (c, PQSupportOff)
+  it "dh/pq/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOn) (c, PQSupportOn)
+  it "pq/dh/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOff) (c, PQSupportOff)
+  it "pq/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOff) (c, PQSupportOn)
+  it "pq/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOn) (c, PQSupportOff)
+  it "pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOn) (c, PQSupportOn)
 
 testDuplexConnection :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
-testDuplexConnection _ alice bob = testDuplexConnection' (alice, IKPQOn) (bob, PQEncOn)
+testDuplexConnection _ alice bob = testDuplexConnection' (alice, IKPQOn) (bob, PQSupportOn)
 
-testDuplexConnection' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQEncryption) -> IO ()
+testDuplexConnection' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV" <> pqConnModeStr aPQ <> " subscribe")
@@ -246,9 +246,9 @@ testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   alice #:# "nothing else should be delivered to alice"
 
 testDuplexConnRandomIds :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
-testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, IKPQOn) (bob, PQEncOn)
+testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, IKPQOn) (bob, PQSupportOn)
 
-testDuplexConnRandomIds' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQEncryption) -> IO ()
+testDuplexConnRandomIds' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV" <> pqConnModeStr aPQ <> " subscribe")
@@ -282,7 +282,7 @@ testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
-testContactConnection :: Transport c => (c, InitialKeys) -> (c, PQEncryption) -> (c, PQEncryption) -> IO ()
+testContactConnection :: Transport c => (c, InitialKeys) -> (c, PQSupport) -> (c, PQSupport) -> IO ()
 testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
@@ -316,7 +316,7 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   tom <#= \case ("", "alice", Msg' 4 pq' "hi there") -> pq' == atPQ; _ -> False
   tom #: ("23", "alice", "ACK 4") #> ("23", "alice", OK)
 
-testContactConnRandomIds :: Transport c => (c, InitialKeys) -> (c, PQEncryption) -> IO ()
+testContactConnRandomIds :: Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testContactConnRandomIds (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON" <> pqConnModeStr aPQ <> " subscribe")
@@ -380,7 +380,7 @@ testSubscrNotification t (server, _) client = do
   withSmpServer (ATransport t) $
     client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
-testMsgDeliveryServerRestart :: forall c. Transport c => (c, InitialKeys) -> (c, PQEncryption) -> IO ()
+testMsgDeliveryServerRestart :: forall c. Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
   withServer $ do
@@ -547,9 +547,9 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
 
 connect :: Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
-connect (h1, name1) (h2, name2) = connect' (h1, name1, IKPQOn) (h2, name2, PQEncOn)
+connect (h1, name1) (h2, name2) = connect' (h1, name1, IKPQOn) (h2, name2, PQSupportOn)
 
-connect' :: forall c. Transport c => (c, ByteString, InitialKeys) -> (c, ByteString, PQEncryption) -> IO ()
+connect' :: forall c. Transport c => (c, ByteString, InitialKeys) -> (c, ByteString, PQSupport) -> IO ()
 connect' (h1, name1, pqMode1) (h2, name2, pqMode2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV" <> pqConnModeStr pqMode1 <> " subscribe")
   let cReq' = strEncode cReq
@@ -561,15 +561,15 @@ connect' (h1, name1, pqMode1) (h2, name2, pqMode2) = do
   h2 <# ("", name1, CON pq)
   h1 <# ("", name2, CON pq)
 
-pqConnectionMode :: InitialKeys -> PQEncryption -> PQEncryption
-pqConnectionMode pqMode1 pqMode2 = PQEncryption $ enablePQ (CR.connPQEncryption pqMode1) && enablePQ pqMode2
+pqConnectionMode :: InitialKeys -> PQSupport -> PQEncryption
+pqConnectionMode pqMode1 pqMode2 = PQEncryption $ supportPQ (CR.connPQEncryption pqMode1) && supportPQ pqMode2
 
-enableKEMStr :: PQEncryption -> ByteString
-enableKEMStr PQEncOn = " " <> strEncode PQEncOn
+enableKEMStr :: PQSupport -> ByteString
+enableKEMStr PQSupportOn = " " <> strEncode PQSupportOn
 enableKEMStr _ = ""
 
 pqConnModeStr :: InitialKeys -> ByteString
-pqConnModeStr (IKNoPQ PQEncOff) = ""
+pqConnModeStr (IKNoPQ PQSupportOff) = ""
 pqConnModeStr pq =  " " <> strEncode pq
 
 sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()

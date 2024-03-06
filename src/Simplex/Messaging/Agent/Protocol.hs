@@ -192,7 +192,9 @@ import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
     PQEncryption (..),
     pattern PQEncOff,
-    pattern PQEncOn,
+    PQSupport,
+    pattern PQSupportOn,
+    pattern PQSupportOff,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
     SndE2ERatchetParams
@@ -272,27 +274,27 @@ pqdrSMPAgentVersion = VersionSMPA 5
 currentSMPAgentVersion :: VersionSMPA
 currentSMPAgentVersion = VersionSMPA 4
 
--- TODO v5.7 remove dependency of version range on whether PQ encryption is used
-supportedSMPAgentVRange :: PQEncryption -> VersionRangeSMPA
+-- TODO v5.7 remove dependency of version range on whether PQ support is needed
+supportedSMPAgentVRange :: PQSupport -> VersionRangeSMPA
 supportedSMPAgentVRange pq =
   mkVersionRange duplexHandshakeSMPAgentVersion $ case pq of
-    PQEncOn -> pqdrSMPAgentVersion
-    PQEncOff -> currentSMPAgentVersion
+    PQSupportOn -> pqdrSMPAgentVersion
+    PQSupportOff -> currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
-e2eEncConnInfoLength :: PQEncryption -> Int
+e2eEncConnInfoLength :: PQSupport -> Int
 e2eEncConnInfoLength = \case
   -- reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  PQEncOn -> 11148
-  PQEncOff -> 14848
+  PQSupportOn -> 11148
+  PQSupportOff -> 14848
 
-e2eEncUserMsgLength :: PQEncryption -> Int
+e2eEncUserMsgLength :: PQSupport -> Int
 e2eEncUserMsgLength = \case
   -- reduced by 2200 (roughly the increase of message ratchet header size)
-  PQEncOn -> 13656
-  PQEncOff -> 15856
+  PQSupportOn -> 13656
+  PQSupportOff -> 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
@@ -371,11 +373,11 @@ type ConnInfo = ByteString
 data ACommand (p :: AParty) (e :: AEntity) where
   NEW :: Bool -> AConnectionMode -> InitialKeys -> SubscriptionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
-  JOIN :: Bool -> AConnectionRequestUri -> PQEncryption -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
+  JOIN :: Bool -> AConnectionRequestUri -> PQSupport -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
-  ACPT :: InvitationId -> PQEncryption -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
+  ACPT :: InvitationId -> PQSupport -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client AEConn
   INFO :: ConnInfo -> ACommand Agent AEConn
   CON :: PQEncryption -> ACommand Agent AEConn -- notification that connection is established
@@ -1732,9 +1734,9 @@ commandP binaryP =
       ACmdTag SClient e cmd ->
         ACmd SClient e <$> case cmd of
           NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
-          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqEncP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
+          JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
           LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
-          ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> pqEncP <*> binaryP)
+          ACPT_ -> s (ACPT <$> A.takeTill (== ' ') <* A.space <*> pqSupP <*> binaryP)
           RJCT_ -> s (RJCT <$> A.takeByteString)
           SUB_ -> pure SUB
           SEND_ -> s (SEND <$> pqEncP <*> smpP <* A.space <*> binaryP)
@@ -1781,7 +1783,9 @@ commandP binaryP =
     s :: Parser a -> Parser a
     s p = A.space *> p
     pqIKP :: Parser InitialKeys
-    pqIKP = strP_ <|> pure (IKNoPQ PQEncOff)
+    pqIKP = strP_ <|> pure (IKNoPQ PQSupportOff)
+    pqSupP :: Parser PQSupport
+    pqSupP = strP_ <|> pure PQSupportOff
     pqEncP :: Parser PQEncryption
     pqEncP = strP_ <|> pure PQEncOff
     connections :: Parser [ConnId]
