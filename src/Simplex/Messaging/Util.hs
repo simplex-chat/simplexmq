@@ -180,7 +180,7 @@ traceStop :: MonadIO m => ByteString -> m ()
 traceStop section = liftIO . unsafeTraceEventIO $ B.concat ["STOP ", section, "\0"]
 
 traceGroupStart :: (Hashable a, MonadIO m) => a -> ByteString -> m ()
-traceGroupStart sub section = liftIO . unsafeTraceEventIO $ B.concat ["START ", bshow $ hash sub, " ", section, "\0"]
+traceGroupStart sub section = liftIO . unsafeTraceEventIO $ B.concat ["START ", bshow . abs $ hash sub, " ", section, "\0"]
 
 traceGroupStop :: (Hashable a, MonadIO m) => a -> ByteString -> m ()
-traceGroupStop sub section = liftIO . unsafeTraceEventIO $ B.concat ["STOP ", bshow $ hash sub, " ", section, "\0"]
+traceGroupStop sub section = liftIO . unsafeTraceEventIO $ B.concat ["STOP ", bshow . abs $ hash sub, " ", section, "\0"]
