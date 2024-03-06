@@ -58,7 +58,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     setConnAgentVersion,
-    enableConnPQEncryption,
+    setConnPQSupport,
     getDeletedConnIds,
     getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
@@ -268,7 +268,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations (DownMigration (..), MTRE
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys, PQEncryption (..), PQSupport (..))
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -576,14 +576,14 @@ createSndConn db gVar cData q@SndQueue {server} =
       insertSndQueue_ db connId q serverKeyHash_
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
-createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqEncryption} cMode =
+createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport} cMode =
   DB.execute
     db
     [sql|
       INSERT INTO connections
         (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_encryption, duplex_handshake) VALUES (?,?,?,?,?,?,?)
     |]
-    (userId, connId, cMode, connAgentVersion, enableNtfs, pqEncryption, True)
+    (userId, connId, cMode, connAgentVersion, enableNtfs, pqSupport, True)
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
@@ -1032,7 +1032,7 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
             |]
             (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
-        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, CR.PQEncryption, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
         pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, riSlow_, riFast_) =
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
@@ -1130,7 +1130,7 @@ getLastMsg db connId msgId =
       |]
       (connId, msgId)
 
-toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, CR.PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
+toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
 toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, userAck)) =
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
@@ -1776,9 +1776,13 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 instance FromField (Version v) where fromField f = Version <$> fromField f
 
-instance ToField CR.PQEncryption where toField (CR.PQEncryption pqEnc) = toField pqEnc
+instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
 
-instance FromField CR.PQEncryption where fromField f = CR.PQEncryption <$> fromField f
+instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
+
+instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
+
+instance FromField PQSupport where fromField f = PQSupport <$> fromField f
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
@@ -1937,8 +1941,8 @@ getConnData db connId' =
       |]
       (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqEncryption) =
-      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqEncryption}, cMode)
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport) =
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
@@ -1952,9 +1956,9 @@ setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =
   DB.execute db "UPDATE connections SET smp_agent_version = ? WHERE conn_id = ?" (aVersion, connId)
 
-enableConnPQEncryption :: DB.Connection -> ConnId -> IO ()
-enableConnPQEncryption db connId =
-  DB.execute db "UPDATE connections SET pq_encryption = ? WHERE conn_id = ?" (CR.PQEncOn, connId)
+setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
+setConnPQSupport db connId pqSupport =
+  DB.execute db "UPDATE connections SET pq_encryption = ? WHERE conn_id = ?" (pqSupport, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)

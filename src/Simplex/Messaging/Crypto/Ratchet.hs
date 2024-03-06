@@ -28,6 +28,9 @@ module Simplex.Messaging.Crypto.Ratchet
     PQEncryption (..),
     pattern PQEncOn,
     pattern PQEncOff,
+    PQSupport (..),
+    pattern PQSupportOn,
+    pattern PQSupportOff,
     AUseKEM (..),
     RatchetKEMState (..),
     SRatchetKEMState (..),
@@ -53,6 +56,8 @@ module Simplex.Messaging.Crypto.Ratchet
     connPQEncryption,
     joinContactInitialKeys,
     replyKEM_,
+    pqSupportToEnc,
+    pqEncToSupport,
     pqX3dhSnd,
     pqX3dhRcv,
     initSndRatchet,
@@ -143,11 +148,11 @@ currentE2EEncryptVersion :: VersionE2E
 currentE2EEncryptVersion = VersionE2E 2
 
 -- TODO v5.7 remove dependency of version range on whether PQ encryption is used
-supportedE2EEncryptVRange :: PQEncryption -> VersionRangeE2E
+supportedE2EEncryptVRange :: PQSupport -> VersionRangeE2E
 supportedE2EEncryptVRange pq =
   mkVersionRange kdfX3DHE2EEncryptVersion $ case pq of 
-    PQEncOn -> pqRatchetE2EEncryptVersion
-    PQEncOff -> currentE2EEncryptVersion
+    PQSupportOn -> pqRatchetE2EEncryptVersion
+    PQSupportOff -> currentE2EEncryptVersion
 
 data RatchetKEMState
   = RKSProposed -- only KEM encapsulation key
@@ -385,14 +390,13 @@ generateE2EParams g v useKEM_ = do
       _ -> pure Nothing
 
 -- used by party initiating connection, Bob in double-ratchet spec
-generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> PQEncryption -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
+generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> PQSupport -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
 generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
   where
-    proposeKEM_ :: PQEncryption -> Maybe (UseKEM 'RKSProposed)
+    proposeKEM_ :: PQSupport -> Maybe (UseKEM 'RKSProposed)
     proposeKEM_ = \case
-      PQEncOn -> Just ProposeKEM
-      PQEncOff -> Nothing
-
+      PQSupportOn -> Just ProposeKEM
+      PQSupportOff -> Nothing
 
 -- used by party accepting connection, Alice in double-ratchet spec
 generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe AUseKEM -> IO (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams, AE2ERatchetParams a)
@@ -466,7 +470,7 @@ data Ratchet a = Ratchet
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
-    rcSupportKEM :: PQEncryption, -- defines header size, can only be enabled once
+    rcSupportKEM :: PQSupport, -- defines header size, can only be enabled once
     rcEnableKEM :: PQEncryption, -- will enable KEM on the next ratchet step
     rcSndKEM :: PQEncryption, -- used KEM hybrid secret for sending ratchet
     rcRcvKEM :: PQEncryption, -- used KEM hybrid secret for receiving ratchet
@@ -597,14 +601,14 @@ initSndRatchet ::
 initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs (rcPQRss <$> kemAccepted)
-      pqEnc = PQEncryption $ isJust rcPQRs_
+      pqOn = isJust rcPQRs_
    in Ratchet
         { rcVersion,
           rcAD = assocData,
           rcDHRs,
           rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-          rcSupportKEM = pqEnc,
-          rcEnableKEM = pqEnc,
+          rcSupportKEM = PQSupport pqOn,
+          rcEnableKEM = PQEncryption pqOn,
           rcSndKEM = PQEncryption $ isJust kemAccepted,
           rcRcvKEM = PQEncOff,
           rcRK,
@@ -624,8 +628,8 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQEncryption -> Ratchet a
-initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) pqEnc =
+  forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQSupport -> Ratchet a
+initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) pqSupport =
   Ratchet
     { rcVersion,
       rcAD = assocData,
@@ -636,8 +640,8 @@ initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK
       -- state.PQRss = None
       -- state.PQRct = None
       rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-      rcSupportKEM = pqEnc,
-      rcEnableKEM = pqEnc,
+      rcSupportKEM = pqSupport,
+      rcEnableKEM = pqSupportToEnc pqSupport,
       rcSndKEM = PQEncOff,
       rcRcvKEM = PQEncOff,
       rcRK = ratchetKey,
@@ -666,14 +670,14 @@ data MsgHeader a = MsgHeader
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 -- TODO PQ this must be version-dependent
 -- TODO this is the exact size, some reserve should be added
-paddedHeaderLen :: PQEncryption -> Int
+paddedHeaderLen :: PQSupport -> Int
 paddedHeaderLen = \case
-  PQEncOn -> 2288
-  PQEncOff -> 88
+  PQSupportOn -> 2288
+  PQSupportOff -> 88
 
 -- only used in tests to validate correct padding
 -- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)
-fullHeaderLen :: PQEncryption -> Int
+fullHeaderLen :: PQSupport -> Int
 fullHeaderLen pq = 2 + 1 + paddedHeaderLen pq + authTagSize + ivSize @AES256
 
 -- pass the current version, as MsgHeader only includes the max supported version that can be different from the current
@@ -759,12 +763,37 @@ instance FromJSON PQEncryption where
   parseJSON v = PQEncryption <$> parseJSON v
   omittedField = Just PQEncOff
 
-replyKEM_ :: PQEncryption -> Maybe (RKEMParams 'RKSProposed) -> Maybe AUseKEM
-replyKEM_ pqEnc kem_ = case pqEnc of
-  PQEncOn -> Just $ case kem_ of
+newtype PQSupport = PQSupport {supportPQ :: Bool}
+  deriving (Eq, Show)
+
+pattern PQSupportOn :: PQSupport
+pattern PQSupportOn = PQSupport True
+
+pattern PQSupportOff :: PQSupport
+pattern PQSupportOff = PQSupport False
+
+{-# COMPLETE PQSupportOn, PQSupportOff #-}
+
+instance ToJSON PQSupport where
+  toEncoding (PQSupport pq) = toEncoding pq
+  toJSON (PQSupport pq) = toJSON pq
+
+instance FromJSON PQSupport where
+  parseJSON v = PQSupport <$> parseJSON v
+  omittedField = Just PQSupportOff
+
+pqSupportToEnc :: PQSupport -> PQEncryption
+pqSupportToEnc (PQSupport pq) = PQEncryption pq
+
+pqEncToSupport :: PQEncryption -> PQSupport
+pqEncToSupport (PQEncryption pq) = PQSupport pq
+
+replyKEM_ :: Maybe (RKEMParams 'RKSProposed) -> PQSupport -> Maybe AUseKEM
+replyKEM_ kem_ = \case
+  PQSupportOn -> Just $ case kem_ of
     Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
     Nothing -> AUseKEM SRKSProposed ProposeKEM
-  PQEncOff -> Nothing
+  PQSupportOff -> Nothing
 
 instance StrEncoding PQEncryption where
   strEncode pqMode
@@ -778,14 +807,20 @@ instance StrEncoding PQEncryption where
     where
       pq = pure . PQEncryption
 
-data InitialKeys = IKUsePQ | IKNoPQ PQEncryption
+instance StrEncoding PQSupport where
+  strEncode = strEncode . pqSupportToEnc
+  {-# INLINE strEncode #-}
+  strP = pqEncToSupport <$> strP
+  {-# INLINE strP #-}
+
+data InitialKeys = IKUsePQ | IKNoPQ PQSupport
   deriving (Eq, Show)
 
 pattern IKPQOn :: InitialKeys
-pattern IKPQOn = IKNoPQ PQEncOn
+pattern IKPQOn = IKNoPQ PQSupportOn
 
 pattern IKPQOff :: InitialKeys
-pattern IKPQOff = IKNoPQ PQEncOff
+pattern IKPQOff = IKNoPQ PQSupportOff
 
 instance StrEncoding InitialKeys where
   strEncode = \case
@@ -794,22 +829,22 @@ instance StrEncoding InitialKeys where
   strP = IKNoPQ <$> strP <|> "pq=invitation" $> IKUsePQ
 
 -- determines whether PQ key should be included in invitation link
-initialPQEncryption :: InitialKeys -> PQEncryption
+initialPQEncryption :: InitialKeys -> PQSupport
 initialPQEncryption = \case
-  IKUsePQ -> PQEncOn
-  IKNoPQ _ -> PQEncOff -- default
+  IKUsePQ -> PQSupportOn
+  IKNoPQ _ -> PQSupportOff -- default
 
 -- determines whether PQ encryption should be used in connection
-connPQEncryption :: InitialKeys -> PQEncryption
+connPQEncryption :: InitialKeys -> PQSupport
 connPQEncryption = \case
-  IKUsePQ -> PQEncOn
+  IKUsePQ -> PQSupportOn
   IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
 
 -- determines whether PQ key should be included in invitation link sent to contact address
-joinContactInitialKeys :: PQEncryption -> InitialKeys
+joinContactInitialKeys :: PQSupport -> InitialKeys
 joinContactInitialKeys = \case
-  PQEncOn -> IKUsePQ -- default
-  PQEncOff -> IKNoPQ PQEncOff
+  PQSupportOn -> IKUsePQ -- default
+  PQSupportOff -> IKNoPQ PQSupportOff
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
@@ -820,7 +855,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       -- PQ encryption can be enabled or disabled
       rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
       -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
-      rcSupportKEM' = PQEncryption $ enablePQ rcSupportKEM || enablePQ rcEnableKEM'
+      rcSupportKEM' = PQSupport $ supportPQ rcSupportKEM || enablePQ rcEnableKEM'
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader v)
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
@@ -954,7 +989,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
             rc'
               { rcDHRs = rcDHRs',
                 rcKEM = rcKEM',
-                rcSupportKEM = PQEncryption $ enablePQ rcSupportKEM || enableKEM,
+                rcSupportKEM = PQSupport $ supportPQ rcSupportKEM || enableKEM,
                 rcEnableKEM = PQEncryption enableKEM,
                 rcSndKEM = PQEncryption sndKEM,
                 rcRcvKEM = PQEncryption rcvKEM,

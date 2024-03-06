@@ -30,7 +30,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448, PQEncryption)
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, PQEncryption, PQSupport)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
@@ -309,7 +309,7 @@ data ConnData = ConnData
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
-    pqEncryption :: PQEncryption
+    pqSupport :: PQSupport
   }
   deriving (Eq, Show)
 
