@@ -36,7 +36,7 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  fdescribe "double-ratchet encryption/decryption" $ do
+  describe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader kdfX3DHE2EEncryptVersion
       testAlgs $ testMessageHeader $ max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
@@ -48,7 +48,7 @@ doubleRatchetTests = do
     it "should decode v2 Ratchet with default field values" $ testDecodeV2RatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
-  fdescribe "post-quantum hybrid KEM double-ratchet algorithm" $ do
+  describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
@@ -90,12 +90,15 @@ paddedMsgLen :: Int
 paddedMsgLen = 100
 
 fullMsgLen :: Ratchet a -> Int
-fullMsgLen Ratchet {rcEnableKEM, rcVersion} = headerLenLength + fullHeaderLen v rcEnableKEM + C.authTagSize + paddedMsgLen
+fullMsgLen Ratchet {rcSupportKEM} = headerLenLength + fullHeaderLen rcSupportKEM + C.authTagSize + paddedMsgLen
   where
-    v = current rcVersion
-    headerLenLength
-      | v >= pqRatchetE2EEncryptVersion = 3 -- two bytes are added because of two Large used in new encoding
-      | otherwise = 1
+    -- v = current rcVersion
+    headerLenLength = case rcSupportKEM of
+      PQEncOn -> 3 -- two bytes are added because of two Large used in new encoding
+      PQEncOff -> 1
+      -- TODO PQ below should work too
+      -- | v >= pqRatchetE2EEncryptVersion = 3
+      -- | otherwise = 1
 
 testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
@@ -590,7 +593,7 @@ encrypt_ pqEnc_ (_, rc, _) msg =
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
-      B.length msg' `shouldBe` fullMsgLen rc
+      B.length msg' `shouldBe` fullMsgLen rc'
       pure $ Right (msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
