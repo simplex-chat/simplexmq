@@ -8,6 +8,7 @@ import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
+import Data.Either (fromRight)
 import Data.List.NonEmpty (NonEmpty)
 import Foreign
 import Foreign.C.Types
@@ -43,8 +44,12 @@ withCompressCtx scratchSize action =
     allocaBytes scratchSize $ \scratchPtr ->
       action (cctx, scratchPtr, scratchSize)
 
-compress :: CompressCtx -> ByteString -> IO (Either String Compressed)
-compress (cctx, scratchPtr, scratchSize) bs
+-- | Compress bytes, falling back to Passthrough in case of some internal error.
+compress :: CompressCtx -> ByteString -> IO Compressed
+compress ctx bs = fromRight (Passthrough bs) <$> compress_ ctx bs
+
+compress_ :: CompressCtx -> ByteString -> IO (Either String Compressed)
+compress_ (cctx, scratchPtr, scratchSize) bs
   | B.length bs < maxLengthPassthrough = pure . Right $ Passthrough bs
   | otherwise =
       B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
