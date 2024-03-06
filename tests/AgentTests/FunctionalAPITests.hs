@@ -149,7 +149,7 @@ pGet c = do
     _ -> pure t
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e
-pattern CONF conId srvs connInfo <- A.CONF conId _ srvs connInfo
+pattern CONF conId srvs connInfo <- A.CONF conId PQSupportOn srvs connInfo
 
 pattern INFO :: ConnInfo -> ACommand 'Agent 'AEConn
 pattern INFO connInfo = A.INFO PQSupportOn connInfo
@@ -484,7 +484,8 @@ runAgentClientTest pqSupport alice@AgentClient {} bob baseId =
   runRight_ $ do
     (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (IKNoPQ pqSupport) SMSubscribe
     aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
-    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ pqSup' `shouldBe` pqSupport
     allowConnection alice bobId confId "alice's connInfo"
     let pqEnc = CR.pqSupportToEnc pqSupport
     get alice ##> ("", bobId, A.CON pqEnc)
@@ -548,7 +549,8 @@ runAgentClientContactTest pqSupport alice bob baseId =
     aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
-    ("", _, CONF confId _ "alice's connInfo") <- get bob
+    ("", _, A.CONF confId pqSup' _ "alice's connInfo") <- get bob
+    liftIO $ pqSup' `shouldBe` pqSupport
     allowConnection bob aliceId confId "bob's connInfo"
     let pqEnc = CR.pqSupportToEnc pqSupport
     get alice ##> ("", bobId, A.INFO pqSupport "bob's connInfo")
@@ -1280,7 +1282,8 @@ makeConnectionForUsers_ :: PQSupport -> AgentClient -> UserId -> AgentClient -> 
 makeConnectionForUsers_ pqSupport alice aliceUserId bob bobUserId = do
   (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.joinConnection bob bobUserId True qInfo "bob's connInfo" pqSupport SMSubscribe
-  ("", _, CONF confId _ "bob's connInfo") <- get alice
+  ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+  liftIO $ pqSup' `shouldBe` pqSupport
   allowConnection alice bobId confId "alice's connInfo"
   let pqEnc = CR.pqSupportToEnc pqSupport
   get alice ##> ("", bobId, A.CON pqEnc)

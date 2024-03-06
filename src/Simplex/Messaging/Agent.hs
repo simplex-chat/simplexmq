@@ -570,11 +570,6 @@ joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> Con
 joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
   withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
     compatibleInvitationVersion cReqUri pqSup >>= \case
-    -- AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-    -- case ( qUri `compatibleVersion` smpClientVRange,
-    --       e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange pqSup,
-    --       crAgentVRange `compatibleVersion` smpAgentVRange pqSup
-    --     ) of
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
         g <- asks random
         let pqSupport = versionPQSupport_ pqSup connAgentVersion (Just v)
@@ -726,18 +721,6 @@ connRequestPQSupport pqSup cReq = case cReq of
         pure . Just $ versionPQSupport_ pqSup agentV Nothing
       Nothing ->
         pure Nothing
-  -- AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  -- pure $ do -- Maybe
-  --   (ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}, e2eV_) <-
-  --     case
-  --       CRInvitationUri cReqData e2eRcvParamsUri -> do
-  --         Compatible (CR.E2ERatchetParams e2eV _ _ _) <- e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange pqSup
-  --         pure (cReqData, Just e2eV)
-  --       CRContactUri cReqData ->
-  --         pure (cReqData, Nothing)
-  --   _ <- qUri `compatibleVersion` smpClientVRange
-  --   Compatible agentV <- crAgentVRange `compatibleVersion` smpAgentVRange pqSup
-  --   pure $ Compatible $ versionPQSupport_ pqSup agentV e2eV_
 
 compatibleInvitationVersion :: AgentMonad' m => ConnectionRequestUri 'CMInvitation -> PQSupport -> m (Maybe (Compatible SMPQueueInfo, Compatible (CR.RcvE2ERatchetParams 'C.X448), Compatible VersionSMPA))
 compatibleInvitationVersion (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) pqSup = do
@@ -778,10 +761,6 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
         throwError e
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   compatibleContactVersion cReqUri pqSup >>= \case
-  -- case ( qUri `compatibleVersion` clientVRange,
-  --        crAgentVRange `compatibleVersion` aVRange
-  --      ) of
-    -- (Just qInfo, Just vrsn) -> do
     Just (qInfo, vrsn) -> do
       (connId', cReq) <- newConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.joinContactInitialKeys pqSup) subMode srv
       sendInvitation c userId qInfo vrsn cReq cInfo
@@ -2213,7 +2192,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
                   -- TODO PQ combine isCompatible check and construction in one call
                   let rcVs = CR.RVersions {current = e2eVersion, maxSupported = maxVersion e2eVRange}
-                      rc = CR.initRcvRatchet rcVs rcDHRs rcParams pqSupport
+                      pqSupport' = versionPQSupport_ pqSupport agentVersion (Just e2eVersion)
+                      rc = CR.initRcvRatchet rcVs rcDHRs rcParams pqSupport'
                   g <- asks random
                   (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
                   case (agentMsgBody_, skipped) of
@@ -2227,9 +2207,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
                           confId <- withStore c $ \db -> do
                             setConnAgentVersion db connId agentVersion
+                            when (pqSupport /= pqSupport') $ setConnPQSupport db connId pqSupport'
                             createConfirmation db g newConfirmation
                           let srvs = map qServer $ smpReplyQueues senderConf
-                          notify $ CONF confId pqSupport srvs connInfo
+                          notify $ CONF confId pqSupport' srvs connInfo
                     _ -> prohibited
                 -- party accepting connection
                 (DuplexConnection _ (RcvQueue {smpClientVersion = v'} :| _) _, Nothing) -> do
