@@ -58,7 +58,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getConnData,
     setConnDeleted,
     setConnAgentVersion,
-    setConnPQEncryption,
+    enableConnPQEncryption,
     getDeletedConnIds,
     getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
@@ -1952,10 +1952,9 @@ setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =
   DB.execute db "UPDATE connections SET smp_agent_version = ? WHERE conn_id = ?" (aVersion, connId)
 
-setConnPQEncryption :: DB.Connection -> ConnData -> CR.PQEncryption -> IO ConnData
-setConnPQEncryption db cData@ConnData {connId} pqEnc = do
-  DB.execute db "UPDATE connections SET pq_encryption = ? WHERE conn_id = ?" (pqEnc, connId)
-  pure (cData :: ConnData) {pqEncryption = pqEnc}
+enableConnPQEncryption :: DB.Connection -> ConnId -> IO ()
+enableConnPQEncryption db connId =
+  DB.execute db "UPDATE connections SET pq_encryption = ? WHERE conn_id = ?" (CR.PQEncOn, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)

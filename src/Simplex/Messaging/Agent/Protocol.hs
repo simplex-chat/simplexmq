@@ -282,17 +282,17 @@ supportedSMPAgentVRange pq =
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
-e2eEncConnInfoLength :: VersionSMPA -> Int
-e2eEncConnInfoLength v
+e2eEncConnInfoLength :: PQEncryption -> Int
+e2eEncConnInfoLength = \case
   -- reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  | v >= pqdrSMPAgentVersion = 11148
-  | otherwise = 14848
+  PQEncOn -> 11148
+  PQEncOff -> 14848
 
-e2eEncUserMsgLength :: VersionSMPA -> Int
-e2eEncUserMsgLength v
+e2eEncUserMsgLength :: PQEncryption -> Int
+e2eEncUserMsgLength = \case
   -- reduced by 2200 (roughly the increase of message ratchet header size)
-  | v >= pqdrSMPAgentVersion = 13656
-  | otherwise = 15856
+  PQEncOn -> 13656
+  PQEncOff -> 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)

@@ -466,6 +466,7 @@ data Ratchet a = Ratchet
     rcAD :: Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
+    rcSupportKEM :: PQEncryption, -- defines header size, can only be enabled once
     rcEnableKEM :: PQEncryption, -- will enable KEM on the next ratchet step
     rcSndKEM :: PQEncryption, -- used KEM hybrid secret for sending ratchet
     rcRcvKEM :: PQEncryption, -- used KEM hybrid secret for receiving ratchet
@@ -596,12 +597,14 @@ initSndRatchet ::
 initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs (rcPQRss <$> kemAccepted)
+      pqEnc = PQEncryption $ isJust rcPQRs_
    in Ratchet
         { rcVersion,
           rcAD = assocData,
           rcDHRs,
           rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-          rcEnableKEM = PQEncryption $ isJust rcPQRs_,
+          rcSupportKEM = pqEnc,
+          rcEnableKEM = pqEnc,
           rcSndKEM = PQEncryption $ isJust kemAccepted,
           rcRcvKEM = PQEncOff,
           rcRK,
@@ -622,7 +625,7 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQEncryption -> Ratchet a
-initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) rcEnableKEM =
+initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) pqEnc =
   Ratchet
     { rcVersion,
       rcAD = assocData,
@@ -633,7 +636,8 @@ initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK
       -- state.PQRss = None
       -- state.PQRct = None
       rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-      rcEnableKEM,
+      rcSupportKEM = pqEnc,
+      rcEnableKEM = pqEnc,
       rcSndKEM = PQEncOff,
       rcRcvKEM = PQEncOff,
       rcRK = ratchetKey,
@@ -662,15 +666,15 @@ data MsgHeader a = MsgHeader
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 -- TODO PQ this must be version-dependent
 -- TODO this is the exact size, some reserve should be added
-paddedHeaderLen :: VersionE2E -> Int
-paddedHeaderLen v
-  | v >= pqRatchetE2EEncryptVersion = 2284
-  | otherwise = 88
+paddedHeaderLen :: PQEncryption -> Int
+paddedHeaderLen = \case
+  PQEncOn -> 2288
+  PQEncOff -> 88
 
 -- only used in tests to validate correct padding
 -- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)
-fullHeaderLen :: VersionE2E -> Int
-fullHeaderLen v = 2 + 1 + paddedHeaderLen v + authTagSize + ivSize @AES256
+fullHeaderLen :: PQEncryption -> Int
+fullHeaderLen pq = 2 + 1 + paddedHeaderLen pq + authTagSize + ivSize @AES256
 
 -- pass the current version, as MsgHeader only includes the max supported version that can be different from the current
 encodeMsgHeader :: AlgorithmI a => VersionE2E -> MsgHeader a -> ByteString
@@ -698,12 +702,26 @@ data EncMessageHeader = EncMessageHeader
 -- this encoding depends on version in EncMessageHeader because it is "current" ratchet version
 instance Encoding EncMessageHeader where
   smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
-    | ehVersion >= pqRatchetE2EEncryptVersion = smpEncode (ehVersion, ehIV, ehAuthTag, Large ehBody)
-    | otherwise = smpEncode (ehVersion, ehIV, ehAuthTag, ehBody)
+    = smpEncode (ehVersion, ehIV, ehAuthTag) <> encodeLarge ehVersion ehBody
   smpP = do
     (ehVersion, ehIV, ehAuthTag) <- smpP
-    ehBody <- if ehVersion >= pqRatchetE2EEncryptVersion then unLarge <$> smpP else smpP
+    ehBody <- largeP
     pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
+
+-- the encoder always uses 2-byte lengths for the new version, even for short headers without PQ keys.
+encodeLarge :: VersionE2E -> ByteString -> ByteString
+encodeLarge v s
+  -- the condition for length is not necessary, it's here as a fallback.
+  | v >= pqRatchetE2EEncryptVersion || B.length s > 255 = smpEncode $ Large s
+  | otherwise = smpEncode s
+
+-- This parser relies on the fact that header cannot be shorter than 32 bytes (it is ~69 bytes without PQ KEM),
+-- therefore if the first byte is less or equal to 31 (x1F), then we have 2 byte-length limited to 8191.
+-- This allows upgrading the current version in one message.
+largeP :: Parser ByteString
+largeP = do
+  len1 <- peekWord8'
+  if len1 < 32 then unLarge <$> smpP else smpP
 
 -- the header is length-prefixed to parse it as string and use as part of associated data for authenticated encryption
 data EncRatchetMessage = EncRatchetMessage
@@ -712,19 +730,13 @@ data EncRatchetMessage = EncRatchetMessage
     emBody :: ByteString
   }
 
--- the encoder always uses 2-byte lengths for the new version, even for short headers without PQ keys.
 encodeEncRatchetMessage :: VersionE2E -> EncRatchetMessage -> ByteString
 encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-  | v >= pqRatchetE2EEncryptVersion = smpEncode (Large emHeader, emAuthTag, Tail emBody)
-  | otherwise = smpEncode (emHeader, emAuthTag, Tail emBody)
+  = encodeLarge v emHeader <> smpEncode (emAuthTag, Tail emBody)
 
--- This parser relies on the fact that header cannot be shorter than 32 bytes (it is ~69 bytes without PQ KEM),
--- therefore if the first byte is less or equal to 31 (x1F), then we have 2 byte-length limited to 8191.
--- This allows upgrading the current version in one message.
 encRatchetMessageP :: Parser EncRatchetMessage
 encRatchetMessageP = do
-  len1 <- peekWord8'
-  emHeader <- if len1 < 32 then unLarge <$> smpP else smpP
+  emHeader <- largeP
   (emAuthTag, Tail emBody) <- smpP
   pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
@@ -801,30 +813,42 @@ joinContactInitialKeys = \case
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg pqEnc_ = do
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} paddedMsgLen msg pqEnc_ = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
+      v = current rcVersion
+      -- PQ encryption can be enabled or disabled
+      rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
+      -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
+      rcSupportKEM' = PQEncryption $ enablePQ rcSupportKEM || enablePQ rcEnableKEM'
   -- enc_header = HENCRYPT(state.HKs, header)
-  let v = current rcVersion
-  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen v) rcAD (msgHeader v)
+  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader v)
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
   let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
   let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-      -- state.Ns += 1
       -- TODO v5.8 remove comments below
       -- Note that maxSupported will not downgrade here below current.
       -- TODO v5.7 remove comments below
-      -- It will downgrade when decrypting the message when the current version downgrades to remove support for PQ encryption.
-      -- TODO v5.8 replace `max v currentE2EEncryptVersion` with `v` (to allow downgrade when app downgraded)
-      rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1, rcVersion = rcVersion {maxSupported = max v currentE2EEncryptVersion}}
+      -- TODO PQ It will downgrade when decrypting the message when the current version downgrades to remove support for PQ encryption.
+      -- TODO v5.8 possibly, replace `max v currentE2EEncryptVersion` with `v` (to allow downgrade when app downgraded)?
+      --
+      -- state.Ns += 1
+      rc' =
+        rc
+          { rcSnd = Just sr {rcCKs = ck'},
+            rcNs = rcNs + 1,
+            rcSupportKEM = rcSupportKEM',
+            rcEnableKEM = rcEnableKEM',
+            rcVersion = rcVersion {maxSupported = max v currentE2EEncryptVersion}
+          }
       rc'' = case pqEnc_ of
         Nothing -> rc'
         -- This sets max version to support PQ encryption.
         -- Current version upgrade happens when peer decrypts the message.
         -- TODO v5.7 remove version upgrade here, as it's already upgraded above
-        Just PQEncOn -> rc' {rcEnableKEM = PQEncOn, rcVersion = rcVersion {maxSupported = pqRatchetE2EEncryptVersion}}
-        Just PQEncOff -> rc' {rcEnableKEM = PQEncOff, rcKEM = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM}
+        Just PQEncOn -> rc' {rcVersion = rcVersion {maxSupported = max v pqRatchetE2EEncryptVersion}}
+        Just PQEncOff -> rc' {rcKEM = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM}
   pure (msg', rc'')
   where
     -- header = HEADER_PQ2(
@@ -870,7 +894,6 @@ rcDecrypt ::
   ByteString ->
   ExceptT CryptoError IO (DecryptResult a)
 rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
-  -- TODO PQ versioning should change
   encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError encRatchetMessageP msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, cipher-text, AD)
@@ -909,12 +932,14 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
       where
         upgradedRatchet :: Ratchet a
         upgradedRatchet
-          | msgMaxVersion > current rcVersion = rc {rcVersion = rcVersion {current = min msgMaxVersion $ maxSupported rcVersion}}
+          | msgMaxVersion > current = rc {rcVersion = rcVersion {current = max current $ min msgMaxVersion maxSupported}}
           | otherwise = rc
+          where
+            RVersions {current, maxSupported} = rcVersion
         smkDiff :: SkippedMsgKeys -> SkippedMsgDiff
         smkDiff smks = if M.null smks then SMDNoChange else SMDAdd smks
         ratchetStep :: Ratchet a -> MsgHeader a -> ExceptT CryptoError IO (Ratchet a)
-        ratchetStep rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr} MsgHeader {msgDHRs, msgKEM} = do
+        ratchetStep rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr, rcSupportKEM} MsgHeader {msgDHRs, msgKEM} = do
           (kemSS, kemSS', rcKEM') <- pqRatchetStep rc' msgKEM
           -- state.DHRs = GENERATE_DH()
           (_, rcDHRs') <- atomically $ generateKeyPair @a g
@@ -924,11 +949,13 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
               (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
               sndKEM = isJust kemSS'
               rcvKEM = isJust kemSS
+              enableKEM = sndKEM || rcvKEM || isJust rcKEM'
           pure
             rc'
               { rcDHRs = rcDHRs',
                 rcKEM = rcKEM',
-                rcEnableKEM = PQEncryption $ sndKEM || rcvKEM,
+                rcSupportKEM = PQEncryption $ enablePQ rcSupportKEM || enableKEM,
+                rcEnableKEM = PQEncryption enableKEM,
                 rcSndKEM = PQEncryption sndKEM,
                 rcRcvKEM = PQEncryption rcvKEM,
                 rcRK = rcRK'',
@@ -945,7 +972,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
           -- received message does not have KEM in header,
           -- but the user enabled KEM when sending previous message
           Nothing -> case rcKEM of
-            Nothing | pqEnc -> do
+            Nothing | pqEnc && current rv >= pqRatchetE2EEncryptVersion -> do
               rcPQRs <- liftIO $ sntrup761Keypair g
               pure (Nothing, Nothing, Just RatchetKEM {rcPQRs, rcKEMs = Nothing})
             _ -> pure (Nothing, Nothing, Nothing)
