@@ -569,7 +569,7 @@ newConnNoQueues c userId connId enableNtfs cMode pqSupport = do
 joinConnAsync :: AgentMonad m => AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> m ConnId
 joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
   withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
-    compatibleInvitationVersion cReqUri pqSup >>= \case
+    compatibleInvitationUri cReqUri pqSup >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
         g <- asks random
         let pqSupport = versionPQSupport_ pqSup connAgentVersion (Just v)
@@ -577,7 +577,7 @@ joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup 
         connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
         enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
         pure connId
-      _ -> throwError $ AGENT A_VERSION
+      Nothing -> throwError $ AGENT A_VERSION
 joinConnAsync _c _userId _corrId _enableNtfs (CRContactUri _) _subMode _cInfo _pqEncryption =
   throwError $ CMD PROHIBITED
 
@@ -692,7 +692,7 @@ joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
 
 startJoinInvitation :: AgentMonad m => UserId -> ConnId -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> m (Compatible VersionSMPA, ConnData, NewSndQueue, CR.Ratchet 'C.X448, CR.SndE2ERatchetParams 'C.X448)
 startJoinInvitation userId connId enableNtfs cReqUri pqSup =
-  compatibleInvitationVersion cReqUri pqSup >>= \case
+  compatibleInvitationUri cReqUri pqSup >>= \case
     Just (qInfo, (Compatible e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_)), aVersion@(Compatible connAgentVersion)) -> do
       g <- asks random
       let pqSupport = versionPQSupport_ pqSup connAgentVersion (Just v)
@@ -705,25 +705,19 @@ startJoinInvitation userId connId enableNtfs cReqUri pqSup =
       q <- newSndQueue userId "" qInfo
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       pure (aVersion, cData, q, rc, e2eSndParams)
-    _ -> throwError $ AGENT A_VERSION
+    Nothing -> throwError $ AGENT A_VERSION
 
 connRequestPQSupport :: AgentMonad' m => PQSupport -> ConnectionRequestUri c -> m (Maybe PQSupport)
 connRequestPQSupport pqSup cReq = case cReq of
-  CRInvitationUri {} ->
-    compatibleInvitationVersion cReq pqSup >>= \case
-      Just (_, Compatible (CR.E2ERatchetParams e2eV _ _ _), Compatible agentV) ->
-        pure . Just $ versionPQSupport_ pqSup agentV (Just e2eV)
-      Nothing ->
-        pure Nothing
-  CRContactUri {} ->
-    compatibleContactVersion cReq pqSup >>= \case
-      Just (_, Compatible agentV) ->
-        pure . Just $ versionPQSupport_ pqSup agentV Nothing
-      Nothing ->
-        pure Nothing
+  CRInvitationUri {} -> invPQSupported <$$> compatibleInvitationUri cReq pqSup
+    where
+      invPQSupported (_, Compatible (CR.E2ERatchetParams e2eV _ _ _), Compatible agentV) = versionPQSupport_ pqSup agentV (Just e2eV)
+  CRContactUri {} -> ctPQSupported <$$> compatibleContactUri cReq pqSup
+    where
+      ctPQSupported (_, Compatible agentV) = versionPQSupport_ pqSup agentV Nothing
 
-compatibleInvitationVersion :: AgentMonad' m => ConnectionRequestUri 'CMInvitation -> PQSupport -> m (Maybe (Compatible SMPQueueInfo, Compatible (CR.RcvE2ERatchetParams 'C.X448), Compatible VersionSMPA))
-compatibleInvitationVersion (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) pqSup = do
+compatibleInvitationUri :: AgentMonad' m => ConnectionRequestUri 'CMInvitation -> PQSupport -> m (Maybe (Compatible SMPQueueInfo, Compatible (CR.RcvE2ERatchetParams 'C.X448), Compatible VersionSMPA))
+compatibleInvitationUri (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) pqSup = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   pure $
     (,,)
@@ -731,8 +725,8 @@ compatibleInvitationVersion (CRInvitationUri ConnReqUriData {crAgentVRange, crSm
       <*> (e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange pqSup)
       <*> (crAgentVRange `compatibleVersion` smpAgentVRange pqSup)
 
-compatibleContactVersion :: AgentMonad' m => ConnectionRequestUri 'CMContact -> PQSupport -> m (Maybe (Compatible SMPQueueInfo, Compatible VersionSMPA))
-compatibleContactVersion (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) pqSup = do
+compatibleContactUri :: AgentMonad' m => ConnectionRequestUri 'CMContact -> PQSupport -> m (Maybe (Compatible SMPQueueInfo, Compatible VersionSMPA))
+compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) pqSup = do
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   pure $
     (,)
@@ -760,12 +754,12 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
         void $ withStore' c $ \db -> deleteConn db Nothing connId'
         throwError e
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
-  compatibleContactVersion cReqUri pqSup >>= \case
+  compatibleContactUri cReqUri pqSup >>= \case
     Just (qInfo, vrsn) -> do
       (connId', cReq) <- newConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.joinContactInitialKeys pqSup) subMode srv
       sendInvitation c userId qInfo vrsn cReq cInfo
       pure connId'
-    _ -> throwError $ AGENT A_VERSION
+    Nothing -> throwError $ AGENT A_VERSION
 
 joinConnSrvAsync :: AgentMonad m => AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> m ()
 joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSupport subMode srv = do
@@ -2364,16 +2358,23 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
               enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} (EREADY lastExternalSndId)
 
           smpInvitation :: SMP.MsgId -> Connection c -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
-          smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData e2eParams) cInfo = do
+          smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData _) cInfo = do
             logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret srvMsgId
             case conn' of
               ContactConnection {} -> do
+                -- show connection request even if invitaion via contact address is not compatible.
+                -- in case invitation not compatible, assume there is no PQ encryption support.
+                pqSupport <- maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq PQSupportOn
+                liftIO $ print pqSupport
                 g <- asks random
                 let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
                 invId <- withStore c $ \db -> createInvitation db g newInv
                 let srvs = L.map qServer $ crSmpQueues crData
-                notify $ REQ invId (CR.pqSupported e2eParams) srvs cInfo
+                notify $ REQ invId pqSupport srvs cInfo
               _ -> prohibited
+            where
+              pqSupported (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible agentVersion) =
+                versionPQSupport_ PQSupportOn agentVersion (Just v)
 
           qDuplex :: Connection c -> String -> (Connection 'CDuplex -> m ()) -> m ()
           qDuplex conn' name action = case conn' of

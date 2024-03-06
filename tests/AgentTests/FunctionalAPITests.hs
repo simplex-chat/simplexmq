@@ -155,7 +155,7 @@ pattern INFO :: ConnInfo -> ACommand 'Agent 'AEConn
 pattern INFO connInfo = A.INFO PQSupportOn connInfo
 
 pattern REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand 'Agent e
-pattern REQ invId srvs connInfo <- A.REQ invId _ srvs connInfo
+pattern REQ invId srvs connInfo <- A.REQ invId PQSupportOn srvs connInfo
 
 pattern CON :: ACommand 'Agent 'AEConn
 pattern CON = A.CON PQEncOn
@@ -547,10 +547,11 @@ runAgentClientContactTest pqSupport alice bob baseId =
   runRight_ $ do
     (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing (IKNoPQ pqSupport) SMSubscribe
     aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
-    ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
-    ("", _, A.CONF confId pqSup' _ "alice's connInfo") <- get bob
+    ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` pqSupport
+    bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
+    liftIO $ pqSup'' `shouldBe` pqSupport
     allowConnection bob aliceId confId "bob's connInfo"
     let pqEnc = CR.pqSupportToEnc pqSupport
     get alice ##> ("", bobId, A.INFO pqSupport "bob's connInfo")

@@ -13,7 +13,7 @@ module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
-import AgentTests.FunctionalAPITests (functionalAPITests, pattern REQ, pattern Msg, pattern Msg')
+import AgentTests.FunctionalAPITests (functionalAPITests, pattern Msg, pattern Msg')
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
@@ -295,10 +295,11 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
       aPQMode = CR.connPQEncryption aPQ
 
   bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
+  ("", "alice_contact", Right (A.REQ aInvId pqSup' _ "bob's connInfo")) <- (alice <#:)
+  pqSup' `shouldBe` bPQ
   alice #: ("2", "bob", "ACPT " <> aInvId <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  ("", "alice", Right (A.CONF bConfId pqSup' _ "alice's connInfo")) <- (bob <#:)
-  pqSup' `shouldBe` abPQSup
+  ("", "alice", Right (A.CONF bConfId pqSup'' _ "alice's connInfo")) <- (bob <#:)
+  pqSup'' `shouldBe` abPQSup
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", A.INFO abPQSup "bob's connInfo 2")
   alice <# ("", "bob", CON abPQ)
@@ -311,10 +312,11 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   let atPQ = pqConnectionMode aPQ tPQ
       atPQSup = CR.pqEncToSupport atPQ
   tom #: ("21", "alice", "JOIN T " <> cReq' <> enableKEMStr tPQ <> " subscribe 14\ntom's connInfo") #> ("21", "alice", OK)
-  ("", "alice_contact", Right (REQ aInvId' _ "tom's connInfo")) <- (alice <#:)
+  ("", "alice_contact", Right (A.REQ aInvId' pqSup3 _ "tom's connInfo")) <- (alice <#:)
+  pqSup3 `shouldBe` tPQ
   alice #: ("4", "tom", "ACPT " <> aInvId' <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("4", "tom", OK)
-  ("", "alice", Right (A.CONF tConfId pqSup'' _ "alice's connInfo")) <- (tom <#:)
-  pqSup'' `shouldBe` atPQSup
+  ("", "alice", Right (A.CONF tConfId pqSup4 _ "alice's connInfo")) <- (tom <#:)
+  pqSup4 `shouldBe` atPQSup
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", A.INFO atPQSup "tom's connInfo 2")
   alice <# ("", "tom", CON atPQ)
@@ -332,12 +334,13 @@ testContactConnRandomIds (alice, aPQ) (bob, bPQ) = do
   let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo")
-  ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
+  ("", aliceContact', Right (A.REQ aInvId pqSup' _ "bob's connInfo")) <- (alice <#:)
+  pqSup' `shouldBe` bPQ
   aliceContact' `shouldBe` aliceContact
 
   ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> enableKEMStr (CR.connPQEncryption aPQ) <> " 16\nalice's connInfo")
-  ("", aliceConn', Right (A.CONF bConfId pqSup' _ "alice's connInfo")) <- (bob <#:)
-  pqSup' `shouldBe` pqSup
+  ("", aliceConn', Right (A.CONF bConfId pqSup'' _ "alice's connInfo")) <- (bob <#:)
+  pqSup'' `shouldBe` pqSup
   aliceConn' `shouldBe` aliceConn
 
   bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
@@ -355,7 +358,7 @@ testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW T CON subscribe")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 10\nbob's info") #> ("11", "alice", OK)
-  ("", "a_contact", Right (REQ aInvId _ "bob's info")) <- (alice <#:)
+  ("", "a_contact", Right (A.REQ aInvId PQSupportOff _ "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
