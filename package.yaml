@@ -73,6 +73,7 @@ dependencies:
   - unliftio-core == 0.2.*
   - websockets == 0.12.*
   - yaml == 0.11.*
+  - zstd == 0.1.3.*
 
 flags:
   swift:
