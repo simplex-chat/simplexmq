@@ -141,6 +141,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
+import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
@@ -925,19 +926,24 @@ sendMessages' c = sendMessagesB' c . map Right
 sendMessagesB' :: forall m t. (AgentMonad' m, Traversable t) => AgentClient -> t (Either AgentErrorType MsgReq) -> m (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
   reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
-  let reqs'' = fmap (>>= prepareConn) reqs'
+  let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
+  void $ withStoreBatch' c $ \db -> map (enableConnPQEncryption db) toEnable
   enqueueMessagesB c reqs''
   where
-    prepareConn :: (MsgReq, SomeConn) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage)
-    prepareConn ((_, pqEnc, msgFlags, msg), SomeConn _ conn) = case conn of
+    prepareConn :: [ConnId] -> Either AgentErrorType (MsgReq, SomeConn) -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
+    prepareConn acc (Left e) = (acc, Left e)
+    prepareConn acc (Right ((_, pqEnc, msgFlags, msg), SomeConn _ conn)) = case conn of
       DuplexConnection cData _ sqs -> prepareMsg cData sqs
       SndConnection cData sq -> prepareMsg cData [sq]
-      _ -> Left $ CONN SIMPLEX
+      _ -> (acc, Left $ CONN SIMPLEX)
       where
-        prepareMsg :: ConnData -> NonEmpty SndQueue -> Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage)
-        prepareMsg cData sqs
-          | ratchetSyncSendProhibited cData = Left $ CMD PROHIBITED
-          | otherwise = Right (cData, sqs, Just pqEnc, msgFlags, A_MSG msg)
+        prepareMsg :: ConnData -> NonEmpty SndQueue -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
+        prepareMsg cData@ConnData {connId, pqEncryption} sqs
+          | ratchetSyncSendProhibited cData = (acc, Left $ CMD PROHIBITED)
+          | pqEnc == PQEncOn && pqEncryption == PQEncOff =
+              let cData' = cData {pqEncryption = pqEnc} :: ConnData
+               in (connId : acc, Right (cData', sqs, Just pqEnc, msgFlags, A_MSG msg))
+          | otherwise = (acc, Right (cData, sqs, Just pqEnc, msgFlags, A_MSG msg))
     connIds = map (\(connId, _, _, _) -> connId) $ rights $ toList reqs
 
 -- / async command processing v v v
@@ -1413,7 +1419,7 @@ synchronizeRatchet' c connId pqEnc force = withConnLock c connId "synchronizeRat
       | ratchetSyncAllowed cData || force -> do
           -- check queues are not switching?
           pqEnc' <- case (pqEnc, pqEncryption) of
-            (PQEncOn, PQEncOff) -> PQEncOn <$ withStore' c (\db -> setConnPQEncryption db cData PQEncOn)
+            (PQEncOn, PQEncOff) -> PQEncOn <$ withStore' c (`enableConnPQEncryption` connId)
             _ -> pure pqEncryption
           let cData' = cData {pqEncryption = pqEnc'} :: ConnData
           AgentConfig {e2eEncryptVRange} <- asks config
