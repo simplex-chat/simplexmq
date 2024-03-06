@@ -458,7 +458,7 @@ testPqX3dhProposeAgain _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (propose KEM)
-  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOff
+  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
   E2ERatchetParams _ _ _ (Just (RKParamsProposed _)) <- pure e2eAlice
   -- propose KEM again in reply - this is not an error
   (pkBob1, pkBob2, pKemBob_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSProposed ProposeKEM)

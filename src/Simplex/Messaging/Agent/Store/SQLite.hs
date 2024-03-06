@@ -581,7 +581,7 @@ createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSup
     db
     [sql|
       INSERT INTO connections
-        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_encryption, duplex_handshake) VALUES (?,?,?,?,?,?,?)
+        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, duplex_handshake) VALUES (?,?,?,?,?,?,?)
     |]
     (userId, connId, cMode, connAgentVersion, enableNtfs, pqSupport, True)
 
@@ -1935,7 +1935,7 @@ getConnData db connId' =
       [sql|
         SELECT
           user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_encryption
+          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
         FROM connections
         WHERE conn_id = ?
       |]
@@ -1958,7 +1958,7 @@ setConnAgentVersion db connId aVersion =
 
 setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
 setConnPQSupport db connId pqSupport =
-  DB.execute db "UPDATE connections SET pq_encryption = ? WHERE conn_id = ?" (pqSupport, connId)
+  DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
