@@ -234,7 +234,7 @@ ackMonitor acksVar = forever $ do
   late <- atomically $ do
     (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acksVar
     late <$ writeTVar acksVar later
-  forM_ late $ \((rId, msgId), time, label_) -> traceEvent $ B.concat ["ACK-MISS ", logEntity rId, "/", logEntity msgId, " ", bshow time, " ", bshow label_, "\0"]
+  forM_ late $ \((rId, msgId), _time, label_) -> traceEvent $ B.concat ["ACK-MISS ", logEntity rId, "/", logEntity msgId, " ", bshow label_, "\0"]
   threadDelay 1000000
   where
     logEntity bs = B64.encode $ B.take 3 bs
