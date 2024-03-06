@@ -788,6 +788,9 @@ pqSupportToEnc (PQSupport pq) = PQEncryption pq
 pqEncToSupport :: PQEncryption -> PQSupport
 pqEncToSupport (PQEncryption pq) = PQSupport pq
 
+supportOrEnc :: PQSupport -> PQEncryption -> PQSupport
+supportOrEnc (PQSupport sup) (PQEncryption enc) = PQSupport $ sup || enc
+
 replyKEM_ :: Maybe (RKEMParams 'RKSProposed) -> PQSupport -> Maybe AUseKEM
 replyKEM_ kem_ = \case
   PQSupportOn -> Just $ case kem_ of
@@ -855,7 +858,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       -- PQ encryption can be enabled or disabled
       rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
       -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
-      rcSupportKEM' = PQSupport $ supportPQ rcSupportKEM || enablePQ rcEnableKEM'
+      rcSupportKEM' = rcSupportKEM `supportOrEnc` rcEnableKEM'
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader v)
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
@@ -984,13 +987,13 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
               (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
               sndKEM = isJust kemSS'
               rcvKEM = isJust kemSS
-              enableKEM = sndKEM || rcvKEM || isJust rcKEM'
+              rcEnableKEM' = PQEncryption $ sndKEM || rcvKEM || isJust rcKEM'
           pure
             rc'
               { rcDHRs = rcDHRs',
                 rcKEM = rcKEM',
-                rcSupportKEM = PQSupport $ supportPQ rcSupportKEM || enableKEM,
-                rcEnableKEM = PQEncryption enableKEM,
+                rcSupportKEM = rcSupportKEM `supportOrEnc` rcEnableKEM',
+                rcEnableKEM = rcEnableKEM',
                 rcSndKEM = PQEncryption sndKEM,
                 rcRcvKEM = PQEncryption rcvKEM,
                 rcRK = rcRK'',
