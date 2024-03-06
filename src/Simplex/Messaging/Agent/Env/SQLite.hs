@@ -56,7 +56,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (PQEncryption, VersionRangeE2E, supportedE2EEncryptVRange)
+import Simplex.Messaging.Crypto.Ratchet (PQSupport, VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
@@ -116,8 +116,8 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    e2eEncryptVRange :: PQEncryption -> VersionRangeE2E,
-    smpAgentVRange :: PQEncryption -> VersionRangeSMPA,
+    e2eEncryptVRange :: PQSupport -> VersionRangeE2E,
+    smpAgentVRange :: PQSupport -> VersionRangeSMPA,
     smpClientVRange :: VersionRangeSMPC
   }
 

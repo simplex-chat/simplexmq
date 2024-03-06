@@ -28,7 +28,7 @@ CREATE TABLE connections(
   REFERENCES users ON DELETE CASCADE,
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
   deleted_at_wait_delivery TEXT,
-  pq_encryption INTEGER NOT NULL DEFAULT 0
+  pq_support INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,

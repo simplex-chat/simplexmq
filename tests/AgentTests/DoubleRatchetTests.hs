@@ -89,10 +89,16 @@ testAlgs test = test C.SX25519 >> test C.SX448
 paddedMsgLen :: Int
 paddedMsgLen = 100
 
-fullMsgLen :: VersionE2E -> Int
-fullMsgLen v = headerLenLength + fullHeaderLen v + C.authTagSize + paddedMsgLen
+fullMsgLen :: Ratchet a -> Int
+fullMsgLen Ratchet {rcSupportKEM} = headerLenLength + fullHeaderLen rcSupportKEM + C.authTagSize + paddedMsgLen
   where
-    headerLenLength = if v < pqRatchetE2EEncryptVersion then 1 else 3 -- two bytes are added because of two Large used in new encoding
+    -- v = current rcVersion
+    headerLenLength = case rcSupportKEM of
+      PQSupportOn -> 3 -- two bytes are added because of two Large used in new encoding
+      PQSupportOff -> 1
+      -- TODO PQ below should work too
+      -- | v >= pqRatchetE2EEncryptVersion = 3
+      -- | otherwise = 1
 
 testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
@@ -302,8 +308,10 @@ testEnableKEM alice bob _ _ _ = do
   (alice, "accepting KEM") \#>! bob
   (alice, "KEM not enabled yet here too") \#>! bob
   (bob, "KEM is still not enabled") \#>! alice
-  (alice, "now KEM is enabled") !#> bob
-  (bob, "now KEM is enabled for both sides") !#> alice
+  (alice, "KEM still not enabled 2") \#>! bob
+  (bob, "now KEM is enabled") !#> alice
+  (alice, "now KEM is enabled for both sides") !#> bob
+  (bob, "Still enabled for both sides") !#> alice
   (alice, "disabling KEM") !#>\ bob
   (bob, "KEM not disabled yet") !#> alice
   (alice, "KEM disabled") \#> bob
@@ -318,12 +326,20 @@ testEnableKEMStrict alice bob _ _ _ = do
   (alice, "accepting KEM") \#>! bob
   (alice, "KEM not enabled yet here too") \#>! bob
   (bob, "KEM is still not enabled") \#>! alice
-  (alice, "now KEM is enabled") !#>! bob
-  (bob, "now KEM is enabled for both sides") !#>! alice
+  (alice, "KEM still not enabled 2") \#>! bob
+  (bob, "now KEM is enabled") !#>! alice
+  (alice, "now KEM is enabled for both sides") !#>! bob
+  (bob, "Still enabled for both sides") !#>! alice
   (alice, "disabling KEM") !#>\ bob
   (bob, "KEM not disabled yet") !#>! alice
   (alice, "KEM disabled") \#>\ bob
   (bob, "KEM disabled on both sides") \#>! alice
+  (alice, "KEM still disabled 1") \#>\ bob
+  (bob, "KEM still disabled 2") \#>! alice
+  (alice, "KEM still disabled 3") \#>\ bob
+  (bob, "KEM still disabled 4") \#>! alice
+  (alice, "KEM still disabled 5") \#>\ bob
+  (bob, "KEM still disabled 6") \#>! alice
 
 testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
 testKeyJSON _ = do
@@ -355,6 +371,7 @@ testDecodeV2RatchetJSON :: IO ()
 testDecodeV2RatchetJSON = do
   let v2RatchetJSON = "{\"rcVersion\":[2,2],\"rcAD\":\"2GEJrq48TmQse6NR16I-hrI0tSySZQ57E_g46nDceAPRAiF6j0drq26RTE7be6X7uiB4RaGJGf4QRXzcYuVtWw==\",\"rcDHRs\":\"TUM0Q0FRQXdCUVlESzJWdUJDSUVJRkNYbUxtSHQ3SUNfeHpGTi1Qb3ZqTVQ3S2p6XzZlZlBjOG9fRFY2RWxKOQ==\",\"rcRK\":\"BOX2X7YW5qDSp2XknY_lqacSrtDqQNPvS6iJlZIs3G0=\",\"rcNs\":0,\"rcNr\":0,\"rcPN\":0,\"rcNHKs\":\"IMouSkXUvzT_mo0WM-pqEUK09-HTLk9WOTCFQglyQxU=\",\"rcNHKr\":\"g-tus1clYPV0rGlzkf5a959tUqDYQVZ1FpcPeXdKwxI=\"}"
   Right (r :: Ratchet X25519) <- pure $ J.eitherDecodeStrict' v2RatchetJSON
+  rcSupportKEM r `shouldBe` PQSupportOff
   rcEnableKEM r `shouldBe` PQEncOff
   rcSndKEM r `shouldBe` PQEncOff
   rcRcvKEM r `shouldBe` PQEncOff
@@ -370,7 +387,7 @@ testX3dh _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v Nothing
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQEncOff
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOff
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
@@ -379,7 +396,7 @@ testX3dhV1 :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testX3dhV1 _ = do
   g <- C.newRandom
   (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g (VersionE2E 1) Nothing
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g (VersionE2E 1) PQEncOff
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g (VersionE2E 1) PQSupportOff
   let paramsBob = pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   paramsAlice `shouldBe` paramsBob
@@ -389,7 +406,7 @@ testPqX3dhProposeInReply _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (no KEM)
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQEncOff
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOff
   -- propose KEM in reply
   (pkBob1, pkBob2, pKemBob_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSProposed ProposeKEM)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemBob_ e2eAlice
@@ -401,7 +418,7 @@ testPqX3dhProposeAccept _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (propose KEM)
-  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQEncOn
+  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
   E2ERatchetParams _ _ _ (Just (RKParamsProposed aliceKem)) <- pure e2eAlice
   -- accept KEM
   (pkBob1, pkBob2, pKemBob_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSAccepted $ AcceptKEM aliceKem)
@@ -414,7 +431,7 @@ testPqX3dhProposeReject _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (propose KEM)
-  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQEncOn
+  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
   E2ERatchetParams _ _ _ (Just (RKParamsProposed _)) <- pure e2eAlice
   -- reject KEM
   (pkBob1, pkBob2, Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v Nothing
@@ -427,7 +444,7 @@ testPqX3dhAcceptWithoutProposalError _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (no KEM)
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQEncOff
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOff
   E2ERatchetParams _ _ _ Nothing <- pure e2eAlice
   -- incorrectly accept KEM
   -- we don't have key in proposal, so we just generate it
@@ -441,7 +458,7 @@ testPqX3dhProposeAgain _ = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (propose KEM)
-  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQEncOn
+  (pkAlice1, pkAlice2, pKemAlice_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
   E2ERatchetParams _ _ _ (Just (RKParamsProposed _)) <- pure e2eAlice
   -- propose KEM again in reply - this is not an error
   (pkBob1, pkBob2, pKemBob_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSProposed ProposeKEM)
@@ -504,13 +521,13 @@ initRatchets = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   (pkBob1, pkBob2, _pKemParams@Nothing, AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v Nothing
-  (pkAlice1, pkAlice2, _pKem@Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams g v PQEncOff
+  (pkAlice1, pkAlice2, _pKem@Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams g v PQSupportOff
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQEncOff
+  let vs = testRatchetVersions PQSupportOff
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOff
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOff
   pure (alice, bob, encrypt' noSndKEM, decrypt' noRcvKEM, (\#>))
 
 initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -518,16 +535,16 @@ initRatchetsKEMProposed = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (no KEM)
-  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams g v PQEncOff
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams g v PQSupportOff
   -- propose KEM in reply
   let useKem = AUseKEM SRKSProposed ProposeKEM
   (pkBob1, pkBob2, pKemParams_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQEncOn
+  let vs = testRatchetVersions PQSupportOn
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOn
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -535,7 +552,7 @@ initRatchetsKEMAccepted = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (propose)
-  (pkAlice1, pkAlice2, pKem_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams g v PQEncOn
+  (pkAlice1, pkAlice2, pKem_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams g v PQSupportOn
   E2ERatchetParams _ _ _ (Just (RKParamsProposed aliceKem)) <- pure e2eAlice
   -- accept
   let useKem = AUseKEM SRKSAccepted (AcceptKEM aliceKem)
@@ -543,9 +560,9 @@ initRatchetsKEMAccepted = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQEncOn
+  let vs = testRatchetVersions PQSupportOn
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOn
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -553,31 +570,31 @@ initRatchetsKEMProposedAgain = do
   g <- C.newRandom
   let v = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
   -- initiate (propose KEM)
-  (pkAlice1, pkAlice2, pKem_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams g v PQEncOn
+  (pkAlice1, pkAlice2, pKem_@(Just _), e2eAlice) <- liftIO $ generateRcvE2EParams g v PQSupportOn
   -- propose KEM again in reply
   let useKem = AUseKEM SRKSProposed ProposeKEM
   (pkBob1, pkBob2, pKemParams_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQEncOn
+  let vs = testRatchetVersions PQSupportOn
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQEncOn
+      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
-testRatchetVersions :: PQEncryption -> RatchetVersions
+testRatchetVersions :: PQSupport -> RatchetVersions
 testRatchetVersions pq =
   let v = maxVersion $ supportedE2EEncryptVRange pq
    in RVersions v v
 
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
-encrypt_ enableKem (_, rc, _) msg =
+encrypt_ pqEnc_ (_, rc, _) msg =
   -- print msg >>
-  runExceptT (rcEncrypt rc paddedMsgLen msg enableKem)
+  runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
-      B.length msg' `shouldBe` fullMsgLen (current $ rcVersion rc)
+      B.length msg' `shouldBe` fullMsgLen rc'
       pure $ Right (msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
