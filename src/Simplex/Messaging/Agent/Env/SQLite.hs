@@ -72,7 +72,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors, traceEvent, bshow)
+import Simplex.Messaging.Util (allFinally, bshow, catchAllErrors, traceEventM, tryAllErrors)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException, cancel)
@@ -234,7 +234,7 @@ ackMonitor acksVar = forever $ do
   late <- atomically $ do
     (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acksVar
     late <$ writeTVar acksVar later
-  forM_ late $ \((rId, msgId), _time, label_) -> traceEvent $ B.concat ["ACK-MISS ", logEntity rId, "/", logEntity msgId, " ", bshow label_, "\0"]
+  forM_ late $ \((rId, msgId), _time, label_) -> traceEventM $ B.concat ["ACK-MISS ", logEntity rId, "/", logEntity msgId, " ", bshow label_]
   threadDelay 1000000
   where
     logEntity bs = B64.encode $ B.take 3 bs

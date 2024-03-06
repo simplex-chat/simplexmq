@@ -18,8 +18,8 @@ import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
-import Data.Time (NominalDiffTime)
-import Debug.Trace.ByteString (traceEventIO, unsafeTraceEventIO)
+import Data.Time (NominalDiffTime, diffUTCTime, getCurrentTime)
+import Debug.Trace.ByteString (traceEventIO, traceMarkerIO, unsafeTraceEventIO)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
 import UnliftIO
 import qualified UnliftIO.Exception as UE
@@ -170,8 +170,22 @@ diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
 
-traceEvent :: MonadIO m => B.ByteString -> m ()
-traceEvent = liftIO . traceEventIO
+traceMarkerM :: MonadIO m => B.ByteString -> m ()
+traceMarkerM = liftIO . traceMarkerIO
+
+traceEventM :: MonadIO m => B.ByteString -> m ()
+traceEventM = liftIO . traceEventIO
+
+traceSection :: MonadUnliftIO m => ByteString -> m a -> m a
+traceSection label = UE.bracket_ (traceStart label) (traceStop label)
+
+traceSlow :: MonadIO m => ByteString -> NominalDiffTime -> m a -> m a
+traceSlow label time action = do
+  begin <- liftIO getCurrentTime
+  r <- action
+  end <- liftIO getCurrentTime
+  when (diffUTCTime end begin > time) $ liftIO . unsafeTraceEventIO $ B.concat ["SLOW ", label, " \0"]
+  pure r
 
 traceStart :: MonadIO m => ByteString -> m ()
 traceStart section = liftIO . unsafeTraceEventIO $ B.concat ["START ", section, "\0"]
