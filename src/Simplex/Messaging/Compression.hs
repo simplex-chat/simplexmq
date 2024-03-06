@@ -36,12 +36,19 @@ instance Encoding Compressed where
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
 
-type CompressCtx = (Ptr Z.CCtx, Ptr CChar, Int)
+-- | Compress a single blob, using bespoke scratch buffer.
+compress1 :: ByteString -> Compressed
+compress1 bs = unsafePerformIO $ do
+  scratchSize <- Z.compressBound $ fromIntegral (B.length bs)
+  withCompressCtx scratchSize $ \ctx -> compress ctx bs
+{-# NOINLINE compress1 #-} -- prevent double-evaluation under unsafePerformIO
 
-withCompressCtx :: Int -> (CompressCtx -> IO a) -> IO a
+type CompressCtx = (Ptr Z.CCtx, Ptr CChar, CSize)
+
+withCompressCtx :: CSize -> (CompressCtx -> IO a) -> IO a
 withCompressCtx scratchSize action =
   bracket Z.createCCtx Z.freeCCtx $ \cctx ->
-    allocaBytes scratchSize $ \scratchPtr ->
+    allocaBytes (fromIntegral scratchSize) $ \scratchPtr ->
       action (cctx, scratchPtr, scratchSize)
 
 -- | Compress bytes, falling back to Passthrough in case of some internal error.
@@ -53,7 +60,7 @@ compress_ (cctx, scratchPtr, scratchSize) bs
   | B.length bs < maxLengthPassthrough = pure . Right $ Passthrough bs
   | otherwise =
       B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
-        res <- Z.checkError $ Z.compressCCtx cctx scratchPtr (fromIntegral scratchSize) sourcePtr (fromIntegral sourceSize) 3
+        res <- Z.checkError $ Z.compressCCtx cctx scratchPtr scratchSize sourcePtr (fromIntegral sourceSize) 3
         case res of
           Left e -> pure $ Left e -- should not happen, unless input buffer is too short
           Right dstSize -> Right . Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
