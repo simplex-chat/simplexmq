@@ -36,11 +36,9 @@ instance Encoding Compressed where
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
 
--- | Compress a single blob, using bespoke scratch buffer.
+-- | Compress a single blob, using passthrough when compressed size exceeds the original
 compress1 :: ByteString -> Compressed
-compress1 bs = unsafePerformIO $ do
-  scratchSize <- Z.compressBound $ fromIntegral (B.length bs)
-  withCompressCtx scratchSize $ \ctx -> compress ctx bs
+compress1 bs = unsafePerformIO $ withCompressCtx (fromIntegral $ B.length bs) $ \ctx -> compress ctx bs
 {-# NOINLINE compress1 #-} -- prevent double-evaluation under unsafePerformIO
 
 type CompressCtx = (Ptr Z.CCtx, Ptr CChar, CSize)
