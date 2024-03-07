@@ -5,9 +5,12 @@ module Simplex.Messaging.Compression where
 
 import qualified Codec.Compression.Zstd.FFI as Z
 import Control.Monad (forM)
+import Control.Monad.Except
+import Control.Monad.IO.Class
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
+import Data.Either (fromRight)
 import Data.List.NonEmpty (NonEmpty)
 import Foreign
 import Foreign.C.Types
@@ -23,7 +26,7 @@ data Compressed
 
 -- | Messages below this length are not encoded to avoid compression overhead.
 maxLengthPassthrough :: Int
-maxLengthPassthrough = 181 -- Sampled from real client data. Messages with length >=181 rapidly gain compression ratio.
+maxLengthPassthrough = 180 -- Sampled from real client data. Messages with length > 180 rapidly gain compression ratio.
 
 instance Encoding Compressed where
   smpEncode = \case
@@ -35,23 +38,26 @@ instance Encoding Compressed where
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
 
-type CompressCtx = (Ptr Z.CCtx, Ptr CChar, Int)
+type CompressCtx = (Ptr Z.CCtx, Ptr CChar, CSize)
 
-withCompressCtx :: Int -> (CompressCtx -> IO a) -> IO a
+withCompressCtx :: CSize -> (CompressCtx -> IO a) -> IO a
 withCompressCtx scratchSize action =
   bracket Z.createCCtx Z.freeCCtx $ \cctx ->
-    allocaBytes scratchSize $ \scratchPtr ->
+    allocaBytes (fromIntegral scratchSize) $ \scratchPtr ->
       action (cctx, scratchPtr, scratchSize)
 
-compress :: CompressCtx -> ByteString -> IO (Either String Compressed)
-compress (cctx, scratchPtr, scratchSize) bs
-  | B.length bs < maxLengthPassthrough = pure . Right $ Passthrough bs
+-- | Compress bytes, falling back to Passthrough in case of some internal error.
+compress :: CompressCtx -> ByteString -> IO Compressed
+compress ctx bs = fromRight (Passthrough bs) <$> compress_ ctx bs
+
+compress_ :: CompressCtx -> ByteString -> IO (Either String Compressed)
+compress_ (cctx, scratchPtr, scratchSize) bs
+  | B.length bs <= maxLengthPassthrough = pure . Right $ Passthrough bs
   | otherwise =
-      B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> do
-        res <- Z.checkError $ Z.compressCCtx cctx scratchPtr (fromIntegral scratchSize) sourcePtr (fromIntegral sourceSize) 3
-        case res of
-          Left e -> pure $ Left e -- should not happen, unless input buffer is too short
-          Right dstSize -> Right . Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
+      B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> runExceptT $ do
+        -- should not fail, unless input buffer is too short
+        dstSize <- ExceptT $ Z.checkError $ Z.compressCCtx cctx scratchPtr scratchSize sourcePtr (fromIntegral sourceSize) 3
+        liftIO $ Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
 
 type DecompressCtx = (Ptr Z.DCtx, Ptr CChar, CSize)
 
