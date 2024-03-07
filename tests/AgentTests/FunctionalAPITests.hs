@@ -36,6 +36,9 @@ module AgentTests.FunctionalAPITests
     (##>),
     (=##>),
     pattern CON,
+    pattern CONF,
+    pattern INFO,
+    pattern REQ,
     pattern Msg,
     pattern Msg',
     agentCfgV7,
@@ -52,6 +55,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (nub)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
@@ -66,7 +70,7 @@ import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMes
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
-import Simplex.Messaging.Agent.Protocol hiding (CON)
+import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
@@ -143,6 +147,15 @@ pGet c = do
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
     _ -> pure t
+
+pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e
+pattern CONF conId srvs connInfo <- A.CONF conId PQSupportOn srvs connInfo
+
+pattern INFO :: ConnInfo -> ACommand 'Agent 'AEConn
+pattern INFO connInfo = A.INFO PQSupportOn connInfo
+
+pattern REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand 'Agent e
+pattern REQ invId srvs connInfo <- A.REQ invId PQSupportOn srvs connInfo
 
 pattern CON :: ACommand 'Agent 'AEConn
 pattern CON = A.CON PQEncOn
@@ -471,11 +484,12 @@ runAgentClientTest pqSupport alice@AgentClient {} bob baseId =
   runRight_ $ do
     (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (IKNoPQ pqSupport) SMSubscribe
     aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
-    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ pqSup' `shouldBe` pqSupport
     allowConnection alice bobId confId "alice's connInfo"
     let pqEnc = CR.pqSupportToEnc pqSupport
     get alice ##> ("", bobId, A.CON pqEnc)
-    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, A.INFO pqSupport "alice's connInfo")
     get bob ##> ("", aliceId, A.CON pqEnc)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
     1 <- msgId <$> A.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
@@ -533,12 +547,14 @@ runAgentClientContactTest pqSupport alice bob baseId =
   runRight_ $ do
     (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing (IKNoPQ pqSupport) SMSubscribe
     aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
-    ("", _, REQ invId _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ pqSup' `shouldBe` pqSupport
     bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
-    ("", _, CONF confId _ "alice's connInfo") <- get bob
+    ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
+    liftIO $ pqSup'' `shouldBe` pqSupport
     allowConnection bob aliceId confId "bob's connInfo"
     let pqEnc = CR.pqSupportToEnc pqSupport
-    get alice ##> ("", bobId, INFO "bob's connInfo")
+    get alice ##> ("", bobId, A.INFO pqSupport "bob's connInfo")
     get alice ##> ("", bobId, A.CON pqEnc)
     get bob ##> ("", aliceId, A.CON pqEnc)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
@@ -1267,11 +1283,12 @@ makeConnectionForUsers_ :: PQSupport -> AgentClient -> UserId -> AgentClient -> 
 makeConnectionForUsers_ pqSupport alice aliceUserId bob bobUserId = do
   (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.joinConnection bob bobUserId True qInfo "bob's connInfo" pqSupport SMSubscribe
-  ("", _, CONF confId _ "bob's connInfo") <- get alice
+  ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+  liftIO $ pqSup' `shouldBe` pqSupport
   allowConnection alice bobId confId "alice's connInfo"
   let pqEnc = CR.pqSupportToEnc pqSupport
   get alice ##> ("", bobId, A.CON pqEnc)
-  get bob ##> ("", aliceId, INFO "alice's connInfo")
+  get bob ##> ("", aliceId, A.INFO pqSupport "alice's connInfo")
   get bob ##> ("", aliceId, A.CON pqEnc)
   pure (aliceId, bobId)
 

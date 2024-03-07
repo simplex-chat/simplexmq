@@ -30,6 +30,8 @@ import AgentTests.FunctionalAPITests
     (##>),
     (=##>),
     pattern CON,
+    pattern CONF,
+    pattern INFO,
     pattern Msg,
   )
 import Control.Concurrent (ThreadId, killThread, threadDelay)
@@ -50,7 +52,7 @@ import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpSer
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
-import Simplex.Messaging.Agent.Protocol hiding (CON)
+import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO)
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
