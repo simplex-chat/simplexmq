@@ -374,12 +374,12 @@ data ACommand (p :: AParty) (e :: AEntity) where
   NEW :: Bool -> AConnectionMode -> InitialKeys -> SubscriptionMode -> ACommand Client AEConn -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent AEConn
   JOIN :: Bool -> AConnectionRequestUri -> PQSupport -> SubscriptionMode -> ConnInfo -> ACommand Client AEConn -- response OK
-  CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
+  CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
-  REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
+  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> ACommand Agent AEConn -- ConnInfo is from sender
   ACPT :: InvitationId -> PQSupport -> ConnInfo -> ACommand Client AEConn -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client AEConn
-  INFO :: ConnInfo -> ACommand Agent AEConn
+  INFO :: PQSupport -> ConnInfo -> ACommand Agent AEConn
   CON :: PQEncryption -> ACommand Agent AEConn -- notification that connection is established
   SUB :: ACommand Client AEConn
   END :: ACommand Agent AEConn
@@ -1748,9 +1748,9 @@ commandP binaryP =
       ACmdTag SAgent e cmd ->
         ACmd SAgent e <$> case cmd of
           INV_ -> s (INV <$> strP)
-          CONF_ -> s (CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> binaryP)
-          REQ_ -> s (REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> binaryP)
-          INFO_ -> s (INFO <$> binaryP)
+          CONF_ -> s (CONF <$> A.takeTill (== ' ') <* A.space <*> pqSupP <*> strListP <* A.space <*> binaryP)
+          REQ_ -> s (REQ <$> A.takeTill (== ' ') <* A.space <*> pqSupP <*> strP_ <*> binaryP)
+          INFO_ -> s (INFO <$> pqSupP <*> binaryP)
           CON_ -> s (CON <$> strP)
           END_ -> pure END
           CONNECT_ -> s (CONNECT <$> strP_ <*> strP)
@@ -1805,13 +1805,13 @@ serializeCommand :: ACommand p e -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
   INV cReq -> s (INV_, cReq)
-  JOIN ntfs cReq pqEnc subMode cInfo -> s (JOIN_, ntfs, cReq, pqEnc, subMode, Str $ serializeBinary cInfo)
-  CONF confId srvs cInfo -> B.unwords [s CONF_, confId, strEncodeList srvs, serializeBinary cInfo]
+  JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
+  CONF confId pqSup srvs cInfo -> B.unwords [s CONF_, confId, s pqSup, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
-  REQ invId srvs cInfo -> B.unwords [s REQ_, invId, s srvs, serializeBinary cInfo]
-  ACPT invId pqEnc cInfo -> B.unwords [s ACPT_, invId, s pqEnc, serializeBinary cInfo]
+  REQ invId pqSup srvs cInfo -> B.unwords [s REQ_, invId, s pqSup, s srvs, serializeBinary cInfo]
+  ACPT invId pqSup cInfo -> B.unwords [s ACPT_, invId, s pqSup, serializeBinary cInfo]
   RJCT invId -> B.unwords [s RJCT_, invId]
-  INFO cInfo -> B.unwords [s INFO_, serializeBinary cInfo]
+  INFO pqSup cInfo -> B.unwords [s INFO_, s pqSup, serializeBinary cInfo]
   SUB -> s SUB_
   END -> s END_
   CONNECT p h -> s (CONNECT_, p, h)
@@ -1910,14 +1910,14 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
     cmdWithMsgBody (APC e cmd) =
       APC e <$$> case cmd of
-        SEND kem msgFlags body -> SEND kem msgFlags <$$> getBody body
+        SEND pqEnc msgFlags body -> SEND pqEnc msgFlags <$$> getBody body
         MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-        JOIN ntfs qUri kem subMode cInfo -> JOIN ntfs qUri kem subMode <$$> getBody cInfo
-        CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
+        JOIN ntfs qUri pqSup subMode cInfo -> JOIN ntfs qUri pqSup subMode <$$> getBody cInfo
+        CONF confId pqSup srvs cInfo -> CONF confId pqSup srvs <$$> getBody cInfo
         LET confId cInfo -> LET confId <$$> getBody cInfo
-        REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
-        ACPT invId kem cInfo -> ACPT invId kem <$$> getBody cInfo
-        INFO cInfo -> INFO <$$> getBody cInfo
+        REQ invId pqSup srvs cInfo -> REQ invId pqSup srvs <$$> getBody cInfo
+        ACPT invId pqSup cInfo -> ACPT invId pqSup <$$> getBody cInfo
+        INFO pqSup cInfo -> INFO pqSup <$$> getBody cInfo
         _ -> pure $ Right cmd
 
     getBody :: ByteString -> m (Either AgentErrorType ByteString)

@@ -1776,14 +1776,6 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 instance FromField (Version v) where fromField f = Version <$> fromField f
 
-instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
-
-instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
-
-instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
-
-instance FromField PQSupport where fromField f = PQSupport <$> fromField f
-
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
