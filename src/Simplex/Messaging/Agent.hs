@@ -221,6 +221,9 @@ createUser c = withAgentEnv c .: createUser' c
 deleteUser :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> m ()
 deleteUser c = withAgentEnv c .: deleteUser' c
 
+connRequestPQSupport :: (MonadUnliftIO m) => AgentClient -> PQSupport -> ConnectionRequestUri c -> m (Maybe PQSupport)
+connRequestPQSupport c = withAgentEnv c .: connRequestPQSupport' c
+
 -- | Create SMP agent connection (NEW command) asynchronously, synchronous response is new connection id
 createConnectionAsync :: forall m c. (AgentErrorMonad m, ConnectionModeI c) => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> m ConnId
 createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAsync c userId aCorrId enableNtfs
@@ -707,8 +710,8 @@ startJoinInvitation userId connId enableNtfs cReqUri pqSup =
       pure (aVersion, cData, q, rc, e2eSndParams)
     Nothing -> throwError $ AGENT A_VERSION
 
-connRequestPQSupport :: AgentMonad' m => PQSupport -> ConnectionRequestUri c -> m (Maybe PQSupport)
-connRequestPQSupport pqSup cReq = case cReq of
+connRequestPQSupport' :: AgentMonad' m => AgentClient -> PQSupport -> ConnectionRequestUri c -> m (Maybe PQSupport)
+connRequestPQSupport' _c pqSup cReq = case cReq of
   CRInvitationUri {} -> invPQSupported <$$> compatibleInvitationUri cReq pqSup
     where
       invPQSupported (_, Compatible (CR.E2ERatchetParams e2eV _ _ _), Compatible agentV) = pqSup `CR.pqSupportAnd` versionPQSupport_ agentV (Just e2eV)
