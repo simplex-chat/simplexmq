@@ -58,6 +58,8 @@ module Simplex.Messaging.Crypto.Ratchet
     replyKEM_,
     pqSupportToEnc,
     pqEncToSupport,
+    pqSupportAnd,
+    pqSupportOrEnc,
     pqX3dhSnd,
     pqX3dhRcv,
     initSndRatchet,
@@ -788,8 +790,11 @@ pqSupportToEnc (PQSupport pq) = PQEncryption pq
 pqEncToSupport :: PQEncryption -> PQSupport
 pqEncToSupport (PQEncryption pq) = PQSupport pq
 
-supportOrEnc :: PQSupport -> PQEncryption -> PQSupport
-supportOrEnc (PQSupport sup) (PQEncryption enc) = PQSupport $ sup || enc
+pqSupportAnd :: PQSupport -> PQSupport -> PQSupport
+pqSupportAnd (PQSupport s1) (PQSupport s2) = PQSupport $ s1 && s2
+
+pqSupportOrEnc :: PQSupport -> PQEncryption -> PQSupport
+pqSupportOrEnc (PQSupport sup) (PQEncryption enc) = PQSupport $ sup || enc
 
 replyKEM_ :: Maybe (RKEMParams 'RKSProposed) -> PQSupport -> Maybe AUseKEM
 replyKEM_ kem_ = \case
@@ -858,7 +863,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       -- PQ encryption can be enabled or disabled
       rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
       -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
-      rcSupportKEM' = rcSupportKEM `supportOrEnc` rcEnableKEM'
+      rcSupportKEM' = rcSupportKEM `pqSupportOrEnc` rcEnableKEM'
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader v)
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
@@ -992,7 +997,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
             rc'
               { rcDHRs = rcDHRs',
                 rcKEM = rcKEM',
-                rcSupportKEM = rcSupportKEM `supportOrEnc` rcEnableKEM',
+                rcSupportKEM = rcSupportKEM `pqSupportOrEnc` rcEnableKEM',
                 rcEnableKEM = rcEnableKEM',
                 rcSndKEM = PQEncryption sndKEM,
                 rcRcvKEM = PQEncryption rcvKEM,
@@ -1138,3 +1143,11 @@ instance AlgorithmI a => FromJSON (Ratchet a) where
 instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
 
 instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
+
+instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
+
+instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
+
+instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
+
+instance FromField PQSupport where fromField f = PQSupport <$> fromField f
