@@ -164,10 +164,13 @@ pattern Msg :: MsgBody -> ACommand 'Agent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = PQEncOn} _ msgBody
 
 pattern Msg' :: AgentMsgId -> PQEncryption -> MsgBody -> ACommand 'Agent e
-pattern Msg' aMsgId pqEncryption msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption} _ msgBody
+pattern Msg' aMsgId pq msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption = pq} _ msgBody
 
 pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> ACommand 'Agent 'AEConn
 pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} _ msgBody
+
+pattern MsgErr' :: AgentMsgId -> MsgErrorType -> PQEncryption -> MsgBody -> ACommand 'Agent 'AEConn
+pattern MsgErr' msgId err pq msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err, pqEncryption = pq} _ msgBody
 
 pattern Rcvd :: AgentMsgId -> ACommand 'Agent 'AEConn
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
@@ -256,6 +259,8 @@ functionalAPITests t = do
       withSmpServer t testServerMultipleIdentities
     it "should connect with two peers" $
       withSmpServer t testAgentClient3
+    it "should establish connection without PQ encryption and enable it" $
+      withSmpServer t testEnablePQEncryption
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
@@ -515,6 +520,76 @@ runAgentClientTest pqSupport alice@AgentClient {} bob baseId =
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId . fst
+
+testEnablePQEncryption :: HasCallStack => IO ()
+testEnablePQEncryption = do
+  ca <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  cb <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  g <- C.newRandom
+  runRight_ $ do
+    (aId, bId) <- makeConnection_ PQSupportOff ca cb
+    let a = (ca, aId)
+        b = (cb, bId)
+    (a, 4, "msg 1") \#>\ b
+    (b, 5, "msg 2") \#>\ a
+    -- 45 bytes is used by agent message envelope inside double ratchet message envelope
+    let largeMsg g' pqEnc = atomically $ C.randomBytes (e2eEncUserMsgLength pqdrSMPAgentVersion pqEnc - 45) g'
+    lrg <- largeMsg g PQSupportOff
+    (a, 6, lrg) \#>\ b
+    (b, 7, lrg) \#>\ a
+    -- enabling PQ encryption
+    (a, 8, lrg) \#>! b
+    (b, 9, lrg) \#>! a
+    -- switched to smaller envelopes (before reporting PQ encryption enabled)
+    sml <- largeMsg g PQSupportOn
+    -- fail because of message size
+    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
+    (11, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
+    get ca =##> \case ("", connId, SENT 11) -> connId == bId; _ -> False
+    get cb =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
+    ackMessage cb aId 10 Nothing
+    -- -- fail in reply to sync IDss
+    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
+    (12, PQEncOn) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
+    get cb =##> \case ("", connId, SENT 12) -> connId == aId; _ -> False
+    get ca =##> \case ("", connId, MsgErr' 12 MsgSkipped {} PQEncOn msg') -> connId == bId && msg' == sml; _ -> False
+    ackMessage ca bId 12 Nothing
+    -- PQ encryption now enabled
+    (a, 13, sml) !#>! b
+    (b, 14, sml) !#>! a
+    -- disabling PQ encryption
+    (a, 15, sml) !#>\ b
+    (b, 16, sml) !#>\ a
+    (a, 17, sml) \#>\ b
+    (b, 18, sml) \#>\ a
+    -- enabling PQ encryption again
+    (a, 19, sml) \#>! b
+    (b, 20, sml) \#>! a
+    (a, 21, sml) \#>! b
+    (b, 22, sml) !#>! a
+    (a, 23, sml) !#>! b
+    -- disabling PQ encryption again
+    (b, 24, sml) !#>\ a
+    (a, 25, sml) !#>\ b
+    (b, 26, sml) \#>\ a
+    (a, 27, sml) \#>\ b
+    -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
+    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    pure ()
+  where
+    (\#>\) = PQEncOff `sndRcv` PQEncOff
+    (\#>!) = PQEncOff `sndRcv` PQEncOn
+    (!#>!) = PQEncOn `sndRcv` PQEncOn
+    (!#>\) = PQEncOn `sndRcv` PQEncOff
+
+sndRcv :: PQEncryption -> PQEncryption -> ((AgentClient, ConnId), AgentMsgId, MsgBody) -> (AgentClient, ConnId) -> ExceptT AgentErrorType IO ()
+sndRcv pqEnc pqEnc' ((c1, id1), mId, msg) (c2, id2) = do
+  r <- A.sendMessage c1 id2 pqEnc' SMP.noMsgFlags msg
+  liftIO $ r `shouldBe` (mId, pqEnc)
+  get c1 =##> \case ("", connId, SENT mId') -> connId == id2 && mId' == mId; _ -> False
+  get c2 =##> \case ("", connId, Msg' mId' pq msg') -> connId == id1 && mId' == mId && msg' == msg && pq == pqEnc; _ -> False
+  ackMessage c2 id1 mId Nothing
 
 testAgentClient3 :: HasCallStack => IO ()
 testAgentClient3 = do

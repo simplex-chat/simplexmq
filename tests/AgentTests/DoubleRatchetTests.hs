@@ -90,15 +90,12 @@ paddedMsgLen :: Int
 paddedMsgLen = 100
 
 fullMsgLen :: Ratchet a -> Int
-fullMsgLen Ratchet {rcSupportKEM} = headerLenLength + fullHeaderLen rcSupportKEM + C.authTagSize + paddedMsgLen
+fullMsgLen Ratchet {rcSupportKEM, rcVersion} = headerLenLength + fullHeaderLen v rcSupportKEM + C.authTagSize + paddedMsgLen
   where
-    -- v = current rcVersion
+    v = current rcVersion
     headerLenLength = case rcSupportKEM of
-      PQSupportOn -> 3 -- two bytes are added because of two Large used in new encoding
-      PQSupportOff -> 1
-      -- TODO PQ below should work too
-      -- | v >= pqRatchetE2EEncryptVersion = 3
-      -- | otherwise = 1
+      PQSupportOn | v >= pqRatchetE2EEncryptVersion -> 3 -- two bytes are added because of two Large used in new encoding
+      _ -> 1
 
 testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
@@ -308,10 +305,10 @@ testEnableKEM alice bob _ _ _ = do
   (alice, "accepting KEM") \#>! bob
   (alice, "KEM not enabled yet here too") \#>! bob
   (bob, "KEM is still not enabled") \#>! alice
-  (alice, "KEM still not enabled 2") \#>! bob
-  (bob, "now KEM is enabled") !#> alice
-  (alice, "now KEM is enabled for both sides") !#> bob
-  (bob, "Still enabled for both sides") !#> alice
+  (alice, "now KEM is enabled") !#>! bob
+  (bob, "now KEM is enabled for both sides") !#> alice
+  (alice, "still enabled for both sides") !#> bob
+  (bob, "still enabled for both sides 2") !#> alice
   (alice, "disabling KEM") !#>\ bob
   (bob, "KEM not disabled yet") !#> alice
   (alice, "KEM disabled") \#> bob
@@ -326,10 +323,10 @@ testEnableKEMStrict alice bob _ _ _ = do
   (alice, "accepting KEM") \#>! bob
   (alice, "KEM not enabled yet here too") \#>! bob
   (bob, "KEM is still not enabled") \#>! alice
-  (alice, "KEM still not enabled 2") \#>! bob
-  (bob, "now KEM is enabled") !#>! alice
-  (alice, "now KEM is enabled for both sides") !#>! bob
-  (bob, "Still enabled for both sides") !#>! alice
+  (alice, "now KEM is enabled") !#>! bob
+  (bob, "now KEM is enabled for both sides") !#>! alice
+  (alice, "still enabled for both sides") !#>! bob
+  (bob, "still enabled for both sides 2") !#>! alice
   (alice, "disabling KEM") !#>\ bob
   (bob, "KEM not disabled yet") !#>! alice
   (alice, "KEM disabled") \#>\ bob

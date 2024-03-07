@@ -54,12 +54,11 @@ module Simplex.Messaging.Crypto.Ratchet
     generateSndE2EParams,
     initialPQEncryption,
     connPQEncryption,
-    joinContactInitialKeys,
     replyKEM_,
     pqSupportToEnc,
     pqEncToSupport,
     pqSupportAnd,
-    pqSupportOrEnc,
+    pqEnableSupport,
     pqX3dhSnd,
     pqX3dhRcv,
     initSndRatchet,
@@ -672,15 +671,15 @@ data MsgHeader a = MsgHeader
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 -- TODO PQ this must be version-dependent
 -- TODO this is the exact size, some reserve should be added
-paddedHeaderLen :: PQSupport -> Int
-paddedHeaderLen = \case
-  PQSupportOn -> 2288
-  PQSupportOff -> 88
+paddedHeaderLen :: VersionE2E -> PQSupport -> Int
+paddedHeaderLen v = \case
+  PQSupportOn | v >= pqRatchetE2EEncryptVersion -> 2288
+  _ -> 88
 
 -- only used in tests to validate correct padding
 -- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)
-fullHeaderLen :: PQSupport -> Int
-fullHeaderLen pq = 2 + 1 + paddedHeaderLen pq + authTagSize + ivSize @AES256
+fullHeaderLen :: VersionE2E -> PQSupport -> Int
+fullHeaderLen v pq = 2 + 1 + paddedHeaderLen v pq + authTagSize + ivSize @AES256
 
 -- pass the current version, as MsgHeader only includes the max supported version that can be different from the current
 encodeMsgHeader :: AlgorithmI a => VersionE2E -> MsgHeader a -> ByteString
@@ -718,7 +717,8 @@ instance Encoding EncMessageHeader where
 encodeLarge :: VersionE2E -> ByteString -> ByteString
 encodeLarge v s
   -- the condition for length is not necessary, it's here as a fallback.
-  | v >= pqRatchetE2EEncryptVersion || B.length s > 255 = smpEncode $ Large s
+  -- | v >= pqRatchetE2EEncryptVersion || B.length s > 255 = smpEncode $ Large s
+  | v >= pqRatchetE2EEncryptVersion = smpEncode $ Large s
   | otherwise = smpEncode s
 
 -- This parser relies on the fact that header cannot be shorter than 32 bytes (it is ~69 bytes without PQ KEM),
@@ -793,15 +793,15 @@ pqEncToSupport (PQEncryption pq) = PQSupport pq
 pqSupportAnd :: PQSupport -> PQSupport -> PQSupport
 pqSupportAnd (PQSupport s1) (PQSupport s2) = PQSupport $ s1 && s2
 
-pqSupportOrEnc :: PQSupport -> PQEncryption -> PQSupport
-pqSupportOrEnc (PQSupport sup) (PQEncryption enc) = PQSupport $ sup || enc
+pqEnableSupport :: VersionE2E -> PQSupport -> PQEncryption -> PQSupport
+pqEnableSupport v (PQSupport sup) (PQEncryption enc) = PQSupport $ sup || (v >= pqRatchetE2EEncryptVersion && enc)
 
-replyKEM_ :: Maybe (RKEMParams 'RKSProposed) -> PQSupport -> Maybe AUseKEM
-replyKEM_ kem_ = \case
-  PQSupportOn -> Just $ case kem_ of
+replyKEM_ :: VersionE2E -> Maybe (RKEMParams 'RKSProposed) -> PQSupport -> Maybe AUseKEM
+replyKEM_ v kem_ = \case
+  PQSupportOn | v >= pqRatchetE2EEncryptVersion -> Just $ case kem_ of
     Just (RKParamsProposed k) -> AUseKEM SRKSAccepted $ AcceptKEM k
     Nothing -> AUseKEM SRKSProposed ProposeKEM
-  PQSupportOff -> Nothing
+  _ -> Nothing
 
 instance StrEncoding PQEncryption where
   strEncode pqMode
@@ -848,12 +848,6 @@ connPQEncryption = \case
   IKUsePQ -> PQSupportOn
   IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
 
--- determines whether PQ key should be included in invitation link sent to contact address
-joinContactInitialKeys :: PQSupport -> InitialKeys
-joinContactInitialKeys = \case
-  PQSupportOn -> IKUsePQ -- default
-  PQSupportOff -> IKNoPQ PQSupportOff
-
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
 rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} paddedMsgLen msg pqEnc_ = do
@@ -863,9 +857,14 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       -- PQ encryption can be enabled or disabled
       rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
       -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
-      rcSupportKEM' = rcSupportKEM `pqSupportOrEnc` rcEnableKEM'
+      rcSupportKEM' = pqEnableSupport v rcSupportKEM rcEnableKEM'
+      -- This sets max version to support PQ encryption.
+      -- Current version upgrade happens when peer decrypts the message.
+      -- TODO v5.7 remove version upgrade here, as it's already upgraded above
+      maxSupported' = max currentE2EEncryptVersion $ if pqEnc_ == Just PQEncOn then pqRatchetE2EEncryptVersion else v
+      rcVersion' = rcVersion {maxSupported = maxSupported'}
   -- enc_header = HENCRYPT(state.HKs, header)
-  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader v)
+  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen v rcSupportKEM') rcAD (msgHeader v maxSupported')
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
   let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
@@ -883,16 +882,10 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
             rcNs = rcNs + 1,
             rcSupportKEM = rcSupportKEM',
             rcEnableKEM = rcEnableKEM',
-            rcVersion = rcVersion {maxSupported = max v currentE2EEncryptVersion}
+            rcVersion = rcVersion',
+            rcKEM = if pqEnc_ == Just PQEncOff then (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM else rcKEM
           }
-      rc'' = case pqEnc_ of
-        Nothing -> rc'
-        -- This sets max version to support PQ encryption.
-        -- Current version upgrade happens when peer decrypts the message.
-        -- TODO v5.7 remove version upgrade here, as it's already upgraded above
-        Just PQEncOn -> rc' {rcVersion = rcVersion {maxSupported = max v pqRatchetE2EEncryptVersion}}
-        Just PQEncOff -> rc' {rcKEM = (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM}
-  pure (msg', rc'')
+  pure (msg', rc')
   where
     -- header = HEADER_PQ2(
     --   dh = state.DHRs.public,
@@ -901,11 +894,11 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
     --   pn = state.PN,
     --   n = state.Ns
     -- )
-    msgHeader v =
+    msgHeader v maxSupported' =
       encodeMsgHeader
-        v 
+        v
         MsgHeader
-          { msgMaxVersion = maxSupported rcVersion,
+          { msgMaxVersion = maxSupported',
             msgDHRs = publicKey rcDHRs,
             msgKEM = msgKEMParams <$> rcKEM,
             msgPN = rcPN,
@@ -982,7 +975,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
         smkDiff :: SkippedMsgKeys -> SkippedMsgDiff
         smkDiff smks = if M.null smks then SMDNoChange else SMDAdd smks
         ratchetStep :: Ratchet a -> MsgHeader a -> ExceptT CryptoError IO (Ratchet a)
-        ratchetStep rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr, rcSupportKEM} MsgHeader {msgDHRs, msgKEM} = do
+        ratchetStep rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr, rcSupportKEM, rcVersion = rv} MsgHeader {msgDHRs, msgKEM} = do
           (kemSS, kemSS', rcKEM') <- pqRatchetStep rc' msgKEM
           -- state.DHRs = GENERATE_DH()
           (_, rcDHRs') <- atomically $ generateKeyPair @a g
@@ -997,7 +990,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
             rc'
               { rcDHRs = rcDHRs',
                 rcKEM = rcKEM',
-                rcSupportKEM = rcSupportKEM `pqSupportOrEnc` rcEnableKEM',
+                rcSupportKEM = pqEnableSupport (current rv) rcSupportKEM rcEnableKEM',
                 rcEnableKEM = rcEnableKEM',
                 rcSndKEM = PQEncryption sndKEM,
                 rcRcvKEM = PQEncryption rcvKEM,
