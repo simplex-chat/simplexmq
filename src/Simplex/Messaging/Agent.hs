@@ -699,7 +699,7 @@ startJoinInvitation userId connId enableNtfs cReqUri pqSup =
     Just (qInfo, (Compatible e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_)), aVersion@(Compatible connAgentVersion)) -> do
       g <- asks random
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
-      (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ kem_ pqSupport)
+      (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
       maxSupported <- asks $ maxVersion . ($ pqSup) . e2eEncryptVRange . config
@@ -759,7 +759,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   compatibleContactUri cReqUri pqSup >>= \case
     Just (qInfo, vrsn) -> do
-      (connId', cReq) <- newConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.joinContactInitialKeys pqSup) subMode srv
+      (connId', cReq) <- newConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.IKNoPQ pqSup) subMode srv
       sendInvitation c userId qInfo vrsn cReq cInfo
       pure connId'
     Nothing -> throwError $ AGENT A_VERSION
@@ -2368,7 +2368,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 -- show connection request even if invitaion via contact address is not compatible.
                 -- in case invitation not compatible, assume there is no PQ encryption support.
                 pqSupport <- maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq PQSupportOn
-                liftIO $ print pqSupport
                 g <- asks random
                 let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
                 invId <- withStore c $ \db -> createInvitation db g newInv
@@ -2554,10 +2553,10 @@ enqueueRatchetKey c cData@ConnData {connId, pqSupport} sq e2eEncryption = do
       pure internalId
 
 -- encoded AgentMessage -> encoded EncAgentMessage
-agentRatchetEncrypt :: DB.Connection -> ConnData -> ByteString -> (PQSupport -> Int) -> Maybe PQEncryption -> ExceptT StoreError IO (ByteString, PQEncryption)
-agentRatchetEncrypt db ConnData {connId, pqSupport} msg getPaddedLen pqEnc_ = do
+agentRatchetEncrypt :: DB.Connection -> ConnData -> ByteString -> (VersionSMPA -> PQSupport -> Int) -> Maybe PQEncryption -> ExceptT StoreError IO (ByteString, PQEncryption)
+agentRatchetEncrypt db ConnData {connId, connAgentVersion = v, pqSupport} msg getPaddedLen pqEnc_ = do
   rc <- ExceptT $ getRatchet db connId
-  let paddedLen = getPaddedLen pqSupport
+  let paddedLen = getPaddedLen v pqSupport
   (encMsg, rc') <- liftE (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg pqEnc_
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
   pure (encMsg, CR.rcSndKEM rc')
