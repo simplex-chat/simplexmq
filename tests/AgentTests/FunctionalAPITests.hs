@@ -57,7 +57,7 @@ import Data.Int (Int64)
 import Data.List (nub)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -80,7 +80,7 @@ import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQ
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF, authBatchCmdsNTFVersion)
-import Simplex.Messaging.Protocol (AProtocolType (..), BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -95,14 +95,6 @@ import Util
 import XFTPClient (testXFTPServer)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
-
-deriving instance Eq (ACommand p e)
-
-instance Eq AConnectionMode where
-  ACM m == ACM m' = isJust $ testEquality m m'
-
-instance Eq AProtocolType where
-  AProtocolType p == AProtocolType p' = isJust $ testEquality p p'
 
 -- deriving instance Eq (ValidFileDescription p)
 
