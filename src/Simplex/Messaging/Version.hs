@@ -4,6 +4,7 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Version
@@ -26,9 +27,11 @@ module Simplex.Messaging.Version
 where
 
 import Control.Applicative (optional)
+import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Version.Internal (Version (..))
 
 pattern VersionRange :: Version v -> Version v -> VersionRange v
@@ -120,3 +123,5 @@ compatibleVersion x vr =
 
 mkCompatibleIf :: a -> Bool -> Maybe (Compatible a)
 x `mkCompatibleIf` cond = if cond then Just $ Compatible_ x else Nothing
+
+$(J.deriveJSON defaultJSON ''VersionRange)
