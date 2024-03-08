@@ -183,7 +183,7 @@ import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
@@ -765,6 +765,9 @@ deriving instance Ord (SProtocolType p)
 deriving instance Show (SProtocolType p)
 
 data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
+
+instance Eq AProtocolType where
+  AProtocolType p == AProtocolType p' = isJust $ testEquality p p'
 
 deriving instance Show AProtocolType
 

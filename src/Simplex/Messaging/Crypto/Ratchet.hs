@@ -190,6 +190,8 @@ data RKEMParams (s :: RatchetKEMState) where
   RKParamsProposed :: KEMPublicKey -> RKEMParams 'RKSProposed
   RKParamsAccepted :: KEMCiphertext -> KEMPublicKey -> RKEMParams 'RKSAccepted
 
+deriving instance Eq (RKEMParams s)
+
 deriving instance Show (RKEMParams s)
 
 data ARKEMParams = forall s. RatchetKEMStateI s => ARKP (SRatchetKEMState s) (RKEMParams s)
@@ -275,7 +277,7 @@ type RcvE2ERatchetParamsUri a = E2ERatchetParamsUri 'RKSProposed a
 
 data E2ERatchetParamsUri (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParamsUri VersionRangeE2E (PublicKey a) (PublicKey a) (Maybe (RKEMParams s))
-  deriving (Show)
+  deriving (Eq, Show)
 
 data AE2ERatchetParamsUri (a :: Algorithm)
   = forall s.

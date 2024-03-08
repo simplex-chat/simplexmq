@@ -3,7 +3,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
@@ -11,7 +10,6 @@
 module AgentTests.ConnectionRequestTests where
 
 import Data.ByteString (ByteString)
-import Data.Type.Equality
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -21,17 +19,6 @@ import Simplex.Messaging.Protocol (ProtocolServer (..), pattern VersionSMPC, sup
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec
-
-deriving instance Eq (ConnectionRequestUri m)
-
-deriving instance Eq (E2ERatchetParamsUri s a)
-
-deriving instance Eq (RKEMParams s)
-
-instance Eq AConnectionRequestUri where
-  ACR m cr == ACR m' cr' = case testEquality m m' of
-    Just Refl -> cr == cr'
-    _ -> False
 
 uri :: String
 uri = "smp.simplex.im"

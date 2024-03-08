@@ -160,8 +160,6 @@ deriving instance Eq RatchetInitParams
 
 deriving instance Eq RatchetKey
 
-deriving instance Eq (RKEMParams s)
-
 instance Eq ARKEMParams where
   (ARKP s ps) == (ARKP s' ps') = case testEquality s s' of
     Just Refl -> ps == ps'
