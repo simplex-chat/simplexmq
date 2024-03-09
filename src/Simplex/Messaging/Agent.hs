@@ -1923,7 +1923,6 @@ cleanupManager c@AgentClient {subQ} = do
 data ACKd
   = AckNow SMP.RecipientId
   | AckLater Text SMP.RecipientId
-  | DontAck
 
 -- | make sure to ACK or throw in each message processing branch
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
@@ -2028,8 +2027,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv@SMP.Proto
                                       AgentMessage _ (A_MSG body) -> do
                                         logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
                                         notify $ MSG msgMeta msgFlags body
-                                        pure $ AckLater "MSG" rId
-                                      _ -> pure DontAck
+                                        pure $ AckLater "A_DUPLICATE" rId
+                                      _ -> prohibited >> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             exists <- withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash
@@ -2092,7 +2091,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv@SMP.Proto
                   now <- liftIO getSystemTime
                   atomically $ modifyTVar' (acks $ agentEnv c) $ OP.insert (rId', srvMsgId) now (Just label)
                   traceGroupStart (rId', srvMsgId) $ "ACK|" <> strEncode (L.head host)
-                DontAck -> pure ()
               ack :: m ACKd
               ack = enqueueCmd (ICAck rId srvMsgId) $> AckNow rId
               ackDel :: InternalId -> m ACKd
