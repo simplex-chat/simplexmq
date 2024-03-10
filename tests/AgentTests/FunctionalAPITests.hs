@@ -176,7 +176,6 @@ smpCfgV7 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange batchCmdsSMPVersio
 ntfCfgV2 :: ProtocolClientConfig NTFVersion
 ntfCfgV2 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange (VersionNTF 1) authBatchCmdsNTFVersion}
 
--- TODO PQ test next version with PQ
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
@@ -187,10 +186,13 @@ agentCfgVPrev =
       smpCfg = smpCfgVPrev
     }
 
+-- agent config for the next client version
 agentCfgV7 :: AgentConfig
 agentCfgV7 =
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SX25519,
+      smpAgentVRange = \_ -> V.mkVersionRange duplexHandshakeSMPAgentVersion $ max pqdrSMPAgentVersion currentSMPAgentVersion,
+      e2eEncryptVRange = \_ -> V.mkVersionRange CR.kdfX3DHE2EEncryptVersion $ max CR.pqRatchetE2EEncryptVersion CR.currentE2EEncryptVersion,
       smpCfg = smpCfgV7,
       ntfCfg = ntfCfgV2
     }
@@ -436,7 +438,6 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
   let v = basicAuthSMPVersion
    in allowNew && (isNothing srvAuth || (srvVersion >= v && clntVersion >= v && srvAuth == clntAuth))
 
--- TODO PQ test next version with PQ
 testMatrix2 :: ATransport -> (PQSupport -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
   it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn 
@@ -448,9 +449,11 @@ testMatrix2 t runTest = do
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff
 
--- TODO PQ test next version with PQ
 testRatchetMatrix2 :: ATransport -> (PQSupport -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
+  it "ratchet next" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn 
+  it "ratchet next to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 $ runTest PQSupportOn 
+  it "ratchet current to next" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 $ runTest PQSupportOn 
   it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQSupportOn 
   it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 $ runTest PQSupportOff
   it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 $ runTest PQSupportOff
@@ -2478,14 +2481,12 @@ testDeliveryReceiptsVersion t = do
       ackMessage a' bId 10 $ Just ""
       get b' =##> \case ("", c, Rcvd 10) -> c == aId; _ -> False
       ackMessage b' aId 11 Nothing
-      -- TODO PQ this part hangs when waiting for Rcvd, because connection tries to upgrade to PQ encryption.
-      -- replacing 2 PQSupportOn with PQEncOff above prevents hanging.
-      -- (12, _) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
-      -- get a' ##> ("", bId, SENT 12)
-      -- get b' =##> \case ("", c, Msg' 12 PQEncOff "hello 2") -> c == aId; _ -> False
-      -- ackMessage b' aId 12 $ Just ""
-      -- get a' =##> \case ("", c, Rcvd 12) -> c == bId; _ -> False
-      -- ackMessage a' bId 13 Nothing
+      (12, _) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
+      get a' ##> ("", bId, SENT 12)
+      get b' =##> \case ("", c, Msg' 12 PQEncOff "hello 2") -> c == aId; _ -> False
+      ackMessage b' aId 12 $ Just ""
+      get a' =##> \case ("", c, Rcvd 12) -> c == bId; _ -> False
+      ackMessage a' bId 13 Nothing
     disconnectAgentClient a'
     disconnectAgentClient b'
 

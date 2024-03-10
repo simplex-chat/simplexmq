@@ -585,7 +585,7 @@ testRatchetVersions pq =
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ pqEnc_ (_, rc, _) msg =
   -- print msg >>
-  runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_)
+  runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_ currentE2EEncryptVersion)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
