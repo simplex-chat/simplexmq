@@ -50,7 +50,6 @@ data FileRec = FileRec
     recipientIds :: TVar (Set RecipientId),
     createdAt :: SystemTime
   }
-  deriving (Eq)
 
 data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
 

@@ -170,7 +170,7 @@ data FileInfo = FileInfo
     size :: Word32,
     digest :: ByteString
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 type XFTPFileId = ByteString
 

@@ -17,14 +17,14 @@ data QueueRec = QueueRec
     notifier :: !(Maybe NtfCreds),
     status :: !ServerQueueStatus
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data NtfCreds = NtfCreds
   { notifierId :: !NotifierId,
     notifierKey :: !NtfPublicAuthKey,
     rcvNtfDhSecret :: !RcvNtfDhSecret
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 instance StrEncoding NtfCreds where
   strEncode NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} = strEncode (notifierId, notifierKey, rcvNtfDhSecret)
