@@ -580,7 +580,7 @@ initRatchetsKEMProposedAgain = do
 testRatchetVersions :: PQSupport -> RatchetVersions
 testRatchetVersions pq =
   let v = maxVersion $ supportedE2EEncryptVRange pq
-   in RVersions v v
+   in RatchetVersions v v
 
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ pqEnc_ (_, rc, _) msg =

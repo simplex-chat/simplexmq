@@ -700,7 +700,7 @@ startJoinInvitation userId connId enableNtfs cReqUri pqSup =
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
       maxSupported <- asks $ maxVersion . ($ pqSup) . e2eEncryptVRange . config
-      let rcVs = CR.RVersions {current = v, maxSupported}
+      let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
       q <- newSndQueue userId "" qInfo
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
@@ -2183,8 +2183,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                   unless (e2eVersion `isCompatible` e2eVRange) (throwError $ AGENT A_VERSION)
                   (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
                   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
-                  -- TODO PQ combine isCompatible check and construction in one call
-                  let rcVs = CR.RVersions {current = e2eVersion, maxSupported = maxVersion e2eVRange}
+                  let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eVRange}
                       pqSupport' = pqSupport `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
                       rc = CR.initRcvRatchet rcVs rcDHRs rcParams pqSupport'
                   g <- asks random
@@ -2379,7 +2378,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             DuplexConnection {} -> action conn'
             _ -> qError $ name <> ": message must be sent to duplex connection"
 
-          -- TODO PQ make sure pqEncryption is set correctly here
           newRatchetKey :: CR.RcvE2ERatchetParams 'C.X448 -> Connection 'CDuplex -> m ()
           newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv _) conn'@(DuplexConnection cData'@ConnData {lastExternalSndId, pqSupport} _ sqs) =
             unlessM ratchetExists $ do
@@ -2387,8 +2385,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
               let connE2EVRange = e2eEncryptVRange pqSupport
               unless (e2eVersion `isCompatible` connE2EVRange) (throwError $ AGENT A_VERSION)
               keys <- getSendRatchetKeys
-              -- TODO PQ combine with `isCompatible` check above
-              let rcVs = CR.RVersions {current = e2eVersion, maxSupported = maxVersion connE2EVRange}
+              let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion connE2EVRange}
               initRatchet rcVs keys
               notifyAgreed
             where
