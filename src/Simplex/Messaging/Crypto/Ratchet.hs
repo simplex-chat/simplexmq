@@ -488,7 +488,7 @@ data Ratchet a = Ratchet
   }
   deriving (Show)
 
-data RatchetVersions = RVersions
+data RatchetVersions = RatchetVersions
   { current :: VersionE2E,
     maxSupported :: VersionE2E
   }
@@ -496,8 +496,8 @@ data RatchetVersions = RVersions
 
 instance ToJSON RatchetVersions where
   -- TODO v5.7 or v5.8 change to the default record encoding
-  toJSON (RVersions v1 v2) = toJSON (v1, v2)
-  toEncoding (RVersions v1 v2) = toEncoding (v1, v2)
+  toJSON (RatchetVersions v1 v2) = toJSON (v1, v2)
+  toEncoding (RatchetVersions v1 v2) = toEncoding (v1, v2)
 
 instance FromJSON RatchetVersions where
   -- TODO v6.0 replace with the default record parser
@@ -509,7 +509,7 @@ instance FromJSON RatchetVersions where
       toRV (v1, v2) = maybe (fail "bad version range") (pure . ratchetVersions) $ safeVersionRange v1 v2
 
 ratchetVersions :: VersionRangeE2E -> RatchetVersions
-ratchetVersions (VersionRange v1 v2) = RVersions {current = v1,  maxSupported = v2}
+ratchetVersions (VersionRange v1 v2) = RatchetVersions {current = v1,  maxSupported = v2}
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
@@ -671,7 +671,6 @@ data MsgHeader a = MsgHeader
 
 -- to allow extension without increasing the size, the actual header length is:
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
--- TODO PQ this must be version-dependent
 -- TODO this is the exact size, some reserve should be added
 paddedHeaderLen :: VersionE2E -> PQSupport -> Int
 paddedHeaderLen v = \case
@@ -679,7 +678,7 @@ paddedHeaderLen v = \case
   _ -> 88
 
 -- only used in tests to validate correct padding
--- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)
+-- (2 bytes - version size, 1 byte - header size)
 fullHeaderLen :: VersionE2E -> PQSupport -> Int
 fullHeaderLen v pq = 2 + 1 + paddedHeaderLen v pq + authTagSize + ivSize @AES256
 
@@ -862,7 +861,8 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       rcSupportKEM' = pqEnableSupport v rcSupportKEM rcEnableKEM'
       -- This sets max version to support PQ encryption.
       -- Current version upgrade happens when peer decrypts the message.
-      -- TODO v5.7 remove version upgrade here, as it's already upgraded above
+      -- TODO note that maxSupported will not downgrade here below current (v).
+      -- TODO PQ currentE2EEncryptVersion should be passed via config
       maxSupported' = max currentE2EEncryptVersion $ if pqEnc_ == Just PQEncOn then pqRatchetE2EEncryptVersion else v
       rcVersion' = rcVersion {maxSupported = maxSupported'}
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -871,12 +871,6 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
   let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
   let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-      -- TODO v5.8 remove comments below
-      -- Note that maxSupported will not downgrade here below current.
-      -- TODO v5.7 remove comments below
-      -- TODO PQ It will downgrade when decrypting the message when the current version downgrades to remove support for PQ encryption.
-      -- TODO v5.8 possibly, replace `max v currentE2EEncryptVersion` with `v` (to allow downgrade when app downgraded)?
-      --
       -- state.Ns += 1
       rc' =
         rc
@@ -973,7 +967,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
           | msgMaxVersion > current = rc {rcVersion = rcVersion {current = max current $ min msgMaxVersion maxSupported}}
           | otherwise = rc
           where
-            RVersions {current, maxSupported} = rcVersion
+            RatchetVersions {current, maxSupported} = rcVersion
         smkDiff :: SkippedMsgKeys -> SkippedMsgDiff
         smkDiff smks = if M.null smks then SMDNoChange else SMDAdd smks
         ratchetStep :: Ratchet a -> MsgHeader a -> ExceptT CryptoError IO (Ratchet a)
