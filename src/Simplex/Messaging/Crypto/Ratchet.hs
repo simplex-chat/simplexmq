@@ -667,10 +667,10 @@ data MsgHeader a = MsgHeader
 
 -- to allow extension without increasing the size, the actual header length is:
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
--- TODO this is the exact size, some reserve should be added
+-- The exact size is 2288, added reserve
 paddedHeaderLen :: VersionE2E -> PQSupport -> Int
 paddedHeaderLen v = \case
-  PQSupportOn | v >= pqRatchetE2EEncryptVersion -> 2288
+  PQSupportOn | v >= pqRatchetE2EEncryptVersion -> 2310
   _ -> 88
 
 -- only used in tests to validate correct padding

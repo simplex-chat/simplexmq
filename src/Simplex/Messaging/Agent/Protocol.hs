@@ -288,14 +288,14 @@ supportedSMPAgentVRange pq =
 -- signing key of the sender for the server
 e2eEncConnInfoLength :: VersionSMPA -> PQSupport -> Int
 e2eEncConnInfoLength v = \case
-  -- reduced by 3700 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 11148
+  -- reduced by 3726 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
+  PQSupportOn | v >= pqdrSMPAgentVersion -> 11122
   _ -> 14848
 
 e2eEncUserMsgLength :: VersionSMPA -> PQSupport -> Int
 e2eEncUserMsgLength v = \case
-  -- reduced by 2200 (roughly the increase of message ratchet header size)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 13656
+  -- reduced by 2222 (the increase of message ratchet header size)
+  PQSupportOn | v >= pqdrSMPAgentVersion -> 13634
   _ -> 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
