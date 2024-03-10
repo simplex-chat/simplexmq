@@ -2027,9 +2027,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             exists <- withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash
-                            if exists then notifySync else ack
+                            unless exists notifySync
+                            ack
                             where
-                              notifySync :: m ACKd
+                              notifySync :: m ()
                               notifySync = qDuplex conn' "AGENT A_CRYPTO error" $ \connDuplex -> do
                                 let rss' = cryptoErrToSyncState e
                                 when (rss `elem` ([RSOk, RSAllowed, RSRequired] :: [RatchetSyncState])) $ do
@@ -2037,7 +2038,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                       conn'' = updateConnection cData'' connDuplex
                                   notify . RSYNC rss' (Just e) $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId rss'
-                                ack
                           Left e -> checkDuplicateHash e encryptedMsgHash >> ack
                         where
                           checkDuplicateHash :: AgentErrorType -> ByteString -> m ()
