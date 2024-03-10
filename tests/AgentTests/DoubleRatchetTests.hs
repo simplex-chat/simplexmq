@@ -358,7 +358,7 @@ testVersionJSON = do
   testDecodeRV $ (1 :: Int, 2 :: Int)
   testDecodeRV $ J.object ["current" .= (1 :: Int), "maxSupported" .= (2 :: Int)]
   where
-    rv v1 v2 = ratchetVersions $ mkVersionRange (VersionE2E v1) (VersionE2E v2)
+    rv v1 v2 = RatchetVersions (VersionE2E v1) (VersionE2E v2)
     testDecodeRV :: ToJSON a => a -> Expectation
     testDecodeRV a = J.eitherDecode' (J.encode a) `shouldBe` Right (rv 1 2)
 
@@ -585,7 +585,7 @@ testRatchetVersions pq =
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ pqEnc_ (_, rc, _) msg =
   -- print msg >>
-  runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_)
+  runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_ currentE2EEncryptVersion)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do

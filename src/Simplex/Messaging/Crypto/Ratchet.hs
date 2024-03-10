@@ -76,7 +76,6 @@ module Simplex.Messaging.Crypto.Ratchet
     RatchetKEM (..),
     RatchetKEMAccepted (..),
     RatchetKey (..),
-    ratchetVersions,
     fullHeaderLen,
     applySMDiff,
     encodeMsgHeader,
@@ -496,20 +495,17 @@ data RatchetVersions = RatchetVersions
 
 instance ToJSON RatchetVersions where
   -- TODO v5.7 or v5.8 change to the default record encoding
-  toJSON (RatchetVersions v1 v2) = toJSON (v1, v2)
-  toEncoding (RatchetVersions v1 v2) = toEncoding (v1, v2)
+  toJSON RatchetVersions {current, maxSupported} = toJSON (current, maxSupported)
+  toEncoding RatchetVersions {current, maxSupported} = toEncoding (current, maxSupported)
 
 instance FromJSON RatchetVersions where
-  -- TODO v6.0 replace with the default record parser
+  -- TODO v5.7 or v5.8 replace comment below with "tuple for backward"
   -- this parser supports JSON record encoding for forward compatibility
-  parseJSON v = (tupleP <|> recordP v) >>= toRV
+  parseJSON v = toRV <$> (tupleP <|> recordP v)
     where
       tupleP = parseJSON v
       recordP = J.withObject "RatchetVersions" $ \o -> (,) <$> o J..: "current" <*> o J..: "maxSupported"
-      toRV (v1, v2) = maybe (fail "bad version range") (pure . ratchetVersions) $ safeVersionRange v1 v2
-
-ratchetVersions :: VersionRangeE2E -> RatchetVersions
-ratchetVersions (VersionRange v1 v2) = RatchetVersions {current = v1,  maxSupported = v2}
+      toRV (current, maxSupported) = RatchetVersions {current, maxSupported}
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
@@ -849,9 +845,9 @@ connPQEncryption = \case
   IKUsePQ -> PQSupportOn
   IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
 
-rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> ExceptT CryptoError IO (ByteString, Ratchet a)
-rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} paddedMsgLen msg pqEnc_ = do
+rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (ByteString, Ratchet a)
+rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ _ = throwE CERatchetState
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} paddedMsgLen msg pqEnc_ supportedE2EVersion = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
       v = current rcVersion
@@ -862,8 +858,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       -- This sets max version to support PQ encryption.
       -- Current version upgrade happens when peer decrypts the message.
       -- TODO note that maxSupported will not downgrade here below current (v).
-      -- TODO PQ currentE2EEncryptVersion should be passed via config
-      maxSupported' = max currentE2EEncryptVersion $ if pqEnc_ == Just PQEncOn then pqRatchetE2EEncryptVersion else v
+      maxSupported' = max supportedE2EVersion $ if pqEnc_ == Just PQEncOn then pqRatchetE2EEncryptVersion else v
       rcVersion' = rcVersion {maxSupported = maxSupported'}
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen v rcSupportKEM') rcAD (msgHeader v maxSupported')
