@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -26,6 +27,10 @@ module Simplex.Messaging.Version
 where
 
 import Control.Applicative (optional)
+import qualified Data.Aeson as J
+import qualified Data.Aeson.Encoding as JE
+import Data.Aeson.Types ((.:), (.=))
+import qualified Data.Aeson.Types as JT
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -41,6 +46,18 @@ data VersionRange v = VRange
     maxVersion :: Version v
   }
   deriving (Eq, Show)
+
+instance J.FromJSON (VersionRange v) where
+  parseJSON (J.Object v) = do
+    minVersion <- v .: "minVersion"
+    maxVersion <- v .: "maxVersion"
+    pure VRange {minVersion, maxVersion}
+  parseJSON invalid =
+    JT.prependFailure "bad VersionRange, " (JT.typeMismatch "Object" invalid)
+
+instance J.ToJSON (VersionRange v) where
+  toEncoding VRange {minVersion, maxVersion} = JE.pairs $ ("minVersion" .= minVersion) <> ("maxVersion" .= maxVersion)
+  toJSON VRange {minVersion, maxVersion} = J.object ["minVersion" .= minVersion, "maxVersion" .= maxVersion]
 
 class VersionScope v
 

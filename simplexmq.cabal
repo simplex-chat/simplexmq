@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        5.6.0.0
+version:        5.6.0.1
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -104,9 +104,11 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
+      Simplex.Messaging.Compression
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
@@ -227,6 +229,7 @@ library
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -299,6 +302,7 @@ executable ntf-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -371,6 +375,7 @@ executable smp-agent
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -443,6 +448,7 @@ executable smp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -515,6 +521,7 @@ executable xftp
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -587,6 +594,7 @@ executable xftp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -608,6 +616,7 @@ test-suite simplexmq-test
       AgentTests
       AgentTests.ConnectionRequestTests
       AgentTests.DoubleRatchetTests
+      AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
       AgentTests.NotificationTests
@@ -630,6 +639,7 @@ test-suite simplexmq-test
       ServerTests
       SMPAgentClient
       SMPClient
+      Util
       XFTPAgent
       XFTPCLI
       XFTPClient
@@ -698,6 +708,7 @@ test-suite simplexmq-test
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
