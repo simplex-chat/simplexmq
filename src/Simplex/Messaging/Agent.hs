@@ -1962,9 +1962,7 @@ cleanupManager c@AgentClient {subQ} = do
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> ExceptT AgentErrorType m ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 
-data ACKd
-  = AckNow SMP.RecipientId
-  | AckLater Text SMP.RecipientId
+data ACKd = ACKd | ACKPending
 
 -- | make sure to ACK or throw in each message processing branch
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
@@ -1980,7 +1978,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
-            checkAck . handleNotifyAck $ do
+            void . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
@@ -2037,7 +2035,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
                                 notify $ MSG msgMeta msgFlags body
-                                pure $ AckLater "A_MSG" rId
+                                pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
                               QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
                               QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg srvMsgId qs
@@ -2069,7 +2067,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                       AgentMessage _ (A_MSG body) -> do
                                         logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
                                         notify $ MSG msgMeta msgFlags body
-                                        pure $ AckLater "MSG" rId
+                                        pure ACKPending
                                       _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
@@ -2123,12 +2121,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                         pure $ updateConnection cData'' conn'
                     | otherwise -> pure conn'
                   Nothing -> pure conn'
-              checkAck :: m ACKd -> m ()
-              checkAck = void
               ack :: m ACKd
-              ack = enqueueCmd (ICAck rId srvMsgId) $> AckNow rId
+              ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
               ackDel :: InternalId -> m ACKd
-              ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> AckNow rId
+              ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> ACKd
               handleNotifyAck :: m ACKd -> m ACKd
               handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
           SMP.END ->
@@ -2262,9 +2258,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             logServer "<--" c srv rId $ "MSG <RCPT>:" <> logSecret srvMsgId
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAgentError` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
-              Just rs' -> notify (RCVD msgMeta rs') $> AckLater "RCVD" rId
-              Nothing -> enqueueCmd (ICAck rId srvMsgId) $> AckNow rId
+              Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
+              Nothing -> ack
             where
+              ack :: m ACKd
+              ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
               clientReceipt :: AMessageReceipt -> m (Maybe MsgReceipt)
               clientReceipt AMessageReceipt {agentMsgId, msgHash} = do
                 let sndMsgId = InternalSndId agentMsgId
@@ -2352,7 +2350,6 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                     let sqs' = updatedQs sq1' sqs
                         conn' = DuplexConnection cData' rqs sqs'
                     notify . SWITCH QDSnd SPSecured $ connectionStats conn'
-                    -- pure $ AckLater "SWITCH QDSnd" rId srvMsgId
                   _ -> qError "QUSE: switching SndQueue not found in connection"
               _ -> qError "QUSE: switched queue address not found in connection"
 
