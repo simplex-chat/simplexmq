@@ -157,6 +157,8 @@ data XFTPErrorType
     HAS_FILE
   | -- | file IO error
     FILE_IO
+  | -- | file sending timeout
+    TIMEOUT
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
   | -- | internal server error
@@ -188,6 +190,7 @@ instance Encoding XFTPErrorType where
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
+    TIMEOUT -> "TIMEOUT"
     REDIRECT err -> "REDIRECT " <> smpEncode err
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
@@ -205,6 +208,7 @@ instance Encoding XFTPErrorType where
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO
+      "TIMEOUT" -> pure TIMEOUT
       "REDIRECT" -> REDIRECT <$> _smpP
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_

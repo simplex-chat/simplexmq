@@ -21,12 +21,12 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -346,35 +346,37 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         pure $ FRRcvIds rIds
       pure $ either FRErr id r
     receiveServerFile :: FileRec -> M FileResponse
-    receiveServerFile fr@FileRec {senderId, fileInfo} = case bodyPart of
-      -- TODO do not allow repeated file upload
+    receiveServerFile FileRec {senderId, fileInfo, filePath} = checkDuplicate $ case bodyPart of
       Nothing -> pure $ FRErr SIZE
       Just getBody -> do
         -- TODO validate body size before downloading, once it's populated
         path <- asks $ filesPath . config
         let fPath = path </> B.unpack (B64.encode senderId)
             FileInfo {size, digest} = fileInfo
-        withFileLog $ \sl -> logPutFile sl senderId fPath
         st <- asks store
-        quota_ <- asks $ fileSizeQuota . config
-        -- TODO timeout file upload, remove partially uploaded files
         stats <- asks serverStats
-        liftIO $
-          runExceptT (receiveFile getBody (XFTPRcvChunkSpec fPath size digest)) >>= \case
+        reserve (usedStorage st) (fromIntegral size) $
+          liftIO (receiveChunk $ XFTPRcvChunkSpec fPath size digest) >>= \case
             Right () -> do
-              used <- readTVarIO $ usedStorage st
-              if maybe False (used + fromIntegral size >) quota_
-                then remove fPath $> FRErr QUOTA
-                else do
-                  atomically (setFilePath' st fr fPath)
-                  atomically $ modifyTVar' (filesUploaded stats) (+ 1)
-                  atomically $ modifyTVar' (filesCount stats) (+ 1)
-                  atomically $ modifyTVar' (filesSize stats) (+ fromIntegral size)
-                  pure FROk
-            Left e -> remove fPath $> FRErr e
+              withFileLog $ \sl -> logPutFile sl senderId fPath
+              atomically $ writeTVar filePath (Just fPath)
+              atomically $ modifyTVar' (filesUploaded stats) (+ 1)
+              atomically $ modifyTVar' (filesCount stats) (+ 1)
+              atomically $ modifyTVar' (filesSize stats) (+ fromIntegral size)
+              pure FROk
+            Left e -> do
+              atomically . modifyTVar' (usedStorage st) $ subtract (fromIntegral size)
+              liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
+              pure $ FRErr e
         where
-          remove fPath = whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
-
+          reserve us size rcv = do
+            quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
+            reserved <- atomically . stateTVar us $ \used -> if used + size <= quota then (True, used + size) else (False, used)
+            if reserved then rcv else pure $ FRErr QUOTA
+          receiveChunk spec = fromMaybe (Left TIMEOUT) <$> timeout chunkTimeout (runExceptT (receiveFile getBody spec) `catchAll_` pure (Left FILE_IO))
+          chunkTimeout = 10 * 60 * 1000000 -- 10 mins to send 4mb chunk
+      where
+        checkDuplicate = ifM (isJust <$> readTVarIO filePath) (pure $ FRErr DUPLICATE_)
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case

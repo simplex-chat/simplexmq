@@ -11,7 +11,6 @@ module Simplex.FileTransfer.Server.Store
     newFileStore,
     addFile,
     setFilePath,
-    setFilePath',
     addRecipient,
     deleteFile,
     deleteRecipient,
@@ -79,12 +78,10 @@ newFileRec senderId fileInfo createdAt = do
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
-  withFile st sId $ \fr -> setFilePath' st fr fPath $> Right ()
-
-setFilePath' :: FileStore -> FileRec -> FilePath -> STM ()
-setFilePath' st FileRec {fileInfo, filePath} fPath = do
-  writeTVar filePath (Just fPath)
-  modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
+  withFile st sId $ \FileRec {fileInfo, filePath} -> do
+    writeTVar filePath (Just fPath)
+    modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
+    pure $ Right ()
 
 addRecipient :: FileStore -> SenderId -> FileRecipient -> STM (Either XFTPErrorType ())
 addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) =
