@@ -414,6 +414,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   CHK :: ACommand Client AEConn
   STAT :: ConnectionStats -> ACommand Agent AEConn
   OK :: ACommand Agent AEConn
+  ACK_OK :: ACommand Agent AEConn
   ERR :: AgentErrorType -> ACommand Agent AEConn
   SUSPENDED :: ACommand Agent AENone
   -- XFTP commands and responses
@@ -476,6 +477,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   CHK_ :: ACommandTag Client AEConn
   STAT_ :: ACommandTag Agent AEConn
   OK_ :: ACommandTag Agent AEConn
+  ACK_OK_ :: ACommandTag Agent AEConn
   ERR_ :: ACommandTag Agent AEConn
   SUSPENDED_ :: ACommandTag Agent AENone
   -- XFTP commands and responses
@@ -531,6 +533,7 @@ aCommandTag = \case
   CHK -> CHK_
   STAT _ -> STAT_
   OK -> OK_
+  ACK_OK -> ACK_OK_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_
@@ -1677,6 +1680,7 @@ instance StrEncoding ACmdTag where
       "CHK" -> t CHK_
       "STAT" -> ct STAT_
       "OK" -> ct OK_
+      "ACK_OK" -> ct ACK_OK_
       "ERR" -> ct ERR_
       "SUSPENDED" -> nt SUSPENDED_
       "RFPROG" -> at SAERcvFile RFPROG_
@@ -1734,6 +1738,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     CHK_ -> "CHK"
     STAT_ -> "STAT"
     OK_ -> "OK"
+    ACK_OK_ -> "ACK_OK"
     ERR_ -> "ERR"
     SUSPENDED_ -> "SUSPENDED"
     RFPROG_ -> "RFPROG"
@@ -1799,6 +1804,7 @@ commandP binaryP =
           DEL_USER_ -> s (DEL_USER <$> strP)
           STAT_ -> s (STAT <$> strP)
           OK_ -> pure OK
+          ACK_OK_ -> pure ACK_OK
           ERR_ -> s (ERR <$> strP)
           SUSPENDED_ -> pure SUSPENDED
           RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal)
@@ -1868,6 +1874,7 @@ serializeCommand = \case
   CON pqEnc -> s (CON_, pqEnc)
   ERR e -> s (ERR_, e)
   OK -> s OK_
+  ACK_OK -> s ACK_OK_
   SUSPENDED -> s SUSPENDED_
   RFPROG rcvd total -> s (RFPROG_, rcvd, total)
   RFDONE fPath -> s (RFDONE_, fPath)

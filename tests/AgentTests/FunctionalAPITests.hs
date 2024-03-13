@@ -1567,11 +1567,11 @@ testAsyncCommands =
     ackMessageAsync bob "4" aliceId (baseId + 1) Nothing
     inAnyOrder
       (get bob)
-      [ \case ("4", _, OK) -> True; _ -> False,
+      [ \case ("4", _, ACK_OK) -> True; _ -> False,
         \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
       ]
     ackMessageAsync bob "5" aliceId (baseId + 2) Nothing
-    get bob =##> \case ("5", _, OK) -> True; _ -> False
+    get bob =##> \case ("5", _, ACK_OK) -> True; _ -> False
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
     4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
@@ -1580,11 +1580,11 @@ testAsyncCommands =
     ackMessageAsync alice "6" bobId (baseId + 3) Nothing
     inAnyOrder
       (get alice)
-      [ \case ("6", _, OK) -> True; _ -> False,
+      [ \case ("6", _, ACK_OK) -> True; _ -> False,
         \case ("", c, Msg "message 1") -> c == bobId; _ -> False
       ]
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
-    get alice =##> \case ("7", _, OK) -> True; _ -> False
+    get alice =##> \case ("7", _, ACK_OK) -> True; _ -> False
     deleteConnectionAsync alice False bobId
     get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
     get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
@@ -2520,18 +2520,12 @@ testDeliveryReceiptsConcurrent t =
         receiveLoop n = do
           r <- getWithTimeout
           case r of
-            (_, _, SENT _) -> do
-              -- liftIO $ print $ cName <> ": SENT"
-              pure ()
-            (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) -> do
-              -- liftIO $ print $ cName <> ": MSG " <> show msgId
+            (_, _, SENT _) -> pure ()
+            (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) ->
               ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
-            (_, _, RCVD MsgMeta {recipient = (msgId, _), integrity = MsgOk} _) -> do
-              -- liftIO $ print $ cName <> ": RCVD " <> show msgId
+            (_, _, RCVD MsgMeta {recipient = (msgId, _), integrity = MsgOk} _) ->
               ackMessageAsync client (B.pack . show $ n) connId msgId Nothing
-            (_, _, OK) -> do
-              -- liftIO $ print $ cName <> ": OK"
-              pure ()
+            (_, _, ACK_OK) -> pure ()
             r' -> error $ "unexpected event: " <> show r'
           receiveLoop (n - 1)
         getWithTimeout :: ExceptT AgentErrorType IO (AEntityTransmission 'AEConn)

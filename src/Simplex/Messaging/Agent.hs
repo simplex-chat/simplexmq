@@ -525,7 +525,7 @@ processCommand c (connId, APC e cmd) =
     RJCT invId -> rejectContact' c connId invId $> (connId, OK)
     SUB -> subscribeConnection' c connId $> (connId, OK)
     SEND pqEnc msgFlags msgBody -> (connId,) . uncurry MID <$> sendMessage' c connId pqEnc msgFlags msgBody
-    ACK msgId rcptInfo_ -> ackMessage' c connId msgId rcptInfo_ $> (connId, OK)
+    ACK msgId rcptInfo_ -> ackMessage' c connId msgId rcptInfo_ $> (connId, ACK_OK)
     SWCH -> switchConnection' c connId $> (connId, OK)
     OFF -> suspendConnection' c connId $> (connId, OK)
     DEL -> deleteConnection' c connId $> (connId, OK)
@@ -1018,7 +1018,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
             joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
             notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
-        ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
+        ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify ACK_OK
         SWCH ->
           noServer . tryCommand . withConnLock c connId "switchConnection" $
             withStore c (`getConn` connId) >>= \case
