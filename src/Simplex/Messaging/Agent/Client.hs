@@ -110,8 +110,6 @@ module Simplex.Messaging.Agent.Client
     whenSuspending,
     withStore,
     withStore',
-    withStoreCtx,
-    withStoreCtx',
     withStoreBatch,
     withStoreBatch',
     storeError,
@@ -1457,34 +1455,13 @@ waitUntilForeground :: AgentClient -> STM ()
 waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
-withStore' = withStoreCtx_' Nothing
+withStore' c action = withStore c $ fmap Right . action
 
 withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
-withStore = withStoreCtx_ Nothing
-
-withStoreCtx' :: AgentMonad m => String -> AgentClient -> (DB.Connection -> IO a) -> m a
-withStoreCtx' = withStoreCtx_' . Just
-
-withStoreCtx :: AgentMonad m => String -> AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
-withStoreCtx = withStoreCtx_ . Just
-
-withStoreCtx_' :: AgentMonad m => Maybe String -> AgentClient -> (DB.Connection -> IO a) -> m a
-withStoreCtx_' ctx_ c action = withStoreCtx_ ctx_ c $ fmap Right . action
-
-withStoreCtx_ :: AgentMonad m => Maybe String -> AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
-withStoreCtx_ ctx_ c action = do
+withStore c action = do
   st <- asks store
-  liftEitherError storeError . agentOperationBracket c AODatabase (\_ -> pure ()) $ case ctx_ of
-    Nothing -> withTransaction st action `E.catch` handleInternal ""
-    -- uncomment to debug store performance
-    -- Just ctx -> do
-    --   t1 <- liftIO getCurrentTime
-    --   putStrLn $ "agent withStoreCtx start       :: " <> show t1 <> " :: " <> ctx
-    --   r <- withTransaction st action `E.catch` handleInternal (" (" <> ctx <> ")")
-    --   t2 <- liftIO getCurrentTime
-    --   putStrLn $ "agent withStoreCtx end         :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
-    --   pure r
-    Just _ -> withTransaction st action `E.catch` handleInternal ""
+  liftEitherError storeError . agentOperationBracket c AODatabase (\_ -> pure ()) $
+    withTransaction st action `E.catch` handleInternal ""
   where
     handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
     handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
