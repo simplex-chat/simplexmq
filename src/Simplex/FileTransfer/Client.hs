@@ -20,6 +20,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time (UTCTime)
 import Data.Word (Word32)
+import Debug.Trace
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Description (mb)
@@ -46,11 +47,11 @@ import Simplex.Messaging.Protocol
     SenderId,
   )
 import Simplex.Messaging.Transport (THandleParams (..), supportedParameters)
-import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost)
+import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, liftEitherError, whenM)
+import Simplex.Messaging.Util (bshow, liftEitherError, tshow, whenM)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -90,7 +91,7 @@ defaultXFTPClientConfig =
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig} disconnected = runExceptT $ do
-  let tcConfig = transportClientConfig xftpNetworkConfig
+  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/test"]}
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
@@ -99,9 +100,10 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkC
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
   http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
-  let HTTP2Client {sessionId} = http2Client
+  let HTTP2Client {sessionId, sessionALPN} = http2Client
       thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, implySessId = False, batch = True}
       c = XFTPClient {http2Client, thParams, transportSession, config}
+  traceM $ "Negotiated protocol: " <> show sessionALPN
   atomically $ writeTVar clientVar $ Just c
   pure c
 

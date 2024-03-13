@@ -13,14 +13,14 @@ import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (SessionId, TLS, closeConnection)
+import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
 import UnliftIO (finally)
 import UnliftIO.Concurrent (forkIO, killThread)
 
-type HTTP2ServerFunc = SessionId -> Request -> (Response -> IO ()) -> IO ()
+type HTTP2ServerFunc = SessionId -> Maybe ALPN -> Request -> (Response -> IO ()) -> IO ()
 
 data HTTP2ServerConfig = HTTP2ServerConfig
   { qSize :: Natural,
@@ -37,6 +37,7 @@ data HTTP2ServerConfig = HTTP2ServerConfig
 
 data HTTP2Request = HTTP2Request
   { sessionId :: SessionId,
+    sessionALPN :: Maybe ALPN,
     request :: Request,
     reqBody :: HTTP2Body,
     sendResponse :: Response -> IO ()
@@ -54,9 +55,9 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize tlsServerParams transportConfig Nothing $ \sessionId r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize tlsServerParams transportConfig Nothing $ \sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
-      atomically $ writeTBQueue reqQ HTTP2Request {sessionId, request = r, reqBody, sendResponse}
+      atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
   pure HTTP2Server {action, reqQ}
 
@@ -77,9 +78,9 @@ runHTTP2ServerWith_ expCfg_ bufferSize setup http2Server = setup $ \tls -> do
   tid_ <- mapM (forkIO . expireInactiveClient tls activeAt) expCfg_
   withHTTP2 bufferSize (run activeAt) tls `finally` mapM_ killThread tid_
   where
-    run activeAt cfg sessId = H.run cfg $ \req _aux sendResp -> do
+    run activeAt cfg sessId sessALPN = H.run cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
-      http2Server sessId req (`sendResp` [])
+      http2Server sessId sessALPN req (`sendResp` [])
     expireInactiveClient tls activeAt expCfg = loop
       where
         loop = do

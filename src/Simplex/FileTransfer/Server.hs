@@ -47,7 +47,7 @@ import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, RecipientId, TransmissionAuth)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
@@ -67,13 +67,12 @@ import qualified UnliftIO.Exception as E
 
 type M a = ReaderT XFTPEnv IO a
 
-data XFTPTransportRequest =
-  XFTPTransportRequest
-    { thParams :: THandleParams XFTPVersion,
-      reqBody :: HTTP2Body,
-      request :: H.Request,
-      sendResponse :: H.Response -> IO ()
-    }
+data XFTPTransportRequest = XFTPTransportRequest
+  { thParams :: THandleParams XFTPVersion,
+    reqBody :: HTTP2Body,
+    request :: H.Request,
+    sendResponse :: H.Response -> IO ()
+  }
 
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
@@ -93,7 +92,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       serverParams <- asks tlsServerParams
       env <- ask
       liftIO $
-        runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration $ \sessionId r sendResponse -> do
+        runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration $ \sessionId sessionALPN r sendResponse -> do
+          logError $ "Serving session " <> tshow (B.take 5 $ strEncode sessionId) <> " request using " <> tshow sessionALPN
           reqBody <- getHTTP2Body r xftpBlockSize
           let thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, implySessId = False, batch = True}
           processRequest XFTPTransportRequest {thParams, request = r, reqBody, sendResponse} `runReaderT` env

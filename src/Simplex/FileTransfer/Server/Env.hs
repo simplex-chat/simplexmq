@@ -8,10 +8,11 @@
 
 module Simplex.FileTransfer.Server.Env where
 
-import Control.Logger.Simple (logInfo)
+import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.Default (def)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
@@ -97,7 +98,18 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  tlsServerParams' <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  let tlsServerParams =
+        tlsServerParams'
+          { T.serverHooks =
+              def
+                { T.onALPNClientSuggest = Just $ \alpn -> do
+                    logError $ "Client suggests ALPN: " <> tshow alpn
+                    case alpn of
+                      [] -> pure ""
+                      p : _ps -> pure p
+                }
+          }
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
   pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
