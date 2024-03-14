@@ -413,7 +413,8 @@ getChunkDigest :: XFTPChunkSpec -> IO ByteString
 getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
   withFile chunkPath ReadMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
+    chunk <- LB.hGet h (fromIntegral chunkSize)
+    pure $! LC.sha256Hash chunk
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =

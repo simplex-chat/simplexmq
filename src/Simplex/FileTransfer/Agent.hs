@@ -35,6 +35,7 @@ import Control.Monad.Reader
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Coerce (coerce)
 import Data.Composition ((.:))
 import Data.Either (rights)
 import Data.Int (Int64)
@@ -402,8 +403,8 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
-          chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs
-          pure (FileDigest digest, zip chunkSpecs chunkDigests)
+          chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
+          pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
         chunkCreated :: SndFileChunk -> Bool
         chunkCreated SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSCreated) replicas
