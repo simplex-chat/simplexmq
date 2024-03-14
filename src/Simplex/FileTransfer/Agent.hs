@@ -389,16 +389,20 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       where
         AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
         encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
-        encryptFileForUpload SndFile {key, nonce, srcFile} fsEncPath = do
+        encryptFileForUpload SndFile {key, nonce, srcFile, redirect} fsEncPath = do
           let CryptoFile {filePath} = srcFile
               fileName = takeFileName filePath
           fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
           when (fileSize > maxFileSizeHard) $ throwError $ INTERNAL "max file size exceeded"
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize
-              chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
-              chunkSizes' = map fromIntegral chunkSizes
-              encSize = sum chunkSizes'
+              payloadSize = fileSize' + fileSizeLen + authTagSize
+          chunkSizes <- case redirect of
+            Nothing -> pure $ prepareChunkSizes payloadSize
+            Just _ -> case singleChunkSize payloadSize of
+              Nothing -> throwError $ INTERNAL "max file size exceeded for redirect"
+              Just chunkSize -> pure [chunkSize]
+          let encSize = sum $ map fromIntegral chunkSizes
           void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes

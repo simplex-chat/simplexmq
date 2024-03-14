@@ -16,6 +16,7 @@ module Simplex.FileTransfer.Client.Main
     xftpClientCLI,
     cliSendFile,
     cliSendFileOpts,
+    singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
@@ -42,7 +43,7 @@ import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -527,6 +528,13 @@ getFileDescription' :: FilePartyI p => FilePath -> ExceptT CLIError IO (ValidFil
 getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
+
+singleChunkSize :: Int64 -> Maybe Word32
+singleChunkSize size'
+  | size' > fromIntegral (maxBound :: Word32) = Nothing
+  | otherwise = listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
+  where
+    chunkSize = fromIntegral size'
 
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes size' = prepareSizes size'
