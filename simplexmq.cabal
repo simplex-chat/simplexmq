@@ -733,6 +733,7 @@ benchmark simplexmq-bench
   type: exitcode-stdio-1.0
   main-is: Bench.hs
   other-modules:
+      Bench.Compression
       Bench.SNTRUP761
       Bench.TRcvQueues
       Paths_simplexmq
@@ -797,6 +798,7 @@ benchmark simplexmq-bench
     , unordered-containers
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON

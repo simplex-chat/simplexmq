@@ -123,6 +123,7 @@ module Simplex.Messaging.Protocol
     NMsgMeta (..),
     MsgFlags (..),
     initialSMPClientVersion,
+    currentSMPClientVersion,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,

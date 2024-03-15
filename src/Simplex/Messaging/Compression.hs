@@ -38,13 +38,23 @@ instance Encoding Compressed where
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
 
+-- ** Batch compression context
+
 type CompressCtx = (Ptr Z.CCtx, Ptr CChar, CSize)
 
 withCompressCtx :: CSize -> (CompressCtx -> IO a) -> IO a
-withCompressCtx scratchSize action =
-  bracket Z.createCCtx Z.freeCCtx $ \cctx ->
-    allocaBytes (fromIntegral scratchSize) $ \scratchPtr ->
-      action (cctx, scratchPtr, scratchSize)
+withCompressCtx scratchSize = bracket (createCompressCtx scratchSize) freeCompressCtx
+
+createCompressCtx :: CSize -> IO CompressCtx
+createCompressCtx scratchSize = do
+  ctx <- Z.createCCtx
+  scratch <- mallocBytes (fromIntegral scratchSize)
+  pure (ctx, scratch, scratchSize)
+
+freeCompressCtx :: CompressCtx -> IO ()
+freeCompressCtx (ctx, scratch, _) = do
+  free scratch
+  Z.freeCCtx ctx
 
 -- | Compress bytes, falling back to Passthrough in case of some internal error.
 compress :: CompressCtx -> ByteString -> IO Compressed

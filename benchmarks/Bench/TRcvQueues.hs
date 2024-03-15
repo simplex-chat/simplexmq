@@ -13,7 +13,7 @@ import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as Current
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (ProtocolServer (..), SMPServer, SProtocolType (..))
+import Simplex.Messaging.Protocol (ProtocolServer (..), SMPServer, SProtocolType (..), currentSMPClientVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Test.Tasty.Bench
 import qualified Data.Map.Strict as M
@@ -126,7 +126,7 @@ genQueues random servers nUsers nQueues =
           primary = True,
           dbReplaceQueueId = Nothing,
           rcvSwchStatus = Nothing,
-          smpClientVersion = 123,
+          smpClientVersion = currentSMPClientVersion,
           clientNtfCreds = Nothing,
           deleteErrors = 0
         }

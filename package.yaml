@@ -184,6 +184,7 @@ benchmarks:
     - tasty-hspec
     - unliftio
     - unordered-containers
+    - zstd
     ghc-options:
     - -fproc-alignment=64
     - -rtsopts
