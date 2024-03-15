@@ -35,6 +35,7 @@ import Control.Monad.Reader
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Coerce (coerce)
 import Data.Composition ((.:))
 import Data.Either (rights)
 import Data.Int (Int64)
@@ -52,8 +53,8 @@ import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
-import qualified Simplex.FileTransfer.Protocol as XFTP
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
+import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
 import Simplex.FileTransfer.Util (removePath, uniqueCombine)
 import Simplex.Messaging.Agent.Client
@@ -389,21 +390,25 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       where
         AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
         encryptFileForUpload :: SndFile -> FilePath -> m (FileDigest, [(XFTPChunkSpec, FileDigest)])
-        encryptFileForUpload SndFile {key, nonce, srcFile} fsEncPath = do
+        encryptFileForUpload SndFile {key, nonce, srcFile, redirect} fsEncPath = do
           let CryptoFile {filePath} = srcFile
               fileName = takeFileName filePath
           fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
-          when (fileSize > maxFileSize) $ throwError $ INTERNAL "max file size exceeded"
+          when (fileSize > maxFileSizeHard) $ throwError $ INTERNAL "max file size exceeded"
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
               fileSize' = fromIntegral (B.length fileHdr) + fileSize
-              chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
-              chunkSizes' = map fromIntegral chunkSizes
-              encSize = sum chunkSizes'
+              payloadSize = fileSize' + fileSizeLen + authTagSize
+          chunkSizes <- case redirect of
+            Nothing -> pure $ prepareChunkSizes payloadSize
+            Just _ -> case singleChunkSize payloadSize of
+              Nothing -> throwError $ INTERNAL "max file size exceeded for redirect"
+              Just chunkSize -> pure [chunkSize]
+          let encSize = sum $ map fromIntegral chunkSizes
           void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
-          chunkDigests <- map FileDigest <$> mapM (liftIO . getChunkDigest) chunkSpecs
-          pure (FileDigest digest, zip chunkSpecs chunkDigests)
+          chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
+          pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
         chunkCreated :: SndFileChunk -> Bool
         chunkCreated SndFileChunk {replicas} =
           any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSCreated) replicas

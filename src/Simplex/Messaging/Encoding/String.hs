@@ -179,6 +179,12 @@ instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncodin
   strP = (,,,,) <$> strP_ <*> strP_ <*> strP_ <*> strP_ <*> strP
   {-# INLINE strP #-}
 
+instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncoding e, StrEncoding f) => StrEncoding (a, b, c, d, e, f) where
+  strEncode (a, b, c, d, e, f) = B.unwords [strEncode a, strEncode b, strEncode c, strEncode d, strEncode e, strEncode f]
+  {-# INLINE strEncode #-}
+  strP = (,,,,,) <$> strP_ <*> strP_ <*> strP_ <*> strP_ <*> strP_ <*> strP
+  {-# INLINE strP #-}
+
 strP_ :: StrEncoding a => Parser a
 strP_ = strP <* A.space
 

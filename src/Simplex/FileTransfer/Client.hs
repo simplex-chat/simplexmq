@@ -57,7 +57,7 @@ import UnliftIO.Directory
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
     transportSession :: TransportSession FileResponse,
-    thParams :: THandleParams,
+    thParams :: THandleParams XFTPVersion,
     config :: XFTPClientConfig
   }
 

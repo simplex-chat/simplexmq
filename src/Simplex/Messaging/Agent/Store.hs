@@ -30,7 +30,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, PQEncryption, PQSupport)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
@@ -44,10 +44,10 @@ import Simplex.Messaging.Protocol
     RcvPrivateAuthKey,
     SndPrivateAuthKey,
     SndPublicAuthKey,
+    VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util ((<$?>))
-import Simplex.Messaging.Version
 
 -- * Queue types
 
@@ -60,8 +60,6 @@ data SQueueStored (q :: QueueStored) where
 data DBQueueId (q :: QueueStored) where
   DBQueueId :: Int64 -> DBQueueId 'QSStored
   DBNewQueue :: DBQueueId 'QSNew
-
-deriving instance Eq (DBQueueId q)
 
 deriving instance Show (DBQueueId q)
 
@@ -96,12 +94,12 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     dbReplaceQueueId :: Maybe Int64,
     rcvSwchStatus :: Maybe RcvSwitchStatus,
     -- | SMP client version
-    smpClientVersion :: Version,
+    smpClientVersion :: VersionSMPC,
     -- | credentials used in context of notifications
     clientNtfCreds :: Maybe ClientNtfCreds,
     deleteErrors :: Int
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
 rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
@@ -128,7 +126,7 @@ data ClientNtfCreds = ClientNtfCreds
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
     rcvNtfDhSecret :: RcvNtfDhSecret
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 type SndQueue = StoredSndQueue 'QSStored
 
@@ -159,9 +157,9 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     dbReplaceQueueId :: Maybe Int64,
     sndSwchStatus :: Maybe SndSwitchStatus,
     -- | SMP client version
-    smpClientVersion :: Version
+    smpClientVersion :: VersionSMPC
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 sndQueueInfo :: SndQueue -> SndQueueInfo
 sndQueueInfo SndQueue {server, sndSwchStatus} =
@@ -256,8 +254,6 @@ data Connection (d :: ConnType) where
   DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
   ContactConnection :: ConnData -> RcvQueue -> Connection CContact
 
-deriving instance Eq (Connection d)
-
 deriving instance Show (Connection d)
 
 toConnData :: Connection d -> ConnData
@@ -290,8 +286,6 @@ connType SCSnd = CSnd
 connType SCDuplex = CDuplex
 connType SCContact = CContact
 
-deriving instance Eq (SConnType d)
-
 deriving instance Show (SConnType d)
 
 instance TestEquality SConnType where
@@ -305,21 +299,17 @@ instance TestEquality SConnType where
 -- Used to refer to an arbitrary connection when retrieving from store.
 data SomeConn = forall d. SomeConn (SConnType d) (Connection d)
 
-instance Eq SomeConn where
-  SomeConn d c == SomeConn d' c' = case testEquality d d' of
-    Just Refl -> c == c'
-    _ -> False
-
 deriving instance Show SomeConn
 
 data ConnData = ConnData
   { connId :: ConnId,
     userId :: UserId,
-    connAgentVersion :: Version,
+    connAgentVersion :: VersionSMPA,
     enableNtfs :: Bool,
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
-    ratchetSyncState :: RatchetSyncState
+    ratchetSyncState :: RatchetSyncState,
+    pqSupport :: PQSupport
   }
   deriving (Eq, Show)
 
@@ -534,6 +524,7 @@ data SndMsgData = SndMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
+    pqEncryption :: PQEncryption,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
   }
@@ -551,6 +542,7 @@ data PendingMsgData = PendingMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
+    pqEncryption :: PQEncryption,
     msgRetryState :: Maybe RI2State,
     internalTs :: InternalTs
   }

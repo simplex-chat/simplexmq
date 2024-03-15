@@ -1,13 +1,16 @@
 {-# LANGUAGE ConstrainedClassMethods #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Simplex.Messaging.Version
   ( Version,
     VersionRange (minVersion, maxVersion),
+    VersionScope,
     pattern VersionRange,
     VersionI (..),
     VersionRangeI (..),
@@ -24,47 +27,61 @@ module Simplex.Messaging.Version
 where
 
 import Control.Applicative (optional)
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson as J
+import qualified Data.Aeson.Encoding as JE
+import Data.Aeson.Types ((.:), (.=))
+import qualified Data.Aeson.Types as JT
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Word (Word16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Version.Internal (Version (..))
 
-pattern VersionRange :: Word16 -> Word16 -> VersionRange
+pattern VersionRange :: Version v -> Version v -> VersionRange v
 pattern VersionRange v1 v2 <- VRange v1 v2
 
 {-# COMPLETE VersionRange #-}
 
-type Version = Word16
-
-data VersionRange = VRange
-  { minVersion :: Version,
-    maxVersion :: Version
+data VersionRange v = VRange
+  { minVersion :: Version v,
+    maxVersion :: Version v
   }
   deriving (Eq, Show)
 
+instance J.FromJSON (VersionRange v) where
+  parseJSON (J.Object v) = do
+    minVersion <- v .: "minVersion"
+    maxVersion <- v .: "maxVersion"
+    pure VRange {minVersion, maxVersion}
+  parseJSON invalid =
+    JT.prependFailure "bad VersionRange, " (JT.typeMismatch "Object" invalid)
+
+instance J.ToJSON (VersionRange v) where
+  toEncoding VRange {minVersion, maxVersion} = JE.pairs $ ("minVersion" .= minVersion) <> ("maxVersion" .= maxVersion)
+  toJSON VRange {minVersion, maxVersion} = J.object ["minVersion" .= minVersion, "maxVersion" .= maxVersion]
+
+class VersionScope v
+
 -- | construct valid version range, to be used in constants
-mkVersionRange :: Version -> Version -> VersionRange
+mkVersionRange :: Version v -> Version v -> VersionRange v
 mkVersionRange v1 v2
   | v1 <= v2 = VRange v1 v2
   | otherwise = error "invalid version range"
 
-safeVersionRange :: Version -> Version -> Maybe VersionRange
+safeVersionRange :: Version v -> Version v -> Maybe (VersionRange v)
 safeVersionRange v1 v2
   | v1 <= v2 = Just $ VRange v1 v2
   | otherwise = Nothing
 
-versionToRange :: Version -> VersionRange
+versionToRange :: Version v -> VersionRange v
 versionToRange v = VRange v v
 
-instance Encoding VersionRange where
+instance VersionScope v => Encoding (VersionRange v) where
   smpEncode (VRange v1 v2) = smpEncode (v1, v2)
   smpP =
     maybe (fail "invalid version range") pure
       =<< safeVersionRange <$> smpP <*> smpP
 
-instance StrEncoding VersionRange where
+instance VersionScope v => StrEncoding (VersionRange v) where
   strEncode (VRange v1 v2)
     | v1 == v2 = strEncode v1
     | otherwise = strEncode v1 <> "-" <> strEncode v2
@@ -73,32 +90,23 @@ instance StrEncoding VersionRange where
     v2 <- maybe (pure v1) (const strP) =<< optional (A.char '-')
     maybe (fail "invalid version range") pure $ safeVersionRange v1 v2
 
-instance ToJSON VersionRange where
-  toJSON (VRange v1 v2) = toJSON (v1, v2)
-  toEncoding (VRange v1 v2) = toEncoding (v1, v2)
+class VersionScope v => VersionI v a | a -> v where
+  type VersionRangeT v a
+  version :: a -> Version v
+  toVersionRangeT :: a -> VersionRange v -> VersionRangeT v a
 
-instance FromJSON VersionRange where
-  parseJSON v =
-    (\(v1, v2) -> maybe (Left "bad VersionRange") Right $ safeVersionRange v1 v2)
-      <$?> parseJSON v
+class VersionScope v => VersionRangeI v a | a -> v where
+  type VersionT v a
+  versionRange :: a -> VersionRange v
+  toVersionT :: a -> Version v -> VersionT v a
 
-class VersionI a where
-  type VersionRangeT a
-  version :: a -> Version
-  toVersionRangeT :: a -> VersionRange -> VersionRangeT a
-
-class VersionRangeI a where
-  type VersionT a
-  versionRange :: a -> VersionRange
-  toVersionT :: a -> Version -> VersionT a
-
-instance VersionI Version where
-  type VersionRangeT Version = VersionRange
+instance VersionScope v => VersionI v (Version v) where
+  type VersionRangeT v (Version v) = VersionRange v
   version = id
   toVersionRangeT _ vr = vr
 
-instance VersionRangeI VersionRange where
-  type VersionT VersionRange = Version
+instance VersionScope v => VersionRangeI v (VersionRange v) where
+  type VersionT v (VersionRange v) = Version v
   versionRange = id
   toVersionT _ v = v
 
@@ -109,18 +117,18 @@ pattern Compatible a <- Compatible_ a
 
 {-# COMPLETE Compatible #-}
 
-isCompatible :: VersionI a => a -> VersionRange -> Bool
+isCompatible :: VersionI v a => a -> VersionRange v -> Bool
 isCompatible x (VRange v1 v2) = let v = version x in v1 <= v && v <= v2
 
-isCompatibleRange :: VersionRangeI a => a -> VersionRange -> Bool
+isCompatibleRange :: VersionRangeI v a => a -> VersionRange v -> Bool
 isCompatibleRange x (VRange min2 max2) = min1 <= max2 && min2 <= max1
   where
     VRange min1 max1 = versionRange x
 
-proveCompatible :: VersionI a => a -> VersionRange -> Maybe (Compatible a)
+proveCompatible :: VersionI v a => a -> VersionRange v -> Maybe (Compatible a)
 proveCompatible x vr = x `mkCompatibleIf` (x `isCompatible` vr)
 
-compatibleVersion :: VersionRangeI a => a -> VersionRange -> Maybe (Compatible (VersionT a))
+compatibleVersion :: VersionRangeI v a => a -> VersionRange v -> Maybe (Compatible (VersionT v a))
 compatibleVersion x vr =
   toVersionT x (min max1 max2) `mkCompatibleIf` isCompatibleRange x vr
   where

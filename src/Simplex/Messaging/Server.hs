@@ -380,7 +380,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPQuit -> pure ()
               CPSkip -> pure ()
 
-runClientTransport :: Transport c => THandle c -> M ()
+runClientTransport :: Transport c => THandleSMP c -> M ()
 runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
@@ -428,7 +428,7 @@ cancelSub sub =
     Sub {subThread = SubThread t} -> liftIO $ deRefWeak t >>= mapM_ killThread
     _ -> return ()
 
-receive :: Transport c => THandle c -> Client -> M ()
+receive :: Transport c => THandleSMP c -> Client -> M ()
 receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
@@ -449,7 +449,7 @@ receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActi
               VRFailed -> Left (corrId, queueId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: Transport c => THandle c -> Client -> IO ()
+send :: Transport c => THandleSMP c -> Client -> IO ()
 send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
@@ -464,7 +464,7 @@ send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
       NMSG {} -> 0
       _ -> 1
 
-disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport :: Transport c => THandle v c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop

@@ -28,7 +28,7 @@ import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
@@ -147,7 +147,7 @@ instance Encoding ANewNtfEntity where
       'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
-instance Protocol ErrorType NtfResponse where
+instance Protocol NTFVersion ErrorType NtfResponse where
   type ProtoCommand NtfResponse = NtfCmd
   type ProtoType NtfResponse = 'PNTF
   protocolClientHandshake = ntfClientHandshake
@@ -184,7 +184,7 @@ data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
 
 deriving instance Show NtfCmd
 
-instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
+instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
   encodeProtocol _v = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
@@ -203,7 +203,7 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
-  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
   checkCredentials (auth, _, entityId, _) cmd = case cmd of
@@ -223,7 +223,7 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
-instance ProtocolEncoding ErrorType NtfCmd where
+instance ProtocolEncoding NTFVersion ErrorType NtfCmd where
   type Tag NtfCmd = NtfCmdTag
   encodeProtocol _v (NtfCmd _ c) = encodeProtocol _v c
 
@@ -243,7 +243,7 @@ instance ProtocolEncoding ErrorType NtfCmd where
         SDEL_ -> pure SDEL
         PING_ -> pure PING
 
-  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
@@ -290,7 +290,7 @@ data NtfResponse
   | NRPong
   deriving (Show)
 
-instance ProtocolEncoding ErrorType NtfResponse where
+instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol _v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)

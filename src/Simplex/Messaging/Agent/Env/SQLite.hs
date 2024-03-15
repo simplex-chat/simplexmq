@@ -56,16 +56,16 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
+import Simplex.Messaging.Crypto.Ratchet (PQSupport, VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
+import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, VersionRangeSMPC, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (TLS, Transport (..))
+import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors)
-import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
 import UnliftIO.STM
@@ -87,12 +87,13 @@ data AgentConfig = AgentConfig
     sndAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    smpCfg :: ProtocolClientConfig,
-    ntfCfg :: ProtocolClientConfig,
+    smpCfg :: ProtocolClientConfig SMPVersion,
+    ntfCfg :: ProtocolClientConfig NTFVersion,
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
+    connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int64,
@@ -115,9 +116,9 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    e2eEncryptVRange :: VersionRange,
-    smpAgentVRange :: VersionRange,
-    smpClientVRange :: VersionRange
+    e2eEncryptVRange :: PQSupport -> VersionRangeE2E,
+    smpAgentVRange :: PQSupport -> VersionRangeSMPA,
+    smpClientVRange :: VersionRangeSMPC
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -161,6 +162,7 @@ defaultAgentConfig =
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
+      connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       quotaExceededTimeout = 7 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds

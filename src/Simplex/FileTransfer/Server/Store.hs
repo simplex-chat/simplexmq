@@ -28,7 +28,8 @@ import Data.Int (Int64)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..))
-import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPErrorType (..), XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
@@ -49,7 +50,6 @@ data FileRec = FileRec
     recipientIds :: TVar (Set RecipientId),
     createdAt :: SystemTime
   }
-  deriving (Eq)
 
 data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
 

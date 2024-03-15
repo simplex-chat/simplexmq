@@ -16,9 +16,11 @@ module Simplex.FileTransfer.Client.Main
     xftpClientCLI,
     cliSendFile,
     cliSendFileOpts,
+    singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
+    maxFileSizeHard,
     fileSizeLen,
     getChunkDigest,
     SentRecipientReplica (..),
@@ -41,7 +43,7 @@ import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -76,11 +78,16 @@ import UnliftIO.Directory
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
 
+-- | Soft limit for XFTP clients. Should be checked and reported to user.
 maxFileSize :: Int64
 maxFileSize = gb 1
 
 maxFileSizeStr :: String
 maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+
+-- | Hard internal limit for XFTP agent after which it refuses to prepare chunks.
+maxFileSizeHard :: Int64
+maxFileSizeHard = gb 5
 
 fileSizeLen :: Int64
 fileSizeLen = 8
@@ -214,13 +221,13 @@ data SentFileChunk = SentFileChunk
     digest :: FileDigest,
     replicas :: [SentFileChunkReplica]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentFileChunkReplica = SentFileChunkReplica
   { server :: XFTPServer,
     recipients :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentRecipientReplica = SentRecipientReplica
   { chunkNo :: Int,
@@ -407,7 +414,8 @@ getChunkDigest :: XFTPChunkSpec -> IO ByteString
 getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
   withFile chunkPath ReadMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
+    chunk <- LB.hGet h (fromIntegral chunkSize)
+    pure $! LC.sha256Hash chunk
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
@@ -521,6 +529,12 @@ getFileDescription' :: FilePartyI p => FilePath -> ExceptT CLIError IO (ValidFil
 getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
+
+singleChunkSize :: Int64 -> Maybe Word32
+singleChunkSize size' =
+  listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
+  where
+    chunkSize = fromIntegral size'
 
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes size' = prepareSizes size'
