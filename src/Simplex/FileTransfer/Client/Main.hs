@@ -530,9 +530,8 @@ getFileDescription' path =
     AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
 
 singleChunkSize :: Int64 -> Maybe Word32
-singleChunkSize size'
-  | size' > fromIntegral (maxBound :: Word32) = Nothing
-  | otherwise = listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
+singleChunkSize size' =
+  listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
   where
     chunkSize = fromIntegral size'
 
