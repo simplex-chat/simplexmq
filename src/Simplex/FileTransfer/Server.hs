@@ -83,7 +83,7 @@ runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpSer
 
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration} started = do
-  mapM_ (expireServerFiles 0) fileExpiration
+  mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
   raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
   where
@@ -111,7 +111,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let interval = checkInterval expCfg * 1000000
       forever $ do
         liftIO $ threadDelay' interval
-        expireServerFiles 100000 expCfg
+        expireServerFiles (Just 100000) expCfg
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -403,7 +403,7 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
       atomically $ modifyTVar' (filesCount stats) (subtract 1)
       atomically $ modifyTVar' (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
-expireServerFiles :: Int -> ExpirationConfig -> M ()
+expireServerFiles :: Maybe Int -> ExpirationConfig -> M ()
 expireServerFiles itemDelay expCfg = do
   st <- asks store
   usedStart <- readTVarIO $ usedStorage st
@@ -411,7 +411,7 @@ expireServerFiles itemDelay expCfg = do
   files' <- readTVarIO (files st)
   logInfo $ "Expiration check: " <> tshow (M.size files') <> " files"
   forM_ (M.keys files') $ \sId -> do
-    when (itemDelay > 0) $ threadDelay itemDelay
+    mapM_ threadDelay itemDelay
     atomically (expiredFilePath st sId old)
       >>= mapM_ (maybeRemove $ delete st sId)
   usedEnd <- readTVarIO $ usedStorage st
