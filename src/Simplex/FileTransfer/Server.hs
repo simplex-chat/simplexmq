@@ -377,7 +377,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
             t <- asks $ fileTimeout . config
             liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT (receiveFile getBody spec) `catchAll_` pure (Left FILE_IO))
       where
-        checkDuplicate = ifM (isJust <$> readTVarIO filePath) (pure $ FRErr DUPLICATE_)
+        checkDuplicate = ifM (isJust <$> readTVarIO filePath) (pure FROk)
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
