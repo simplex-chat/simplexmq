@@ -106,6 +106,7 @@ testXFTPServerConfig =
       allowNewFiles = True,
       newFileBasicAuth = Nothing,
       fileExpiration = Just defaultFileExpiration,
+      fileTimeout = 10000000,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",

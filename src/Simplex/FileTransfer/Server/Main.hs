@@ -160,6 +160,7 @@ xftpServerCLI cfgPath logPath = do
                   defaultFileExpiration
                     { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
                     },
+              fileTimeout = 10 * 60 * 1000000, -- 10 mins to send 4mb chunk
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig
