@@ -117,6 +117,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent.STM (retry)
 import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad
 import Control.Monad.Except
@@ -138,6 +139,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -200,7 +202,16 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
       pure c
     runAgentThreads c
       | backgroundMode = subscriber c
-      | otherwise = raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c]
+      | otherwise = raceAny_ [subscriber c, smpSupervisor c, runNtfSupervisor c, cleanupManager c]
+
+smpSupervisor :: AgentMonad' m => AgentClient -> m ()
+smpSupervisor c@AgentClient {smpSubRequests} = forever $ do
+  subs <- atomically $ do
+    subs <- readTVar smpSubRequests
+    if S.null subs then retry else writeTVar smpSubRequests S.empty
+    pure subs
+  mapM_ (resubscribeSMPSession c) subs
+  threadDelay 1000000 -- try to aggregate reconnect requests in the Set
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
@@ -730,7 +741,7 @@ compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = 
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   pure $
     (,)
-      <$> (qUri `compatibleVersion` smpClientVRange) 
+      <$> (qUri `compatibleVersion` smpClientVRange)
       <*> (crAgentVRange `compatibleVersion` smpAgentVRange pqSup)
 
 versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport

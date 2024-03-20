@@ -30,6 +30,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
+    resubscribeSMPSession,
     closeXFTPServerClient,
     runSMPServerTest,
     runXFTPServerTest,
@@ -286,6 +287,7 @@ data AgentClient = AgentClient
     deleteLock :: Lock,
     -- smpSubWorkers for SMP servers sessions
     smpSubWorkers :: TMap SMPTransportSession (SessionVar (Async ())),
+    smpSubRequests :: TVar (Set SMPTransportSession),
     agentStats :: TMap AgentStatsKey (TVar Int),
     clientId :: Int,
     agentEnv :: Env
@@ -425,6 +427,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   invLocks <- TM.empty
   deleteLock <- createLock
   smpSubWorkers <- TM.empty
+  smpSubRequests <- newTVar mempty
   agentStats <- TM.empty
   return
     AgentClient
@@ -458,6 +461,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         invLocks,
         deleteLock,
         smpSubWorkers,
+        smpSubRequests,
         agentStats,
         clientId,
         agentEnv
@@ -516,16 +520,15 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     -- make it expensive to check for pending subscriptions.
     newClient v =
       newProtocolClient c tSess smpClients connectClient v
-        `catchAgentError` \e -> resubscribeSMPSession c tSess >> throwError e
+        `catchAgentError` \e -> atomically (modifyTVar' (smpSubRequests c) $ S.insert tSess) >> throwError e
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
       g <- asks random
-      u <- askUnliftIO
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected u v)
+      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) $ getProtocolClient g tSess cfg (Just msgQ) (clientDisconnected v)
 
-    clientDisconnected :: UnliftIO m -> SMPClientVar -> SMPClient -> IO ()
-    clientDisconnected u v client = do
+    clientDisconnected :: SMPClientVar -> SMPClient -> IO ()
+    clientDisconnected v client = do
       removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
@@ -548,7 +551,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            unliftIO u $ resubscribeSMPSession c tSess
+            atomically $ modifyTVar' (smpSubRequests c) $ S.insert tSess
 
         notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
