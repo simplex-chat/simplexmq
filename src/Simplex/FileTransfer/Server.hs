@@ -349,7 +349,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}, filePath} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> checkDuplicate $ ifM reserve receive (pure $ FRErr QUOTA)
+      Just getBody -> ifM reserve receive (pure $ FRErr QUOTA) -- TODO: handle duplicate uploads
         where
           reserve = do
             us <- asks $ usedStorage . store
@@ -376,8 +376,6 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
           receiveChunk spec = do
             t <- asks $ fileTimeout . config
             liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT (receiveFile getBody spec) `catchAll_` pure (Left FILE_IO))
-      where
-        checkDuplicate = ifM (isJust <$> readTVarIO filePath) (pure FROk)
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
