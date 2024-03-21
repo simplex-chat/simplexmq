@@ -129,7 +129,7 @@ module Simplex.Messaging.Agent.Client
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (ThreadId, forkIO, threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..))
@@ -225,6 +225,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import System.Mem.Weak (Weak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
@@ -252,7 +253,8 @@ type NtfTransportSession = TransportSession NtfResponse
 type XFTPTransportSession = TransportSession FileResponse
 
 data AgentClient = AgentClient
-  { active :: TVar Bool,
+  { acThread :: TVar (Maybe (Weak ThreadId)),
+    active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue (ServerTransmission SMPVersion BrokerMsg),
@@ -395,6 +397,7 @@ data AgentStatsKey = AgentStatsKey
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
+  acThread <- newTVar Nothing
   active <- newTVar True
   rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
@@ -428,7 +431,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   agentStats <- TM.empty
   return
     AgentClient
-      { active,
+      { acThread,
+        active,
         rcvQ,
         subQ,
         msgQ,

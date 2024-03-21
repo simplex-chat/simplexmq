@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent
     getSMPAgentClient,
     getSMPAgentClient_,
     disconnectAgentClient,
+    disposeAgentClient,
     resumeAgentClient,
     withConnLock,
     withInvLock,
@@ -122,7 +123,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
-import Crypto.Random (ChaChaDRG, MonadRandom)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
@@ -179,31 +180,40 @@ import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
+import System.Mem.Weak (deRefWeak)
 import UnliftIO.Async (race_)
-import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
+import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
+import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- import GHC.Conc (unsafeIOToSTM)
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient :: MonadIO m => AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: (MonadRandom m, MonadUnliftIO m) => Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
+getSMPAgentClient_ :: MonadIO m => Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> m AgentClient
 getSMPAgentClient_ clientId cfg initServers store backgroundMode =
-  liftIO (newSMPAgentEnv cfg store) >>= runReaderT runAgent
+  liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient clientId initServers
-      void $ runAgentThreads c `forkFinally` \r -> either (notifyErr c . show) pure r >> disconnectAgentClient c
-      pure c
+      t <- runAgentThreads c `forkFinally` const (disconnectAgentClient c)
+      acThread <- newTVarIO . Just =<< mkWeakThreadId t
+      pure c {acThread}
     runAgentThreads c
-      | backgroundMode = subscriber c
-      | otherwise = raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c]
-    notifyErr AgentClient {subQ} err = do
-      logError $ "runAgentThreads crashed: " <> T.pack err
-      atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ CRITICAL True err)
+      | backgroundMode = run c "subscriber" $ subscriber c
+      | otherwise =
+          raceAny_
+            [ run c "subscriber" $ subscriber c,
+              run c "runNtfSupervisor" $ runNtfSupervisor c,
+              run c "cleanupManager" $ cleanupManager c
+            ]
+    run AgentClient {subQ, acThread} name a =
+      a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
+        logError $ "Agent thread " <> name <> " crashed: " <> tshow e
+        atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ CRITICAL True $ show e)
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
@@ -211,6 +221,14 @@ disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAge
   closeNtfSupervisor ns
   closeXFTPAgent xa
   logConnection c False
+
+-- only used in the tests
+disposeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+disposeAgentClient c@AgentClient {acThread, agentEnv = Env {store}} = do
+  t_ <- atomically (swapTVar acThread Nothing) $>>= (liftIO . deRefWeak)
+  disconnectAgentClient c
+  mapM_ killThread t_
+  liftIO $ closeSQLiteStore store
 
 resumeAgentClient :: MonadIO m => AgentClient -> m ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
@@ -1919,10 +1937,11 @@ cleanupManager c@AgentClient {subQ} = do
   where
     run :: forall e. AEntityI e => (AgentErrorType -> ACommand 'Agent e) -> ExceptT AgentErrorType m () -> m ()
     run err a = do
-      atomically $ waitUntilActive c
-      void . runExceptT $ a `catchAgentError` (notify "" . err)
+      waitActive . runExceptT $ a `catchAgentError` (notify "" . err)
       step <- asks $ cleanupStepInterval . config
       liftIO $ threadDelay step
+    -- we are catching it to avoid CRITICAL errors in tests when this is the only remaining handle to active
+    waitActive a = liftIO (E.tryAny . atomically $ waitUntilActive c) >>= either (\_ -> pure ()) (\_ -> void a)
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
