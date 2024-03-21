@@ -198,10 +198,10 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient clientId initServers
+      c@AgentClient {acThread}  <- getAgentClient clientId initServers
       t <- runAgentThreads c `forkFinally` const (disconnectAgentClient c)
-      acThread <- newTVarIO . Just =<< mkWeakThreadId t
-      pure c {acThread}
+      atomically . writeTVar acThread . Just =<< mkWeakThreadId t
+      pure c
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise =
