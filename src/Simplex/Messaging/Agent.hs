@@ -181,7 +181,6 @@ import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
-import UnliftIO.Async (race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import UnliftIO.STM
 
@@ -515,7 +514,7 @@ logConnection c connected =
 
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runAgentClient :: AgentMonad' m => AgentClient -> m ()
-runAgentClient c = race_ (subscriber c) (client c)
+runAgentClient c = raceAny_ [subscriber c, client c, smpSupervisor c]
 
 client :: forall m. AgentMonad' m => AgentClient -> m ()
 client c@AgentClient {rcvQ, subQ} = forever $ do
