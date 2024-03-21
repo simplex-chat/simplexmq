@@ -521,11 +521,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     connectClient v = do
       cfg <- getClientConfig c smpCfg
       g <- asks random
-      u <- askUnliftIO
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected u v)
+      env <- ask
+      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected env v)
 
-    clientDisconnected :: UnliftIO m -> SMPClientVar -> SMPClient -> IO ()
-    clientDisconnected u v client = do
+    clientDisconnected :: Env -> SMPClientVar -> SMPClient -> IO ()
+    clientDisconnected env v client = do
       removeClientAndSubs >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
@@ -548,7 +548,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            unliftIO u $ resubscribeSMPSession c tSess
+            runReaderT (resubscribeSMPSession c tSess) env
 
         notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
@@ -1066,19 +1066,19 @@ subscribeQueues c qs = do
   atomically $ do
     modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
     RQ.batchAddQueues (pendingSubs c) qs'
-  u <- askUnliftIO
+  env <- ask
   -- only "checked" queues are subscribed
-  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
+  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ env) c qs'
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
-    subscribeQueues_ :: UnliftIO m -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
-    subscribeQueues_ u smp qs' = do
+    subscribeQueues_ :: Env -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
+    subscribeQueues_ env smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
-      when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
-        resubscribeSMPSession c (transportSession' smp)
+      when (any temporaryClientError . lefts . map snd $ L.toList rs) $
+        runReaderT (resubscribeSMPSession c $ transportSession' smp) env
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
