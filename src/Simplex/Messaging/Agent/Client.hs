@@ -1086,7 +1086,8 @@ subscribeQueues c qs = do
     subscribeQueues_ smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
-      when (any temporaryClientError . lefts . map snd $ L.toList rs) $ submitSMPResubscribe c (transportSession' smp)
+      when (any temporaryClientError . lefts . map snd $ L.toList rs) $
+        submitSMPResubscribe c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
