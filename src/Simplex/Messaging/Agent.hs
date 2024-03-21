@@ -196,11 +196,14 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   where
     runAgent = do
       c <- getAgentClient clientId initServers
-      void $ runAgentThreads c `forkFinally` const (disconnectAgentClient c)
+      void $ runAgentThreads c `forkFinally` \r -> either (notifyErr c . show) pure r >> disconnectAgentClient c
       pure c
     runAgentThreads c
       | backgroundMode = subscriber c
       | otherwise = raceAny_ [subscriber c, runNtfSupervisor c, cleanupManager c]
+    notifyErr AgentClient {subQ} err = do
+      logError $ "runAgentThreads crashed: " <> T.pack err
+      atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ CRITICAL True err)
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
