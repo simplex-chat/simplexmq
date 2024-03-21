@@ -520,7 +520,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
     -- make it expensive to check for pending subscriptions.
     newClient v =
       newProtocolClient c tSess smpClients connectClient v
-        `catchAgentError` \e -> atomically (modifyTVar' (smpSubRequests c) $ S.insert tSess) >> throwError e
+        `catchAgentError` \e -> submitSMPResubscribe c tSess >> throwError e
     connectClient :: SMPClientVar -> m SMPClient
     connectClient v = do
       cfg <- getClientConfig c smpCfg
@@ -551,10 +551,17 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
           unless (null conns) $ notifySub "" $ DOWN srv conns
           unless (null qs) $ do
             atomically $ mapM_ (releaseGetLock c) qs
-            atomically $ modifyTVar' (smpSubRequests c) $ S.insert tSess
+            submitSMPResubscribe c tSess
 
         notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
+
+-- | Schedule SMP resubscription job
+--
+-- Attempting to resubscribe directly in exception handlers results in untraceable resource leaking.
+-- A supervisor agent thread starts workers to process session resubscription requests instead allowing the handler to finish quickly.
+submitSMPResubscribe :: MonadIO m => AgentClient -> SMPTransportSession -> m ()
+submitSMPResubscribe c = atomically . modifyTVar' (smpSubRequests c) . S.insert
 
 resubscribeSMPSession :: AgentMonad' m => AgentClient -> SMPTransportSession -> m ()
 resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
@@ -1069,19 +1076,17 @@ subscribeQueues c qs = do
   atomically $ do
     modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
     RQ.batchAddQueues (pendingSubs c) qs'
-  u <- askUnliftIO
   -- only "checked" queues are subscribed
-  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ u) c qs'
+  (errs <>) <$> sendTSessionBatches "SUB" 90 id subscribeQueues_ c qs'
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
-    subscribeQueues_ :: UnliftIO m -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
-    subscribeQueues_ u smp qs' = do
+    subscribeQueues_ :: SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
+    subscribeQueues_ smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       mapM_ (uncurry $ processSubResult c) rs
-      when (any temporaryClientError . lefts . map snd $ L.toList rs) . unliftIO u $
-        resubscribeSMPSession c (transportSession' smp)
+      when (any temporaryClientError . lefts . map snd $ L.toList rs) $ submitSMPResubscribe c (transportSession' smp)
       pure rs
 
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
