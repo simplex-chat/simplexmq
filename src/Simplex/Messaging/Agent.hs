@@ -1919,6 +1919,7 @@ cleanupManager c@AgentClient {subQ} = do
   where
     run :: forall e. AEntityI e => (AgentErrorType -> ACommand 'Agent e) -> ExceptT AgentErrorType m () -> m ()
     run err a = do
+      atomically $ waitUntilActive c
       void . runExceptT $ a `catchAgentError` (notify "" . err)
       step <- asks $ cleanupStepInterval . config
       liftIO $ threadDelay step
