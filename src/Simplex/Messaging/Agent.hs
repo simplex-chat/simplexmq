@@ -181,6 +181,7 @@ import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import UnliftIO.Async (race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
+import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- import GHC.Conc (unsafeIOToSTM)
@@ -1887,12 +1888,18 @@ getSMPServer :: AgentMonad m => AgentClient -> UserId -> m SMPServerWithAuth
 getSMPServer c userId = withUserServers c userId pickServer
 
 subscriber :: AgentMonad' m => AgentClient -> m ()
-subscriber c@AgentClient {msgQ} = forever $ do
+subscriber c@AgentClient {msgQ, subQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
-  agentOperationBracket c AORcvNetwork waitUntilActive $
+  E.handleAny notifyIOErr . agentOperationBracket c AORcvNetwork waitUntilActive $
     runExceptT (processSMPTransmission c t) >>= \case
       Left e -> liftIO $ print e
       Right _ -> return ()
+  where
+    notifyIOErr e = do
+      let err = show e
+      logError $ "AgentClient.subscriber crashed: " <> T.pack err
+      atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ CRITICAL True err)
+      E.throwIO e
 
 cleanupManager :: forall m. AgentMonad' m => AgentClient -> m ()
 cleanupManager c@AgentClient {subQ} = do
