@@ -3,6 +3,7 @@
 
 module Simplex.Messaging.Compression where
 
+import qualified Codec.Compression.Zstd as Z1
 import qualified Codec.Compression.Zstd.FFI as Z
 import Control.Monad (forM)
 import Control.Monad.Except
@@ -28,6 +29,9 @@ data Compressed
 maxLengthPassthrough :: Int
 maxLengthPassthrough = 180 -- Sampled from real client data. Messages with length > 180 rapidly gain compression ratio.
 
+compressionLevel :: Num a => a
+compressionLevel = 3
+
 instance Encoding Compressed where
   smpEncode = \case
     Passthrough bytes -> "0" <> smpEncode bytes
@@ -38,7 +42,11 @@ instance Encoding Compressed where
       '1' -> Compressed <$> smpP
       x -> fail $ "unknown Compressed tag: " <> show x
 
--- ** Batch compression context
+-- | Compress as single chunk using stack-allocated context.
+compress1 :: ByteString -> Compressed
+compress1 bs
+  | B.length bs <= maxLengthPassthrough = Passthrough bs
+  | otherwise = Compressed . Large $ Z1.compress compressionLevel bs
 
 type CompressCtx = (Ptr Z.CCtx, Ptr CChar, CSize)
 
@@ -66,7 +74,7 @@ compress_ (cctx, scratchPtr, scratchSize) bs
   | otherwise =
       B.unsafeUseAsCStringLen bs $ \(sourcePtr, sourceSize) -> runExceptT $ do
         -- should not fail, unless input buffer is too short
-        dstSize <- ExceptT $ Z.checkError $ Z.compressCCtx cctx scratchPtr scratchSize sourcePtr (fromIntegral sourceSize) 3
+        dstSize <- ExceptT $ Z.checkError $ Z.compressCCtx cctx scratchPtr scratchSize sourcePtr (fromIntegral sourceSize) compressionLevel
         liftIO $ Compressed . Large <$> B.packCStringLen (scratchPtr, fromIntegral dstSize)
 
 type DecompressCtx = (Ptr Z.DCtx, Ptr CChar, CSize)
