@@ -47,13 +47,14 @@ import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicDhKey, RcvPublicAuthKey, RecipientId, TransmissionAuth)
+import Simplex.Messaging.Protocol (CorrId, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Transport (THandleParams (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
+import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server (runTCPServer)
 import Simplex.Messaging.Util
@@ -67,13 +68,12 @@ import qualified UnliftIO.Exception as E
 
 type M a = ReaderT XFTPEnv IO a
 
-data XFTPTransportRequest =
-  XFTPTransportRequest
-    { thParams :: THandleParams XFTPVersion,
-      reqBody :: HTTP2Body,
-      request :: H.Request,
-      sendResponse :: H.Response -> IO ()
-    }
+data XFTPTransportRequest = XFTPTransportRequest
+  { thParams :: THandleParams XFTPVersion,
+    reqBody :: HTTP2Body,
+    request :: H.Request,
+    sendResponse :: H.Response -> IO ()
+  }
 
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
@@ -349,8 +349,14 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}, filePath} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> ifM reserve receive (pure $ FRErr QUOTA) -- TODO: handle duplicate uploads
+      Just getBody -> skipCommitted $ ifM reserve receive (pure $ FRErr QUOTA)
         where
+          -- having a filePath means the file is already uploaded and committed, must not change anything
+          skipCommitted = ifM (isJust <$> readTVarIO filePath) (liftIO drain)
+            where
+              -- can't send FROk without reading the request body or a client will block on sending it
+              -- can't send any old error as the client would fail or restart indefinitely
+              drain = ifM (B.null <$> getBody fileBlockSize) (pure FROk) drain
           reserve = do
             us <- asks $ usedStorage . store
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
