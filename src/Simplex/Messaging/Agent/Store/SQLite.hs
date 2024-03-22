@@ -227,6 +227,7 @@ import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Base64.Types (extractBase64)
 import Data.Bifunctor (first, second)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
@@ -2248,7 +2249,7 @@ createWithRandomId' gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
+randomId gVar n = atomically $ extractBase64 . U.encodeBase64' <$> C.randomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)

@@ -44,8 +44,9 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Base64.Types (extractBase64)
 import Data.Bifunctor (first)
-import Data.ByteString.Base64 (encode)
+import Data.ByteString.Base64 (encodeBase64, encodeBase64')
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight, partitionEithers)
@@ -305,7 +306,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   now <- liftIO getSystemTime
                   let age = systemSeconds now - systemSeconds createdAt
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
-                  hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
+                  hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, extractBase64 $ encodeBase64' sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> do
                 ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
@@ -392,7 +393,7 @@ runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = 
     pure new
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  labelMyThread . B.unpack $ "client $" <> encode sessionId
+  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId)
   raceAny_ ([liftIO $ send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
@@ -402,7 +403,7 @@ runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = 
 
 clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endThreads} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
+  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId) <> " disc"
   subs <- atomically $ do
     writeTVar connected False
     swapTVar subscriptions M.empty
@@ -430,7 +431,7 @@ cancelSub sub =
 
 receive :: Transport c => THandleSMP c -> Client -> M ()
 receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
+  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId) <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet th)
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
@@ -451,7 +452,7 @@ receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActi
 
 send :: Transport c => THandleSMP c -> Client -> IO ()
 send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
+  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId) <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
     -- TODO we can authorize responses as well
@@ -466,7 +467,7 @@ send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
 
 disconnectTransport :: Transport c => THandle v c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
+  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId) <> " disconnectTransport"
   loop
   where
     loop = do
@@ -554,7 +555,7 @@ dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
+  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId) <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
@@ -854,7 +855,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                 s -> s
               where
                 subscriber = do
-                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name
+                  labelMyThread $ "client $" <> B.unpack (extractBase64 $ encodeBase64' sessionId) <> " subscriber/" <> T.unpack name
                   msg <- atomically $ peekMsg q
                   time "subscriber" . atomically $ do
                     let encMsg = encryptMsg qr msg
@@ -921,7 +922,7 @@ timed name qId a = do
   r <- a
   t' <- liftIO getSystemTime
   let int = diff t t'
-  when (int > sec) . logDebug $ T.unwords [name, tshow $ encode qId, tshow int]
+  when (int > sec) . logDebug $ T.unwords [name, extractBase64 $ encodeBase64 qId, tshow int]
   pure r
   where
     diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral (systemNanoseconds t' - systemNanoseconds t)

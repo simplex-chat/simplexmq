@@ -27,10 +27,12 @@ import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as JQ
+import Data.Base64.Types (extractBase64)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -54,7 +56,6 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
-import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.Environment (getEnv)
 import UnliftIO.STM
 
@@ -86,13 +87,13 @@ $(JQ.deriveToJSON defaultJSON ''JWTClaims)
 
 signedJWTToken :: EC.PrivateKey -> JWTToken -> IO SignedJWTToken
 signedJWTToken pk (JWTToken hdr claims) = do
-  let hc = jwtEncode hdr <> "." <> jwtEncode claims
+  let hc = B.concat [jwtEncode hdr, ".", jwtEncode claims]
   sig <- EC.sign pk SHA256 hc
-  pure $ hc <> "." <> serialize sig
+  pure $ B.concat [hc, ".", serialize sig]
   where
     jwtEncode :: ToJSON a => a -> ByteString
-    jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
-    serialize sig = U.encodeUnpadded $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
+    jwtEncode = extractBase64 . U.encodeBase64Unpadded' . LB.toStrict . J.encode
+    serialize sig = extractBase64 . U.encodeBase64Unpadded' $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
 
 readECPrivateKey :: FilePath -> IO EC.PrivateKey
 readECPrivateKey f = do
@@ -290,7 +291,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
-    encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
+    encrypt ntfData f = f . extractBase64 . U.encodeBase64 <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
 

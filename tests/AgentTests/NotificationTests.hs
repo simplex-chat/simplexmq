@@ -184,7 +184,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
 (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
 v .-> key = do
   J.Object o <- pure v
-  liftEither . bimap INTERNAL (U.decodeLenient . encodeUtf8) $ JT.parseEither (J..: key) o
+  liftEither . bimap INTERNAL (U.decodeBase64Lenient . encodeUtf8) $ JT.parseEither (J..: key) o
 
 -- logCfg :: LogConfig
 -- logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
@@ -345,7 +345,7 @@ testRunNTFServerTests :: ATransport -> NtfServer -> IO (Maybe ProtocolTestFailur
 testRunNTFServerTests t srv =
   withNtfServerThreadOn t ntfTestPort $ \ntf -> do
     a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
-    r <- runRight $ testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing 
+    r <- runRight $ testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
     killThread ntf
     pure r
 

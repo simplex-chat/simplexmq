@@ -163,7 +163,8 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteString.Base64
+import Data.Base64.Types (extractBase64)
+import Data.ByteString.Base64 (encodeBase64')
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -821,12 +822,20 @@ data MsgMeta = MsgMeta
 
 instance StrEncoding MsgMeta where
   strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
-    B.unwords
+    B.concat
       [ strEncode integrity,
-        "R=" <> bshow rmId <> "," <> showTs rTs,
-        "B=" <> encode bmId <> "," <> showTs bTs,
-        "S=" <> bshow sndMsgId,
-        "PQ=" <> strEncode pqEncryption
+        " R=",
+        bshow rmId,
+        ",",
+        showTs rTs,
+        " B=",
+        extractBase64 (encodeBase64' bmId),
+        ",",
+        showTs bTs,
+        " S=",
+        bshow sndMsgId,
+        " PQ=",
+        strEncode pqEncryption
       ]
     where
       showTs = B.pack . formatISO8601Millis

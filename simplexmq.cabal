@@ -187,7 +187,7 @@ library
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
@@ -259,7 +259,7 @@ executable ntf-server
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
@@ -332,7 +332,7 @@ executable smp-agent
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
@@ -405,7 +405,7 @@ executable smp-server
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
@@ -478,7 +478,7 @@ executable xftp
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
@@ -551,7 +551,7 @@ executable xftp-server
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
@@ -658,7 +658,7 @@ test-suite simplexmq-test
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64 ==1.0.*
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14

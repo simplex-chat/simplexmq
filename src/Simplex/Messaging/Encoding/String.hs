@@ -23,15 +23,17 @@ import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Base64.Types (extractBase64)
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlphaNum)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
@@ -58,15 +60,18 @@ class StrEncoding a where
 
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
-  strEncode = U.encode
-  strDecode = U.decode
+  strEncode = extractBase64 . U.encodeBase64'
+  strDecode = first T.unpack . U.decodeBase64Untyped
   strP = base64urlP
 
 base64urlP :: Parser ByteString
 base64urlP = do
-  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
-  pad <- A.takeWhile (== '=')
-  either fail pure $ U.decode (str <> pad)
+  str <- A.takeWhile1 (`B.elem` base64AlphabetURL)
+  _pad <- A.takeWhile (== '=') -- correct amount of padding can be derived from str length
+  either (fail . T.unpack) pure $ U.decodeBase64UnpaddedUntyped str
+
+base64AlphabetURL :: ByteString
+base64AlphabetURL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 newtype Str = Str {unStr :: ByteString}
   deriving (Eq, Show)

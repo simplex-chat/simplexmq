@@ -28,7 +28,7 @@ import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
-base64P = decode <$?> paddedBase64 rawBase64P
+base64P = (first T.unpack . decodeBase64Untyped) <$?> paddedBase64 rawBase64P
 
 paddedBase64 :: Parser ByteString -> Parser ByteString
 paddedBase64 raw = (<>) <$> raw <*> pad

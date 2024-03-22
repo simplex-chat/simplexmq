@@ -92,7 +92,7 @@ signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) =
 (.->) :: J.Value -> J.Key -> Either String ByteString
 v .-> key =
   let J.Object o = v
-   in U.decodeLenient . encodeUtf8 <$> JT.parseEither (J..: key) o
+   in U.decodeBase64Lenient . encodeUtf8 <$> JT.parseEither (J..: key) o
 
 testNotificationSubscription :: ATransport -> Spec
 testNotificationSubscription (ATransport t) =

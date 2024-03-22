@@ -12,7 +12,8 @@ import Control.Exception (SomeException)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
-import qualified Data.ByteString.Base64.URL as B64
+import Data.Base64.Types (extractBase64)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -75,7 +76,7 @@ createTestChunk fp = do
   pure bytes
 
 readChunk :: SenderId -> IO ByteString
-readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode sId))
+readChunk sId = B.readFile (xftpServerFiles </> B.unpack (extractBase64 $ U.encodeBase64' sId))
 
 testFileChunkDelivery :: Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c

@@ -185,6 +185,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -312,7 +313,7 @@ decodeTAuthBytes s
   | otherwise = Just . TASignature <$> C.decodeSignature s
 
 instance IsString (Maybe TransmissionAuth) where
-  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap TASignature
+  fromString = parseString $ first T.unpack . B64.decodeBase64Untyped >=> C.decodeSignature >=> pure . fmap TASignature
 
 -- | unparsed sent SMP transmission with signature, without session ID.
 type SignedRawTransmission = (Maybe TransmissionAuth, SessionId, ByteString, ByteString)
@@ -946,7 +947,7 @@ legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
 
 strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
 strEncodeServer scheme host port keyHash auth_ =
-  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr
+  B.concat [strEncode scheme, "://", strEncode keyHash,  maybe "" ((":" <>) . strEncode) auth_, "@", host, portStr]
   where
     portStr = B.pack $ if null port then "" else ':' : port
 
