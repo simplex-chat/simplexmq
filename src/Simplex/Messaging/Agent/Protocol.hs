@@ -822,20 +822,12 @@ data MsgMeta = MsgMeta
 
 instance StrEncoding MsgMeta where
   strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
-    B.concat
+    B.unwords
       [ strEncode integrity,
-        " R=",
-        bshow rmId,
-        ",",
-        showTs rTs,
-        " B=",
-        extractBase64 (encodeBase64' bmId),
-        ",",
-        showTs bTs,
-        " S=",
-        bshow sndMsgId,
-        " PQ=",
-        strEncode pqEncryption
+        "R=" <> bshow rmId <> "," <> showTs rTs,
+        "B=" <> extractBase64 (encodeBase64' bmId) <> "," <> showTs bTs,
+        "S=" <> bshow sndMsgId,
+        "PQ=" <> strEncode pqEncryption
       ]
     where
       showTs = B.pack . formatISO8601Millis

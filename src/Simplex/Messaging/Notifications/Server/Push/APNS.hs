@@ -32,7 +32,6 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -87,9 +86,9 @@ $(JQ.deriveToJSON defaultJSON ''JWTClaims)
 
 signedJWTToken :: EC.PrivateKey -> JWTToken -> IO SignedJWTToken
 signedJWTToken pk (JWTToken hdr claims) = do
-  let hc = B.concat [jwtEncode hdr, ".", jwtEncode claims]
+  let hc = jwtEncode hdr <> "." <> jwtEncode claims
   sig <- EC.sign pk SHA256 hc
-  pure $ B.concat [hc, ".", serialize sig]
+  pure $ hc <> "." <> serialize sig
   where
     jwtEncode :: ToJSON a => a -> ByteString
     jwtEncode = extractBase64 . U.encodeBase64Unpadded' . LB.toStrict . J.encode
