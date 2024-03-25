@@ -8,7 +8,8 @@ import Data.ByteString (ByteString)
 import Simplex.Messaging.Encoding.String
 
 data ControlProtocol
-  = CPSuspend
+  = CPAuth ByteString
+  | CPSuspend
   | CPResume
   | CPClients
   | CPStats
@@ -24,6 +25,7 @@ data ControlProtocol
 
 instance StrEncoding ControlProtocol where
   strEncode = \case
+    CPAuth bs -> "auth " <> strEncode bs
     CPSuspend -> "suspend"
     CPResume -> "resume"
     CPClients -> "clients"
@@ -39,6 +41,7 @@ instance StrEncoding ControlProtocol where
     CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
+      "auth" -> CPAuth <$> (A.space *> strP)
       "suspend" -> pure CPSuspend
       "resume" -> pure CPResume
       "clients" -> pure CPClients

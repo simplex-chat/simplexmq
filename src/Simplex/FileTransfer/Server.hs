@@ -200,12 +200,21 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           cpLoop h
           where
             cpLoop h = do
-              s <- B.hGetLine h
-              case strDecode $ trimCR s of
+              s <- trimCR <$> B.hGetLine h
+              case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> processCP h cmd >> cpLoop h
+                Right cmd -> logCmd s cmd >> processCP h cmd >> cpLoop h
                 Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
+            logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
+              where
+                shouldLog = case cmd of
+                  CPAuth{} -> False
+                  CPHelp -> False
+                  CPQuit -> False
+                  CPSkip -> False
+                  _ -> True
             processCP h = \case
+              CPAuth todo'bs -> undefined
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
               CPDelete fileId -> unliftIO u $ do
                 fs <- asks store

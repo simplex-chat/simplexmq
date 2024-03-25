@@ -287,12 +287,21 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           cpLoop h
           where
             cpLoop h = do
-              s <- B.hGetLine h
-              case strDecode $ trimCR s of
+              s <- trimCR <$> B.hGetLine h
+              case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> processCP h cmd >> cpLoop h
+                Right cmd -> logCmd s cmd >> processCP h cmd >> cpLoop h
                 Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
+            logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
+              where
+                shouldLog = case cmd of
+                  CPAuth{} -> False
+                  CPHelp -> False
+                  CPQuit -> False
+                  CPSkip -> False
+                  _ -> True
             processCP h = \case
+              CPAuth todo'bs -> undefined
               CPSuspend -> hPutStrLn h "suspend not implemented"
               CPResume -> hPutStrLn h "resume not implemented"
               CPClients -> do

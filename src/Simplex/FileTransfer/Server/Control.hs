@@ -8,7 +8,8 @@ import Data.ByteString (ByteString)
 import Simplex.Messaging.Encoding.String
 
 data ControlProtocol
-  = CPStatsRTS
+  = CPAuth ByteString
+  | CPStatsRTS
   | CPDelete ByteString
   | CPHelp
   | CPQuit
@@ -16,6 +17,7 @@ data ControlProtocol
 
 instance StrEncoding ControlProtocol where
   strEncode = \case
+    CPAuth tok -> "auth " <> strEncode tok
     CPStatsRTS -> "stats-rts"
     CPDelete bs -> "delete " <> strEncode bs
     CPHelp -> "help"
@@ -23,6 +25,7 @@ instance StrEncoding ControlProtocol where
     CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
+      "auth" -> CPAuth <$> (A.space *> strP)
       "stats-rts" -> pure CPStatsRTS
       "delete" -> CPDelete <$> (A.space *> strP)
       "help" -> pure CPHelp
