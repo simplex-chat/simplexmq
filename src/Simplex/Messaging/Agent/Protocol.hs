@@ -1301,7 +1301,7 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: 
 instance Encoding SMPQueueInfo where
   smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey})
     | clientVersion > initialSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
-    | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
+    | otherwise = B.concat [smpEncode clientVersion, legacyEncodeServer smpServer, smpEncode senderId, smpEncode dhPublicKey]
   smpP = do
     clientVersion <- smpP
     smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP

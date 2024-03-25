@@ -451,7 +451,7 @@ encodeRcvMsgBody = \case
     let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
      in C.appendMaxLenBS rcvMeta msgBody
   RcvMsgQuota {msgTs} ->
-    C.unsafeMaxLenBS $ msgQuotaTag <> " " <> smpEncode msgTs
+    C.unsafeMaxLenBS $ B.concat [msgQuotaTag, " ", smpEncode msgTs]
 
 data ClientRcvMsgBody
   = ClientRcvMsgBody

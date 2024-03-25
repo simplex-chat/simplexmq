@@ -15,6 +15,7 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -207,7 +208,7 @@ data RCHostEncHello = RCHostEncHello
 
 instance Encoding RCHostEncHello where
   smpEncode RCHostEncHello {dhPubKey, nonce, encBody} =
-    "HELLO " <> smpEncode (dhPubKey, nonce, Tail encBody)
+    B.concat ["HELLO ", smpEncode dhPubKey, smpEncode nonce, encBody]
   smpP = do
     (dhPubKey, nonce, Tail encBody) <- "HELLO " *> smpP
     pure RCHostEncHello {dhPubKey, nonce, encBody}
@@ -219,8 +220,8 @@ data RCCtrlEncHello
 
 instance Encoding RCCtrlEncHello where
   smpEncode = \case
-    RCCtrlEncHello {kem, nonce, encBody} -> "HELLO " <> smpEncode (kem, nonce, Tail encBody)
-    RCCtrlEncError {nonce, encMessage} -> "ERROR " <> smpEncode (nonce, Tail encMessage)
+    RCCtrlEncHello {kem, nonce, encBody} -> B.concat ["HELLO ", smpEncode kem, smpEncode nonce, encBody]
+    RCCtrlEncError {nonce, encMessage} -> B.concat ["ERROR ", smpEncode nonce, encMessage]
   smpP =
     A.takeTill (== ' ') >>= \case
       "HELLO" -> do

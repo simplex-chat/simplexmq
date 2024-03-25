@@ -735,7 +735,7 @@ data EncRatchetMessage = EncRatchetMessage
 
 encodeEncRatchetMessage :: VersionE2E -> EncRatchetMessage -> ByteString
 encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-  = encodeLarge v emHeader <> smpEncode (emAuthTag, Tail emBody)
+  = B.concat [encodeLarge v emHeader, smpEncode emAuthTag, emBody]
 
 encRatchetMessageP :: Parser EncRatchetMessage
 encRatchetMessageP = do
