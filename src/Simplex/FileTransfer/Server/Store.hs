@@ -22,6 +22,7 @@ where
 
 import Control.Concurrent.STM
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Set (Set)
@@ -53,7 +54,7 @@ data FileRec = FileRec
 data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
 
 instance StrEncoding FileRecipient where
-  strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey
+  strEncode (FileRecipient rId rKey) = B.concat [strEncode rId, ":", strEncode rKey]
   strP = FileRecipient <$> strP <* A.char ':' <*> strP
 
 newFileStore :: STM FileStore

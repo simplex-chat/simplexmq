@@ -197,7 +197,7 @@ setPeriodStats s d = do
 
 instance (Ord a, StrEncoding a) => StrEncoding (PeriodStatsData a) where
   strEncode PeriodStatsData {_day, _week, _month} =
-    "day=" <> strEncode _day <> "\nweek=" <> strEncode _week <> "\nmonth=" <> strEncode _month
+    B.concat ["day=", strEncode _day, "\nweek=", strEncode _week, "\nmonth=", strEncode _month]
   strP = do
     _day <- "day=" *> strP <* A.endOfLine
     _week <- "week=" *> strP <* A.endOfLine

@@ -313,13 +313,17 @@ encodeFileReplicas defChunkSize =
 
 encodeServerReplica :: FileServerReplica -> ByteString
 encodeServerReplica FileServerReplica {chunkNo, replicaId, replicaKey, digest, chunkSize} =
-  bshow chunkNo
-    <> ":"
-    <> strEncode replicaId
-    <> ":"
-    <> strEncode replicaKey
-    <> maybe "" ((":" <>) . strEncode) digest
-    <> maybe "" ((":" <>) . strEncode) chunkSize
+  B.concat $
+    concat
+      [ [ bshow chunkNo,
+          ":",
+          strEncode replicaId,
+          ":",
+          strEncode replicaKey
+        ],
+        maybe [] (\d -> [":", strEncode d]) digest,
+        maybe [] (\cs -> [":", strEncode cs]) chunkSize
+      ]
 
 serverReplicaP :: XFTPServer -> Parser FileServerReplica
 serverReplicaP server = do

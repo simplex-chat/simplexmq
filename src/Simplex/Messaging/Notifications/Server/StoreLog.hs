@@ -113,15 +113,23 @@ instance StrEncoding NtfStoreLogRecord where
 
 instance StrEncoding NtfTknRec where
   strEncode NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval} =
-    B.unwords
-      [ "tknId=" <> strEncode ntfTknId,
-        "token=" <> strEncode token,
-        "tokenStatus=" <> strEncode tknStatus,
-        "verifyKey=" <> strEncode tknVerifyKey,
-        "dhKeys=" <> strEncode tknDhKeys,
-        "dhSecret=" <> strEncode tknDhSecret,
-        "regCode=" <> strEncode tknRegCode,
-        "cron=" <> strEncode tknCronInterval
+    B.concat
+      [ "tknId=",
+        strEncode ntfTknId,
+        " token=",
+        strEncode token,
+        " tokenStatus=",
+        strEncode tknStatus,
+        " verifyKey=",
+        strEncode tknVerifyKey,
+        " dhKeys=",
+        strEncode tknDhKeys,
+        " dhSecret=",
+        strEncode tknDhSecret,
+        " regCode=",
+        strEncode tknRegCode,
+        " cron=",
+        strEncode tknCronInterval
       ]
   strP = do
     ntfTknId <- "tknId=" *> strP_
@@ -136,12 +144,17 @@ instance StrEncoding NtfTknRec where
 
 instance StrEncoding NtfSubRec where
   strEncode NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus} =
-    B.unwords
-      [ "subId=" <> strEncode ntfSubId,
-        "smpQueue=" <> strEncode smpQueue,
-        "notifierKey=" <> strEncode notifierKey,
-        "tknId=" <> strEncode tokenId,
-        "subStatus=" <> strEncode subStatus
+    B.concat
+      [ "subId=",
+        strEncode ntfSubId,
+        " smpQueue=",
+        strEncode smpQueue,
+        " notifierKey=",
+        strEncode notifierKey,
+        " tknId=",
+        strEncode tokenId,
+        " subStatus=",
+        strEncode subStatus
       ]
   strP = do
     ntfSubId <- "subId=" *> strP_

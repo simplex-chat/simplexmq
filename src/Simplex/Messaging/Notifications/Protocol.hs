@@ -352,7 +352,7 @@ instance Encoding SMPQueueNtf where
     pure SMPQueueNtf {smpServer, notifierId}
 
 instance StrEncoding SMPQueueNtf where
-  strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId
+  strEncode SMPQueueNtf {smpServer, notifierId} = B.concat [strEncode smpServer, "/", strEncode notifierId]
   strP = do
     smpServer <- updateSMPServerHosts <$> strP
     notifierId <- A.char '/' *> strP

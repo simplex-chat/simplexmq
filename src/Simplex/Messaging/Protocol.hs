@@ -451,7 +451,7 @@ encodeRcvMsgBody = \case
     let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
      in C.appendMaxLenBS rcvMeta msgBody
   RcvMsgQuota {msgTs} ->
-    C.unsafeMaxLenBS $ msgQuotaTag <> " " <> smpEncode msgTs
+    C.unsafeMaxLenBS $ B.concat [msgQuotaTag, " ", smpEncode msgTs]
 
 data ClientRcvMsgBody
   = ClientRcvMsgBody
@@ -476,10 +476,13 @@ clientRcvMsgBodyP = msgQuotaP <|> msgBodyP
 instance StrEncoding Message where
   strEncode = \case
     Message {msgId, msgTs, msgFlags, msgBody} ->
-      B.unwords
+      B.concat
         [ strEncode msgId,
+          " ",
           strEncode msgTs,
-          "flags=" <> strEncode msgFlags,
+          " flags=",
+          strEncode msgFlags,
+          " ",
           strEncode msgBody
         ]
     MessageQuota {msgId, msgTs} ->
