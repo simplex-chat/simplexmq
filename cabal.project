@@ -16,8 +16,8 @@ source-repository-package
 
 source-repository-package
     type: git
-    location: https://github.com/emilypi/base64.git
-    tag: e67505b35084040c91c833bae6a9e6592863fd04
+    location: https://github.com/dpwiz/base64.git
+    tag: d7d20c1a603d22f031a8700d23153050ff7343fe
 
 source-repository-package
     type: git
