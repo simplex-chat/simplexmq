@@ -768,7 +768,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
               Message {msgFlags} -> do
                 stats <- asks serverStats
                 atomically $ modifyTVar' (msgRecv stats) (+ 1)
-                atomically $ modifyTVar' (msgCount stats) (+ 1)
+                atomically $ modifyTVar' (msgCount stats) (subtract 1)
                 atomically $ updatePeriodStats (activeQueues stats) queueId
                 when (notification msgFlags) $ do
                   atomically $ modifyTVar' (msgRecvNtf stats) (+ 1)
@@ -796,7 +796,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                           atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                           atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
-                        atomically $ modifyTVar' (msgCount stats) (subtract 1)
+                        atomically $ modifyTVar' (msgCount stats) (+ 1)
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                         pure ok
           where
