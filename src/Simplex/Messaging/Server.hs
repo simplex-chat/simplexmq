@@ -977,7 +977,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
                     | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
                     | otherwise -> pure (True, False)
                   MessageQuota {} -> writeMsg q msg $> (False, False)
-              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
+              when logFull . logError . decodeLatin1 $ B.unwords ["message queue", strEncode rId, "is full, message not restored:", strEncode (messageId msg)]
               pure $ if isExpired then expired + 1 else expired
             msgErr :: Show e => String -> e -> String
             msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)

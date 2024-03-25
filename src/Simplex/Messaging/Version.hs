@@ -32,6 +32,7 @@ import qualified Data.Aeson.Encoding as JE
 import Data.Aeson.Types ((.:), (.=))
 import qualified Data.Aeson.Types as JT
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Char8 as B
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Version.Internal (Version (..))
@@ -84,7 +85,7 @@ instance VersionScope v => Encoding (VersionRange v) where
 instance VersionScope v => StrEncoding (VersionRange v) where
   strEncode (VRange v1 v2)
     | v1 == v2 = strEncode v1
-    | otherwise = strEncode v1 <> "-" <> strEncode v2
+    | otherwise = B.concat [strEncode v1, "-", strEncode v2]
   strP = do
     v1 <- strP
     v2 <- maybe (pure v1) (const strP) =<< optional (A.char '-')

@@ -54,16 +54,19 @@ data StoreLogRecord
 
 instance StrEncoding QueueRec where
   strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
-    B.unwords
-      [ "rid=" <> strEncode recipientId,
-        "rk=" <> strEncode recipientKey,
-        "rdh=" <> strEncode rcvDhSecret,
-        "sid=" <> strEncode senderId,
-        "sk=" <> strEncode senderKey
+    B.concat $
+      [ "rid=",
+        strEncode recipientId,
+        " rk=",
+        strEncode recipientKey,
+        " rdh=",
+        strEncode rcvDhSecret,
+        " sid=",
+        strEncode senderId,
+        " sk=",
+        strEncode senderKey
       ]
-      <> maybe "" notifierStr notifier
-    where
-      notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
+        ++ maybe [] (\ntfCreds -> [" notifier=", strEncode ntfCreds]) notifier
 
   strP = do
     recipientId <- "rid=" *> strP_

@@ -476,10 +476,13 @@ clientRcvMsgBodyP = msgQuotaP <|> msgBodyP
 instance StrEncoding Message where
   strEncode = \case
     Message {msgId, msgTs, msgFlags, msgBody} ->
-      B.unwords
+      B.concat
         [ strEncode msgId,
+          " ",
           strEncode msgTs,
-          "flags=" <> strEncode msgFlags,
+          " flags=",
+          strEncode msgFlags,
+          " ",
           strEncode msgBody
         ]
     MessageQuota {msgId, msgTs} ->

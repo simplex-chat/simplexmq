@@ -751,7 +751,7 @@ compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = 
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   pure $
     (,)
-      <$> (qUri `compatibleVersion` smpClientVRange) 
+      <$> (qUri `compatibleVersion` smpClientVRange)
       <*> (crAgentVRange `compatibleVersion` smpAgentVRange pqSup)
 
 versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
@@ -2056,7 +2056,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                               HELLO -> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
-                                logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
+                                logServer "<--" c srv rId ["MSG <MSG>:" <> logSecret srvMsgId]
                                 notify $ MSG msgMeta msgFlags body
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
@@ -2066,7 +2066,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                               QUSE qs -> qDuplexAckDel conn'' "QUSE" $ qUseMsg srvMsgId qs
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
-                              QTEST _ -> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret srvMsgId) >> ackDel msgId
+                              QTEST _ -> logServer "<--" c srv rId ["MSG <QTEST>:" <> logSecret srvMsgId] >> ackDel msgId
                               EREADY _ -> qDuplexAckDel conn'' "EREADY" $ ereadyMsg rcPrev
                             where
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> m ()) -> m ACKd
@@ -2088,7 +2088,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                 | otherwise -> do
                                     liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
                                       AgentMessage _ (A_MSG body) -> do
-                                        logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
+                                        logServer "<--" c srv rId ["MSG <MSG>:" <> logSecret srvMsgId]
                                         notify $ MSG msgMeta msgFlags body
                                         pure ACKPending
                                       _ -> ack
@@ -2159,12 +2159,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                   | sessId == sessionId (thParams clnt) -> do
                       removeSubscription c connId
                       notify' END
-                      pure "END"
+                      pure ["END"]
                   | otherwise -> ignored
                 _ -> ignored
-              ignored = pure "END from disconnected client - ignored"
+              ignored = pure ["END from disconnected client - ignored"]
           _ -> do
-            logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
+            logServer "<--" c srv rId ["unexpected:", bshow cmd]
             notify . ERR $ BROKER (B.unpack $ strEncode srv) UNEXPECTED
         where
           notify :: forall e. AEntityI e => ACommand 'Agent e -> m ()
@@ -2197,7 +2197,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
 
           smpConfirmation :: SMP.MsgId -> Connection c -> C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> ByteString -> VersionSMPC -> VersionSMPA -> m ()
           smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
-            logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret srvMsgId
+            logServer "<--" c srv rId ["MSG <CONF>:" <> logSecret srvMsgId]
             AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
             let ConnData {pqSupport} = toConnData conn'
                 aVRange = smpAgentVRange pqSupport
@@ -2248,7 +2248,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
 
           helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> m ()
           helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
-            logServer "<--" c srv rId $ "MSG <HELLO>:" <> logSecret srvMsgId
+            logServer "<--" c srv rId ["MSG <HELLO>:" <> logSecret srvMsgId]
             case status of
               Active -> prohibited
               _ ->
@@ -2270,7 +2270,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
           continueSending srvMsgId addr (DuplexConnection _ _ sqs) =
             case findQ addr sqs of
               Just sq -> do
-                logServer "<--" c srv rId $ "MSG <QCONT>:" <> logSecret srvMsgId
+                logServer "<--" c srv rId ["MSG <QCONT>:" <> logSecret srvMsgId]
                 atomically $
                   TM.lookup (qAddress sq) (smpDeliveryWorkers c)
                     >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
@@ -2278,7 +2278,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
 
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> m ACKd
           messagesRcvd rcpts msgMeta@MsgMeta {broker = (srvMsgId, _)} _ = do
-            logServer "<--" c srv rId $ "MSG <RCPT>:" <> logSecret srvMsgId
+            logServer "<--" c srv rId ["MSG <RCPT>:" <> logSecret srvMsgId]
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAgentError` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
@@ -2321,7 +2321,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                         sq2 <- withStore c $ \db -> addConnSndQueue db connId sq''
                         case (sndPublicKey, e2ePubKey) of
                           (Just sndPubKey, Just dhPublicKey) -> do
-                            logServer "<--" c srv rId $ "MSG <QADD>:" <> logSecret srvMsgId <> " " <> logSecret (senderId queueAddress)
+                            logServer "<--" c srv rId ["MSG <QADD>:" <> logSecret srvMsgId, logSecret (senderId queueAddress)]
                             let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = queueAddress {dhPublicKey}}
                             void . enqueueMessages c cData' sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPubKey)]
                             sq1 <- withStore' c $ \db -> setSndSwitchStatus db sq $ Just SSSendingQKEY
@@ -2343,7 +2343,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
               Just rq'@RcvQueue {rcvId, e2ePrivKey = dhPrivKey, smpClientVersion = cVer, status = status'}
                 | status' == New || status' == Confirmed -> do
                     checkRQSwchStatus rq RSSendingQADD
-                    logServer "<--" c srv rId $ "MSG <QKEY>:" <> logSecret srvMsgId <> " " <> logSecret senderId
+                    logServer "<--" c srv rId ["MSG <QKEY>:" <> logSecret srvMsgId, logSecret senderId]
                     let dhSecret = C.dh' dhPublicKey dhPrivKey
                     withStore' c $ \db -> setRcvQueueConfirmedE2E db rq' dhSecret $ min cVer cVer'
                     enqueueCommand c "" connId (Just smpServer) $ AInternalCommand $ ICQSecure rcvId senderKey
@@ -2364,7 +2364,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 case find ((replaceQId ==) . dbQId) sqs of
                   Just sq1 -> do
                     checkSQSwchStatus sq1 SSSendingQKEY
-                    logServer "<--" c srv rId $ "MSG <QUSE>:" <> logSecret srvMsgId <> " " <> logSecret (snd addr)
+                    logServer "<--" c srv rId ["MSG <QUSE>:" <> logSecret srvMsgId, logSecret (snd addr)]
                     withStore' c $ \db -> setSndQueueStatus db sq' Secured
                     let sq'' = (sq' :: SndQueue) {status = Secured}
                     -- sending QTEST to the new queue only, the old one will be removed if sent successfully
@@ -2388,7 +2388,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
 
           smpInvitation :: SMP.MsgId -> Connection c -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
           smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData _) cInfo = do
-            logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret srvMsgId
+            logServer "<--" c srv rId ["MSG <KEY>:" <> logSecret srvMsgId]
             case conn' of
               ContactConnection {} -> do
                 -- show connection request even if invitaion via contact address is not compatible.

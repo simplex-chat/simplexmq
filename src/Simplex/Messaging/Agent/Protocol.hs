@@ -687,9 +687,12 @@ data RcvQueueInfo = RcvQueueInfo
 
 instance StrEncoding RcvQueueInfo where
   strEncode RcvQueueInfo {rcvServer, rcvSwitchStatus, canAbortSwitch} =
-    ("srv=" <> strEncode rcvServer)
-      <> maybe "" (\switch -> ";switch=" <> strEncode switch) rcvSwitchStatus
-      <> (";can_abort_switch=" <> strEncode canAbortSwitch)
+    B.concat $
+      concat @[]
+        [ ["srv=", strEncode rcvServer],
+          maybe [] (\switch -> [";switch=", strEncode switch]) rcvSwitchStatus,
+          [";can_abort_switch=", strEncode canAbortSwitch]
+        ]
   strP = do
     rcvServer <- "srv=" *> strP
     rcvSwitchStatus <- optional $ ";switch=" *> strP
@@ -704,7 +707,7 @@ data SndQueueInfo = SndQueueInfo
 
 instance StrEncoding SndQueueInfo where
   strEncode SndQueueInfo {sndServer, sndSwitchStatus} =
-    "srv=" <> strEncode sndServer <> maybe "" (\switch -> ";switch=" <> strEncode switch) sndSwitchStatus
+    B.concat $ "srv=" : strEncode sndServer : maybe [] (\switch -> [";switch=", strEncode switch]) sndSwitchStatus
   strP = do
     sndServer <- "srv=" *> strP
     sndSwitchStatus <- optional $ ";switch=" *> strP
@@ -721,11 +724,18 @@ data ConnectionStats = ConnectionStats
 
 instance StrEncoding ConnectionStats where
   strEncode ConnectionStats {connAgentVersion, rcvQueuesInfo, sndQueuesInfo, ratchetSyncState, ratchetSyncSupported} =
-    ("agent_version=" <> strEncode connAgentVersion)
-      <> (" rcv=" <> strEncodeList rcvQueuesInfo)
-      <> (" snd=" <> strEncodeList sndQueuesInfo)
-      <> (" sync=" <> strEncode ratchetSyncState)
-      <> (" sync_supported=" <> strEncode ratchetSyncSupported)
+    B.concat
+      [ "agent_version=",
+        strEncode connAgentVersion,
+        " rcv=",
+        strEncodeList rcvQueuesInfo,
+        " snd=",
+        strEncodeList sndQueuesInfo,
+        " sync=",
+        strEncode ratchetSyncState,
+        " sync_supported=",
+        strEncode ratchetSyncSupported
+      ]
   strP = do
     connAgentVersion <- "agent_version=" *> strP
     rcvQueuesInfo <- " rcv=" *> strListP
@@ -822,12 +832,20 @@ data MsgMeta = MsgMeta
 
 instance StrEncoding MsgMeta where
   strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
-    B.unwords
+    B.concat
       [ strEncode integrity,
-        "R=" <> bshow rmId <> "," <> showTs rTs,
-        "B=" <> extractBase64 (encodeBase64' bmId) <> "," <> showTs bTs,
-        "S=" <> bshow sndMsgId,
-        "PQ=" <> strEncode pqEncryption
+        " R=",
+        bshow rmId,
+        ",",
+        showTs rTs,
+        " B=",
+        extractBase64 (encodeBase64' bmId),
+        ",",
+        showTs bTs,
+        " S=",
+        bshow sndMsgId,
+        " PQ=",
+        strEncode pqEncryption
       ]
     where
       showTs = B.pack . formatISO8601Millis
@@ -911,7 +929,7 @@ instance Encoding AgentMsgEnvelope where
 -- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = -- used by the initiating party when confirming reply queue
-  AgentConnInfo ConnInfo
+    AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
@@ -1153,7 +1171,7 @@ instance Encoding AMessageReceipt where
 
 instance StrEncoding MsgReceipt where
   strEncode MsgReceipt {agentMsgId, msgRcptStatus} =
-    strEncode agentMsgId <> ":" <> strEncode msgRcptStatus
+    B.concat [strEncode agentMsgId, ":", strEncode msgRcptStatus]
   strP = do
     agentMsgId <- strP <* A.char ':'
     msgRcptStatus <- strP
@@ -1341,11 +1359,11 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 
 instance StrEncoding SMPQueueUri where
   strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
-    | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
-    | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
+    | minVersion vr >= srvHostnamesSMPClientVersion = B.concat [strEncode srv, "/", strEncode qId, "#/?", query $ queryParams []]
+    | otherwise = B.concat [legacyStrEncodeServer srv, "/", strEncode qId, "#/?", query $ queryParams srvParam]
     where
       query = strEncode . QSP QEscape
-      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
+      queryParams sp = ("v", strEncode vr) : ("dh", strEncode dhPublicKey) : sp
       srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
@@ -1385,9 +1403,9 @@ deriving instance Show (ConnectionRequestUri m)
 data AConnectionRequestUri = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequestUri m)
 
 instance Eq AConnectionRequestUri where
-   ACR m cr == ACR m' cr' = case testEquality m m' of
-     Just Refl -> cr == cr'
-     _ -> False
+  ACR m cr == ACR m' cr' = case testEquality m m' of
+    Just Refl -> cr == cr'
+    _ -> False
 
 deriving instance Show AConnectionRequestUri
 
@@ -1602,22 +1620,23 @@ instance StrEncoding AgentErrorType where
       <|> "INACTIVE" $> INACTIVE
     where
       textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
-  strEncode = \case
-    CMD e -> "CMD " <> bshow e
-    CONN e -> "CONN " <> bshow e
-    SMP e -> "SMP " <> strEncode e
-    NTF e -> "NTF " <> strEncode e
-    XFTP e -> "XFTP " <> strEncode e
-    RCP e -> "RCP " <> strEncode e
-    BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
-    BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
-    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
-    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
-    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
-    AGENT e -> "AGENT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> bshow e
-    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> bshow e
-    INACTIVE -> "INACTIVE"
+  strEncode =
+    B.unwords . \case
+      CMD e -> ["CMD", bshow e]
+      CONN e -> ["CONN", bshow e]
+      SMP e -> ["SMP", strEncode e]
+      NTF e -> ["NTF", strEncode e]
+      XFTP e -> ["XFTP", strEncode e]
+      RCP e -> ["RCP", strEncode e]
+      BROKER srv (RESPONSE e) -> ["BROKER", text srv, "RESPONSE", text e]
+      BROKER srv (TRANSPORT e) -> ["BROKER", text srv, "TRANSPORT", serializeTransportError e]
+      BROKER srv e -> ["BROKER", text srv, bshow e]
+      AGENT (A_CRYPTO e) -> ["AGENT CRYPTO", bshow e]
+      AGENT (A_QUEUE e) -> ["AGENT QUEUE", bshow e]
+      AGENT e -> ["AGENT", bshow e]
+      INTERNAL e -> ["INTERNAL", bshow e]
+      CRITICAL restart e -> ["CRITICAL", bshow restart, bshow e]
+      INACTIVE -> ["INACTIVE"]
     where
       text = encodeUtf8 . T.pack
 
