@@ -22,7 +22,6 @@ where
 
 import Control.Concurrent.STM
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Set (Set)
 import qualified Data.Set as S

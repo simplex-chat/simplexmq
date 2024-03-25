@@ -5,11 +5,12 @@ module Simplex.FileTransfer.Server.Control where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 
 data ControlProtocol
   = CPStatsRTS
-  | CPDelete ByteString
+  | CPDelete ByteString C.APublicAuthKey
   | CPHelp
   | CPQuit
   | CPSkip
@@ -17,14 +18,14 @@ data ControlProtocol
 instance StrEncoding ControlProtocol where
   strEncode = \case
     CPStatsRTS -> "stats-rts"
-    CPDelete bs -> "delete " <> strEncode bs
+    CPDelete bs k -> strEncode (Str "delete", bs, k)
     CPHelp -> "help"
     CPQuit -> "quit"
     CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
       "stats-rts" -> pure CPStatsRTS
-      "delete" -> CPDelete <$> (A.space *> strP)
+      "delete" -> CPDelete <$> _strP <*> _strP
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
       "" -> pure CPSkip
