@@ -18,7 +18,7 @@ data ControlProtocol
 instance StrEncoding ControlProtocol where
   strEncode = \case
     CPStatsRTS -> "stats-rts"
-    CPDelete bs k -> strEncode (Str "delete", bs, k)
+    CPDelete fId fKey -> strEncode (Str "delete", fId, fKey)
     CPHelp -> "help"
     CPQuit -> "quit"
     CPSkip -> ""
