@@ -72,9 +72,9 @@ type M a = ReaderT NtfEnv IO a
 ntfServer :: NtfServerConfig -> TMVar Bool -> M ()
 ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
   restoreServerStats
-  resubscribe
   s <- asks subscriber
   ps <- asks pushServer
+  resubscribe s
   raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg) `finally` stopServer
   where
     runServer :: (ServiceName, ATransport) -> M ()
@@ -145,12 +145,11 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
               ]
         liftIO $ threadDelay' interval
 
-resubscribe :: M ()
-resubscribe = do
+resubscribe :: NtfSubscriber -> M ()
+resubscribe NtfSubscriber {newSubQ} = do
   logInfo "Preparing SMP resubscriptions..."
   subs <- readTVarIO =<< asks (subscriptions . store)
   subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
-  NtfSubscriber {newSubQ} <- asks subscriber
   atomically . writeTBQueue newSubQ $ map NtfSub subs'
   logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
 
