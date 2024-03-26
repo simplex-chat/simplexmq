@@ -296,7 +296,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
               where
                 shouldLog = case cmd of
-                  CPAuth{} -> False
+                  CPAuth _ -> False
                   CPHelp -> False
                   CPQuit -> False
                   CPSkip -> False

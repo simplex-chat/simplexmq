@@ -209,7 +209,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
             logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
               where
                 shouldLog = case cmd of
-                  CPAuth{} -> False
+                  CPAuth _ -> False
                   CPHelp -> False
                   CPQuit -> False
                   CPSkip -> False

@@ -29,7 +29,7 @@ instance StrEncoding ControlProtocol where
     CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
-      "auth" -> CPAuth <$> (A.space *> strP)
+      "auth" -> CPAuth <$> _strP
       "stats-rts" -> pure CPStatsRTS
       "delete" -> CPDelete <$> _strP <*> _strP
       "help" -> pure CPHelp
