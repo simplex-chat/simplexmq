@@ -284,14 +284,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           hSetBuffering h LineBuffering
           hSetNewlineMode h universalNewlineMode
           hPutStrLn h "SMP server control port\n'help' for supported commands"
-          cpLoop h
+          role <- newTVarIO CPRNone
+          cpLoop h role
           where
-            cpLoop h = do
+            cpLoop h role = do
               s <- trimCR <$> B.hGetLine h
               case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> logCmd s cmd >> processCP h cmd >> cpLoop h
-                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
+                Right cmd -> logCmd s cmd >> processCP h role cmd >> cpLoop h role
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h role
             logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
               where
                 shouldLog = case cmd of
@@ -300,8 +301,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   CPQuit -> False
                   CPSkip -> False
                   _ -> True
-            processCP h = \case
-              CPAuth todo'bs -> undefined
+            processCP h role = \case
+              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+                where
+                  newRole ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
+                    | Just auth == admin = CPRAdmin
+                    | Just auth == user = CPRUser
+                    | otherwise = CPRNone
               CPSuspend -> hPutStrLn h "suspend not implemented"
               CPResume -> hPutStrLn h "resume not implemented"
               CPClients -> do
