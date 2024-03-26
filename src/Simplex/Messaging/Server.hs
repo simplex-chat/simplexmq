@@ -398,10 +398,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 withUserRole action = readTVarIO role >>= \case
                   CPRAdmin -> action
                   CPRUser -> action
-                  _ -> hPutStrLn h "AUTH"
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
                 withAdminRole action = readTVarIO role >>= \case
                   CPRAdmin -> action
-                  _ -> hPutStrLn h "AUTH"
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
 
 runClientTransport :: Transport c => THandleSMP c -> M ()
 runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = do

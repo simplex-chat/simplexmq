@@ -239,7 +239,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                 withUserRole action = readTVarIO role >>= \case
                   CPRAdmin -> action
                   CPRUser -> action
-                  _ -> hPutStrLn h "AUTH"
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
 
 data ServerFile = ServerFile
   { filePath :: FilePath,
