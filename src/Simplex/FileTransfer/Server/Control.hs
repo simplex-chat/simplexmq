@@ -7,9 +7,13 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol (BasicAuth)
+
+data CPClientRole = CPRNone | CPRUser | CPRAdmin
 
 data ControlProtocol
-  = CPStatsRTS
+  = CPAuth BasicAuth
+  | CPStatsRTS
   | CPDelete ByteString C.APublicAuthKey
   | CPHelp
   | CPQuit
@@ -17,6 +21,7 @@ data ControlProtocol
 
 instance StrEncoding ControlProtocol where
   strEncode = \case
+    CPAuth tok -> "auth " <> strEncode tok
     CPStatsRTS -> "stats-rts"
     CPDelete fId fKey -> strEncode (Str "delete", fId, fKey)
     CPHelp -> "help"
@@ -24,6 +29,7 @@ instance StrEncoding ControlProtocol where
     CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
+      "auth" -> CPAuth <$> _strP
       "stats-rts" -> pure CPStatsRTS
       "delete" -> CPDelete <$> _strP <*> _strP
       "help" -> pure CPHelp

@@ -46,6 +46,9 @@ data XFTPServerConfig = XFTPServerConfig
     allowNewFiles :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new files
     newFileBasicAuth :: Maybe BasicAuth,
+    -- | control port passwords,
+    controlPortUserAuth :: Maybe BasicAuth,
+    controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the files can be removed and check interval, seconds
     fileExpiration :: Maybe ExpirationConfig,
     -- | timeout to receive file
