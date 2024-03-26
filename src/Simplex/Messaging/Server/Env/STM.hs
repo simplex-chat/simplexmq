@@ -53,6 +53,9 @@ data ServerConfig = ServerConfig
     allowNewQueues :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new queues
     newQueueBasicAuth :: Maybe BasicAuth,
+    -- | control port passwords,
+    controlPortUserAuth :: Maybe BasicAuth,
+    controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
