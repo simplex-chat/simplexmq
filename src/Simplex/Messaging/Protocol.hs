@@ -193,6 +193,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import qualified Simplex.Messaging.Encoding.Base64 as B64
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.ServiceScheme
@@ -313,7 +314,7 @@ decodeTAuthBytes s
   | otherwise = Just . TASignature <$> C.decodeSignature s
 
 instance IsString (Maybe TransmissionAuth) where
-  fromString = parseString $ first T.unpack . B64.decodeBase64Untyped >=> C.decodeSignature >=> pure . fmap TASignature
+  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap TASignature
 
 -- | unparsed sent SMP transmission with signature, without session ID.
 type SignedRawTransmission = (Maybe TransmissionAuth, SessionId, ByteString, ByteString)
@@ -947,7 +948,7 @@ legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
 
 strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
 strEncodeServer scheme host port keyHash auth_ =
-  B.concat [strEncode scheme, "://", strEncode keyHash,  maybe "" ((":" <>) . strEncode) auth_, "@", host, portStr]
+  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr
   where
     portStr = B.pack $ if null port then "" else ':' : port
 

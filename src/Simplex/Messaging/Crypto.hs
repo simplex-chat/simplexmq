@@ -211,9 +211,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
-import Data.Base64.Types (extractBase64)
-import Data.ByteString.Base64 (decodeBase64Untyped, encodeBase64')
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
@@ -221,7 +218,6 @@ import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import qualified Data.List.NonEmpty as L
 import Data.String
-import qualified Data.Text as T
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
@@ -232,6 +228,8 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.Base64 (decode, encode)
+import qualified Simplex.Messaging.Encoding.Base64URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
@@ -647,10 +645,6 @@ signatureKeyPair ak@(APrivateSignKey a k) = (APublicVerifyKey a (publicKey k), a
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
 
-decode :: ByteString -> Either String ByteString
-decode = first T.unpack . decodeBase64Untyped
-{-# INLINE decode #-}
-
 instance AlgorithmI a => IsString (PrivateKey a) where
   fromString = parseString $ decode >=> decodePrivKey
 
@@ -662,7 +656,7 @@ instance AlgorithmI a => ToJSON (PrivateKey a) where
   toEncoding = strToJEncoding . strEncode . encodePrivKey
 
 instance AlgorithmI a => FromJSON (PrivateKey a) where
-  parseJSON v = (decodePrivKey <=< first T.unpack . U.decodeBase64Untyped) <$?> strParseJSON "PrivateKey" v
+  parseJSON v = (decodePrivKey <=< U.decode) <$?> strParseJSON "PrivateKey" v
 
 type KeyPairType pk = (PublicKeyType pk, pk)
 
@@ -773,7 +767,7 @@ deriving instance Show ASignature
 
 class CryptoSignature s where
   serializeSignature :: s -> ByteString
-  serializeSignature = extractBase64 . encodeBase64' . signatureBytes
+  serializeSignature = encode . signatureBytes
   signatureBytes :: s -> ByteString
   decodeSignature :: ByteString -> Either String s
 
