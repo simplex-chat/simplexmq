@@ -387,7 +387,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     withLog (`logDeleteQueue` queueId)
                     updateDeletedStats q
                     liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
-              CPSave -> withLock (savingLock srv) "control" $ do
+              CPSave -> withAdminRole $ withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
