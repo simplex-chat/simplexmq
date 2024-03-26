@@ -7,9 +7,12 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol (BasicAuth)
+
+data CPClientRole = CPRNone | CPRUser | CPRAdmin
 
 data ControlProtocol
-  = CPAuth ByteString
+  = CPAuth BasicAuth
   | CPStatsRTS
   | CPDelete ByteString C.APublicAuthKey
   | CPHelp

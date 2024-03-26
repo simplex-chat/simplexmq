@@ -128,6 +128,8 @@ smpServerCLI cfgPath logPath =
                       _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
                    )
                 <> "\n\n\
+                   \# control_port_admin_password:\n\
+                   \# control_port_user_password:\n\
                    \[TRANSPORT]\n\
                    \# host is only used to print server address on start\n"
                 <> ("host: " <> host <> "\n")
@@ -189,6 +191,8 @@ smpServerCLI cfgPath logPath =
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
+              controlPortAdminAuth = either error id <$> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$> strDecodeIni "AUTH" "control_port_user_password" ini,
               messageExpiration =
                 Just
                   defaultMessageExpiration

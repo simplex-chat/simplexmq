@@ -197,14 +197,15 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           hSetBuffering h LineBuffering
           hSetNewlineMode h universalNewlineMode
           hPutStrLn h "XFTP server control port\n'help' for supported commands"
-          cpLoop h
+          role <- newTVarIO CPRNone
+          cpLoop h role
           where
-            cpLoop h = do
+            cpLoop h role  = do
               s <- trimCR <$> B.hGetLine h
               case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> logCmd s cmd >> processCP h cmd >> cpLoop h
-                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
+                Right cmd -> logCmd s cmd >> processCP h role cmd >> cpLoop h role
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h role
             logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
               where
                 shouldLog = case cmd of
@@ -213,10 +214,15 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                   CPQuit -> False
                   CPSkip -> False
                   _ -> True
-            processCP h = \case
-              CPAuth todo'bs -> undefined
+            processCP h role = \case
+              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+                where
+                  newRole XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
+                    | Just auth == admin = CPRAdmin
+                    | Just auth == user = CPRUser
+                    | otherwise = CPRNone
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
-              CPDelete fileId fKey -> unliftIO u $ do
+              CPDelete fileId fKey -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
                   let asSender = ExceptT . atomically $ getFile fs SFSender fileId
@@ -229,6 +235,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
+              where
+                withUserRole action = readTVarIO role >>= \case
+                  CPRAdmin -> action
+                  CPRUser -> action
+                  _ -> hPutStrLn h "AUTH"
 
 data ServerFile = ServerFile
   { filePath :: FilePath,
