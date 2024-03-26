@@ -11,6 +11,7 @@ import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Client (ProtocolClientConfig (..))
@@ -26,6 +27,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Util (tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -69,7 +71,7 @@ ntfServerCLI cfgPath logPath =
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp)) Nothing
-      writeFile iniFile $ iniFileContent host
+      T.writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
       printServiceInfo serverVersion srv
@@ -85,17 +87,17 @@ ntfServerCLI cfgPath logPath =
             <> "log_stats: off\n\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
-            <> ("host: " <> host <> "\n")
-            <> ("port: " <> defaultServerPort <> "\n")
+            <> ("host: " <> T.pack host <> "\n")
+            <> ("port: " <> T.pack defaultServerPort <> "\n")
             <> "log_tls_errors: off\n\
                \# delay between command batches sent to SMP relays (microseconds), 0 to disable\n"
-            <> ("smp_batch_delay: " <> show defaultSMPBatchDelay <> "\n")
+            <> ("smp_batch_delay: " <> tshow defaultSMPBatchDelay <> "\n")
             <> "websockets: off\n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
                \disconnect: off\n"
-            <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
+            <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering

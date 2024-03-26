@@ -15,6 +15,7 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (isJust, isNothing)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -26,6 +27,7 @@ import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -79,7 +81,9 @@ data ServerConfig = ServerConfig
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
-    controlPort :: Maybe ServiceName
+    controlPort :: Maybe ServiceName,
+    -- | server public information
+    information :: Maybe ServerPublicInfo
   }
 
 defMsgExpirationDays :: Int64
@@ -101,6 +105,7 @@ defaultInactiveClientExpiration =
 
 data Env = Env
   { config :: ServerConfig,
+    serverInfo :: ServerInformation,
     server :: Server,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
@@ -174,7 +179,7 @@ newSubscription subThread = do
   return Sub {subThread, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, information, messageExpiration} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
@@ -187,7 +192,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  return Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -203,3 +208,20 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier q = case notifier q of
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
+    serverInfo =
+      ServerInformation
+        { information,
+          config =
+            ServerPublicConfig
+              { persistence,
+                messageExpiration = ttl <$> messageExpiration,
+                statsEnabled = isJust $ logStatsInterval config,
+                newQueuesAllowed = allowNewQueues config,
+                basicAuthEnabled = isJust $ newQueueBasicAuth config
+              }
+        }
+      where
+        persistence
+          | isNothing storeLogFile = SPMMemoryOnly
+          | isJust (storeMsgsFile config) = SPMMessages
+          | otherwise = SPMQueues

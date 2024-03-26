@@ -139,6 +139,7 @@ library
       Simplex.Messaging.Server.Control
       Simplex.Messaging.Server.Env.STM
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.Information
       Simplex.Messaging.Server.Main
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM

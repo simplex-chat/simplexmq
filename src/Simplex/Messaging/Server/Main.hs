@@ -12,10 +12,13 @@ import Control.Concurrent.STM
 import Control.Monad (void)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Ini (lookupValue, readIniFile)
+import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
 import qualified Simplex.Messaging.Crypto as C
@@ -25,10 +28,11 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -71,7 +75,8 @@ smpServerCLI cfgPath logPath =
           password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
           let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password}
+          sourceCode <- Just . T.pack <$> withPrompt ("Enter server source code URI (" <> simplexmqSource <> "): ") getServerSourceCode
+          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password, sourceCode}
       where
         serverPassword =
           getLine >>= \case
@@ -82,7 +87,7 @@ smpServerCLI cfgPath logPath =
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
-        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password} = do
+        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode} = do
           clearDirIfExists cfgPath
           clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
@@ -92,26 +97,29 @@ smpServerCLI cfgPath logPath =
           basicAuth <- mapM createServerPassword password
           let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
               srv = ProtoServerWithAuth (SMPServer [THDomainName host] "" (C.KeyHash fp)) basicAuth
-          writeFile iniFile $ iniFileContent host basicAuth
-          putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
+          T.writeFile iniFile $ iniFileContent host basicAuth $ Just "https://github.com/simplex-chat/simplexmq"
+          putStrLn $ "Server initialized, please provide additional server information in " <> iniFile <> "."
+          putStrLn $ "Run `" <> executableName <> " start` to start server."
           warnCAPrivateKeyFile cfgPath x509cfg
           printServiceInfo serverVersion srv
+          printSourceCode sourceCode
           where
             createServerPassword = \case
               ServerPassword s -> pure s
               SPRandom -> BasicAuth . strEncode <$> (atomically . C.randomBytes 32 =<< C.newRandom)
-            iniFileContent host basicAuth =
-              "[STORE_LOG]\n\
-              \# The server uses STM memory for persistence,\n\
-              \# that will be lost on restart (e.g., as with redis).\n\
-              \# This option enables saving memory to append only log,\n\
-              \# and restoring it when the server is started.\n\
-              \# Log is compacted on start (deleted objects are removed).\n"
+            iniFileContent host basicAuth sourceCode' =
+              informationIniContent sourceCode'
+                <> "[STORE_LOG]\n\
+                   \# The server uses STM memory for persistence,\n\
+                   \# that will be lost on restart (e.g., as with redis).\n\
+                   \# This option enables saving memory to append only log,\n\
+                   \# and restoring it when the server is started.\n\
+                   \# Log is compacted on start (deleted objects are removed).\n"
                 <> ("enable: " <> onOff enableStoreLog <> "\n\n")
                 <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
                    \# they are preserved in the .bak file until the next restart.\n"
                 <> ("restore_messages: " <> onOff enableStoreLog <> "\n")
-                <> ("expire_messages_days: " <> show defMsgExpirationDays <> "\n\n")
+                <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
                 <> "[AUTH]\n\
@@ -124,7 +132,7 @@ smpServerCLI cfgPath logPath =
                    \# The password will not be shared with the connecting contacts, you must share it only\n\
                    \# with the users who you want to allow creating messaging queues on your server.\n"
                 <> ( case basicAuth of
-                      Just auth -> "create_password: " <> T.unpack (safeDecodeUtf8 $ strEncode auth)
+                      Just auth -> "create_password: " <> safeDecodeUtf8 (strEncode auth)
                       _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
                    )
                 <> "\n\n\
@@ -132,25 +140,27 @@ smpServerCLI cfgPath logPath =
                    \# control_port_user_password:\n\
                    \[TRANSPORT]\n\
                    \# host is only used to print server address on start\n"
-                <> ("host: " <> host <> "\n")
-                <> ("port: " <> defaultServerPort <> "\n")
+                <> ("host: " <> T.pack host <> "\n")
+                <> ("port: " <> T.pack defaultServerPort <> "\n")
                 <> "log_tls_errors: off\n\
                    \websockets: off\n\
                    \# control_port: 5224\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
-                <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
-                <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
+                <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+                <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
+      printSourceCode sourceCode'
       printServerConfig transports storeLogFile
       putStrLn $ case messageExpiration of
         Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
@@ -213,8 +223,90 @@ smpServerCLI cfgPath logPath =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
-              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini
+              controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
+              information = serverPublicInfo ini
             }
+
+getServerSourceCode :: IO String
+getServerSourceCode =
+  getLine >>= \case
+    "" -> pure simplexmqSource
+    s | "https://" `isPrefixOf` s || "http://" `isPrefixOf` s -> pure s
+    _ -> putStrLn "Invalid source code. URI should start from http:// or https://" >> getServerSourceCode
+
+simplexmqSource :: String
+simplexmqSource = "https://github.com/simplex-chat/simplexmq"
+
+informationIniContent :: Maybe Text -> Text
+informationIniContent sourceCode_ =
+  "[INFORMATION]\n\
+  \# AGPLv3 license requires that you make any source code modifications\n\
+  \# available to the end users of the server.\n\
+  \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
+  \# Include correct source code URI in case the server source code is modified in any way.\n\
+  \# If any other information fields are present, source code property also MUST be present.\n\n"
+    <> (maybe ("# source_code: URI") ("source_code: " <>) sourceCode_ <> "\n\n")
+    <> "# Declaring all below information is optional, any of these fields can be omitted.\n\
+      \\n\
+      \# Server usage conditions and amendments.\n\
+      \# It is recommended to use standard conditions with any amendments in a separate document.\n\
+      \# usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/stable/PRIVACY.md\n\
+      \# condition_amendments: link\n\
+      \\n\
+      \# Server location and operator.\n\
+      \# server_country: SE\n\
+      \# operator: entity (organization or person name)\n\
+      \# operator_country: GB\n\
+      \# website:\n\
+      \\n\
+      \# Administrative contacts.\n\
+      \# admin_simplex: SimpleX address\n\
+      \# admin_email:\n\
+      \# admin_pgp:\n\
+      \\n\
+      \# Contacts for complaints and feedback.\n\
+      \# complaints_simplex: SimpleX address\n\
+      \# complaints_email:\n\
+      \# complaints_pgp:\n\
+      \\n\
+      \# Hosting provider.\n\
+      \# hosting: entity (organization or person name)\n\
+      \# hosting_country: US\n\n"
+
+serverPublicInfo :: Ini -> Maybe ServerPublicInfo
+serverPublicInfo ini = serverInfo <$> infoValue "source_code"
+  where
+    serverInfo sourceCode =
+      ServerPublicInfo
+        { sourceCode,
+          usageConditions  =
+            (\conditions -> ServerConditions {conditions, amendments = infoValue "condition_amendments"})
+              <$> infoValue "usage_conditions",
+          operator = iniEntity "operator" "operator_country",
+          website = infoValue "website",
+          adminContacts = iniContacts "admin_simplex" "admin_email" "admin_pgp",
+          complaintsContacts = iniContacts "complaints_simplex" "complaints_email" "complaints_pgp",
+          hosting = iniEntity "hosting" "hosting_country",
+          serverCountry = infoValue "server_country"
+        }
+    infoValue name = eitherToMaybe $ lookupValue "INFORMATION" name ini
+    iniEntity nameField countryField =
+      (\name -> Entity {name, country = infoValue countryField})
+        <$> infoValue nameField
+    iniContacts simplexField emailField pgpField =
+      let simplex = either error id <$> strDecodeIni "INFORMATION" simplexField ini
+          email = infoValue emailField
+          pgp = infoValue pgpField
+        in case (simplex, email, pgp) of
+            (Nothing, Nothing, Nothing) -> Nothing
+            _ -> Just ServerContactAddress {simplex, email, pgp}
+
+printSourceCode :: Maybe Text -> IO ()
+printSourceCode = \case
+  Just sourceCode -> T.putStrLn $ "Server source code: " <> sourceCode
+  Nothing -> do
+    putStrLn "Warning: server source code is not specified."
+    putStrLn "Add 'source_code' property to [INFORMATION] section of INI file."
 
 data CliCommand
   = Init InitOptions
@@ -229,6 +321,7 @@ data InitOptions = InitOptions
     ip :: HostName,
     fqdn :: Maybe HostName,
     password :: Maybe ServerPassword,
+    sourceCode :: Maybe Text,
     scripted :: Bool
   }
   deriving (Show)
@@ -283,7 +376,6 @@ cliCommandP cfgPath logPath iniFile =
           ( long "fqdn"
               <> short 'n'
               <> help "Server FQDN used as Common Name for TLS online certificate"
-              <> showDefault
               <> metavar "FQDN"
           )
       password <-
@@ -296,13 +388,19 @@ cliCommandP cfgPath logPath iniFile =
                   <> help "Set password to create new messaging queues"
                   <> value SPRandom
               )
+      sourceCode <-
+        (optional . strOption)
+          ( long "source-code"
+              <> help "Server source code will be communicated to the users"
+              <> metavar "SOURCE"
+          )
       scripted <-
         switch
           ( long "yes"
               <> short 'y'
               <> help "Non-interactive initialization using command-line options"
           )
-      pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
+      pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, sourceCode, scripted}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
 
