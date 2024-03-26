@@ -352,11 +352,15 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       Just getBody -> skipCommitted $ ifM reserve receive (pure $ FRErr QUOTA)
         where
           -- having a filePath means the file is already uploaded and committed, must not change anything
-          skipCommitted = ifM (isJust <$> readTVarIO filePath) (liftIO drain)
+          skipCommitted = ifM (isJust <$> readTVarIO filePath) (liftIO $ drain $ fromIntegral size)
             where
               -- can't send FROk without reading the request body or a client will block on sending it
               -- can't send any old error as the client would fail or restart indefinitely
-              drain = ifM (B.null <$> getBody fileBlockSize) (pure FROk) drain
+              drain s = do
+                bs <- B.length <$> getBody fileBlockSize
+                if bs == 0 || bs >= s
+                  then pure FROk
+                  else drain (s - bs)
           reserve = do
             us <- asks $ usedStorage . store
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
