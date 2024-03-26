@@ -17,8 +17,8 @@ source-repository-package
 -- old bs/text compat for 8.10
 source-repository-package
     type: git
-    location: https://github.com/dpwiz/base64.git
-    tag: d8a3e33e13f030872f698510a1a613e2b17dfbb2
+    location: https://github.com/simplex-chat/base64.git
+    tag: 2d77b6dbcaffc00570a70be8694049f3710e7c94
 
 source-repository-package
     type: git
