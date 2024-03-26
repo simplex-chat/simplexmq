@@ -26,7 +26,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -207,13 +207,15 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                 Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
             processCP h = \case
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
-              CPDelete fileId -> unliftIO u $ do
+              CPDelete fileId fKey -> unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
                   let asSender = ExceptT . atomically $ getFile fs SFSender fileId
                   let asRecipient = ExceptT . atomically $ getFile fs SFRecipient fileId
-                  (fr, _) <- asSender `catchError` const asRecipient
-                  ExceptT $ deleteServerFile_ fr
+                  (fr, fKey') <- asSender `catchError` const asRecipient
+                  if fKey == fKey'
+                    then ExceptT $ deleteServerFile_ fr
+                    else throwError AUTH
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
