@@ -284,18 +284,33 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           hSetBuffering h LineBuffering
           hSetNewlineMode h universalNewlineMode
           hPutStrLn h "SMP server control port\n'help' for supported commands"
-          cpLoop h
+          role <- newTVarIO CPRNone
+          cpLoop h role
           where
-            cpLoop h = do
-              s <- B.hGetLine h
-              case strDecode $ trimCR s of
+            cpLoop h role = do
+              s <- trimCR <$> B.hGetLine h
+              case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> processCP h cmd >> cpLoop h
-                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
-            processCP h = \case
-              CPSuspend -> hPutStrLn h "suspend not implemented"
-              CPResume -> hPutStrLn h "resume not implemented"
-              CPClients -> do
+                Right cmd -> logCmd s cmd >> processCP h role cmd >> cpLoop h role
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h role
+            logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
+              where
+                shouldLog = case cmd of
+                  CPAuth _ -> False
+                  CPHelp -> False
+                  CPQuit -> False
+                  CPSkip -> False
+                  _ -> True
+            processCP h role = \case
+              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+                where
+                  newRole ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
+                    | Just auth == admin = CPRAdmin
+                    | Just auth == user = CPRUser
+                    | otherwise = CPRNone
+              CPSuspend -> withAdminRole $ hPutStrLn h "suspend not implemented"
+              CPResume -> withAdminRole $ hPutStrLn h "resume not implemented"
+              CPClients -> withAdminRole $ do
                 active <- unliftIO u (asks clients) >>= readTVarIO
                 hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
                 forM_ (IM.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
@@ -306,7 +321,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   let age = systemSeconds now - systemSeconds createdAt
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
-              CPStats -> do
+              CPStats -> withAdminRole $ do
                 ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
@@ -324,7 +339,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
               CPStatsRTS -> getRTSStats >>= hPrint h
-              CPThreads -> do
+              CPThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
                 threads <- liftIO listThreads
                 hPutStrLn h $ "Threads: " <> show (length threads)
@@ -335,7 +350,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPSockets -> do
+              CPSockets -> withAdminRole $ do
                 (accepted', closed', active') <- unliftIO u $ asks sockets
                 (accepted, closed, active) <- atomically $ (,,) <$> readTVar accepted' <*> readTVar closed' <*> readTVar active'
                 hPutStrLn h "Sockets: "
@@ -343,7 +358,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 hPutStrLn h $ "closed: " <> show closed
                 hPutStrLn h $ "active: " <> show (IM.size active)
                 hPutStrLn h $ "leaked: " <> show (accepted - closed - IM.size active)
-              CPSocketThreads -> do
+              CPSocketThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
                 (_, _, active') <- unliftIO u $ asks sockets
                 active <- readTVarIO active'
@@ -357,7 +372,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPDelete queueId' -> unliftIO u $ do
+              CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
                 queueId <- atomically (getQueue st SSender queueId') >>= \case
@@ -372,13 +387,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     withLog (`logDeleteQueue` queueId)
                     updateDeletedStats q
                     liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
-              CPSave -> withLock (savingLock srv) "control" $ do
+              CPSave -> withAdminRole $ withLock (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
               CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, delete, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
+              where
+                withUserRole action = readTVarIO role >>= \case
+                  CPRAdmin -> action
+                  CPRUser -> action
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
+                withAdminRole action = readTVarIO role >>= \case
+                  CPRAdmin -> action
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
 
 runClientTransport :: Transport c => THandleSMP c -> M ()
 runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = do
@@ -768,7 +795,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
               Message {msgFlags} -> do
                 stats <- asks serverStats
                 atomically $ modifyTVar' (msgRecv stats) (+ 1)
-                atomically $ modifyTVar' (msgCount stats) (+ 1)
+                atomically $ modifyTVar' (msgCount stats) (subtract 1)
                 atomically $ updatePeriodStats (activeQueues stats) queueId
                 when (notification msgFlags) $ do
                   atomically $ modifyTVar' (msgRecvNtf stats) (+ 1)
@@ -796,7 +823,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                           atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                           atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
-                        atomically $ modifyTVar' (msgCount stats) (subtract 1)
+                        atomically $ modifyTVar' (msgCount stats) (+ 1)
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                         pure ok
           where
