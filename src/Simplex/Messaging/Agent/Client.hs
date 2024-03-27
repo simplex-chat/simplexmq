@@ -142,7 +142,6 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
-import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:.))
@@ -182,6 +181,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.Base64 (encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
