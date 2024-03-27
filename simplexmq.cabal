@@ -733,6 +733,7 @@ benchmark simplexmq-bench
   type: exitcode-stdio-1.0
   main-is: Bench.hs
   other-modules:
+      Bench.BsConcat
       Bench.Compression
       Bench.SNTRUP761
       Bench.TRcvQueues
