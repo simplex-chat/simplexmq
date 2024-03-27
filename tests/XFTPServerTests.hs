@@ -25,7 +25,7 @@ import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..), XFTPErrorType (..)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
-import qualified Simplex.Messaging.Encoding.Base64URL as U
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Util (liftIOEither)

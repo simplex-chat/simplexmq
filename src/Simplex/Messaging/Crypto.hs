@@ -229,7 +229,7 @@ import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.Base64 (decode, encode)
-import qualified Simplex.Messaging.Encoding.Base64URL as U
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))

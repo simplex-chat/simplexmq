@@ -47,7 +47,7 @@ import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
-import qualified Simplex.Messaging.Encoding.Base64URL as U
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal

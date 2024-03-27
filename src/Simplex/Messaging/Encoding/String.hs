@@ -35,7 +35,7 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
-import qualified Simplex.Messaging.Encoding.Base64URL as U
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 

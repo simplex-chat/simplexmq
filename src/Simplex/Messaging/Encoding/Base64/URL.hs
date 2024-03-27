@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Compatibility wrappers for base64 package, Base64URL-padded variant.
-module Simplex.Messaging.Encoding.Base64URL where
+module Simplex.Messaging.Encoding.Base64.URL where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Base64.Types (extractBase64)

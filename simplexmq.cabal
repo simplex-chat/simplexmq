@@ -120,7 +120,7 @@ library
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.Base64
-      Simplex.Messaging.Encoding.Base64URL
+      Simplex.Messaging.Encoding.Base64.URL
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
