@@ -15,7 +15,6 @@ import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
@@ -35,6 +34,7 @@ import ServerTests
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
