@@ -114,12 +114,13 @@ data TransportClientConfig = TransportClientConfig
   { socksProxy :: Maybe SocksProxy,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
-    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey)
+    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
+    alpn :: Maybe [ALPN]
   }
   deriving (Eq, Show)
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing
+defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing Nothing
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
@@ -130,10 +131,10 @@ runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig ->
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials} proxyUsername host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials serverCert
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
         _ -> connectTCPClient hostName
@@ -216,14 +217,15 @@ instance ToJSON SocksProxy where
 instance FromJSON SocksProxy where
   parseJSON = strParseJSON "SocksProxy"
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> TMVar X.CertificateChain -> T.ClientParams
-mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ serverCerts =
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> TMVar X.CertificateChain -> T.ClientParams
+mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ serverCerts =
   (T.defaultParamsClient host p)
     { T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
       T.clientHooks =
         def
           { T.onServerCertificate = onServerCert,
-            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_
+            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_,
+            T.onSuggestALPN = pure alpn_
           },
       T.clientSupported = supported
     }

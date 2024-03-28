@@ -23,7 +23,7 @@ import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Transport (SessionId, TLS)
+import Simplex.Messaging.Transport (ALPN, SessionId, TLS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
 import UnliftIO.STM
@@ -32,6 +32,7 @@ import UnliftIO.Timeout
 data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),
     sessionId :: SessionId,
+    sessionALPN :: Maybe ALPN,
     sessionTs :: UTCTime,
     sendReq :: Request -> (Response -> IO HTTP2Response) -> IO HTTP2Response,
     client_ :: HClient
@@ -66,7 +67,7 @@ defaultHTTP2ClientConfig =
   HTTP2ClientConfig
     { qSize = 64,
       connTimeout = 10000000,
-      transportConfig = TransportClientConfig Nothing Nothing True Nothing,
+      transportConfig = TransportClientConfig Nothing Nothing True Nothing Nothing,
       bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,
       suportedTLSParams = http2TLSParams
@@ -88,7 +89,7 @@ attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP
   where
     setup = runHTTP2ClientWith bufferSize host ($ tls)
 
-getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((SessionId -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
+getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((SessionId -> Maybe ALPN -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
 getVerifiedHTTP2ClientWith config host port disconnected setup =
   (atomically mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
@@ -109,10 +110,10 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
         Just (Left e) -> Left e
         Nothing -> Left HCNetworkError
 
-    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> SessionId -> H.Client HTTP2Response
-    client c cVar sessionId sendReq = do
+    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> SessionId -> Maybe ALPN -> H.Client HTTP2Response
+    client c cVar sessionId sessionALPN sendReq = do
       sessionTs <- getCurrentTime
-      let c' = HTTP2Client {action = Nothing, client_ = c, sendReq, sessionId, sessionTs}
+      let c' = HTTP2Client {action = Nothing, client_ = c, sendReq, sessionId, sessionTs, sessionALPN}
       atomically $ do
         writeTVar (connected c) True
         putTMVar cVar (Right c')
@@ -154,13 +155,13 @@ sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq
 http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
 http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)
 
-runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (SessionId -> H.Client a) -> IO a
+runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (SessionId -> Maybe ALPN -> H.Client a) -> IO a
 runHTTP2Client tlsParams caStore tcConfig bufferSize proxyUsername host port keyHash = runHTTP2ClientWith bufferSize host setup
   where
     setup = runTLSTransportClient tlsParams caStore tcConfig proxyUsername host port keyHash
 
-runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (SessionId -> H.Client a) -> IO a
+runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (SessionId -> Maybe ALPN -> H.Client a) -> IO a
 runHTTP2ClientWith bufferSize host setup client = setup $ withHTTP2 bufferSize run
   where
-    run :: H.Config -> SessionId -> IO a
-    run cfg sessId = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client sessId
+    run :: H.Config -> SessionId -> Maybe ALPN -> IO a
+    run cfg sessId alpn_ = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client sessId alpn_
