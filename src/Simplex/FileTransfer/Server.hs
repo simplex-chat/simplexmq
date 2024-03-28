@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -382,9 +383,10 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               -- can't send any old error as the client would fail or restart indefinitely
               drain s = do
                 bs <- B.length <$> getBody fileBlockSize
-                if bs == 0 || bs >= s
-                  then pure FROk
-                  else drain (s - bs)
+                if
+                  | bs == s -> pure FROk
+                  | bs == 0 || bs > s -> pure $ FRErr SIZE
+                  | otherwise -> drain (s - bs)
           reserve = do
             us <- asks $ usedStorage . store
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
