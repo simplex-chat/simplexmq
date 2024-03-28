@@ -223,15 +223,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                     | Just auth == user = CPRUser
                     | otherwise = CPRNone
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
-              CPDelete fileId fKey -> withUserRole $ unliftIO u $ do
+              CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
                   let asSender = ExceptT . atomically $ getFile fs SFSender fileId
                   let asRecipient = ExceptT . atomically $ getFile fs SFRecipient fileId
-                  (fr, fKey') <- asSender `catchError` const asRecipient
-                  if fKey == fKey'
-                    then ExceptT $ deleteServerFile_ fr
-                    else throwError AUTH
+                  (fr, _) <- asSender `catchError` const asRecipient
+                  ExceptT $ deleteServerFile_ fr
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
