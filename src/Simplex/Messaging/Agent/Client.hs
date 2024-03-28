@@ -785,24 +785,13 @@ closeXFTPServerClient c userId server (FileDigest chunkDigest) =
 
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
-withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
+withConnLock AgentClient {connLocks} connId name = withLockMap connLocks connId name
 
 withInvLock :: MonadUnliftIO m => AgentClient -> ByteString -> String -> m a -> m a
-withInvLock AgentClient {invLocks} = withLockMap_ invLocks
+withInvLock AgentClient {invLocks} = withLockMap invLocks
 
 withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
-withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
-
-withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
-withLockMap_ = withGetLock . getMapLock
-
-withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
-withLocksMap_ = withGetLocks . getMapLock
-
-getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
-getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
-  where
-    newLock = createLock >>= \l -> TM.insert key l locks $> l
+withConnLocks AgentClient {connLocks} = withLocksMap connLocks . filter (not . B.null)
 
 withClient_ :: forall a m v err msg. (AgentMonad m, ProtocolServerClient v err msg) => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> m a) -> m a
 withClient_ c tSess@(userId, srv, _) statCmd action = do
