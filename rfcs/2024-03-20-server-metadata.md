@@ -52,8 +52,8 @@ source_code: https://github.com/simplex-chat/simplexmq
 
 # We should split this document to the model one, where specific parameters will be external to the document,
 # and specific to us, so that relay operators can adopt our recommended policy and publish any amendments separately.
-conditions: https://github.com/simplex-chat/simplex-chat/blob/_archived-ep/ios-file-provider/PRIVACY.md
-# conditions_amendments: link
+usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/_archived-ep/ios-file-provider/PRIVACY.md
+# condition_amendments: link
 
 server_country: SE
 operator: SimpleX Chat Ltd.
@@ -62,9 +62,9 @@ website: https://simplex.chat
 admin_simplex: administrative SimpleX address
 admin_email: chat@simplex.chat
 admin_pgp: PGP key
-feedback_simplex: SimpleX address for feedback, comments and complaints
-feedback_email: complaints@simplex.chat
-feedback_pgp: PGP key
+complaints_simplex: SimpleX address for feedback, comments and complaints
+complaints_email: complaints@simplex.chat
+complaints_pgp: PGP key
 hosting: Linode / Akamai Inc.
 hosting_country: US
 ```
@@ -89,20 +89,27 @@ data ServerHandshake = ServerHandshake
   }
 
 data ServerInformation = ServerInformation
-  { -- below is based on the existing server configuration
-    persistence :: SMPServerPersistenceMode,
+  { config :: ServerPublicConfig,
+    info :: ServerPublicInfo
+  }
+
+-- based on server configuration
+data ServerPublicConfig = ServerPublicConfig
+  { persistence :: SMPServerPersistenceMode,
     messageExpiration :: Int,
     statsEnabled :: Bool,
     newQueuesAllowed :: Bool,
-    basicAuthEnabled :: Bool, -- server is private if enabled
-    -- below is based on INFORMATION section of INI file
-    sourceCode :: Text, -- note that this property is not optional, in line with AGPLv3 license
-    -- all below properties are optional, except entity name MUST be present if any entity country is present
+    basicAuthEnabled :: Bool -- server is private if enabled
+  }
+
+-- based on INFORMATION section of INI file
+data ServerPublicInfo = ServerPublicInfo
+  { sourceCode :: Text, -- note that this property is not optional, in line with AGPLv3 license
     conditions :: Maybe ServerConditions,
     operator :: Maybe Entity,
     website :: Maybe Text,
-    admin :: Maybe ServerContactAddress,
-    feedback :: Maybe ServerContactAddress,
+    adminContacts :: Maybe ServerContactAddress,
+    complaintsContacts :: Maybe ServerContactAddress,
     hosting :: Maybe Entity,
     serverCountry :: Maybe Text
   }

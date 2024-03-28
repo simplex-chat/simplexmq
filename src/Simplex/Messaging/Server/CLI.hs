@@ -19,6 +19,7 @@ import Data.Ini (Ini, lookupValue)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Data.Text.IO as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
@@ -26,6 +27,7 @@ import Network.Socket (HostName, ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -254,7 +256,7 @@ onOffPrompt prompt def =
       "N" -> pure False
       _ -> putStrLn "Invalid input, please enter 'y' or 'n'" >> onOffPrompt prompt def
 
-onOff :: Bool -> String
+onOff :: Bool -> Text
 onOff True = "on"
 onOff _ = "off"
 

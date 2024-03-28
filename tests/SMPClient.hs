@@ -108,7 +108,8 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
-      controlPort = Nothing
+      controlPort = Nothing,
+      information = Nothing
     }
 
 cfgV7 :: ServerConfig
