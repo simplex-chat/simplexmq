@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Server.Information where
@@ -14,6 +15,7 @@ data ServerInformation = ServerInformation
   { config :: ServerPublicConfig,
     information :: Maybe ServerPublicInfo
   }
+  deriving (Show)
 
 -- based on server configuration
 data ServerPublicConfig = ServerPublicConfig
@@ -23,6 +25,7 @@ data ServerPublicConfig = ServerPublicConfig
     newQueuesAllowed :: Bool,
     basicAuthEnabled :: Bool -- server is private if enabled
   }
+  deriving (Show)
 
 -- based on INFORMATION section of INI file
 data ServerPublicInfo = ServerPublicInfo
@@ -35,18 +38,23 @@ data ServerPublicInfo = ServerPublicInfo
     hosting :: Maybe Entity,
     serverCountry :: Maybe Text
   }
+  deriving (Show)
 
 data ServerPersistenceMode = SPMMemoryOnly | SPMQueues | SPMMessages
+  deriving (Show)
 
 data ServerConditions = ServerConditions {conditions :: Text, amendments :: Maybe Text}
+  deriving (Show)
 
 data Entity = Entity {name :: Text, country :: Maybe Text}
+  deriving (Show)
 
 data ServerContactAddress = ServerContactAddress
   { simplex :: Maybe (ConnectionRequestUri 'CMContact),
     email :: Maybe Text, -- it is recommended that it matches DNS email address, if either is present
     pgp :: Maybe Text
   }
+  deriving (Show)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''ServerPersistenceMode)
 

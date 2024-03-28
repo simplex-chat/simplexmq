@@ -5,12 +5,14 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
-import Control.Monad (void)
+import Control.Monad (void, (<$!>))
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (isPrefixOf)
@@ -173,6 +175,7 @@ smpServerCLI cfgPath logPath =
           <> if allowNewQueues cfg
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
+      -- print information
       runSMPServer cfg
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -254,9 +257,9 @@ informationIniContent sourceCode_ =
       \# condition_amendments: link\n\
       \\n\
       \# Server location and operator.\n\
-      \# server_country: SE\n\
+      \# server_country: ISO-3166 2-letter code\n\
       \# operator: entity (organization or person name)\n\
-      \# operator_country: GB\n\
+      \# operator_country: ISO-3166 2-letter code\n\
       \# website:\n\
       \\n\
       \# Administrative contacts.\n\
@@ -271,30 +274,33 @@ informationIniContent sourceCode_ =
       \\n\
       \# Hosting provider.\n\
       \# hosting: entity (organization or person name)\n\
-      \# hosting_country: US\n\n"
+      \# hosting_country: ISO-3166 2-letter code\n\n"
 
 serverPublicInfo :: Ini -> Maybe ServerPublicInfo
-serverPublicInfo ini = serverInfo <$> infoValue "source_code"
+serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
   where
     serverInfo sourceCode =
       ServerPublicInfo
         { sourceCode,
           usageConditions  =
             (\conditions -> ServerConditions {conditions, amendments = infoValue "condition_amendments"})
-              <$> infoValue "usage_conditions",
+              <$!> infoValue "usage_conditions",
+          serverCountry = countryValue "server_country",
           operator = iniEntity "operator" "operator_country",
           website = infoValue "website",
           adminContacts = iniContacts "admin_simplex" "admin_email" "admin_pgp",
           complaintsContacts = iniContacts "complaints_simplex" "complaints_email" "complaints_pgp",
-          hosting = iniEntity "hosting" "hosting_country",
-          serverCountry = infoValue "server_country"
+          hosting = iniEntity "hosting" "hosting_country"
         }
     infoValue name = eitherToMaybe $ lookupValue "INFORMATION" name ini
     iniEntity nameField countryField =
-      (\name -> Entity {name, country = infoValue countryField})
-        <$> infoValue nameField
+      (\name -> Entity {name, country = countryValue countryField})
+        <$!> infoValue nameField
+    countryValue field =
+      (\cs -> if T.length cs == 2 && T.all (\c -> isAscii c && isAlpha c) cs then T.map toUpper cs else error $ "Use ISO3166 2-letter code for " <> T.unpack field)
+        <$!> infoValue field
     iniContacts simplexField emailField pgpField =
-      let simplex = either error id <$> strDecodeIni "INFORMATION" simplexField ini
+      let simplex = either error id <$!> strDecodeIni "INFORMATION" simplexField ini
           email = infoValue emailField
           pgp = infoValue pgpField
         in case (simplex, email, pgp) of
