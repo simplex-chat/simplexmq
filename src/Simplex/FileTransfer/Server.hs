@@ -17,7 +17,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -26,7 +25,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -46,6 +45,7 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
@@ -197,27 +197,51 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           hSetBuffering h LineBuffering
           hSetNewlineMode h universalNewlineMode
           hPutStrLn h "XFTP server control port\n'help' for supported commands"
-          cpLoop h
+          role <- newTVarIO CPRNone
+          cpLoop h role
           where
-            cpLoop h = do
-              s <- B.hGetLine h
-              case strDecode $ trimCR s of
+            cpLoop h role  = do
+              s <- trimCR <$> B.hGetLine h
+              case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> processCP h cmd >> cpLoop h
-                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
-            processCP h = \case
+                Right cmd -> logCmd s cmd >> processCP h role cmd >> cpLoop h role
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h role
+            logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
+              where
+                shouldLog = case cmd of
+                  CPAuth _ -> False
+                  CPHelp -> False
+                  CPQuit -> False
+                  CPSkip -> False
+                  _ -> True
+            processCP h role = \case
+              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+                where
+                  newRole XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
+                    | Just auth == admin = CPRAdmin
+                    | Just auth == user = CPRUser
+                    | otherwise = CPRNone
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
-              CPDelete fileId -> unliftIO u $ do
+              CPDelete fileId fKey -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
                   let asSender = ExceptT . atomically $ getFile fs SFSender fileId
                   let asRecipient = ExceptT . atomically $ getFile fs SFRecipient fileId
-                  (fr, _) <- asSender `catchError` const asRecipient
-                  ExceptT $ deleteServerFile_ fr
+                  (fr, fKey') <- asSender `catchError` const asRecipient
+                  if fKey == fKey'
+                    then ExceptT $ deleteServerFile_ fr
+                    else throwError AUTH
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
+              where
+                withUserRole action = readTVarIO role >>= \case
+                  CPRAdmin -> action
+                  CPRUser -> action
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
 
 data ServerFile = ServerFile
   { filePath :: FilePath,
@@ -368,7 +392,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive = do
             path <- asks $ filesPath . config
-            let fPath = path </> B.unpack (B64.encode senderId)
+            let fPath = path </> B.unpack (U.encode senderId)
             receiveChunk (XFTPRcvChunkSpec fPath size digest) >>= \case
               Right () -> do
                 stats <- asks serverStats

@@ -10,10 +10,9 @@ import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
-import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlphaNum, toLower)
+import Data.Char (toLower)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -24,22 +23,7 @@ import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
-import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
-
-base64P :: Parser ByteString
-base64P = decode <$?> paddedBase64 rawBase64P
-
-paddedBase64 :: Parser ByteString -> Parser ByteString
-paddedBase64 raw = (<>) <$> raw <*> pad
-  where
-    pad = A.takeWhile (== '=')
-
-rawBase64P :: Parser ByteString
-rawBase64P = A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
-
--- rawBase64UriP :: Parser ByteString
--- rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
 
 tsISO8601P :: Parser UTCTime
 tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill wordEnd

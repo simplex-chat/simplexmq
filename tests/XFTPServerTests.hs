@@ -12,7 +12,6 @@ import Control.Exception (SomeException)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
-import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -26,6 +25,7 @@ import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..), XFTPErrorType (..)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Util (liftIOEither)
@@ -76,7 +76,7 @@ createTestChunk fp = do
   pure bytes
 
 readChunk :: SenderId -> IO ByteString
-readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode sId))
+readChunk sId = B.readFile (xftpServerFiles </> B.unpack (U.encode sId))
 
 testFileChunkDelivery :: Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c
