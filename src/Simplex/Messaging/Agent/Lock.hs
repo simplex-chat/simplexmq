@@ -5,6 +5,7 @@ module Simplex.Messaging.Agent.Lock
     createLock,
     withLock,
     waitForLock,
+    withGetLock',
     withGetLock,
     withGetLocks,
     withLockMap,
@@ -36,6 +37,13 @@ withLock lock name =
 
 waitForLock :: Lock -> STM ()
 waitForLock lock = isEmptyTMVar lock >>= (`unless` retry)
+
+withGetLock' :: MonadUnliftIO m => STM Lock -> String -> m a -> m a
+withGetLock' getLock name a =
+  E.bracket
+    (atomically $ getLock >>= \l -> putTMVar l name $> l)
+    (atomically . takeTMVar)
+    (const a)
 
 withGetLock :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> m a -> m a
 withGetLock getLock key name a =
