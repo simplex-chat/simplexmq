@@ -247,15 +247,15 @@ withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort
 withSmpAgent :: ATransport -> IO a -> IO a
 withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
-testSMPAgentClientOn :: (Transport c, MonadUnliftIO m, MonadFail m) => ServiceName -> (c -> m a) -> m a
+testSMPAgentClientOn :: Transport c => ServiceName -> (c -> IO a) -> IO a
 testSMPAgentClientOn port' client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig agentTestHost
   runTransportClient defaultTransportClientConfig Nothing useHost port' (Just testKeyHash) $ \h -> do
-    line <- liftIO $ getLn h
+    line <- getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
       else do
         error $ "wrong welcome message: " <> B.unpack line
 
-testSMPAgentClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (c -> m a) -> m a
+testSMPAgentClient :: Transport c => (c -> IO a) -> IO a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

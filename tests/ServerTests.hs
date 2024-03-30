@@ -103,7 +103,7 @@ tPut1 h t = do
   [r] <- tPut h [Right t]
   pure r
 
-tGet1 :: (ProtocolEncoding v err cmd, Transport c, MonadIO m, MonadFail m) => THandle v c -> m (SignedTransmission err cmd)
+tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c -> IO (SignedTransmission err cmd)
 tGet1 h = do
   [r] <- liftIO $ tGet h
   pure r

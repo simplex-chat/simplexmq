@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -107,11 +108,12 @@ newtype InternalException e = InternalException {unInternalException :: e}
 instance Exception e => Exception (InternalException e)
 
 instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
+  {-# INLINE withRunInIO #-}
   withRunInIO :: ((forall a. ExceptT e m a -> IO a) -> IO b) -> ExceptT e m b
-  withRunInIO exceptToIO =
+  withRunInIO inner =
     withExceptT unInternalException . ExceptT . E.try $
       withRunInIO $ \run ->
-        exceptToIO $ run . (either (E.throwIO . InternalException) return <=< runExceptT)
+        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
 
 newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
@@ -247,8 +249,8 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
     notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
 
-closeSMPClientAgent :: MonadUnliftIO m => SMPClientAgent -> m ()
-closeSMPClientAgent c = liftIO $ do
+closeSMPClientAgent :: SMPClientAgent -> IO ()
+closeSMPClientAgent c = do
   closeSMPServerClients c
   cancelActions $ reconnections c
   cancelActions $ asyncClients c

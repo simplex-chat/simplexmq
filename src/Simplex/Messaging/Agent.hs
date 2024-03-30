@@ -30,7 +30,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent
   ( -- * queue-based SMP agent
-    getAgentClient,
     runAgentClient,
 
     -- * SMP agent functional API
@@ -198,7 +197,7 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
-      c@AgentClient {acThread}  <- getAgentClient clientId initServers
+      c@AgentClient {acThread}  <- atomically . newAgentClient clientId initServers =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -483,11 +482,6 @@ withAgentEnv' c = (`runReaderT` agentEnv c)
 
 withAgentEnv :: AgentClient -> AM a -> AE a
 withAgentEnv c a = ExceptT $ runExceptT a `runReaderT` agentEnv c
-
--- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: Int -> InitialAgentServers -> AM' AgentClient
-getAgentClient clientId initServers = ask >>= atomically . newAgentClient clientId initServers
-{-# INLINE getAgentClient #-}
 
 logConnection :: AgentClient -> Bool -> IO ()
 logConnection c connected =
@@ -2556,7 +2550,7 @@ agentRatchetEncrypt :: DB.Connection -> ConnData -> ByteString -> (VersionSMPA -
 agentRatchetEncrypt db ConnData {connId, connAgentVersion = v, pqSupport} msg getPaddedLen pqEnc_ currentE2EVersion = do
   rc <- ExceptT $ getRatchet db connId
   let paddedLen = getPaddedLen v pqSupport
-  (encMsg, rc') <- liftE (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg pqEnc_ currentE2EVersion
+  (encMsg, rc') <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg pqEnc_ currentE2EVersion
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
   pure (encMsg, CR.rcSndKEM rc')
 
@@ -2569,7 +2563,7 @@ agentRatchetDecrypt g db connId encAgentMsg = do
 agentRatchetDecrypt' :: TVar ChaChaDRG -> DB.Connection -> ConnId -> CR.RatchetX448 -> ByteString -> ExceptT StoreError IO (ByteString, PQEncryption)
 agentRatchetDecrypt' g db connId rc encAgentMsg = do
   skipped <- liftIO $ getSkippedMsgKeys db connId
-  (agentMsgBody_, rc', skippedDiff) <- liftE (SEAgentError . cryptoError) $ CR.rcDecrypt g rc skipped encAgentMsg
+  (agentMsgBody_, rc', skippedDiff) <- withExceptT (SEAgentError . cryptoError) $ CR.rcDecrypt g rc skipped encAgentMsg
   liftIO $ updateRatchet db connId rc' skippedDiff
   liftEither $ bimap (SEAgentError . cryptoError) (,CR.rcRcvKEM rc') agentMsgBody_
 

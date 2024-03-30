@@ -1897,15 +1897,15 @@ tGetRaw :: Transport c => c -> IO ARawTransmission
 tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
-tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
+tPut :: Transport c => c -> ATransmission p -> IO ()
 tPut h (corrId, connId, APC _ cmd) =
-  liftIO $ tPutRaw h (corrId, connId, serializeCommand cmd)
+  tPutRaw h (corrId, connId, serializeCommand cmd)
 
 -- | Receive client and agent transmissions from TCP connection.
-tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
+tGet :: forall c p. Transport c => SAParty p -> c -> IO (ATransmissionOrError p)
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
-    tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
+    tParseLoadBody :: ARawTransmission -> IO (ATransmissionOrError p)
     tParseLoadBody t@(corrId, entId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tConnId t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
@@ -1935,7 +1935,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
           | B.null entId -> Left $ CMD NO_CONN
           | otherwise -> Right cmd
 
-    cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
+    cmdWithMsgBody :: APartyCmd p -> IO (Either AgentErrorType (APartyCmd p))
     cmdWithMsgBody (APC e cmd) =
       APC e <$$> case cmd of
         SEND pqEnc msgFlags body -> SEND pqEnc msgFlags <$$> getBody body
@@ -1948,7 +1948,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         INFO pqSup cInfo -> INFO pqSup <$$> getBody cInfo
         _ -> pure $ Right cmd
 
-    getBody :: ByteString -> m (Either AgentErrorType ByteString)
+    getBody :: ByteString -> IO (Either AgentErrorType ByteString)
     getBody binary =
       case B.unpack binary of
         ':' : body -> return . Right $ B.pack body

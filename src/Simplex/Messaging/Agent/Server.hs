@@ -17,6 +17,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Text.Encoding (decodeUtf8)
 import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent.Client (newAgentClient)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
@@ -39,21 +40,21 @@ runSMPAgent t cfg initServers store =
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPAgentBlocking :: ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Int -> TMVar Bool -> IO ()
-runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers store initClientId started = do
-  liftIO (newSMPAgentEnv cfg store) >>= runReaderT (smpAgent t)
+runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers store initClientId started =
+  newSMPAgentEnv cfg store >>= smpAgent t
   where
-    smpAgent :: forall c. Transport c => TProxy c -> AM' ()
-    smpAgent _ = do
+    smpAgent :: forall c. Transport c => TProxy c -> Env -> IO ()
+    smpAgent _ env = do
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
-      tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+      tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile
       clientId <- newTVarIO initClientId
       runTransportServer started tcpPort tlsServerParams defaultTransportServerConfig $ \(h :: c) -> do
-        liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
+        putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
         cId <- atomically $ stateTVar clientId $ \i -> (i + 1, i + 1)
-        c <- getAgentClient cId initServers
-        liftIO $ logConnection c True
-        race_ (liftIO $ connectClient h c) (runAgentClient c)
-          `E.finally` liftIO (disconnectAgentClient c)
+        c <- atomically $ newAgentClient cId initServers env
+        logConnection c True
+        race_ (connectClient h c) (runAgentClient c `runReaderT` env)
+          `E.finally` (disconnectAgentClient c)
 
 connectClient :: Transport c => c -> AgentClient -> IO ()
 connectClient h c = race_ (send h c) (receive h c)

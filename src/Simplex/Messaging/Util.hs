@@ -50,25 +50,17 @@ maybeWord :: (a -> ByteString) -> Maybe a -> ByteString
 maybeWord f = maybe "" $ B.cons ' ' . f
 {-# INLINE maybeWord #-}
 
-liftIOEither :: (MonadIO m, MonadError e m) => IO (Either e a) -> m a
-liftIOEither a = liftIO a >>= liftEither
-{-# INLINE liftIOEither #-}
-
-liftError :: (MonadIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
-liftError f = liftEitherError f . runExceptT
+liftError :: MonadIO m => (e -> e') -> ExceptT e IO a -> ExceptT e' m a
+liftError f = liftError' f . runExceptT
 {-# INLINE liftError #-}
 
-liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
-liftEitherError f a = liftIOEither (first f <$> a)
-{-# INLINE liftEitherError #-}
+liftError' :: MonadIO m => (e -> e') -> IO (Either e a) -> ExceptT e' m a
+liftError' f = withExceptT f . ExceptT . liftIO
+{-# INLINE liftError' #-}
 
-liftEitherWith :: MonadError e' m => (e -> e') -> Either e a -> m a
+liftEitherWith :: MonadIO m => (e -> e') -> Either e a -> ExceptT e' m a
 liftEitherWith f = liftEither . first f
 {-# INLINE liftEitherWith #-}
-
-liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
-liftE f a = ExceptT $ first f <$> runExceptT a
-{-# INLINE liftE #-}
 
 ifM :: Monad m => m Bool -> m a -> m a -> m a
 ifM ba t f = ba >>= \b -> if b then t else f

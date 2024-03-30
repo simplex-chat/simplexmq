@@ -394,6 +394,7 @@ data AgentStatsKey = AgentStatsKey
   }
   deriving (Eq, Ord, Show)
 
+-- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
@@ -526,7 +527,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       cfg <- lift $ getClientConfig c smpCfg
       g <- asks random
       env <- ask
-      liftEitherError (protocolClientError SMP $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected env v)
+      liftError' (protocolClientError SMP $ B.unpack $ strEncode srv) $
+        getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected env v
 
     clientDisconnected :: Env -> SMPClientVar -> SMPClient -> IO ()
     clientDisconnected env v client = do
@@ -628,7 +630,8 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
     connectClient v = do
       cfg <- lift $ getClientConfig c ntfCfg
       g <- asks random
-      liftEitherError (protocolClientError NTF $ B.unpack $ strEncode srv) (getProtocolClient g tSess cfg Nothing $ clientDisconnected v)
+      liftError' (protocolClientError NTF $ B.unpack $ strEncode srv) $
+        getProtocolClient g tSess cfg Nothing $ clientDisconnected v
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
     clientDisconnected v client = do
@@ -649,7 +652,8 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
     connectClient v = do
       cfg <- asks $ xftpCfg . config
       xftpNetworkConfig <- readTVarIO useNetworkConfig
-      liftEitherError (protocolClientError XFTP $ B.unpack $ strEncode srv) (X.getXFTPClient tSess cfg {xftpNetworkConfig} $ clientDisconnected v)
+      liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
+        X.getXFTPClient tSess cfg {xftpNetworkConfig} $ clientDisconnected v
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
@@ -721,8 +725,8 @@ getClientConfig AgentClient {useNetworkConfig} cfgSel = do
   networkConfig <- readTVarIO useNetworkConfig
   pure cfg {networkConfig}
 
-closeAgentClient :: MonadIO m => AgentClient -> m ()
-closeAgentClient c = liftIO $ do
+closeAgentClient :: AgentClient -> IO ()
+closeAgentClient c = do
   atomically $ writeTVar (active c) False
   closeProtocolServerClients c smpClients
   closeProtocolServerClients c ntfClients
@@ -1464,7 +1468,7 @@ withStore' c action = withStore c $ fmap Right . action
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
 withStore c action = do
   st <- asks store
-  liftEitherError storeError . agentOperationBracket c AODatabase (\_ -> pure ()) $
+  withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
     withTransaction st action `E.catch` handleInternal ""
   where
     handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
@@ -1564,7 +1568,7 @@ data SubscriptionsInfo = SubscriptionsInfo
   }
   deriving (Show)
 
-getAgentSubscriptions :: MonadIO m => AgentClient -> m SubscriptionsInfo
+getAgentSubscriptions :: AgentClient -> IO SubscriptionsInfo
 getAgentSubscriptions c = do
   activeSubscriptions <- getSubs activeSubs
   pendingSubscriptions <- getSubs pendingSubs
@@ -1600,7 +1604,7 @@ data WorkersDetails = WorkersDetails
   }
   deriving (Show)
 
-getAgentWorkersDetails :: MonadIO m => AgentClient -> m AgentWorkersDetails
+getAgentWorkersDetails :: AgentClient -> IO AgentWorkersDetails
 getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, agentEnv} = do
   smpClients_ <- textKeys <$> readTVarIO smpClients
   ntfClients_ <- textKeys <$> readTVarIO ntfClients
@@ -1632,7 +1636,7 @@ getAgentWorkersDetails AgentClient {smpClients, ntfClients, xftpClients, smpDeli
     textKeys = map textKey . M.keys
     textKey :: StrEncoding k => k -> Text
     textKey = decodeASCII . strEncode
-    workerStats :: (StrEncoding k, MonadIO m) => Map k Worker -> m (Map Text WorkersDetails)
+    workerStats :: StrEncoding k => Map k Worker -> IO (Map Text WorkersDetails)
     workerStats ws = fmap M.fromList . forM (M.toList ws) $ \(qa, Worker {restarts, doWork, action}) -> do
       RestartCount {restartCount} <- readTVarIO restarts
       hasWork <- atomically $ not <$> isEmptyTMVar doWork
@@ -1664,7 +1668,7 @@ data WorkersSummary = WorkersSummary
   }
   deriving (Show)
 
-getAgentWorkersSummary :: MonadIO m => AgentClient -> m AgentWorkersSummary
+getAgentWorkersSummary :: AgentClient -> IO AgentWorkersSummary
 getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeliveryWorkers, asyncCmdWorkers, smpSubWorkers, agentEnv} = do
   smpClientsCount <- M.size <$> readTVarIO smpClients
   ntfClientsCount <- M.size <$> readTVarIO ntfClients
@@ -1695,7 +1699,7 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
     Env {ntfSupervisor, xftpAgent} = agentEnv
     NtfSupervisor {ntfWorkers, ntfSMPWorkers} = ntfSupervisor
     XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
-    workerSummary :: MonadIO m => M.Map k Worker -> m WorkersSummary
+    workerSummary :: M.Map k Worker -> IO WorkersSummary
     workerSummary = liftIO . foldM byWork WorkersSummary {numActive = 0, numIdle = 0, totalRestarts = 0}
       where
         byWork WorkersSummary {numActive, numIdle, totalRestarts} Worker {action, restarts} = do
