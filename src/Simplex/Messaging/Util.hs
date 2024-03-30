@@ -109,9 +109,17 @@ tryAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m
 tryAllErrors err action = tryError action `UE.catch` (pure . Left . err)
 {-# INLINE tryAllErrors #-}
 
+tryAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> m (Either e a)
+tryAllErrors' err action = runExceptT action `UE.catch` (pure . Left . err)
+{-# INLINE tryAllErrors' #-}
+
 catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
 catchAllErrors err action handler = tryAllErrors err action >>= either handler pure
 {-# INLINE catchAllErrors #-}
+
+catchAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> (e -> m a) -> m a
+catchAllErrors' err action handler = tryAllErrors' err action >>= either handler pure
+{-# INLINE catchAllErrors' #-}
 
 catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
 catchThrow action err = catchAllErrors err action throwError

@@ -179,3 +179,7 @@ ghc-options:
   - -Wincomplete-record-updates
   - -Wincomplete-uni-patterns
   - -Wunused-type-patterns
+  - -O2
+
+# default-extensions:
+#   - StrictData
