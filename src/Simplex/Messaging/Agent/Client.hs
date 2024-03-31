@@ -835,15 +835,15 @@ withClient_ c tSess@(userId, srv, _) statCmd action = do
     stat cl = liftIO . incClientStat c userId cl statCmd
     logServerError :: Client msg -> AgentErrorType -> AM a
     logServerError cl e = do
-      liftIO $ logServer "<--" c srv "" $ strEncode e
+      logServer "<--" c srv "" $ strEncode e
       stat cl $ strEncode e
       throwError e
 
 withLogClient_ :: ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> AM a) -> AM a
 withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
-  liftIO $ logServer "-->" c srv entId cmdStr
+  logServer "-->" c srv entId cmdStr
   res <- withClient_ c tSess cmdStr action
-  liftIO $ logServer "<--" c srv entId "OK"
+  logServer "<--" c srv entId "OK"
   return res
 
 withClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
@@ -1045,7 +1045,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (dhKey, privDhKey) <- atomically $ C.generateKeyPair g
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
-  liftIO $ logServer "-->" c srv "" "NEW"
+  logServer "-->" c srv "" "NEW"
   tSess <- liftIO $ mkTransportSession c userId srv connId
   QIK {rcvId, sndId, rcvPublicDhKey} <-
     withClient c tSess "NEW" $ \smp -> createSMPQueue smp rKeys dhKey auth subMode
@@ -1173,9 +1173,10 @@ getSubscriptions :: AgentClient -> STM (Set ConnId)
 getSubscriptions = readTVar . subscrConns
 {-# INLINE getSubscriptions #-}
 
-logServer :: ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> IO ()
+logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+{-# INLINE logServer #-}
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
@@ -1336,10 +1337,10 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest = chunkDigest}
-  liftIO $ logServer "-->" c srv "" "FNEW"
+  logServer "-->" c srv "" "FNEW"
   tSess <- liftIO $ mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c tSess "FNEW" $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
-  liftIO . logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
+  logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()

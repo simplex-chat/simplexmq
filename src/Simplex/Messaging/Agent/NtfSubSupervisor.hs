@@ -58,7 +58,7 @@ runNtfSupervisor c = do
     handleErr connId = E.handle $ \(e :: E.SomeException) -> do
       logError $ "runNtfSupervisor error " <> tshow e
       notifyErr connId e
-    notifyErr connId e = liftIO $ notifyInternalError c connId $ "runNtfSupervisor error " <> show e
+    notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e
 
 processNtfSub :: AgentClient -> (ConnId, NtfSupervisorCommand) -> AM ()
 processNtfSub c (connId, cmd) = do
@@ -129,7 +129,7 @@ processNtfSub c (connId, cmd) = do
           logInfo $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
           withStore' c $ \db -> supervisorUpdateNtfAction db connId (NtfSubSMPAction NSASmpDelete)
           lift . void $ getNtfSMPWorker True c smpServer
-        _ -> liftIO $ notifyInternalError c connId "NSCSmpDelete - no rcv queue"
+        _ -> notifyInternalError c connId "NSCSmpDelete - no rcv queue"
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
 
@@ -301,11 +301,12 @@ retryOnError c name loop done e = do
 workerInternalError :: AgentClient -> ConnId -> String -> AM ()
 workerInternalError c connId internalErrStr = do
   withStore' c $ \db -> setNullNtfSubscriptionAction db connId
-  liftIO $ notifyInternalError c connId internalErrStr
+  notifyInternalError c connId internalErrStr
 
 -- TODO change error
-notifyInternalError :: AgentClient -> ConnId -> String -> IO ()
+notifyInternalError :: MonadIO m => AgentClient -> ConnId -> String -> m ()
 notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writeTBQueue subQ ("", connId, APC SAEConn $ ERR $ INTERNAL internalErrStr)
+{-# INLINE notifyInternalError #-}
 
 getNtfToken :: AM' (Maybe NtfToken)
 getNtfToken = do
