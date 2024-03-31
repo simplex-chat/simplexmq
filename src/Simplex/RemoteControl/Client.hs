@@ -103,14 +103,14 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   found@(RCCtrlAddress {address} :| _) <- findCtrlAddress
   c@RCHClient_ {startedPort, announcer} <- liftIO mkClient
   hostKeys <- atomically genHostKeys
-  action <- runClient c r hostKeys `putRCError` r
+  action <- liftIO $ runClient c r hostKeys
   -- wait for the port to make invitation
   portNum <- atomically $ readTMVar startedPort
   signedInv@RCSignedInvitation {invitation} <- maybe (throwError RCETLSStartFailed) (liftIO . mkInvitation hostKeys address) portNum
   when multicast $ case knownHost of
     Nothing -> throwError RCENewController
     Just KnownHostPairing {hostDhPubKey} -> do
-      ann <- async . liftIO . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
+      ann <- liftIO . async . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
       atomically $ putTMVar announcer ann
   pure (found, signedInv, RCHostClient {action, client_ = c}, r)
   where
@@ -125,9 +125,9 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       endSession <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
       pure RCHClient_ {startedPort, announcer, hostCAHash, endSession}
-    runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> ExceptT RCErrorType IO (Async ())
+    runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> IO (Async ())
     runClient RCHClient_ {startedPort, announcer, hostCAHash, endSession} r hostKeys = do
-      tlsCreds <- liftIO $ genTLSCredentials drg caKey caCert
+      tlsCreds <- genTLSCredentials drg caKey caCert
       startTLSServer port_ startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
         void . runExceptT $ do
           r' <- newEmptyTMVarIO
@@ -265,7 +265,7 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- async $ runClient c r `putRCError` r
+  action <- liftIO . async . void . runExceptT $ runClient c r `putRCError` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
     mkClient :: IO RCCClient_
@@ -280,7 +280,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           TLS.Credentials (creds : _) -> pure $ Just creds
           _ -> throwError $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> do
+      ExceptT . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> runExceptT $ do
         -- pump socket to detect connection problems
         liftIO $ peekBuffered tlsBuffer 100000 (TLS.recvData tlsContext) >>= logDebug . tshow -- should normally be ("", Nothing) here
         logDebug "Got TLS connection"
@@ -360,11 +360,11 @@ prepareCtrlSession
 -- * Multicast discovery
 
 announceRC :: TVar ChaChaDRG -> Int -> C.PrivateKeyEd25519 -> C.PublicKeyX25519 -> RCHostKeys -> RCInvitation -> ExceptT RCErrorType IO ()
-announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv = withSender $ \sender -> do
+announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv = ExceptT $ withSender $ \sender -> runExceptT $ do
   replicateM_ maxCount $ do
     logDebug "Announcing..."
     nonce <- atomically $ C.randomCbNonce drg
-    encInvitation <- liftEitherWith undefined $ C.cbEncrypt sharedKey nonce sigInvitation encInvitationSize
+    encInvitation <- liftEitherWith (const RCEEncrypt) $ C.cbEncrypt sharedKey nonce sigInvitation encInvitationSize
     liftIO . UDP.send sender $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
     threadDelay 1000000
   where
@@ -375,9 +375,9 @@ announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv =
 
 discoverRCCtrl :: TMVar Int -> NonEmpty RCCtrlPairing -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
 discoverRCCtrl subscribers pairings =
-  timeoutThrow RCENotDiscovered 30000000 $ withListener subscribers $ \listener ->
-    loop $ do
-      (source, bytes) <- recvAnnounce listener
+  timeoutThrow RCENotDiscovered 30000000 $ ExceptT $ withListener subscribers $ \listener ->
+    runExceptT . loop $ do
+      (source, bytes) <- liftIO $ recvAnnounce listener
       encInvitation <- liftEitherWith (const RCEInvitation) $ smpDecode bytes
       r@(_, RCVerifiedInvitation RCInvitation {host}) <- findRCCtrlPairing pairings encInvitation
       case source of
@@ -386,10 +386,7 @@ discoverRCCtrl subscribers pairings =
       pure r
   where
     loop :: ExceptT RCErrorType IO a -> ExceptT RCErrorType IO a
-    loop action =
-      liftIO (runExceptT action) >>= \case
-        Left err -> logError (tshow err) >> loop action
-        Right res -> pure res
+    loop action = action `catchRCError` \e -> logError (tshow e) >> loop action
 
 findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
 findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do

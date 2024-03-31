@@ -179,7 +179,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
     deleteNtfToken a tkn
     -- agent deleted this token
     Left (CMD PROHIBITED) <- tryE $ checkNtfToken a tkn
-    disposeAgentClient a
+    liftIO $ disposeAgentClient a
 
 (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
 v .-> key = do
@@ -211,7 +211,7 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
     -- can still use the first verification code, it is the same after decryption
     verifyNtfToken a tkn nonce verification
     NTActive <- checkNtfToken a tkn
-    disposeAgentClient a
+    liftIO $ disposeAgentClient a
 
 testNtfTokenSecondRegistration :: APNSMockServer -> IO ()
 testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
@@ -247,8 +247,9 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
-    disposeAgentClient a
-    disposeAgentClient a'
+    pure ()
+  disposeAgentClient a
+  disposeAgentClient a'
 
 testNtfTokenServerRestart :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
@@ -277,11 +278,11 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse' APNSRespOk
     verifyNtfToken a' tkn nonce' verification'
     NTActive <- checkNtfToken a' tkn
-    disposeAgentClient a'
+    liftIO $ disposeAgentClient a'
 
-getTestNtfTokenPort :: (MonadUnliftIO m, MonadError AgentErrorType m) => AgentClient -> m String
+getTestNtfTokenPort :: AgentClient -> AE String
 getTestNtfTokenPort a =
-  runReaderT (withStore' a getSavedNtfToken) (agentEnv a) >>= \case
+  ExceptT (runExceptT (withStore' a getSavedNtfToken) `runReaderT` agentEnv a) >>= \case
     Just NtfToken {ntfServer = ProtocolServer {port}} -> pure port
     Nothing -> error "no active NtfToken"
 
@@ -317,18 +318,18 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
       a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
       tkn <- registerTestToken a "abcd" NMInstant apnsQ
       NTActive <- checkNtfToken a tkn
-      setNtfServers a [testNtfServer2]
+      liftIO $ setNtfServers a [testNtfServer2]
       NTActive <- checkNtfToken a tkn -- still works on old server
-      disposeAgentClient a
+      liftIO $ disposeAgentClient a
       pure tkn
 
     threadDelay 1000000
 
-    a <- liftIO $ getSMPAgentClient' 2 agentCfg initAgentServers testDB
+    a <- getSMPAgentClient' 2 agentCfg initAgentServers testDB
     runRight_ $ do
       getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
       NTActive <- checkNtfToken a tkn1
-      setNtfServers a [testNtfServer2] -- just change configured server list
+      liftIO $ setNtfServers a [testNtfServer2] -- just change configured server list
       getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
       -- trigger token replace
       tkn2 <- registerTestToken a "xyzw" NMInstant apnsQ
@@ -345,7 +346,7 @@ testRunNTFServerTests :: ATransport -> NtfServer -> IO (Maybe ProtocolTestFailur
 testRunNTFServerTests t srv =
   withNtfServerThreadOn t ntfTestPort $ \ntf -> do
     a <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
-    r <- runRight $ testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
+    r <- testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
     killThread ntf
     pure r
 
@@ -712,7 +713,7 @@ testNotificationsOldToken APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 250000
     testMessageAB "hello"
     -- change server
-    setNtfServers a [testNtfServer2] -- server 2 isn't running now, don't use
+    liftIO $ setNtfServers a [testNtfServer2] -- server 2 isn't running now, don't use
     -- replacing token keeps server
     _ <- registerTestToken a "xyzw" NMInstant apnsQ
     getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
@@ -738,7 +739,7 @@ testNotificationsNewToken APNSMockServer {apnsQ} oldNtf = do
     liftIO $ threadDelay 250000
     testMessageAB "hello"
     -- switch
-    setNtfServers a [testNtfServer2]
+    liftIO $ setNtfServers a [testNtfServer2]
     deleteNtfToken a tkn
     _ <- registerTestToken a "abcd" NMInstant apnsQ
     getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort2

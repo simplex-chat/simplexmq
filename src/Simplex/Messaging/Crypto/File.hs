@@ -76,7 +76,7 @@ withFile :: CryptoFile -> IOMode -> (CryptoFileHandle -> ExceptT FTCryptoError I
 withFile (CryptoFile path cfArgs) mode action = do
   sb <- forM cfArgs $ \(CFArgs key nonce) ->
     liftEitherWith FTCECryptoError (LC.sbInit key nonce) >>= newTVarIO
-  IO.withFile path mode $ \h -> action $ CFHandle h sb
+  ExceptT . IO.withFile path mode $ \h -> runExceptT $ action $ CFHandle h sb
 
 hPut :: CryptoFileHandle -> LazyByteString -> IO ()
 hPut (CFHandle h sb_) s = LB.hPut h =<< maybe (pure s) encrypt sb_

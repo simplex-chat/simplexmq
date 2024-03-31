@@ -5,7 +5,6 @@ module Simplex.FileTransfer.Server.Control where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
 

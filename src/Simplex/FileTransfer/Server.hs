@@ -330,7 +330,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry st file 3 ts
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
-        withFileLog $ \sl -> do
+        lift $ withFileLog $ \sl -> do
           logAddFile sl sId file ts
           logAddRecipients sl sId rcps
         stats <- asks serverStats
@@ -362,7 +362,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       st <- asks store
       r <- runExceptT $ do
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
-        withFileLog $ \sl -> logAddRecipients sl sId rcps
+        lift $ withFileLog $ \sl -> logAddRecipients sl sId rcps
         stats <- asks serverStats
         atomically $ modifyTVar' (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
@@ -457,7 +457,7 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
       atomically $ modifyTVar' (filesCount stats) (subtract 1)
       atomically $ modifyTVar' (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
-randomId :: (MonadUnliftIO m, MonadReader XFTPEnv m) => Int -> m ByteString
+randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
 
 getFileId :: M XFTPFileId
@@ -465,7 +465,7 @@ getFileId = do
   size <- asks (fileIdSize . config)
   atomically . C.randomBytes size =<< asks random
 
-withFileLog :: (MonadIO m, MonadReader XFTPEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
+withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
 
 incFileStat :: (FileServerStats -> TVar Int) -> M ()

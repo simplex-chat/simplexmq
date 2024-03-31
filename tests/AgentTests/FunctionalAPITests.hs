@@ -233,13 +233,13 @@ inAnyOrder g rs = do
     expected :: a -> (a -> Bool) -> Bool
     expected r rp = rp r
 
-createConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> m (ConnId, ConnectionRequestUri c)
+createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
 createConnection c userId enableNtfs cMode clientData = A.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQSupportOn)
 
-joinConnection :: AgentErrorMonad m => AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> m ConnId
+joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE ConnId
 joinConnection c userId enableNtfs cReq connInfo = A.joinConnection c userId enableNtfs cReq connInfo PQSupportOn
 
-sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> m AgentMsgId
+sendMessage :: AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> AE AgentMsgId
 sendMessage c connId msgFlags msgBody = do
   (msgId, pqEnc) <- A.sendMessage c connId PQEncOn msgFlags msgBody
   liftIO $ pqEnc `shouldBe` PQEncOn
@@ -664,7 +664,7 @@ testAsyncInitiatingOffline :: HasCallStack => IO ()
 testAsyncInitiatingOffline =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    disposeAgentClient alice
+    liftIO $ disposeAgentClient alice
     aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
     alice' <- liftIO $ getSMPAgentClient' 3 agentCfg initAgentServers testDB
     subscribeConnection alice' bobId
@@ -680,7 +680,7 @@ testAsyncJoiningOfflineBeforeActivation =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
-    disposeAgentClient bob
+    liftIO $ disposeAgentClient bob
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient' 3 agentCfg initAgentServers testDB2
@@ -694,9 +694,9 @@ testAsyncBothOffline :: HasCallStack => IO ()
 testAsyncBothOffline =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    disposeAgentClient alice
+    liftIO $ disposeAgentClient alice
     aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
-    disposeAgentClient bob
+    liftIO $ disposeAgentClient bob
     alice' <- liftIO $ getSMPAgentClient' 3 agentCfg initAgentServers testDB
     subscribeConnection alice' bobId
     ("", _, CONF confId _ "bob's connInfo") <- get alice'
@@ -1067,8 +1067,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
     (aId, bId) <- makeConnection a b
-    liftIO $ threadDelay 500000
-    disposeAgentClient b
+    liftIO $ threadDelay 500000 >> disposeAgentClient b
     4 <- sendMessage a bId SMP.noMsgFlags "1"
     get a ##> ("", bId, SENT 4)
     5 <- sendMessage a bId SMP.noMsgFlags "2"
@@ -1091,8 +1090,7 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
     (aId, bId) <- makeConnection a b
-    liftIO $ threadDelay 500000
-    disposeAgentClient b
+    liftIO $ threadDelay 500000 >> disposeAgentClient b
     4 <- sendMessage a bId SMP.noMsgFlags "1"
     get a ##> ("", bId, SENT 4)
     5 <- sendMessage a bId SMP.noMsgFlags "2"
@@ -1161,13 +1159,13 @@ setupDesynchronizedRatchet alice bob = do
   runRight_ $ do
     subscribeConnection bob2 aliceId
 
-    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOn False
+    Left A.CMD {cmdErr = PROHIBITED} <- liftIO . runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOn False
 
     8 <- sendMessage alice bobId SMP.noMsgFlags "hello 5"
     get alice ##> ("", bobId, SENT 8)
     get bob2 =##> ratchetSyncP aliceId RSRequired
 
-    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
+    Left A.CMD {cmdErr = PROHIBITED} <- liftIO . runExceptT $ sendMessage bob2 aliceId SMP.noMsgFlags "hello 6"
     pure ()
 
   pure (aliceId, bobId, bob2)
@@ -1224,7 +1222,7 @@ testRatchetSyncClientRestart t = do
   ("", "", DOWN _ _) <- nGet bob2
   ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
   liftIO $ ratchetSyncState `shouldBe` RSStarted
-  disposeAgentClient bob2
+  liftIO $ disposeAgentClient bob2
   bob3 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     runRight_ $ do
@@ -1420,12 +1418,12 @@ testSuspendingAgent =
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4 Nothing
-    suspendAgent b 1000000
+    liftIO $ suspendAgent b 1000000
     get' b ##> ("", "", SUSPENDED)
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
-    foregroundAgent b
+    liftIO $ foregroundAgent b
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
 
 testSuspendingAgentCompleteSending :: ATransport -> IO ()
@@ -1444,7 +1442,7 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     5 <- sendMessage b aId SMP.noMsgFlags "hello too"
     6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     liftIO $ threadDelay 100000
-    suspendAgent b 5000000
+    liftIO $ suspendAgent b 5000000
 
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
     pGet b =##> \case ("", c, APC _ (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
@@ -1473,7 +1471,7 @@ testSuspendingAgentTimeout t = withAgentClients2 $ \a b -> do
     ("", "", DOWN {}) <- nGet b
     5 <- sendMessage b aId SMP.noMsgFlags "hello too"
     6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
-    suspendAgent b 100000
+    liftIO $ suspendAgent b 100000
     ("", "", SUSPENDED) <- nGet b
     pure ()
 
@@ -2095,7 +2093,7 @@ testSwitchDelete servers = do
   runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetingsMsgId 4 a bId b aId
-    disposeAgentClient b
+    liftIO $ disposeAgentClient b
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
@@ -2120,7 +2118,7 @@ testAbortSwitchStarted servers = do
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     -- repeat switch is prohibited
-    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ switchConnectionAsync a "" bId
+    Left A.CMD {cmdErr = PROHIBITED} <- liftIO . runExceptT $ switchConnectionAsync a "" bId
     -- abort current switch
     stats' <- abortConnectionSwitch a bId
     liftIO $ rcvSwchStatuses' stats' `shouldMatchList` [Nothing]
@@ -2242,7 +2240,7 @@ testCannotAbortSwitchSecured servers = do
   withA' $ \a -> do
     phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
     phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
-    Left A.CMD {cmdErr = PROHIBITED} <- runExceptT $ abortConnectionSwitch a bId
+    Left A.CMD {cmdErr = PROHIBITED} <- liftIO . runExceptT $ abortConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
@@ -2407,7 +2405,7 @@ testSMPServerConnectionTest :: ATransport -> Maybe BasicAuth -> SMPServerWithAut
 testSMPServerConnectionTest t newQueueBasicAuth srv =
   withSmpServerConfigOn t cfg {newQueueBasicAuth} testPort2 $ \_ -> do
     a <- getSMPAgentClient' 1 agentCfg initAgentServers testDB -- initially passed server is not running
-    runRight $ testProtocolServer a 1 srv
+    testProtocolServer a 1 srv
 
 testRatchetAdHash :: HasCallStack => IO ()
 testRatchetAdHash =
@@ -2551,7 +2549,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetings a bId1' b aId1'
     a `hasClients` 1
     b `hasClients` 1
-    setNetworkConfig a nc {sessionMode = TSMEntity}
+    liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
@@ -2560,7 +2558,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 6 a bId1 b aId1
     exchangeGreetingsMsgId 6 a bId1' b aId1'
     liftIO $ threadDelay 250000
-    setNetworkConfig a nc {sessionMode = TSMUser}
+    liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -2575,7 +2573,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetings a bId2' b aId2'
     a `hasClients` 2
     b `hasClients` 1
-    setNetworkConfig a nc {sessionMode = TSMEntity}
+    liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -2587,7 +2585,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 6 a bId2 b aId2
     exchangeGreetingsMsgId 6 a bId2' b aId2'
     liftIO $ threadDelay 250000
-    setNetworkConfig a nc {sessionMode = TSMUser}
+    liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -2625,9 +2623,10 @@ testServerMultipleIdentities =
     get bob ##> ("", aliceId, CON)
     exchangeGreetings alice bobId bob aliceId
     -- this saves queue with second server identity
-    Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
-    disposeAgentClient bob
-    bob' <- liftIO $ getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+    bob' <- liftIO $ do
+      Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
+      disposeAgentClient bob
+      getSMPAgentClient' 3 agentCfg initAgentServers testDB2
     subscribeConnection bob' aliceId
     exchangeGreetingsMsgId 6 alice bobId bob' aliceId
   where
