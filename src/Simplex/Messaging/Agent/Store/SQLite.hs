@@ -278,7 +278,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
 import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -1043,9 +1043,9 @@ getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreErr
 getWorkItem itemName getId getItem markFailed =
   runExceptT $ handleErr "getId" getId >>= mapM tryGetItem
   where
-    tryGetItem itemId = ExceptT (E.handleAny handleStoreErrors $ getItem itemId) `catchError` \e -> mark itemId >> throwError e
+    tryGetItem itemId = ExceptT (getItem itemId) `catchStoreErrors` \e -> mark itemId >> throwError e
     mark itemId = handleErr ("markFailed ID " <> bshow itemId) $ markFailed itemId
-    handleStoreErrors = pure . Left . SEInternal . bshow
+    catchStoreErrors = catchAllErrors (SEInternal . bshow)
     -- Errors caught by this function will suspend worker as if there is no more work,
     handleErr :: ByteString -> IO a -> ExceptT StoreError IO a
     handleErr opName action = ExceptT $ first mkError <$> E.try action
