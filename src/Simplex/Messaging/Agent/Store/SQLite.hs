@@ -2869,10 +2869,13 @@ addSndChunkReplicaRecipients db r@SndFileChunkReplica {sndChunkReplicaId} rcvIds
   rcvIdsKeys' <- getChunkReplicaRecipients_ db sndChunkReplicaId
   pure (r :: SndFileChunkReplica) {rcvIdsKeys = rcvIdsKeys'}
 
-updateSndChunkReplicaStatus :: DB.Connection -> Int64 -> SndFileReplicaStatus -> IO ()
-updateSndChunkReplicaStatus db replicaId status = do
+updateSndChunkReplicaStatus :: DB.Connection -> Int64 -> SndFileReplicaStatus -> SndFileReplicaStatus -> IO Bool
+updateSndChunkReplicaStatus db@DB.Connection {conn} replicaId old new = do
+  cur <- DB.query db "SELECT replica_status FROM snd_file_chunk_replicas WHERE snd_file_chunk_replica_id = ? AND replica_status = ?" (replicaId, old)
+  print (replicaId, map fromOnly cur :: [SndFileReplicaStatus])
   updatedAt <- getCurrentTime
-  DB.execute db "UPDATE snd_file_chunk_replicas SET replica_status = ?, updated_at = ? WHERE snd_file_chunk_replica_id = ?" (status, updatedAt, replicaId)
+  DB.execute db "UPDATE snd_file_chunk_replicas SET replica_status = ?, updated_at = ? WHERE snd_file_chunk_replica_id = ? AND replica_status = ?" (new, updatedAt, replicaId, old)
+  (> 0) <$> SQL.changes conn
 
 getPendingSndFilesServers :: DB.Connection -> NominalDiffTime -> IO [XFTPServer]
 getPendingSndFilesServers db ttl = do
