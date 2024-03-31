@@ -150,8 +150,8 @@ runNtfWorker :: AgentClient -> NtfServer -> Worker -> AM ()
 runNtfWorker c srv Worker {doWork} = do
   delay <- asks $ ntfWorkerDelay . config
   forever $ do
-    lift $ waitForWork doWork
-    agentOperationBracket c AONtfNetwork throwWhenInactive runNtfOperation
+    waitForWork doWork
+    ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfOperation
     threadDelay delay
   where
     runNtfOperation :: AM ()
@@ -230,10 +230,12 @@ runNtfWorker c srv Worker {doWork} = do
 
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
 runNtfSMPWorker c srv Worker {doWork} = do
+  env <- ask
   delay <- asks $ ntfSMPWorkerDelay . config
   forever $ do
-    lift $ waitForWork doWork
-    agentOperationBracket c AONtfNetwork throwWhenInactive runNtfSMPOperation
+    waitForWork doWork
+    ExceptT . liftIO . agentOperationBracket c AONtfNetwork throwWhenInactive $
+      runReaderT (runExceptT runNtfSMPOperation) env
     threadDelay delay
   where
     runNtfSMPOperation =

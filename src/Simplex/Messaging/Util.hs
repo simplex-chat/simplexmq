@@ -55,7 +55,7 @@ liftError f = liftError' f . runExceptT
 {-# INLINE liftError #-}
 
 liftError' :: MonadIO m => (e -> e') -> IO (Either e a) -> ExceptT e' m a
-liftError' f = withExceptT f . ExceptT . liftIO
+liftError' f = ExceptT . fmap (first f) . liftIO
 {-# INLINE liftError' #-}
 
 liftEitherWith :: MonadIO m => (e -> e') -> Either e a -> ExceptT e' m a
@@ -148,8 +148,8 @@ safeDecodeUtf8 = decodeUtf8With onError
   where
     onError _ _ = Just '?'
 
-timeoutThrow :: (MonadUnliftIO m, MonadError e m) => e -> Int -> m a -> m a
-timeoutThrow e ms action = timeout ms action >>= maybe (throwError e) pure
+timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a
+timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwError e) pure
 
 threadDelay' :: Int64 -> IO ()
 threadDelay' time

@@ -110,7 +110,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
   when multicast $ case knownHost of
     Nothing -> throwError RCENewController
     Just KnownHostPairing {hostDhPubKey} -> do
-      ann <- async . liftIO . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
+      ann <- liftIO . async . runExceptT $ announceRC drg 60 idPrivKey hostDhPubKey hostKeys invitation
       atomically $ putTMVar announcer ann
   pure (found, signedInv, RCHostClient {action, client_ = c}, r)
   where
@@ -265,7 +265,7 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- async $ runClient c r `putRCError` r
+  action <- liftIO . async . void . runExceptT $ runClient c r `putRCError` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
     mkClient :: IO RCCClient_

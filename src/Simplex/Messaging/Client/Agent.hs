@@ -19,6 +19,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
+import Control.Monad.Trans.Reader
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
@@ -107,9 +108,20 @@ newtype InternalException e = InternalException {unInternalException :: e}
 
 instance Exception e => Exception (InternalException e)
 
-instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
+instance Exception e => MonadUnliftIO (ExceptT e IO) where
   {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e m a -> IO a) -> IO b) -> ExceptT e m b
+  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
+  withRunInIO inner =
+    ExceptT . fmap (first unInternalException) . E.try $
+      withRunInIO $ \run ->
+        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
+      -- as MonadUnliftIO instance for IO is `withRunInIO inner = inner id`,
+      -- the last two lines could be replaced with:
+      -- inner $ either (E.throwIO . InternalException) pure <=< runExceptT
+
+instance Exception e => MonadUnliftIO (ExceptT e (ReaderT r IO)) where
+  {-# INLINE withRunInIO #-}
+  withRunInIO :: ((forall a. ExceptT e (ReaderT r IO) a -> IO a) -> IO b) -> ExceptT e (ReaderT r IO) b
   withRunInIO inner =
     withExceptT unInternalException . ExceptT . E.try $
       withRunInIO $ \run ->
@@ -149,7 +161,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
         Nothing -> Left PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
-    newSMPClient smpVar = tryConnectClient pure tryConnectAsync
+    newSMPClient smpVar = tryConnectClient pure (liftIO tryConnectAsync)
       where
         tryConnectClient :: (SMPClient -> ExceptT SMPClientError IO a) -> ExceptT SMPClientError IO () -> ExceptT SMPClientError IO a
         tryConnectClient successAction retryAction =
@@ -165,9 +177,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
                   putTMVar smpVar (Left e)
                   TM.delete srv smpClients
               throwE e
-        tryConnectAsync :: ExceptT SMPClientError IO ()
+        tryConnectAsync :: IO ()
         tryConnectAsync = do
-          a <- async connectAsync
+          a <- async $ void $ runExceptT connectAsync
           atomically $ modifyTVar' (asyncClients ca) (a :)
         connectAsync :: ExceptT SMPClientError IO ()
         connectAsync =
@@ -201,11 +213,11 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
     serverDown :: Map SMPSub C.APrivateAuthKey -> IO ()
     serverDown ss = unless (M.null ss) $ do
       notify . CADisconnected srv $ M.keysSet ss
-      void $ runExceptT reconnectServer
+      reconnectServer
 
-    reconnectServer :: ExceptT SMPClientError IO ()
+    reconnectServer :: IO ()
     reconnectServer = do
-      a <- async tryReconnectClient
+      a <- async $ void $ runExceptT tryReconnectClient
       atomically $ modifyTVar' (reconnections ca) (a :)
 
     tryReconnectClient :: ExceptT SMPClientError IO ()

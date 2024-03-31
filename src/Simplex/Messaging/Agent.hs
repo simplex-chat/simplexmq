@@ -148,7 +148,7 @@ import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Lock (withLock)
+import Simplex.Messaging.Agent.Lock (withLock', withLock)
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -668,9 +668,9 @@ deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
   _ -> do
     (_, rqs, connIds') <- prepareDeleteConnections_ getConns c waitDelivery connIds
     withStore' c $ \db -> forM_ connIds' $ setConnDeleted db waitDelivery
-    void . forkIO $
-      withLock (deleteLock c) "deleteConnectionsAsync" $
-        lift (deleteConnQueues c waitDelivery True rqs) >> onSuccess
+    void . lift . forkIO $
+      withLock' (deleteLock c) "deleteConnectionsAsync" $
+        deleteConnQueues c waitDelivery True rqs >> void (runExceptT onSuccess)
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> AM ConnectionStats
@@ -880,7 +880,7 @@ subscribeConnections' c connIds = do
   rcvRs <- lift $ connResults <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs conns
+  when (instantNotifications tkn) . void . lift . forkIO . void . runExceptT $ sendNtfCreate ns rcvRs conns
   let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
   notifyResultError rs
   pure rs
@@ -2203,7 +2203,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             liftIO . logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
             notify . ERR $ BROKER (B.unpack $ strEncode srv) UNEXPECTED
         where
-          notify :: forall e. AEntityI e => ACommand 'Agent e -> AM ()
+          notify :: forall e m. MonadIO m => AEntityI e => ACommand 'Agent e -> m ()
           notify = atomically . notify'
 
           notify' :: forall e. AEntityI e => ACommand 'Agent e -> STM ()
