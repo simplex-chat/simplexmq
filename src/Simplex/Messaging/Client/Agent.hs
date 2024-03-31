@@ -19,6 +19,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
+import Control.Monad.Trans.Reader
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
@@ -107,9 +108,20 @@ newtype InternalException e = InternalException {unInternalException :: e}
 
 instance Exception e => Exception (InternalException e)
 
-instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
+instance Exception e => MonadUnliftIO (ExceptT e IO) where
   {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e m a -> IO a) -> IO b) -> ExceptT e m b
+  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
+  withRunInIO inner =
+    ExceptT . fmap (first unInternalException) . E.try $
+      withRunInIO $ \run ->
+        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
+      -- as MonadUnliftIO instance for IO is `withRunInIO inner = inner id`,
+      -- the last two lines could be replaced with:
+      -- inner $ either (E.throwIO . InternalException) pure <=< runExceptT
+
+instance Exception e => MonadUnliftIO (ExceptT e (ReaderT r IO)) where
+  {-# INLINE withRunInIO #-}
+  withRunInIO :: ((forall a. ExceptT e (ReaderT r IO) a -> IO a) -> IO b) -> ExceptT e (ReaderT r IO) b
   withRunInIO inner =
     withExceptT unInternalException . ExceptT . E.try $
       withRunInIO $ \run ->
