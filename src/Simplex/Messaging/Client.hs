@@ -240,6 +240,7 @@ defaultNetworkConfig =
 transportClientConfig :: NetworkConfig -> TransportClientConfig
 transportClientConfig NetworkConfig {socksProxy, tcpKeepAlive, logTLSErrors} =
   TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing}
+{-# INLINE transportClientConfig #-}
 
 -- | protocol client configuration.
 data ProtocolClientConfig v = ProtocolClientConfig
@@ -265,9 +266,11 @@ defaultClientConfig serverVRange =
       serverVRange,
       batchDelay = Nothing
     }
+{-# INLINE defaultClientConfig #-}
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
 defaultSMPClientConfig = defaultClientConfig supportedClientSMPRelayVRange
+{-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
   { entityId :: EntityId,
@@ -297,12 +300,15 @@ protocolClientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient v err ms
 protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
+{-# INLINE protocolClientServer #-}
 
 transportHost' :: ProtocolClient v err msg -> TransportHost
 transportHost' = transportHost . client_
+{-# INLINE transportHost' #-}
 
 transportSession' :: ProtocolClient v err msg -> TransportSession msg
 transportSession' = transportSession . client_
+{-# INLINE transportSession' #-}
 
 type UserId = Int64
 
@@ -427,10 +433,12 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
 proxyUsername :: TransportSession msg -> ByteString
 proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
+{-# INLINE proxyUsername #-}
 
 -- | Disconnects client from the server and terminates client threads.
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
 closeProtocolClient = mapM_ uninterruptibleCancel . action
+{-# INLINE closeProtocolClient #-}
 
 -- | SMP client error type.
 data ProtocolClientError err
@@ -470,6 +478,7 @@ temporaryClientError = \case
   PCEResponseTimeout -> True
   PCEIOError _ -> True
   _ -> False
+{-# INLINE temporaryClientError #-}
 
 -- | Create a new SMP queue.
 --
@@ -537,16 +546,19 @@ getSMPMessage c rpKey rId =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateAuthKey -> NotifierId -> ExceptT SMPClientError IO ()
 subscribeSMPQueueNotifications = okSMPCommand NSUB
+{-# INLINE subscribeSMPQueueNotifications #-}
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
 subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateAuthKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
 subscribeSMPQueuesNtfs = okSMPCommands NSUB
+{-# INLINE subscribeSMPQueuesNtfs #-}
 
 -- | Secure the SMP queue by adding a sender public key.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
 secureSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (KEY senderKey) c rpKey rId
+{-# INLINE secureSMPQueue #-}
 
 -- | Enable notifications for the queue for push notifications server.
 --
@@ -572,10 +584,12 @@ enableSMPQueuesNtfs c qs = L.map process <$> sendProtocolCommands c cs
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#disable-notifications-command
 disableSMPQueueNotifications :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 disableSMPQueueNotifications = okSMPCommand NDEL
+{-# INLINE disableSMPQueueNotifications #-}
 
 -- | Disable notifications for multiple queues for push notifications server.
 disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 disableSMPQueuesNtfs = okSMPCommands NDEL
+{-# INLINE disableSMPQueuesNtfs #-}
 
 -- | Send SMP message.
 --
@@ -602,16 +616,19 @@ ackSMPMessage c rpKey rId msgId =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#suspend-queue
 suspendSMPQueue :: SMPClient -> RcvPrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 suspendSMPQueue = okSMPCommand OFF
+{-# INLINE suspendSMPQueue #-}
 
 -- | Irreversibly delete SMP queue and all messages in it.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#delete-queue
 deleteSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand DEL
+{-# INLINE deleteSMPQueue #-}
 
 -- | Delete multiple SMP queues batching commands if supported.
 deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 deleteSMPQueues = okSMPCommands DEL
+{-# INLINE deleteSMPQueues #-}
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
@@ -632,6 +649,7 @@ okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
 -- | Send SMP command
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
+{-# INLINE sendSMPCommand #-}
 
 type PCTransmission err msg = (Either TransportError SentRawTransmission, Request err msg)
 

@@ -295,6 +295,7 @@ data AgentClient = AgentClient
 
 getAgentWorker :: (Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> AM ()) -> AM' Worker
 getAgentWorker = getAgentWorker' id pure
+{-# INLINE getAgentWorker #-}
 
 getAgentWorker' :: forall a k. (Ord k, Show k) => (a -> Worker) -> (Worker -> STM a) -> String -> Bool -> AgentClient -> k -> TMap k a -> (a -> AM ()) -> AM' a
 getAgentWorker' toW fromW name hasWork c key ws work = do
@@ -470,9 +471,11 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
+{-# INLINE agentClientStore #-}
 
 agentDRG :: AgentClient -> TVar ChaChaDRG
 agentDRG AgentClient {agentEnv = Env {random}} = random
+{-# INLINE agentDRG #-}
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg
@@ -675,6 +678,7 @@ getTSessVar c tSess vs = maybe (Left <$> newSessionVar) (pure . Right) =<< TM.lo
 
 removeTSessVar :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM ()
 removeTSessVar = void .:. removeTSessVar'
+{-# INLINE removeTSessVar #-}
 
 removeTSessVar' :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM Bool
 removeTSessVar' v tSess vs =
@@ -754,9 +758,11 @@ cancelWorker Worker {doWork, action} = do
 
 waitUntilActive :: AgentClient -> STM ()
 waitUntilActive c = unlessM (readTVar $ active c) retry
+{-# INLINE waitUntilActive #-}
 
 throwWhenInactive :: AgentClient -> STM ()
 throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
+{-# INLINE throwWhenInactive #-}
 
 -- this function is used to remove workers once delivery is complete, not when it is removed from the map
 throwWhenNoDelivery :: AgentClient -> SndQueue -> STM ()
@@ -790,18 +796,23 @@ closeXFTPServerClient c userId server (FileDigest chunkDigest) =
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
+{-# INLINE withConnLock #-}
 
 withInvLock :: MonadUnliftIO m => AgentClient -> ByteString -> String -> m a -> m a
 withInvLock AgentClient {invLocks} = withLockMap_ invLocks
+{-# INLINE withInvLock #-}
 
 withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
 withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
+{-# INLINE withConnLocks #-}
 
 withLockMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap_ = withGetLock . getMapLock
+{-# INLINE withLockMap_ #-}
 
 withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
 withLocksMap_ = withGetLocks . getMapLock
+{-# INLINE withLocksMap_ #-}
 
 getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
 getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
@@ -829,9 +840,11 @@ withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
 
 withClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
 withClient c tSess statKey action = withClient_ c tSess statKey $ \client -> liftClient (clientProtocolError @v @err @msg) (clientServer client) $ action client
+{-# INLINE withClient #-}
 
 withLogClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
 withLogClient c tSess entId cmdStr action = withLogClient_ c tSess entId cmdStr $ \client -> liftClient (clientProtocolError @v @err @msg) (clientServer client) $ action client
+{-# INLINE withLogClient #-}
 
 withSMPClient :: SMPQueueRec q => AgentClient -> q -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> AM a
 withSMPClient c q cmdStr action = do
@@ -859,6 +872,7 @@ withXFTPClient c (userId, srv, entityId) cmdStr action = do
 
 liftClient :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> AM a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
+{-# INLINE liftClient #-}
 
 protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
 protocolClientError protocolError_ host = \case
@@ -998,18 +1012,23 @@ getXFTPWorkPath = do
 
 mkTransportSession :: AgentClient -> UserId -> ProtoServer msg -> EntityId -> IO (TransportSession msg)
 mkTransportSession c userId srv entityId = mkTSession userId srv entityId <$> getSessionMode c
+{-# INLINE mkTransportSession #-}
 
 mkTSession :: UserId -> ProtoServer msg -> EntityId -> TransportSessionMode -> TransportSession msg
 mkTSession userId srv entityId mode = (userId, srv, if mode == TSMEntity then Just entityId else Nothing)
+{-# INLINE mkTSession #-}
 
 mkSMPTransportSession :: SMPQueueRec q => AgentClient -> q -> IO SMPTransportSession
 mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
+{-# INLINE mkSMPTransportSession #-}
 
 mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSession
 mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
+{-# INLINE mkSMPTSession #-}
 
 getSessionMode :: AgentClient -> IO TransportSessionMode
 getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
+{-# INLINE getSessionMode #-}
 
 newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
@@ -1061,11 +1080,13 @@ temporaryAgentError = \case
   BROKER _ TIMEOUT -> True
   INACTIVE -> True
   _ -> False
+{-# INLINE temporaryAgentError #-}
 
 temporaryOrHostError :: AgentErrorType -> Bool
 temporaryOrHostError = \case
   BROKER _ HOST -> True
   e -> temporaryAgentError e
+{-# INLINE temporaryOrHostError #-}
 
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
@@ -1132,6 +1153,7 @@ addSubscription c rq@RcvQueue {connId} = atomically $ do
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
 hasActiveSubscription c connId = RQ.hasConn connId $ activeSubs c
+{-# INLINE hasActiveSubscription #-}
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
 removeSubscription c connId = do
@@ -1141,6 +1163,7 @@ removeSubscription c connId = do
 
 getSubscriptions :: AgentClient -> STM (Set ConnId)
 getSubscriptions = readTVar . subscrConns
+{-# INLINE getSubscriptions #-}
 
 logServer :: ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> IO ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
@@ -1149,9 +1172,11 @@ logServer dir AgentClient {clientId} srv qId cmdStr =
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
   strEncode host <> B.pack (if null port then "" else ':' : port)
+{-# INLINE showServer #-}
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
+{-# INLINE logSecret #-}
 
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM ()
 sendConfirmation c sq@SndQueue {sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation =
@@ -1379,6 +1404,7 @@ cryptoError = \case
 
 waitForWork :: TMVar () -> AM' ()
 waitForWork = void . atomically . readTMVar
+{-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
 withWork c doWork getWork action =
@@ -1393,12 +1419,15 @@ withWork c doWork getWork action =
 
 noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
+{-# INLINE noWorkToDo #-}
 
 hasWorkToDo :: Worker -> STM ()
 hasWorkToDo = hasWorkToDo' . doWork
+{-# INLINE hasWorkToDo #-}
 
 hasWorkToDo' :: TMVar () -> STM ()
 hasWorkToDo' = void . (`tryPutTMVar` ())
+{-# INLINE hasWorkToDo' #-}
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c op = endOperation c op $ case op of
@@ -1442,6 +1471,7 @@ endOperation c op endedAction = do
 
 whenSuspending :: AgentClient -> STM () -> STM ()
 whenSuspending c = whenM ((== ASSuspending) <$> readTVar (agentState c))
+{-# INLINE whenSuspending #-}
 
 beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
 beginAgentOperation c op = do
@@ -1461,9 +1491,11 @@ agentOperationBracket c op check action =
 
 waitUntilForeground :: AgentClient -> STM ()
 waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
+{-# INLINE waitUntilForeground #-}
 
 withStore' :: AgentClient -> (DB.Connection -> IO a) -> AM a
 withStore' c action = withStore c $ fmap Right . action
+{-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
 withStore c action = do
@@ -1486,6 +1518,7 @@ withStoreBatch c actions = do
 
 withStoreBatch' :: Traversable t => AgentClient -> (DB.Connection -> t (IO a)) -> AM' (t (Either AgentErrorType a))
 withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)
+{-# INLINE withStoreBatch' #-}
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case
@@ -1509,6 +1542,7 @@ incStat AgentClient {agentStats} n k = do
 
 incClientStat :: ProtocolServerClient v err msg => AgentClient -> UserId -> Client msg -> ByteString -> ByteString -> IO ()
 incClientStat c userId pc = incClientStatN c userId pc 1
+{-# INLINE incClientStat #-}
 
 incServerStat :: AgentClient -> UserId -> ProtocolServer p -> ByteString -> ByteString -> IO ()
 incServerStat c userId ProtocolServer {host} cmd res = do
@@ -1527,6 +1561,7 @@ userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMa
 userServers c = case protocolTypeI @p of
   SPSMP -> smpServers c
   SPXFTP -> xftpServers c
+{-# INLINE userServers #-}
 
 pickServer :: forall p. NonEmpty (ProtoServerWithAuth p) -> AM (ProtoServerWithAuth p)
 pickServer = \case
