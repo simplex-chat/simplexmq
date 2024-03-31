@@ -149,7 +149,7 @@ safeDecodeUtf8 = decodeUtf8With onError
     onError _ _ = Just '?'
 
 timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a
-timeoutThrow e ms action = ExceptT (fmap sequence . timeout ms $ runExceptT action) >>= maybe (throwError e) pure
+timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwError e) pure
 
 threadDelay' :: Int64 -> IO ()
 threadDelay' time

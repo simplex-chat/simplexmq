@@ -24,10 +24,8 @@ module Simplex.Messaging.Agent.Client
     ProtocolTestFailure (..),
     ProtocolTestStep (..),
     newAgentClient,
-    withConnLockE,
     withConnLock,
     withConnLocks,
-    withInvLockE,
     withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
@@ -597,7 +595,7 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
-  ExceptT (fmap sequence . timeout t $ runExceptT resubscribe) >>= \case
+  ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
     Just _ -> atomically $ writeTVar tc 0
     Nothing -> do
       tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
@@ -795,24 +793,24 @@ closeXFTPServerClient :: AgentClient -> UserId -> XFTPServer -> FileDigest -> IO
 closeXFTPServerClient c userId server (FileDigest chunkDigest) =
   mkTransportSession c userId server chunkDigest >>= closeClient c xftpClients
 
-withConnLockE :: MonadUnliftIO m => AgentClient -> ConnId -> String -> ExceptT e m a -> ExceptT e m a
-withConnLockE c connId name = ExceptT . withConnLock c connId name . runExceptT
-{-# INLINE withConnLockE #-}
-
-withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
-withConnLock _ "" _ = id
-withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
+withConnLock :: AgentClient -> ConnId -> String -> AM a -> AM a
+withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 {-# INLINE withConnLock #-}
 
-withInvLockE :: MonadUnliftIO m => AgentClient -> ByteString -> String -> ExceptT e m a -> ExceptT e m a
-withInvLockE c key name = ExceptT . withInvLock c key name . runExceptT
-{-# INLINE withInvLockE #-}
+withConnLock' :: AgentClient -> ConnId -> String -> AM' a -> AM' a
+withConnLock' _ "" _ = id
+withConnLock' AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
+{-# INLINE withConnLock' #-}
 
-withInvLock :: MonadUnliftIO m => AgentClient -> ByteString -> String -> m a -> m a
-withInvLock AgentClient {invLocks} = withLockMap_ invLocks
+withInvLock :: AgentClient -> ByteString -> String -> AM a -> AM a
+withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
 {-# INLINE withInvLock #-}
 
-withConnLocks :: MonadUnliftIO m => AgentClient -> [ConnId] -> String -> m a -> m a
+withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
+withInvLock' AgentClient {invLocks} = withLockMap_ invLocks
+{-# INLINE withInvLock' #-}
+
+withConnLocks :: AgentClient -> [ConnId] -> String -> AM' a -> AM' a
 withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
 {-# INLINE withConnLocks #-}
 

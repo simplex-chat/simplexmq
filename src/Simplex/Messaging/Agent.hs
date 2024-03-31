@@ -148,7 +148,7 @@ import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Lock (withLock, withLockE)
+import Simplex.Messaging.Agent.Lock (withLock', withLock)
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -605,7 +605,7 @@ newConnNoQueues c userId connId enableNtfs cMode pqSupport = do
 
 joinConnAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
-  withInvLockE c (strEncode cReqUri) "joinConnAsync" $ do
+  withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
     lift (compatibleInvitationUri cReqUri pqSup) >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
         g <- asks random
@@ -669,13 +669,13 @@ deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
     (_, rqs, connIds') <- prepareDeleteConnections_ getConns c waitDelivery connIds
     withStore' c $ \db -> forM_ connIds' $ setConnDeleted db waitDelivery
     void . lift . forkIO $
-      withLock (deleteLock c) "deleteConnectionsAsync" $
+      withLock' (deleteLock c) "deleteConnectionsAsync" $
         deleteConnQueues c waitDelivery True rqs >> void (runExceptT onSuccess)
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> AM ConnectionStats
 switchConnectionAsync' c corrId connId =
-  withConnLockE c connId "switchConnectionAsync" $
+  withConnLock c connId "switchConnectionAsync" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
@@ -778,7 +778,7 @@ versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && ma
 
 joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM ConnId
 joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
-  withInvLockE c (strEncode inv) "joinConnSrv" $ do
+  withInvLock c (strEncode inv) "joinConnSrv" $ do
     (aVersion, cData, q, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv pqSup
     g <- asks random
     (connId', sq) <- withStore c $ \db -> runExceptT $ do
@@ -825,7 +825,7 @@ createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVers
 
 -- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> AM ()
-allowConnection' c connId confId ownConnInfo = withConnLockE c connId "allowConnection" $ do
+allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConnection" $ do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ rq@RcvQueue {server, rcvId, e2ePrivKey, smpClientVersion = v}) -> do
       senderKey <- withStore c $ \db -> runExceptT $ do
@@ -839,7 +839,7 @@ allowConnection' c connId confId ownConnInfo = withConnLockE c connId "allowConn
 
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
-acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLockE c connId "acceptContact" $ do
+acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
   Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
@@ -1066,7 +1066,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
-          noServer . tryCommand . withConnLockE c connId "switchConnection" $
+          noServer . tryCommand . withConnLock c connId "switchConnection" $
             withStore c (`getConn` connId) >>= \case
               SomeConn _ conn@(DuplexConnection _ (replaced :| _rqs) _) ->
                 switchDuplexConnection c conn replaced >>= notify . SWITCH QDRcv SPStarted
@@ -1157,7 +1157,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
               | temporaryOrHostError e -> retrySndOp c loop
               | otherwise -> cmdError e
             Right () -> withStore' c (`deleteCommand` cmdId)
-        tryWithLock name = tryCommand . withConnLockE c connId name
+        tryWithLock name = tryCommand . withConnLock c connId name
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify :: forall e. AEntityI e => ACommand 'Agent e -> AM ()
@@ -1343,7 +1343,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   notify . SWITCH QDSnd SPConfirmed $ connectionStats conn
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> withConnLockE c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
+                AM_QTEST_ -> withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   case conn of
@@ -1406,7 +1406,7 @@ retrySndOp c loop = do
   loop
 
 ackMessage' :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c connId msgId rcptInfo_ = withConnLockE c connId "ackMessage" $ do
+ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
     DuplexConnection {} -> ack >> sendRcpt conn >> del
@@ -1440,7 +1440,7 @@ ackMessage' c connId msgId rcptInfo_ = withConnLockE c connId "ackMessage" $ do
 
 switchConnection' :: AgentClient -> ConnId -> AM ConnectionStats
 switchConnection' c connId =
-  withConnLockE c connId "switchConnection" $
+  withConnLock c connId "switchConnection" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ conn@(DuplexConnection cData rqs@(rq :| _rqs) _)
         | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
@@ -1468,7 +1468,7 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
 
 abortConnectionSwitch' :: AgentClient -> ConnId -> AM ConnectionStats
 abortConnectionSwitch' c connId =
-  withConnLockE c connId "abortConnectionSwitch" $
+  withConnLock c connId "abortConnectionSwitch" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
         Just rq
@@ -1491,7 +1491,7 @@ abortConnectionSwitch' c connId =
       _ -> throwError $ CMD PROHIBITED
 
 synchronizeRatchet' :: AgentClient -> ConnId -> PQSupport -> Bool -> AM ConnectionStats
-synchronizeRatchet' c connId pqSupport' force = withConnLockE c connId "synchronizeRatchet" $ do
+synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchronizeRatchet" $ do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData@ConnData {pqSupport} rqs sqs)
       | ratchetSyncAllowed cData || force -> do
@@ -1519,7 +1519,7 @@ ackQueueMessage c rq srvMsgId =
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> ConnId -> AM ()
-suspendConnection' c connId = withConnLockE c connId "suspendConnection" $ do
+suspendConnection' c connId = withConnLock c connId "suspendConnection" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
     DuplexConnection _ rqs _ -> mapM_ (suspendQueue c) rqs
@@ -1979,7 +1979,7 @@ cleanupManager c@AgentClient {subQ} = do
     -- we are catching it to avoid CRITICAL errors in tests when this is the only remaining handle to active
     waitActive a = liftIO (E.tryAny . atomically $ waitUntilActive c) >>= either (\_ -> pure ()) (\_ -> void a)
     deleteConns =
-      withLockE (deleteLock c) "cleanupManager" $ do
+      withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
         void $ withStore' c getDeletedWaitingDeliveryConnIds >>= deleteDeletedWaitingDeliveryConns c
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
@@ -2035,7 +2035,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
       rq@RcvQueue {e2ePrivKey, e2eDhSecret, status}
       conn
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss} =
-        withConnLockE c connId "processSMP" $ case cmd of
+        withConnLock c connId "processSMP" $ case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             void . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
