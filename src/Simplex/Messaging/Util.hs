@@ -55,7 +55,7 @@ liftError f = liftError' f . runExceptT
 {-# INLINE liftError #-}
 
 liftError' :: MonadIO m => (e -> e') -> IO (Either e a) -> ExceptT e' m a
-liftError' f = withExceptT f . ExceptT . liftIO
+liftError' f = ExceptT . fmap (first f) . liftIO
 {-# INLINE liftError' #-}
 
 liftEitherWith :: MonadIO m => (e -> e') -> Either e a -> ExceptT e' m a
