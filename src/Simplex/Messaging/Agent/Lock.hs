@@ -1,8 +1,7 @@
-{-# LANGUAGE NamedFieldPuns #-}
-
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
+    withLockE,
     withLock,
     withGetLock,
     withGetLocks,
@@ -10,6 +9,7 @@ module Simplex.Messaging.Agent.Lock
 where
 
 import Control.Monad (void)
+import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
 import UnliftIO.Async (forConcurrently)
@@ -21,6 +21,10 @@ type Lock = TMVar String
 createLock :: STM Lock
 createLock = newEmptyTMVar
 {-# INLINE createLock #-}
+
+withLockE :: MonadUnliftIO m => Lock -> String -> ExceptT e m a -> ExceptT e m a
+withLockE lock name = ExceptT . withLock lock name . runExceptT
+{-# INLINE withLockE #-}
 
 withLock :: MonadUnliftIO m => Lock -> String -> m a -> m a
 withLock lock name =

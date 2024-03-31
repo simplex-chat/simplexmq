@@ -24,8 +24,10 @@ module Simplex.Messaging.Agent.Client
     ProtocolTestFailure (..),
     ProtocolTestStep (..),
     newAgentClient,
+    withConnLockE,
     withConnLock,
     withConnLocks,
+    withInvLockE,
     withInvLock,
     closeAgentClient,
     closeProtocolServerClients,
@@ -595,7 +597,7 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
-  t `timeout` resubscribe >>= \case
+  ExceptT (fmap sequence . timeout t $ runExceptT resubscribe) >>= \case
     Just _ -> atomically $ writeTVar tc 0
     Nothing -> do
       tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
@@ -793,10 +795,18 @@ closeXFTPServerClient :: AgentClient -> UserId -> XFTPServer -> FileDigest -> IO
 closeXFTPServerClient c userId server (FileDigest chunkDigest) =
   mkTransportSession c userId server chunkDigest >>= closeClient c xftpClients
 
+withConnLockE :: MonadUnliftIO m => AgentClient -> ConnId -> String -> ExceptT e m a -> ExceptT e m a
+withConnLockE c connId name = ExceptT . withConnLock c connId name . runExceptT
+{-# INLINE withConnLockE #-}
+
 withConnLock :: MonadUnliftIO m => AgentClient -> ConnId -> String -> m a -> m a
 withConnLock _ "" _ = id
 withConnLock AgentClient {connLocks} connId name = withLockMap_ connLocks connId name
 {-# INLINE withConnLock #-}
+
+withInvLockE :: MonadUnliftIO m => AgentClient -> ByteString -> String -> ExceptT e m a -> ExceptT e m a
+withInvLockE c key name = ExceptT . withInvLock c key name . runExceptT
+{-# INLINE withInvLockE #-}
 
 withInvLock :: MonadUnliftIO m => AgentClient -> ByteString -> String -> m a -> m a
 withInvLock AgentClient {invLocks} = withLockMap_ invLocks
@@ -1402,7 +1412,7 @@ cryptoError = \case
   where
     c = AGENT . A_CRYPTO
 
-waitForWork :: TMVar () -> AM' ()
+waitForWork :: MonadIO m => TMVar () -> m ()
 waitForWork = void . atomically . readTMVar
 {-# INLINE waitForWork #-}
 

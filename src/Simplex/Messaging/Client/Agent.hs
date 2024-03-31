@@ -149,7 +149,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
         Nothing -> Left PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
-    newSMPClient smpVar = tryConnectClient pure tryConnectAsync
+    newSMPClient smpVar = tryConnectClient pure (liftIO tryConnectAsync)
       where
         tryConnectClient :: (SMPClient -> ExceptT SMPClientError IO a) -> ExceptT SMPClientError IO () -> ExceptT SMPClientError IO a
         tryConnectClient successAction retryAction =
@@ -165,9 +165,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
                   putTMVar smpVar (Left e)
                   TM.delete srv smpClients
               throwE e
-        tryConnectAsync :: ExceptT SMPClientError IO ()
+        tryConnectAsync :: IO ()
         tryConnectAsync = do
-          a <- async connectAsync
+          a <- async $ void $ runExceptT connectAsync
           atomically $ modifyTVar' (asyncClients ca) (a :)
         connectAsync :: ExceptT SMPClientError IO ()
         connectAsync =
@@ -201,11 +201,11 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
     serverDown :: Map SMPSub C.APrivateAuthKey -> IO ()
     serverDown ss = unless (M.null ss) $ do
       notify . CADisconnected srv $ M.keysSet ss
-      void $ runExceptT reconnectServer
+      reconnectServer
 
-    reconnectServer :: ExceptT SMPClientError IO ()
+    reconnectServer :: IO ()
     reconnectServer = do
-      a <- async tryReconnectClient
+      a <- async $ void $ runExceptT tryReconnectClient
       atomically $ modifyTVar' (reconnections ca) (a :)
 
     tryReconnectClient :: ExceptT SMPClientError IO ()

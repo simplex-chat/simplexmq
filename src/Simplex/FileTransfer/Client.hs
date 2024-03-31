@@ -196,9 +196,9 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
         let t = chunkTimeout config chunkSize
-        t `timeout` download cbState >>= maybe (throwError PCEResponseTimeout) pure
+        ExceptT (fmap sequence . timeout t $ download cbState) >>= maybe (throwError PCEResponseTimeout) pure
         where
-          download cbState =
+          download cbState = runExceptT $
             withExceptT PCEResponseError $
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
                 whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
