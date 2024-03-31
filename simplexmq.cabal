@@ -173,6 +173,8 @@ library
       Paths_simplexmq
   hs-source-dirs:
       src
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
   include-dirs:
       cbits
@@ -252,6 +254,8 @@ executable ntf-server
       Paths_simplexmq
   hs-source-dirs:
       apps/ntf-server
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
@@ -325,6 +329,8 @@ executable smp-agent
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-agent
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
@@ -398,6 +404,8 @@ executable smp-server
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
@@ -471,6 +479,8 @@ executable xftp
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
@@ -544,6 +554,8 @@ executable xftp-server
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
@@ -649,6 +661,8 @@ test-suite simplexmq-test
       Paths_simplexmq
   hs-source-dirs:
       tests
+  default-extensions:
+      StrictData
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
   build-depends:
       HUnit ==1.6.*

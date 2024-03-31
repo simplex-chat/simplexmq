@@ -97,7 +97,7 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -138,11 +138,12 @@ data PClient v err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmission v msg))
   }
 
-smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe THandleAuth -> STM (ProtocolClient SMPVersion err msg)
+smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe THandleAuth -> STM SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
   clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
+  pingErrorCount <- newTVar 0
   sndQ <- newTBQueue 100
   rcvQ <- newTBQueue 100
   return
@@ -157,15 +158,15 @@ smpClientStub g sessionId thVersion thAuth = do
               implySessId = thVersion >= authCmdsSMPVersion,
               batch = True
             },
-        sessionTs = undefined,
+        sessionTs = UTCTime (read "2024-03-31") 0,
         client_ =
           PClient
             { connected,
-              transportSession = undefined,
-              transportHost = undefined,
-              tcpTimeout = undefined,
+              transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
+              transportHost = "localhost",
+              tcpTimeout = 15_000_000,
               batchDelay = Nothing,
-              pingErrorCount = undefined,
+              pingErrorCount,
               clientCorrId,
               sentCommands,
               sndQ,

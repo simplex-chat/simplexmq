@@ -181,5 +181,5 @@ ghc-options:
   - -Wunused-type-patterns
   - -O2
 
-# default-extensions:
-#   - StrictData
+default-extensions:
+  - StrictData

@@ -83,7 +83,7 @@ testSMPClientVR vr client = do
 cfg :: ServerConfig
 cfg =
   ServerConfig
-    { transports = undefined,
+    { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
       -- serverTbqSize = 1,
