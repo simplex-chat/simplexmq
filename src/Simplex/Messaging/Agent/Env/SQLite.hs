@@ -82,7 +82,7 @@ data InitialAgentServers = InitialAgentServers
   }
 
 data AgentConfig = AgentConfig
-  { tcpPort :: ServiceName,
+  { tcpPort :: Maybe ServiceName,
     rcvAuthAlg :: C.AuthAlg,
     sndAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
@@ -149,7 +149,7 @@ defaultMessageRetryInterval =
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
-    { tcpPort = "5224",
+    { tcpPort = Just "5224",
       -- while the current client version supports X25519, it can only be enabled once support for SMP v6 is dropped,
       -- and all servers are required to support v7 to be compatible.
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519

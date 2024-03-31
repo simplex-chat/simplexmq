@@ -16,6 +16,7 @@ import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Text.Encoding (decodeUtf8)
+import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Client (newAgentClient)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -41,14 +42,16 @@ runSMPAgent t cfg initServers store =
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPAgentBlocking :: ATransport -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Int -> TMVar Bool -> IO ()
 runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers store initClientId started =
-  newSMPAgentEnv cfg store >>= smpAgent t
+  case tcpPort of
+    Just port -> newSMPAgentEnv cfg store >>= smpAgent t port
+    Nothing -> E.throwIO $ userError "no agent port"
   where
-    smpAgent :: forall c. Transport c => TProxy c -> Env -> IO ()
-    smpAgent _ env = do
+    smpAgent :: forall c. Transport c => TProxy c -> ServiceName -> Env -> IO ()
+    smpAgent _ port env = do
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
       tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile
       clientId <- newTVarIO initClientId
-      runTransportServer started tcpPort tlsServerParams defaultTransportServerConfig $ \(h :: c) -> do
+      runTransportServer started port tlsServerParams defaultTransportServerConfig $ \(h :: c) -> do
         putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
         cId <- atomically $ stateTVar clientId $ \i -> (i + 1, i + 1)
         c <- atomically $ newAgentClient cId initServers env

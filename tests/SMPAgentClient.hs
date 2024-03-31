@@ -201,7 +201,7 @@ initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer
 agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
-    { tcpPort = agentTestPort,
+    { tcpPort = Just agentTestPort,
       tbqSize = 4,
       -- database = testDB,
       smpCfg = defaultSMPClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
@@ -225,7 +225,7 @@ fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = 
 
 withSmpAgentThreadOn_ :: ATransport -> (ServiceName, ServiceName, FilePath) -> Int -> IO () -> (ThreadId -> IO a) -> IO a
 withSmpAgentThreadOn_ t (port', smpPort', db') initClientId afterProcess =
-  let cfg' = agentCfg {tcpPort = port'}
+  let cfg' = agentCfg {tcpPort = Just port'}
       initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         ( \started -> do
