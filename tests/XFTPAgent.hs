@@ -44,13 +44,13 @@ import XFTPClient
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
-  fit "should send and receive file" testXFTPAgentSendReceive
+  it "should send and receive file" testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
   it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
   it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-  fit "should resume sending file after restart" testXFTPAgentSendRestore
+  it "should resume sending file after restart" testXFTPAgentSendRestore
   it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
@@ -96,10 +96,6 @@ checkProgress (prev, expected) (progress, total) loop
   | progress < total = loop progress
   | otherwise = pure ()
 
-testNoRedundancy :: HasCallStack => ValidFileDescription 'FRecipient -> IO ()
-testNoRedundancy (ValidFileDescription FileDescription {chunks}) =
-  all (\FileChunk {replicas} -> length replicas == 1) chunks `shouldBe` True
-
 testXFTPAgentSendReceive :: HasCallStack => IO ()
 testXFTPAgentSendReceive = withXFTPServer $ do
   filePath <- createRandomFile
@@ -109,10 +105,6 @@ testXFTPAgentSendReceive = withXFTPServer $ do
     (sfId, _, rfd1, rfd2) <- testSend sndr filePath
     liftIO $ xftpDeleteSndFileInternal sndr sfId
     pure (rfd1, rfd2)
-
-  testNoRedundancy rfd1
-  testNoRedundancy rfd2
-
   -- receive file, delete rcv file
   testReceiveDelete 2 rfd1 filePath
   testReceiveDelete 3 rfd2 filePath
@@ -164,6 +156,9 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
       r -> error $ "Expected SFDONE, got " <> show r
+
+  testNoRedundancy vfdDirect
+
   redirectFileId <- runRight $ xftpSendDescription sndr 1 vfdDirect 1
   logInfo $ "File sent, sending redirect: " <> tshow redirectFileId
   sfGet sndr `shouldReturn` ("", redirectFileId, SFPROG 65536 65536)
@@ -171,6 +166,9 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
       r -> error $ "Expected SFDONE, got " <> show r
+
+  testNoRedundancy vfdRedirect
+
   case fdRedirect of
     FileDescription {redirect = Just _} -> pure ()
     _ -> error "missing RedirectFileInfo"
@@ -215,6 +213,9 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
     sfGet sndr >>= \case
       (_, _, SFDONE _snd (vfd : _)) -> pure vfd
       r -> error $ "Expected SFDONE, got " <> show r
+
+  testNoRedundancy vfdDirect
+
   let uri = strEncode $ fileDescriptionURI vfdDirect
   B.length uri `shouldSatisfy` (< qrSizeLimit)
   case strDecode uri of
@@ -262,8 +263,14 @@ testSendCF sndr file = do
   sfId <- xftpSendFile sndr 1 file 2
   sfProgress sndr $ mb 18
   ("", sfId', SFDONE sndDescr [rfd1, rfd2]) <- sfGet sndr
+  liftIO $ testNoRedundancy rfd1
+  liftIO $ testNoRedundancy rfd2
   liftIO $ sfId' `shouldBe` sfId
   pure (sfId, sndDescr, rfd1, rfd2)
+
+testNoRedundancy :: HasCallStack => ValidFileDescription 'FRecipient -> IO ()
+testNoRedundancy (ValidFileDescription FileDescription {chunks}) =
+  all (\FileChunk {replicas} -> length replicas == 1) chunks `shouldBe` True
 
 testReceive :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceive rcp rfd = testReceiveCF rcp rfd Nothing
@@ -407,7 +414,9 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     sndr' <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
     sfProgress sndr' $ mb 18
-    ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
+    ("", sfId', SFDONE _sndDescr [rfd1, rfd2]) <- sfGet sndr'
+    liftIO $ testNoRedundancy rfd1
+    liftIO $ testNoRedundancy rfd2
     liftIO $ sfId' `shouldBe` sfId
     -- prefix path should be removed after sending file
     threadDelay 100000
@@ -623,6 +632,8 @@ testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
       sfId' `shouldBe` sfId
       length rfds `shouldBe` 500
     pure rfds
+
+  forM_ rfds testNoRedundancy
 
   -- receive file using different descriptions
   -- ! revise number of recipients and indexes if xftpMaxRecipientsPerRequest is changed
