@@ -91,7 +91,7 @@ sfProgress c expected = loop 0
 checkProgress :: (HasCallStack, MonadIO m) => (Int64, Int64) -> (Int64, Int64) -> (Int64 -> m ()) -> m ()
 checkProgress (prev, expected) (progress, total) loop
   | total /= expected = error "total /= expected"
-  | progress < prev = liftIO $ putStrLn "****** progress <= prev"
+  | progress <= prev = liftIO $ putStrLn "****** progress <= prev"
   | progress > total = error "progress > total"
   | progress < total = loop progress
   | otherwise = pure ()
