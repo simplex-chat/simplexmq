@@ -24,7 +24,7 @@ import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionUR
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.Messaging.Agent (AgentClient, execAgentStoreSQL, disposeAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, disposeAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
 import qualified Simplex.Messaging.Crypto as C
@@ -398,24 +398,17 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
     sndr' <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
-    -- runExceptT (execAgentStoreSQL sndr' "select snd_file_id, snd_file_chunk_id, chunk_no, chunk_offset from snd_file_chunks") >>= print
-    -- runExceptT (execAgentStoreSQL sndr' "select snd_file_chunk_replica_id, snd_file_chunk_id, replica_number, created_at, updated_at from snd_file_chunk_replicas") >>= print
     runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
     sfProgress sndr' $ mb 18
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
     liftIO $ sfId' `shouldBe` sfId
-
-    -- runExceptT (execAgentStoreSQL sndr' "select snd_file_id, snd_file_chunk_id, chunk_no, chunk_offset from snd_file_chunks") >>= print
-    -- runExceptT (execAgentStoreSQL sndr' "select snd_file_chunk_replica_id, snd_file_chunk_id, replica_number, created_at, updated_at from snd_file_chunk_replicas") >>= print
-
     -- prefix path should be removed after sending file
-    threadDelay 50000
+    threadDelay 100000
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
 
     -- receive file
     rcp <- getSMPAgentClient' 4 agentCfg initAgentServers testDB2
-    liftIO $ putStrLn $ B.unpack $ strEncode rfd1
     runRight_ . void $
       testReceive rcp rfd1 filePath
 

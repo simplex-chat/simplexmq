@@ -228,7 +228,6 @@ withRetryIntervalLimit maxN ri action =
 
 retryOnError :: Text -> AM a -> AM a -> AgentErrorType -> AM a
 retryOnError name loop done e = do
-  liftIO $ print $ "error: " <> show e
   logError $ name <> " error: " <> tshow e
   if temporaryAgentError e
     then loop
@@ -456,8 +455,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
     runXFTPOperation cfg@AgentConfig {sndFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} = do
       withWork c doWork (\db -> getNextSndChunkToUpload db srv sndFilesTTL) $ \case
         SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
-        fc@SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkOffset}, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
-          liftIO $ putStrLn $ "chunkOffset: " <> show chunkOffset
+        fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
             uploadFileChunk cfg fc replica
@@ -472,8 +470,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
               loop
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: AgentConfig -> SndFileChunk -> SndFileChunkReplica -> AM ()
-    uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath, chunkOffset}, digest = chunkDigest} replica = do
-      liftIO $ putStrLn $ "uploadFileChunk: " <> show chunkOffset
+    uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- lift $ toFSFilePath filePath
       unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
@@ -481,16 +478,13 @@ runXFTPSndWorker c srv Worker {doWork} = do
       atomically $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       atomically $ waitUntilForeground c
-      -- liftIO $ putStrLn $ "uploaded: " <> show chunkOffset
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
       let uploaded = uploadedSize chunks
           total = totalSize chunks
           complete = all chunkUploaded chunks
-      liftIO $ putStrLn $ "uploaded: " <> show chunkOffset <> " size: " <> show uploaded
       notify c sndFileEntityId $ SFPROG uploaded total
-      -- liftIO $ putStrLn $ "notified: " <> show chunkOffset <> " size: " <> show uploaded
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
         notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
