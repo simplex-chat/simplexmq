@@ -22,7 +22,6 @@ import Control.Exception (SomeException, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
-import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Set as S
@@ -31,6 +30,7 @@ import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.Base64 (encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
@@ -103,7 +103,7 @@ tPut1 h t = do
   [r] <- tPut h [Right t]
   pure r
 
-tGet1 :: (ProtocolEncoding v err cmd, Transport c, MonadIO m, MonadFail m) => THandle v c -> m (SignedTransmission err cmd)
+tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c -> IO (SignedTransmission err cmd)
 tGet1 h = do
   [r] <- liftIO $ tGet h
   pure r

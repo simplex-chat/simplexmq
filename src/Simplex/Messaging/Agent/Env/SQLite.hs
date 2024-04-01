@@ -11,8 +11,8 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
-  ( AgentMonad,
-    AgentMonad',
+  ( AM',
+    AM,
     AgentConfig (..),
     InitialAgentServers (..),
     NetworkConfig (..),
@@ -21,6 +21,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     tryAgentError,
     tryAgentError',
     catchAgentError,
+    catchAgentError',
     agentFinally,
     Env (..),
     newSMPAgentEnv,
@@ -34,7 +35,6 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
-import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -65,14 +65,14 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors)
+import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
 import UnliftIO.STM
 
-type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
+type AM' a = ReaderT Env IO a
 
-type AgentMonad m = (AgentMonad' m, MonadError AgentErrorType m)
+type AM a = ExceptT AgentErrorType (ReaderT Env IO) a
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),
@@ -82,7 +82,7 @@ data InitialAgentServers = InitialAgentServers
   }
 
 data AgentConfig = AgentConfig
-  { tcpPort :: ServiceName,
+  { tcpPort :: Maybe ServiceName,
     rcvAuthAlg :: C.AuthAlg,
     sndAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
@@ -149,7 +149,7 @@ defaultMessageRetryInterval =
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
-    { tcpPort = "5224",
+    { tcpPort = Just "5224",
       -- while the current client version supports X25519, it can only be enabled once support for SMP v6 is dropped,
       -- and all servers are required to support v7 to be compatible.
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
@@ -250,20 +250,24 @@ newXFTPAgent = do
   xftpDelWorkers <- TM.empty
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
-tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
+tryAgentError :: AM a -> AM (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
 {-# INLINE tryAgentError #-}
 
 -- unlike runExceptT, this ensures we catch IO exceptions as well
-tryAgentError' :: AgentMonad' m => ExceptT AgentErrorType m a -> m (Either AgentErrorType a)
-tryAgentError' = fmap join . runExceptT . tryAgentError
+tryAgentError' :: AM a -> AM' (Either AgentErrorType a)
+tryAgentError' = tryAllErrors' mkInternal
 {-# INLINE tryAgentError' #-}
 
-catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
+catchAgentError :: AM a -> (AgentErrorType -> AM a) -> AM a
 catchAgentError = catchAllErrors mkInternal
 {-# INLINE catchAgentError #-}
 
-agentFinally :: AgentMonad m => m a -> m b -> m a
+catchAgentError' :: AM a -> (AgentErrorType -> AM' a) -> AM' a
+catchAgentError' = catchAllErrors' mkInternal
+{-# INLINE catchAgentError' #-}
+
+agentFinally :: AM a -> AM b -> AM a
 agentFinally = allFinally mkInternal
 {-# INLINE agentFinally #-}
 

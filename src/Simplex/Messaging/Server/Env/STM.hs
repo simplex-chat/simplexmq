@@ -53,6 +53,9 @@ data ServerConfig = ServerConfig
     allowNewQueues :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new queues
     newQueueBasicAuth :: Maybe BasicAuth,
+    -- | control port passwords,
+    controlPortUserAuth :: Maybe BasicAuth,
+    controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -170,25 +173,25 @@ newSubscription subThread = do
   delivered <- newEmptyTMVar
   return Sub {subThread, delivered}
 
-newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
+newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   random <- liftIO C.newRandom
   storeLog <- restoreQueues queueStore `mapM` storeLogFile
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
+  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
+  serverStats <- atomically . newServerStats =<< getCurrentTime
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
-    restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
+    restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
-      (qs, s) <- liftIO $ readWriteStoreLog f
+      (qs, s) <- readWriteStoreLog f
       atomically $ do
         writeTVar queues =<< mapM newTVar qs
         writeTVar senders $! M.foldr' addSender M.empty qs

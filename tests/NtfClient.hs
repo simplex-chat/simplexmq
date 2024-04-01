@@ -16,7 +16,6 @@ module NtfClient where
 
 import Control.Monad
 import Control.Monad.Except (runExceptT)
-import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -71,13 +70,13 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 
-testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandleNTF c -> m a) -> m a
+testNtfClient :: Transport c => (THandleNTF c -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h -> do
-    g <- liftIO C.newRandom
+    g <- C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
+    runExceptT (ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 

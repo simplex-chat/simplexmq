@@ -50,25 +50,17 @@ maybeWord :: (a -> ByteString) -> Maybe a -> ByteString
 maybeWord f = maybe "" $ B.cons ' ' . f
 {-# INLINE maybeWord #-}
 
-liftIOEither :: (MonadIO m, MonadError e m) => IO (Either e a) -> m a
-liftIOEither a = liftIO a >>= liftEither
-{-# INLINE liftIOEither #-}
-
-liftError :: (MonadIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
-liftError f = liftEitherError f . runExceptT
+liftError :: MonadIO m => (e -> e') -> ExceptT e IO a -> ExceptT e' m a
+liftError f = liftError' f . runExceptT
 {-# INLINE liftError #-}
 
-liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
-liftEitherError f a = liftIOEither (first f <$> a)
-{-# INLINE liftEitherError #-}
+liftError' :: MonadIO m => (e -> e') -> IO (Either e a) -> ExceptT e' m a
+liftError' f = ExceptT . fmap (first f) . liftIO
+{-# INLINE liftError' #-}
 
-liftEitherWith :: MonadError e' m => (e -> e') -> Either e a -> m a
+liftEitherWith :: MonadIO m => (e -> e') -> Either e a -> ExceptT e' m a
 liftEitherWith f = liftEither . first f
 {-# INLINE liftEitherWith #-}
-
-liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
-liftE f a = ExceptT $ first f <$> runExceptT a
-{-# INLINE liftE #-}
 
 ifM :: Monad m => m Bool -> m a -> m a -> m a
 ifM ba t f = ba >>= \b -> if b then t else f
@@ -109,9 +101,17 @@ tryAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m
 tryAllErrors err action = tryError action `UE.catch` (pure . Left . err)
 {-# INLINE tryAllErrors #-}
 
+tryAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> m (Either e a)
+tryAllErrors' err action = runExceptT action `UE.catch` (pure . Left . err)
+{-# INLINE tryAllErrors' #-}
+
 catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
 catchAllErrors err action handler = tryAllErrors err action >>= either handler pure
 {-# INLINE catchAllErrors #-}
+
+catchAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> (e -> m a) -> m a
+catchAllErrors' err action handler = tryAllErrors' err action >>= either handler pure
+{-# INLINE catchAllErrors' #-}
 
 catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
 catchThrow action err = catchAllErrors err action throwError
@@ -148,8 +148,8 @@ safeDecodeUtf8 = decodeUtf8With onError
   where
     onError _ _ = Just '?'
 
-timeoutThrow :: (MonadUnliftIO m, MonadError e m) => e -> Int -> m a -> m a
-timeoutThrow e ms action = timeout ms action >>= maybe (throwError e) pure
+timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a
+timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwError e) pure
 
 threadDelay' :: Int64 -> IO ()
 threadDelay' time
