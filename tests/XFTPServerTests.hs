@@ -28,7 +28,6 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Util (liftIOEither)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec
@@ -60,6 +59,7 @@ xftpServerTests =
         it "prohibited when FNEW disabled" $ testFileBasicAuth False (Just "pwd") (Just "pwd") False
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
+      it "should not change content for uploaded and committed files" testFileSkipCommitted
 
 chSize :: Integral a => a
 chSize = kb 128
@@ -219,7 +219,7 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
 testInactiveClientExpiration :: Expectation
 testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
-  c <- liftIOEither $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
+  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
   pingXFTP c
   liftIO $ do
     threadDelay 100000
@@ -372,3 +372,22 @@ testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success =
           else do
             void (createXFTPChunk c spKey file [rcvKey] clntAuth)
               `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+
+testFileSkipCommitted :: IO ()
+testFileSkipCommitted =
+  withXFTPServerCfg testXFTPServerConfig $
+    \_ -> testXFTPClient $ \c -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      bytes <- createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let file = FileInfo {sndKey, size = chSize, digest}
+          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      runRight_ $ do
+        (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+        uploadXFTPChunk c spKey sId chunkSpec
+        void . liftIO $ createTestChunk testChunkPath -- trash chunk contents
+        uploadXFTPChunk c spKey sId chunkSpec -- upload again to get FROk without getting stuck
+        downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk" chSize digest
+        liftIO $ B.readFile "tests/tmp/received_chunk" `shouldReturn` bytes -- new chunk content got ignored

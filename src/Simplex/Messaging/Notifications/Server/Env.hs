@@ -83,7 +83,7 @@ data NtfEnv = NtfEnv
     serverStats :: NtfServerStats
   }
 
-newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
+newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
 newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
   random <- liftIO C.newRandom
   store <- atomically newNtfStore

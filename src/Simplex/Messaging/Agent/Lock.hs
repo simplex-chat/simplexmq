@@ -1,9 +1,8 @@
-{-# LANGUAGE NamedFieldPuns #-}
-
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
     withLock,
+    withLock',
     waitForLock,
     withGetLock,
     withGetLocks,
@@ -14,6 +13,7 @@ where
 
 import Control.Concurrent.STM (retry)
 import Control.Monad (unless, void)
+import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
 import Simplex.Messaging.TMap (TMap)
@@ -28,8 +28,12 @@ createLock :: STM Lock
 createLock = newEmptyTMVar
 {-# INLINE createLock #-}
 
-withLock :: MonadUnliftIO m => Lock -> String -> m a -> m a
-withLock lock name =
+withLock :: MonadUnliftIO m => Lock -> String -> ExceptT e m a -> ExceptT e m a
+withLock lock name = ExceptT . withLock' lock name . runExceptT
+{-# INLINE withLock #-}
+
+withLock' :: MonadUnliftIO m => Lock -> String -> m a -> m a
+withLock' lock name =
   E.bracket_
     (atomically $ putTMVar lock name)
     (void . atomically $ takeTMVar lock)
@@ -59,9 +63,11 @@ getPutLock getLock key name = getLock key >>= \l -> putTMVar l name $> l
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap = withGetLock . getMapLock
+{-# INLINE withLockMap #-}
 
 withLocksMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
 withLocksMap = withGetLocks . getMapLock
+{-# INLINE withLocksMap #-}
 
 getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
 getMapLock locks key = TM.lookup key locks >>= maybe newLock pure

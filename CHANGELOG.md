@@ -1,3 +1,13 @@
+# 5.6.1
+
+Version 5.6.1.0.
+
+- Much faster iOS notification server start time (fewer skipped notifications).
+- Fix SMP server stored message stats.
+- Prevent overwriting uploaded XFTP files with subsequent upload attempts.
+- Faster base64 encoding/parsing.
+- Control port audit log and authentication.
+
 # 5.6.0
 
 Version 5.6.0.4.

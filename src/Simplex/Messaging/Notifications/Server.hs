@@ -81,7 +81,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
-      runTransportServer started tcpPort serverParams tCfg (runClient serverSignKey t)
+      env <- ask
+      liftIO $ runTransportServer started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
