@@ -91,7 +91,7 @@ sfProgress c expected = loop 0
 checkProgress :: (HasCallStack, MonadIO m) => (Int64, Int64) -> (Int64, Int64) -> (Int64 -> m ()) -> m ()
 checkProgress (prev, expected) (progress, total) loop
   | total /= expected = error "total /= expected"
-  | progress <= prev = liftIO $ putStrLn "****** progress <= prev"
+  | progress <= prev = error "progress <= prev"
   | progress > total = error "progress > total"
   | progress < total = loop progress
   | otherwise = pure ()
@@ -404,7 +404,6 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     sfProgress sndr' $ mb 18
     ("", sfId', SFDONE _sndDescr [rfd1, _rfd2]) <- sfGet sndr'
     liftIO $ sfId' `shouldBe` sfId
-
 
     -- runExceptT (execAgentStoreSQL sndr' "select snd_file_id, snd_file_chunk_id, chunk_no, chunk_offset from snd_file_chunks") >>= print
     -- runExceptT (execAgentStoreSQL sndr' "select snd_file_chunk_replica_id, snd_file_chunk_id, replica_number, created_at, updated_at from snd_file_chunk_replicas") >>= print

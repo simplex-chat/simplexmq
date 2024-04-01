@@ -416,7 +416,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
         chunkCreated :: SndFileChunk -> Bool
         chunkCreated SndFileChunk {replicas} =
-          any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSCreated) replicas
+          not (null replicas)
         createChunk :: Int -> SndFileChunk -> AM ()
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
