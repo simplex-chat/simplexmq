@@ -389,7 +389,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       let numRecipients' = min numRecipients maxRecipients
       -- concurrently?
       -- separate worker to create chunks? record retries and delay on snd_file_chunks?
-      forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
+      forM_ (filter (\SndFileChunk {replicas} -> null replicas) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
         AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
@@ -413,9 +413,6 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
-        chunkCreated :: SndFileChunk -> Bool
-        chunkCreated SndFileChunk {replicas} =
-          any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSCreated) replicas
         createChunk :: Int -> SndFileChunk -> AM ()
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
