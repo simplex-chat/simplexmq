@@ -407,7 +407,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     liftIO $ sfId' `shouldBe` sfId
     disposeAgentClient sndr'
 
-  threadDelay 10000
+  threadDelay 100000
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
