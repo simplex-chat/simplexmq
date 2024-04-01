@@ -94,7 +94,7 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
-newXFTPServerEnv :: (MonadUnliftIO m, MonadRandom m) => XFTPServerConfig -> m XFTPEnv
+newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile} = do
   random <- liftIO C.newRandom
   store <- atomically newFileStore

@@ -68,7 +68,7 @@ preferAddress RCCtrlAddress {address, interface} addrs =
     matchAddr RCCtrlAddress {address = a} = a == address
     matchIface RCCtrlAddress {interface = i} = i == interface
 
-startTLSServer :: MonadUnliftIO m => Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> m (Async ())
+startTLSServer :: Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> IO (Async ())
 startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do
   started <- newEmptyTMVarIO
   bracketOnError (startTCPServer started $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
@@ -91,14 +91,14 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
           TLS.serverSupported = supportedParameters
         }
 
-withSender :: MonadUnliftIO m => (UDP.UDPSocket -> m a) -> m a
-withSender = bracket (liftIO $ UDP.clientSocket MULTICAST_ADDR_V4 DISCOVERY_PORT False) (liftIO . UDP.close)
+withSender :: (UDP.UDPSocket -> IO a) -> IO a
+withSender = bracket (UDP.clientSocket MULTICAST_ADDR_V4 DISCOVERY_PORT False) (UDP.close)
 
-withListener :: MonadUnliftIO m => TMVar Int -> (UDP.ListenSocket -> m a) -> m a
+withListener :: TMVar Int -> (UDP.ListenSocket -> IO a) -> IO a
 withListener subscribers = bracket (openListener subscribers) (closeListener subscribers)
 
-openListener :: MonadIO m => TMVar Int -> m UDP.ListenSocket
-openListener subscribers = liftIO $ do
+openListener :: TMVar Int -> IO UDP.ListenSocket
+openListener subscribers = do
   sock <- UDP.serverSocket (MULTICAST_ADDR_V4, read DISCOVERY_PORT)
   logDebug $ "Discovery listener socket: " <> tshow sock
   let raw = UDP.listenSocket sock
@@ -106,10 +106,9 @@ openListener subscribers = liftIO $ do
   joinMulticast subscribers raw (listenerHostAddr4 sock)
   pure sock
 
-closeListener :: MonadIO m => TMVar Int -> UDP.ListenSocket -> m ()
+closeListener :: TMVar Int -> UDP.ListenSocket -> IO ()
 closeListener subscribers sock =
-  liftIO $
-    partMulticast subscribers (UDP.listenSocket sock) (listenerHostAddr4 sock) `finally` UDP.stop sock
+  partMulticast subscribers (UDP.listenSocket sock) (listenerHostAddr4 sock) `finally` UDP.stop sock
 
 joinMulticast :: TMVar Int -> N.Socket -> N.HostAddress -> IO ()
 joinMulticast subscribers sock group = do
@@ -132,7 +131,7 @@ listenerHostAddr4 sock = case UDP.mySockAddr sock of
   N.SockAddrInet _port host -> host
   _ -> error "MULTICAST_ADDR_V4 is V4"
 
-recvAnnounce :: MonadIO m => UDP.ListenSocket -> m (N.SockAddr, ByteString)
-recvAnnounce sock = liftIO $ do
+recvAnnounce :: UDP.ListenSocket -> IO (N.SockAddr, ByteString)
+recvAnnounce sock = do
   (invite, UDP.ClientSockAddr source _cmsg) <- UDP.recvFrom sock
   pure (source, invite)
