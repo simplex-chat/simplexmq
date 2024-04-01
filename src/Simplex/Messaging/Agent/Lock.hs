@@ -6,8 +6,8 @@ module Simplex.Messaging.Agent.Lock
     waitForLock,
     withGetLock,
     withGetLocks,
-    withLockMap,
-    withLocksMap,
+    withLockMap',
+    withLocksMap',
   )
 where
 
@@ -61,13 +61,13 @@ withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
 getPutLock :: (k -> STM Lock) -> k -> String -> STM Lock
 getPutLock getLock key name = getLock key >>= \l -> putTMVar l name $> l
 
-withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
-withLockMap = withGetLock . getMapLock
-{-# INLINE withLockMap #-}
+withLockMap' :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
+withLockMap' = withGetLock . getMapLock
+{-# INLINE withLockMap' #-}
 
-withLocksMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
-withLocksMap = withGetLocks . getMapLock
-{-# INLINE withLocksMap #-}
+withLocksMap' :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
+withLocksMap' = withGetLocks . getMapLock
+{-# INLINE withLocksMap' #-}
 
 getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
 getMapLock locks key = TM.lookup key locks >>= maybe newLock pure

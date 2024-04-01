@@ -799,7 +799,7 @@ withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 
 withConnLock' :: AgentClient -> ConnId -> String -> AM' a -> AM' a
 withConnLock' _ "" _ = id
-withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId name
+withConnLock' AgentClient {connLocks} connId name = withLockMap' connLocks connId name
 {-# INLINE withConnLock' #-}
 
 withInvLock :: AgentClient -> ByteString -> String -> AM a -> AM a
@@ -807,11 +807,11 @@ withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
 {-# INLINE withInvLock #-}
 
 withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
-withInvLock' AgentClient {invLocks} = withLockMap invLocks
+withInvLock' AgentClient {invLocks} = withLockMap' invLocks
 {-# INLINE withInvLock' #-}
 
 withConnLocks :: AgentClient -> [ConnId] -> String -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks} = withLocksMap connLocks . filter (not . B.null)
+withConnLocks AgentClient {connLocks} = withLocksMap' connLocks . filter (not . B.null)
 {-# INLINE withConnLocks #-}
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> AM a) -> AM a
