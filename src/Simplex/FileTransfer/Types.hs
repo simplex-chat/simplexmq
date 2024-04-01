@@ -209,7 +209,6 @@ data SndFileChunkReplica = SndFileChunkReplica
 
 data SndFileReplicaStatus
   = SFRSCreated
-  | SFRSUploading
   | SFRSUploaded
   deriving (Eq, Show)
 
@@ -220,12 +219,10 @@ instance ToField SndFileReplicaStatus where toField = toField . textEncode
 instance TextEncoding SndFileReplicaStatus where
   textDecode = \case
     "created" -> Just SFRSCreated
-    "uploading" -> Just SFRSUploading
     "uploaded" -> Just SFRSUploaded
     _ -> Nothing
   textEncode = \case
     SFRSCreated -> "created"
-    SFRSUploading -> "uploading"
     SFRSUploaded -> "uploaded"
 
 data DeletedSndChunkReplica = DeletedSndChunkReplica

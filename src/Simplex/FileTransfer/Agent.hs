@@ -61,7 +61,6 @@ import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store (StoreError (SEInternal))
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
@@ -480,17 +479,12 @@ runXFTPSndWorker c srv Worker {doWork} = do
       unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
-      liftIO . putStrLn $ "Uploading " <> show (sndFileId, chunkSpec)
-      withStore c $ \db -> do
-        ok <- updateSndChunkReplicaStatus db sndChunkReplicaId SFRSCreated SFRSUploading
-        if ok then pure (Right ()) else pure (Left $ SEInternal "file already uploading")
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       atomically $ waitUntilForeground c
       -- liftIO $ putStrLn $ "uploaded: " <> show chunkOffset
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
-        liftIO . putStrLn $ "Setting SFRSUploaded for " <> show (sndFileId, chunkSpec)
-        ok <- updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploading SFRSUploaded
-        if ok then getSndFile db sndFileId else pure (Left $ SEInternal "file upload didn't start")
+        updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
+        getSndFile db sndFileId
       let uploaded = uploadedSize chunks
           total = totalSize chunks
           complete = all chunkUploaded chunks
