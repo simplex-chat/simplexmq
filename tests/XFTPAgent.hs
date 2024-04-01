@@ -20,10 +20,10 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
-import Simplex.FileTransfer.Description (FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, mb, qrSizeLimit, pattern ValidFileDescription)
+import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.Messaging.Agent (AgentClient, disposeAgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
@@ -44,7 +44,7 @@ import XFTPClient
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
-  it "should send and receive file" testXFTPAgentSendReceive
+  fit "should send and receive file" testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
   it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
   it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
@@ -96,6 +96,10 @@ checkProgress (prev, expected) (progress, total) loop
   | progress < total = loop progress
   | otherwise = pure ()
 
+testNoRedundancy :: HasCallStack => ValidFileDescription 'FRecipient -> IO ()
+testNoRedundancy (ValidFileDescription FileDescription {chunks}) =
+  all (\FileChunk {replicas} -> length replicas == 1) chunks `shouldBe` True
+
 testXFTPAgentSendReceive :: HasCallStack => IO ()
 testXFTPAgentSendReceive = withXFTPServer $ do
   filePath <- createRandomFile
@@ -105,6 +109,9 @@ testXFTPAgentSendReceive = withXFTPServer $ do
     (sfId, _, rfd1, rfd2) <- testSend sndr filePath
     liftIO $ xftpDeleteSndFileInternal sndr sfId
     pure (rfd1, rfd2)
+
+  testNoRedundancy rfd1
+  testNoRedundancy rfd2
 
   -- receive file, delete rcv file
   testReceiveDelete 2 rfd1 filePath
