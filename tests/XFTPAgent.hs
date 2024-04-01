@@ -418,6 +418,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
     liftIO $ testNoRedundancy rfd1
     liftIO $ testNoRedundancy rfd2
     liftIO $ sfId' `shouldBe` sfId
+
     -- prefix path should be removed after sending file
     threadDelay 100000
     doesDirectoryExist prefixPath `shouldReturn` False
