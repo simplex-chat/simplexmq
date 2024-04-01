@@ -25,8 +25,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (foldM, unless, when)
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -148,13 +148,14 @@ writeQueues s = mapM_ $ \q -> when (active q) $ logCreateQueue s q
     active QueueRec {status} = status == QueueActive
 
 readQueues :: FilePath -> IO (Map RecipientId QueueRec)
-readQueues f = foldM processLine M.empty . B.lines =<< B.readFile f
+readQueues f = foldM processLine M.empty . LB.lines =<< LB.readFile f
   where
-    processLine :: Map RecipientId QueueRec -> ByteString -> IO (Map RecipientId QueueRec)
-    processLine m s = case strDecode $ trimCR s of
+    processLine :: Map RecipientId QueueRec -> LB.ByteString -> IO (Map RecipientId QueueRec)
+    processLine m s' = case strDecode $ trimCR s of
       Right r -> pure $ procLogRecord r
       Left e -> printError e $> m
       where
+        s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> Map RecipientId QueueRec
         procLogRecord = \case
           CreateQueue q -> M.insert (recipientId q) q m

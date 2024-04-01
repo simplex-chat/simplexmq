@@ -47,6 +47,7 @@ import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -983,7 +984,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired ms quota old_) 0 . B.lines) >>= \case
+      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired ms quota old_) 0 . LB.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -992,10 +993,11 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
           logInfo "messages restored"
           pure expired
       where
-        restoreMsg !expired ms quota old_ s = do
+        restoreMsg !expired ms quota old_ s' = do
           MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
           addToMsgQueue rId msg
           where
+            s = LB.toStrict s'
             addToMsgQueue rId msg = do
               (isExpired, logFull) <- atomically $ do
                 q <- getMsgQueue ms rId quota

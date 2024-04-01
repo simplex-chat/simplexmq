@@ -27,6 +27,7 @@ import Control.Concurrent.STM
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -189,7 +190,7 @@ readWriteNtfStore f st = do
   pure s
 
 readNtfStore :: FilePath -> NtfStore -> IO ()
-readNtfStore f st = mapM_ addNtfLogRecord . B.lines =<< B.readFile f
+readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addNtfLogRecord s = case strDecode s of
       Left e -> B.putStrLn $ "Log parsing error (" <> B.pack e <> "): " <> B.take 100 s
