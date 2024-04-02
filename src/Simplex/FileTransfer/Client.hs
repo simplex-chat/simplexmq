@@ -51,7 +51,7 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost,
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, liftEitherError, tshow, whenM)
+import Simplex.Messaging.Util (bshow, whenM)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -147,7 +147,7 @@ sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> Excep
 sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = do
   let req = H.requestStreaming N.methodPost "/" [] streamBody
       reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- liftEitherError xftpClientError $ sendRequest http2Client req reqTimeout
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req reqTimeout
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission thParams bodyHead
@@ -198,9 +198,9 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
         let t = chunkTimeout config chunkSize
-        t `timeout` download cbState >>= maybe (throwError PCEResponseTimeout) pure
+        ExceptT (sequence <$> (t `timeout` download cbState)) >>= maybe (throwError PCEResponseTimeout) pure
         where
-          download cbState =
+          download cbState = runExceptT $
             withExceptT PCEResponseError $
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
                 whenM (doesFileExist filePath) (removeFile filePath) >> throwError e

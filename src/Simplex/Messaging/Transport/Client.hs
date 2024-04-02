@@ -23,7 +23,6 @@ where
 import Control.Applicative (optional)
 import Control.Logger.Simple (logError)
 import Control.Monad (when)
-import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -127,10 +126,10 @@ clientTransportConfig TransportClientConfig {logTLSErrors} =
   TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTransportClient :: Transport c => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
@@ -138,7 +137,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
         _ -> connectTCPClient hostName
-  c <- liftIO $ do
+  c <- do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
@@ -149,7 +148,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
           closeTLS tls >> error "onServerCertificate failed"
         Just c -> pure c
       getClientConnection tCfg chain tls
-  client c `E.finally` liftIO (closeConnection c)
+  client c `E.finally` closeConnection c
   where
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr

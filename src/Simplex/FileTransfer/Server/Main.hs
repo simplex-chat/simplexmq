@@ -97,6 +97,8 @@ xftpServerCLI cfgPath logPath = do
                \# with the users who you want to allow uploading files to your server.\n\
                \# create_password: password to upload files (any printable ASCII characters without whitespace, '@', ':' and '/')\n\
                \\n\
+               \# control_port_admin_password:\n\
+               \# control_port_user_password:\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
@@ -155,11 +157,14 @@ xftpServerCLI cfgPath logPath = do
               allowedChunkSizes = serverChunkSizes,
               allowNewFiles = fromMaybe True $ iniOnOff "AUTH" "new_files" ini,
               newFileBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
+              controlPortAdminAuth = either error id <$> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$> strDecodeIni "AUTH" "control_port_user_password" ini,
               fileExpiration =
                 Just
                   defaultFileExpiration
                     { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
                     },
+              fileTimeout = 10 * 60 * 1000000, -- 10 mins to send 4mb chunk
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig

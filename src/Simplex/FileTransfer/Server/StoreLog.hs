@@ -22,6 +22,7 @@ import Control.Concurrent.STM
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:), (.:.))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -88,7 +89,7 @@ readWriteFileStore f st = do
   pure s
 
 readFileStore :: FilePath -> FileStore -> IO ()
-readFileStore f st = mapM_ addFileLogRecord . B.lines =<< B.readFile f
+readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addFileLogRecord s = case strDecode s of
       Left e -> B.putStrLn $ "Log parsing error (" <> B.pack e <> "): " <> B.take 100 s

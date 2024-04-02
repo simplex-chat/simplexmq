@@ -23,7 +23,6 @@ import Data.Int (Int64)
 import Data.List (intercalate, sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
@@ -75,15 +74,15 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
   restoreServerStats
   s <- asks subscriber
   ps <- asks pushServer
-  subs <- readTVarIO =<< asks (subscriptions . store)
-  void . forkIO $ resubscribe s subs
+  resubscribe s
   raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg) `finally` stopServer
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
-      runTransportServer started tcpPort serverParams tCfg (runClient serverSignKey t)
+      env <- ask
+      liftIO $ runTransportServer started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
@@ -147,11 +146,13 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
               ]
         liftIO $ threadDelay' interval
 
-resubscribe :: NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> M ()
-resubscribe NtfSubscriber {newSubQ} subs = do
-  subs' <- atomically $ filterM (fmap ntfShouldSubscribe . readTVar . subStatus) $ M.elems subs
+resubscribe :: NtfSubscriber -> M ()
+resubscribe NtfSubscriber {newSubQ} = do
+  logInfo "Preparing SMP resubscriptions..."
+  subs <- readTVarIO =<< asks (subscriptions . store)
+  subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
   atomically . writeTBQueue newSubQ $ map NtfSub subs'
-  liftIO $ logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
+  logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do

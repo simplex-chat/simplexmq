@@ -13,7 +13,6 @@
 module SMPClient where
 
 import Control.Monad.Except (runExceptT)
-import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
@@ -68,23 +67,23 @@ xit'' d t = do
   ci <- runIO $ lookupEnv "CI"
   (if ci == Just "true" then skip "skipped on CI" . it d else it d) t
 
-testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandleSMP c -> m a) -> m a
+testSMPClient :: Transport c => (THandleSMP c -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 
-testSMPClientVR :: (Transport c, MonadUnliftIO m, MonadFail m) => VersionRangeSMP -> (THandleSMP c -> m a) -> m a
+testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h -> do
-    g <- liftIO C.newRandom
+    g <- C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash vr) >>= \case
+    runExceptT (smpClientHandshake h ks testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
 cfg :: ServerConfig
 cfg =
   ServerConfig
-    { transports = undefined,
+    { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
       -- serverTbqSize = 1,
@@ -95,6 +94,8 @@ cfg =
       storeMsgsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
+      controlPortUserAuth = Nothing,
+      controlPortAdminAuth = Nothing,
       messageExpiration = Just defaultMessageExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
@@ -127,7 +128,7 @@ withSmpServerConfigOn t cfg' port' =
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn t = withSmpServerConfigOn t cfg
 
-serverBracket :: (HasCallStack, MonadUnliftIO m) => (TMVar Bool -> m ()) -> m () -> (HasCallStack => ThreadId -> m a) -> m a
+serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket

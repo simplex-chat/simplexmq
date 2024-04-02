@@ -238,17 +238,6 @@ type SessionCode = ByteString
 
 type RCStepTMVar a = TMVar (Either RCErrorType a)
 
-type Tasks = TVar [Async ()]
-
-asyncRegistered :: MonadUnliftIO m => Tasks -> m () -> m ()
-asyncRegistered tasks action = async action >>= registerAsync tasks
-
-registerAsync :: MonadIO m => Tasks -> Async () -> m ()
-registerAsync tasks = atomically . modifyTVar tasks . (:)
-
-cancelTasks :: MonadIO m => Tasks -> m ()
-cancelTasks tasks = readTVarIO tasks >>= mapM_ cancel
-
 $(JQ.deriveJSON (sumTypeJSON $ dropPrefix "RCE") ''RCErrorType)
 
 $(JQ.deriveJSON defaultJSON ''RCCtrlAddress)

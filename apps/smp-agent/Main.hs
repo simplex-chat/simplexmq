@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -38,7 +39,8 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 -- Warning: this SMP agent server is experimental - it does not work correctly with multiple connected TCP clients in some cases.
 main :: IO ()
 main = do
-  putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
+  let AgentConfig {tcpPort} = cfg
+  putStrLn $ maybe (error "no agent port") (\port -> "SMP agent listening on port " ++ port) tcpPort
   setLogLevel LogInfo -- LogError
   Right st <- createAgentStore agentDbFile agentDbKey False MCConsole
   withGlobalLogging logCfg $ runSMPAgent (transport @TLS) cfg servers st
