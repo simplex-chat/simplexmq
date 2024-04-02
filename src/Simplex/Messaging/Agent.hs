@@ -136,19 +136,21 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import qualified Data.OrdPSQ as OP
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
-import Data.Time.Clock.System (systemToUTCTime)
+import Data.Time.Clock.System (getSystemTime, systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
+import Debug.Trace
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Lock (withLock', withLock)
+import Simplex.Messaging.Agent.Lock (withLock, withLock')
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -159,9 +161,10 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
-import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOn, pattern PQEncOff, pattern PQSupportOn, pattern PQSupportOff)
+import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
+import qualified Simplex.Messaging.Encoding.Base64 as B64
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
@@ -197,7 +200,7 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
-      c@AgentClient {acThread}  <- atomically . newAgentClient clientId initServers =<< ask
+      c@AgentClient {acThread} <- atomically . newAgentClient clientId initServers =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -238,7 +241,7 @@ createUser c = withAgentEnv c .: createUser' c
 {-# INLINE createUser #-}
 
 -- | Delete user record optionally deleting all user's connections on SMP servers
-deleteUser :: AgentClient -> UserId -> Bool -> AE  ()
+deleteUser :: AgentClient -> UserId -> Bool -> AE ()
 deleteUser c = withAgentEnv c .: deleteUser' c
 {-# INLINE deleteUser #-}
 
@@ -769,7 +772,7 @@ compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = 
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   pure $
     (,)
-      <$> (qUri `compatibleVersion` smpClientVRange) 
+      <$> (qUri `compatibleVersion` smpClientVRange)
       <*> (crAgentVRange `compatibleVersion` smpAgentVRange pqSup)
 
 versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
@@ -1190,7 +1193,7 @@ enqueueMessage c cData sq msgFlags aMessage =
 {-# INLINE enqueueMessage #-}
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
-enqueueMessageB :: forall t. (Traversable t) => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
+enqueueMessageB :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
 enqueueMessageB c reqs = do
   cfg <- asks config
   reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db cfg) reqs
@@ -1223,7 +1226,7 @@ enqueueSavedMessage :: AgentClient -> ConnData -> AgentMsgId -> SndQueue -> AM' 
 enqueueSavedMessage c cData msgId sq = enqueueSavedMessageB c $ Identity (cData, [sq], msgId)
 {-# INLINE enqueueSavedMessage #-}
 
-enqueueSavedMessageB :: (Foldable t) => AgentClient -> t (ConnData, [SndQueue], AgentMsgId) -> AM' ()
+enqueueSavedMessageB :: Foldable t => AgentClient -> t (ConnData, [SndQueue], AgentMsgId) -> AM' ()
 enqueueSavedMessageB c reqs = do
   -- saving to the database is in the start to avoid race conditions when delivery is read from queue before it is saved
   void $ withStoreBatch' c $ \db -> concatMap (storeDeliveries db) reqs
@@ -2021,7 +2024,18 @@ cleanupManager c@AgentClient {subQ} = do
     notify :: forall e. AEntityI e => EntityId -> ACommand 'Agent e -> AM ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, APC (sAEntity @e) cmd)
 
-data ACKd = ACKd | ACKPending
+data ACKd = ACKd | ACKPending String SMP.RecipientId SMP.EntityId
+
+trackAcks :: AgentClient -> AM ACKd -> AM ()
+trackAcks AgentClient {agentEnv = Env {acks}} a =
+  a >>= \case
+    ACKd -> pure ()
+    ACKPending label rId msgId -> liftIO $ do
+      now <- liftIO getSystemTime
+      atomically $ modifyTVar' acks $ OP.insert (rId, msgId) now label
+      traceEventIO $ mconcat ["ACK-PENDING ", logEntity rId, "/", logEntity msgId, " ", label]
+      where
+        logEntity bs = B.unpack . B64.encode $ B.take 3 bs
 
 -- | make sure to ACK or throw in each message processing branch
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
@@ -2037,7 +2051,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
-            void . handleNotifyAck $ do
+            trackAcks c . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
@@ -2094,7 +2108,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
                                 notify $ MSG msgMeta msgFlags body
-                                pure ACKPending
+                                pure $ ACKPending "R/A_MSG" rId srvMsgId
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
                               QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
                               QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg srvMsgId qs
@@ -2126,7 +2140,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                       AgentMessage _ (A_MSG body) -> do
                                         logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
                                         notify $ MSG msgMeta msgFlags body
-                                        pure ACKPending
+                                        pure $ ACKPending "L-DUPLICATE/A_MSG" rId srvMsgId
                                       _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
@@ -2317,7 +2331,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             logServer "<--" c srv rId $ "MSG <RCPT>:" <> logSecret srvMsgId
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAgentError` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
-              Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
+              Just rs' -> notify (RCVD msgMeta rs') $> ACKPending "RCVD" rId srvMsgId
               Nothing -> ack
             where
               ack :: AM ACKd

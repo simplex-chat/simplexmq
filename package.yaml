@@ -59,6 +59,7 @@ dependencies:
   - network-udp >= 0.0 && < 0.1
   - optparse-applicative >= 0.15 && < 0.17
   - process == 1.6.*
+  - psqueues
   - random >= 1.1 && < 1.3
   - simple-logger == 0.1.*
   - socks == 0.6.*

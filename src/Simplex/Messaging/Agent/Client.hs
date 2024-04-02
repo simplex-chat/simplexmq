@@ -153,6 +153,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing, listToMaybe)
+import qualified Data.OrdPSQ as OP
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -160,12 +161,14 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+import Debug.Trace
+import GHC.Conc (unsafeIOToSTM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse)
-import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..), XFTPErrorType (DIGEST), XFTPVersion)
+import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
 import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -195,6 +198,7 @@ import Simplex.Messaging.Protocol
     ErrorType,
     MsgFlags (..),
     MsgId,
+    NtfPublicAuthKey,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -206,22 +210,21 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
-    NtfPublicAuthKey,
     SMPMsgMeta (..),
     SProtocolType (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
+    VersionRangeSMPC,
+    VersionSMPC,
     XFTPServer,
     XFTPServerWithAuth,
-    VersionSMPC,
-    VersionRangeSMPC,
     sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -531,7 +534,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       g <- asks random
       env <- ask
       liftError' (protocolClientError SMP $ B.unpack $ strEncode srv) $
-        getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected env v
+        getProtocolClient g tSess cfg (Just msgQ) $
+          clientDisconnected env v
 
     clientDisconnected :: Env -> SMPClientVar -> SMPClient -> IO ()
     clientDisconnected env v client = do
@@ -634,7 +638,8 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
       cfg <- lift $ getClientConfig c ntfCfg
       g <- asks random
       liftError' (protocolClientError NTF $ B.unpack $ strEncode srv) $
-        getProtocolClient g tSess cfg Nothing $ clientDisconnected v
+        getProtocolClient g tSess cfg Nothing $
+          clientDisconnected v
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
     clientDisconnected v client = do
@@ -656,7 +661,8 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
       cfg <- asks $ xftpCfg . config
       xftpNetworkConfig <- readTVarIO useNetworkConfig
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
-        X.getXFTPClient tSess cfg {xftpNetworkConfig} $ clientDisconnected v
+        X.getXFTPClient tSess cfg {xftpNetworkConfig} $
+          clientDisconnected v
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
@@ -1258,9 +1264,22 @@ disableQueuesNtfs :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentEr
 disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueuesNtfs
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
-sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp ->
+sendAck c@AgentClient {agentEnv = Env {acks, acksLate}} rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
+  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp -> do
     ackSMPMessage smp rcvPrivateKey rcvId msgId
+    let k = (rcvId, msgId)
+    atomically $
+      OP.deleteView k <$> readTVar acks >>= \case
+        Just (_time, label, op') -> do
+          writeTVar acks op'
+          unsafeIOToSTM . traceEventIO $ mconcat ["ACK-MET ", B.unpack $ logSecret rcvId, "/", B.unpack $ logSecret msgId, " ", label]
+        Nothing ->
+          OP.deleteView k <$> readTVar acksLate >>= \case
+            Just (_time, label, op') -> do
+              writeTVar acksLate op'
+              unsafeIOToSTM . traceEventIO $ mconcat ["ACK-LATE ", B.unpack $ logSecret rcvId, "/", B.unpack $ logSecret msgId, " ", label]
+            Nothing ->
+              unsafeIOToSTM . traceEventIO $ mconcat ["ACK-DUPL ", B.unpack $ logSecret rcvId, "/", B.unpack $ logSecret msgId]
   atomically $ releaseGetLock c rq
 
 hasGetLock :: AgentClient -> RcvQueue -> STM Bool

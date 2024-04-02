@@ -35,17 +35,23 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Concurrent (threadDelay)
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteArray (ScrubbedBytes)
+import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
+import Data.OrdPSQ (OrdPSQ)
+import qualified Data.OrdPSQ as OP
 import Data.Time.Clock (NominalDiffTime, nominalDay)
-import Data.Time.Clock.System (SystemTime (..))
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Word (Word16)
+import Debug.Trace
 import Network.Socket
 import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
@@ -57,10 +63,11 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (PQSupport, VersionRangeE2E, supportedE2EEncryptVRange)
+import qualified Simplex.Messaging.Encoding.Base64 as B64
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, VersionRangeSMPC, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (EntityId, NtfServer, RecipientId, VersionRangeSMPC, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
@@ -68,6 +75,7 @@ import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
+import UnliftIO.Async (async, cancel)
 import UnliftIO.STM
 
 type AM' a = ReaderT Env IO a
@@ -201,7 +209,9 @@ data Env = Env
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,
-    multicastSubscribers :: TMVar Int
+    multicastSubscribers :: TMVar Int,
+    acks :: TVar (OrdPSQ (RecipientId, EntityId) SystemTime String),
+    acksLate :: TVar (OrdPSQ (RecipientId, EntityId) SystemTime String)
   }
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
@@ -211,7 +221,24 @@ newSMPAgentEnv config store = do
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
-  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
+  acks <- newTVarIO OP.empty
+  acksLate <- newTVarIO OP.empty
+  ackMonPid <- async $ ackMonitor acks acksLate
+  void $! mkWeakTVar acks (cancel ackMonPid >> putStrLn "monitor begone!")
+  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers, acks, acksLate}
+
+ackMonitor :: TVar (OrdPSQ (RecipientId, EntityId) SystemTime String) -> TVar (OrdPSQ (RecipientId, EntityId) SystemTime String) -> IO a
+ackMonitor acks acksLate = forever $ do
+  MkSystemTime now _ns <- liftIO getSystemTime
+  late <- atomically $ do
+    (late, later) <- OP.atMostView (MkSystemTime (now - 30) 0) <$> readTVar acks
+    late <$ writeTVar acks later
+  forM_ late $ \(k@(rId, msgId), time, label) -> do
+    traceEventIO $ concat ["ACK-MISS ", logEntity rId, "/", logEntity msgId, " ", label]
+    atomically $ modifyTVar' acksLate $ OP.insert k time label
+  threadDelay 1000000
+  where
+    logEntity bs = B.unpack . B64.encode $ B.take 3 bs
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
