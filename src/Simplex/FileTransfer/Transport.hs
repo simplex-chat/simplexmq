@@ -139,6 +139,8 @@ data XFTPErrorType
     BLOCK
   | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
     SESSION
+  | -- | incorrect handshake command
+    HANDSHAKE
   | -- | SMP command is unknown or has invalid syntax
     CMD {cmdErr :: CommandError}
   | -- | command authorization error - bad signature or non-existing SMP queue
@@ -181,6 +183,7 @@ instance Encoding XFTPErrorType where
   smpEncode = \case
     BLOCK -> "BLOCK"
     SESSION -> "SESSION"
+    HANDSHAKE -> "HANDSHAKE"
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
     SIZE -> "SIZE"
@@ -199,6 +202,7 @@ instance Encoding XFTPErrorType where
     A.takeTill (== ' ') >>= \case
       "BLOCK" -> pure BLOCK
       "SESSION" -> pure SESSION
+      "HANDSHAKE" -> pure HANDSHAKE
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
       "SIZE" -> pure SIZE

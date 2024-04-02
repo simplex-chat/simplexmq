@@ -22,7 +22,7 @@ In effect, this makes it usable only to signal that some application-level hands
 ALPN can be used to negotiate for any TLS-based protocol, but the description will focus on XFTP.
 
 TransportClientConfig gets a new `alpn :: Maybe [ALPN]` field so a TLS transport can use it during TLS client creation.
-XFTP client sets it to `Just ["xftp/1.1"]`.
+XFTP client sets it to `Just ["xftp/1"]`.
 The exact value is not important as long it is in agreement with the server side, but ALPN RFC insists on it being an IANA-registered identifier.
 
 XFTP server sets `onALPNClientSuggest` TLS hook to pick the protocol when it is provided.
@@ -62,7 +62,7 @@ If there's a value set, it then sends an initial block and checks out the server
 After that, it sends "client handshake" request to finish version negotiation.
 
 ```haskell
-let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1.1"]}
+let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1"]}
 -- ...
 http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client -- ...
 thVersion <- case sessionALPN http2Client of
@@ -79,7 +79,6 @@ TBD
 ### Client Hello (request)
 
 Can be added to existing v1 `FileCommand`, like `PING`, for transmission to be indistinguishable from other v1 commands (XXX: marked for which party?).
-However, using ALPN is already giving up this information unless e.g. `xftp/1.0` is set to be a valid negotiated version for the current (v1) protocol.
 
 ### Server handshake (response)
 

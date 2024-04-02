@@ -65,7 +65,7 @@ xftpBlockSize :: Int
 xftpBlockSize = 16384
 
 -- | File protocol clients
-data FileParty = FRecipient | FSender
+data FileParty = FRecipient | FSender -- XXX: FHandshake?
   deriving (Eq, Show)
 
 data SFileParty :: FileParty -> Type where
@@ -107,6 +107,8 @@ data FileCommandTag (p :: FileParty) where
   FGET_ :: FileCommandTag FRecipient
   FACK_ :: FileCommandTag FRecipient
   PING_ :: FileCommandTag FRecipient
+  HELO_ :: FileCommandTag FRecipient
+  HAND_ :: FileCommandTag FRecipient
 
 deriving instance Show (FileCommandTag p)
 
@@ -121,6 +123,8 @@ instance FilePartyI p => Encoding (FileCommandTag p) where
     FGET_ -> "FGET"
     FACK_ -> "FACK"
     PING_ -> "PING"
+    HELO_ -> "HELO"
+    HAND_ -> "HAND"
   smpP = messageTagP
 
 instance Encoding FileCmdTag where
@@ -136,6 +140,8 @@ instance ProtocolMsgTag FileCmdTag where
     "FGET" -> Just $ FCT SFRecipient FGET_
     "FACK" -> Just $ FCT SFRecipient FACK_
     "PING" -> Just $ FCT SFRecipient PING_
+    "HELO" -> Just $ FCT SFRecipient HELO_
+    "HAND" -> Just $ FCT SFRecipient HAND_
     _ -> Nothing
 
 instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
@@ -158,6 +164,8 @@ data FileCommand (p :: FileParty) where
   FGET :: RcvPublicDhKey -> FileCommand FRecipient
   FACK :: FileCommand FRecipient
   PING :: FileCommand FRecipient
+  HELO :: FileCommand FRecipient
+  HAND :: VersionXFTP -> FileCommand FRecipient
 
 deriving instance Show (FileCommand p)
 
@@ -184,6 +192,8 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     FGET rKey -> e (FGET_, ' ', rKey)
     FACK -> e FACK_
     PING -> e PING_
+    HELO -> e HELO_
+    HAND cVer -> e (HAND_, ' ', cVer)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -200,6 +210,12 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
       | not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
+      | isNothing auth && B.null fileId -> Right cmd
+      | otherwise -> Left $ CMD HAS_AUTH
+    HELO
+      | isNothing auth && B.null fileId -> Right cmd
+      | otherwise -> Left $ CMD HAS_AUTH
+    HAND {}
       | isNothing auth && B.null fileId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
@@ -223,6 +239,8 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
         FGET_ -> FGET <$> _smpP
         FACK_ -> pure FACK
         PING_ -> pure PING
+        HELO_ -> pure HELO
+        HAND_ -> HAND <$> _smpP
 
   fromProtocolError = fromProtocolError @XFTPVersion @XFTPErrorType @FileResponse
   {-# INLINE fromProtocolError #-}
@@ -244,6 +262,7 @@ data FileResponseTag
   | FROk_
   | FRErr_
   | FRPong_
+  | FRHandshake_
   deriving (Show)
 
 instance Encoding FileResponseTag where
@@ -254,6 +273,7 @@ instance Encoding FileResponseTag where
     FROk_ -> "OK"
     FRErr_ -> "ERR"
     FRPong_ -> "PONG"
+    FRHandshake_ -> "HAND"
   smpP = messageTagP
 
 instance ProtocolMsgTag FileResponseTag where
@@ -264,6 +284,7 @@ instance ProtocolMsgTag FileResponseTag where
     "OK" -> Just FROk_
     "ERR" -> Just FRErr_
     "PONG" -> Just FRPong_
+    "HAND" -> Just FRHandshake_
     _ -> Nothing
 
 data FileResponse
@@ -273,6 +294,7 @@ data FileResponse
   | FROk
   | FRErr XFTPErrorType
   | FRPong
+  | FRHandshake VersionXFTP
   deriving (Show)
 
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
@@ -284,6 +306,7 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
     FROk -> e FROk_
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
+    FRHandshake v -> e (FRHandshake_, ' ', v)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -295,6 +318,7 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
     FROk_ -> pure FROk
     FRErr_ -> FRErr <$> _smpP
     FRPong_ -> pure FRPong
+    FRHandshake_ -> FRHandshake <$> _smpP
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX
@@ -305,10 +329,12 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
     FRSndIds {} -> noEntity
-    -- ERR response does not always have entity ID
+    -- OK/ERR responses does not always have entity ID
+    FROk -> Right cmd
     FRErr _ -> Right cmd
     -- PONG response must not have queue ID
     FRPong -> noEntity
+    FRHandshake {} -> noEntity
     -- other server responses must have entity ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY

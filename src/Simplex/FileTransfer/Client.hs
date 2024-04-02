@@ -9,6 +9,7 @@
 
 module Simplex.FileTransfer.Client where
 
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
@@ -18,9 +19,9 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Maybe (fromMaybe)
 import Data.Time (UTCTime)
 import Data.Word (Word32)
-import Debug.Trace
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Description (mb)
@@ -46,12 +47,12 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (THandleParams (..), supportedParameters)
+import Simplex.Messaging.Transport (HandshakeError (VERSION), THandleParams (..), TransportError (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, whenM)
+import Simplex.Messaging.Util (bshow, liftError', tshow, whenM)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -91,7 +92,7 @@ defaultXFTPClientConfig =
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig} disconnected = runExceptT $ do
-  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/test"]}
+  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1", "xftp/0"]}
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
@@ -99,13 +100,33 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkC
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
-  http2Client <- liftEitherError xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
+  http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
   let HTTP2Client {sessionId, sessionALPN} = http2Client
-      thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, implySessId = False, batch = True}
-      c = XFTPClient {http2Client, thParams, transportSession, config}
-  traceM $ "Negotiated protocol: " <> show sessionALPN
+      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
+      c0 = XFTPClient {http2Client, thParams = thParams0, transportSession, config}
+  logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
+  thVersion <- case fromMaybe "xftp/0" sessionALPN of
+    "xftp/0" -> pure $ VersionXFTP 1
+    "xftp/1" -> xftpClientHandshakeV1 c0
+    _ -> throwError $ PCETransportError (TEHandshake VERSION)
+  let c = c0 {thParams = thParams0 {thVersion}}
   atomically $ writeTVar clientVar $ Just c
   pure c
+
+xftpClientHandshakeV1 :: XFTPClient -> ExceptT XFTPClientError IO VersionXFTP
+xftpClientHandshakeV1 c@XFTPClient {thParams} = do
+  sv <-
+    send_ HELO >>= \case
+      FRHandshake serverVersion -> pure serverVersion
+      r -> throwError $ PCEUnexpectedResponse $ bshow r
+  send_ (HAND currentXFTPVersion) >>= \case
+    -- TODO: compatible version range
+    FROk -> pure sv
+    r -> throwError $ PCEUnexpectedResponse $ bshow r
+  where
+    send_ cmd = do
+      t <- liftEither . first PCETransportError $ xftpEncodeTransmission thParams ("", "", FileCmd SFRecipient cmd)
+      fst <$> sendXFTPTransmission c t Nothing
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client

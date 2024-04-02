@@ -8,7 +8,7 @@
 
 module Simplex.FileTransfer.Server.Env where
 
-import Control.Logger.Simple (logError, logInfo)
+import Control.Logger.Simple (logInfo)
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
@@ -32,6 +32,7 @@ import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprin
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
+import Simplex.FileTransfer.Transport (VersionXFTP)
 
 data XFTPServerConfig = XFTPServerConfig
   { xftpPort :: ServiceName,
@@ -110,9 +111,8 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
         tlsServerParams'
           { T.serverHooks =
               def
-                { T.onALPNClientSuggest = Just $ \alpn -> do
-                    logError $ "Client suggests ALPN: " <> tshow alpn
-                    case alpn of
+                { T.onALPNClientSuggest = Just $ \alpns ->
+                    case filter (`elem` ["xftp/0", "xftp/1"]) alpns of
                       [] -> pure ""
                       p : _ps -> pure p
                 }
@@ -128,3 +128,5 @@ data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
+  | XFTPReqHello
+  | XFTPReqHandshake VersionXFTP
