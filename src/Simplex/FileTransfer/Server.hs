@@ -48,7 +48,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, ProtocolEncoding, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, Transmission, TransmissionAuth)
+import Simplex.Messaging.Protocol (CorrId (..), ProtocolEncoding, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, Transmission, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
@@ -292,7 +292,8 @@ processRequest_ process XFTPTransportRequest {thParams, reqBody = body@HTTP2Body
         Right (sig_, signed, (corrId, fId, cmdOrErr)) ->
           case cmdOrErr of
             Right cmd -> do
-              verifyXFTPTransmission sig_ signed fId cmd >>= \case
+              let THandleParams {thAuth} = thParams
+              verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) sig_ signed fId cmd >>= \case
                 VRVerified req -> uncurry send =<< process body req
                 VRFailed -> send (FRErr AUTH) Nothing
             Left e -> send (FRErr e) Nothing
@@ -321,8 +322,8 @@ makeXFTPResponse thParams t serverFile_ = H.responseStreaming N.ok200 [] streamB
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
-verifyXFTPTransmission :: Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
-verifyXFTPTransmission tAuth authorized fId cmd =
+verifyXFTPTransmission :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission auth_ tAuth authorized fId cmd =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
@@ -337,7 +338,7 @@ verifyXFTPTransmission tAuth authorized fId cmd =
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
           _ -> maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdAuthorization Nothing tAuth authorized k then VRVerified req else VRFailed
+    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case

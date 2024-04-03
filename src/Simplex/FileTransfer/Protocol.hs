@@ -337,9 +337,9 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   _ -> Nothing
 
 xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeAuthTransmission thParams pKey (corrId, fId, msg) = do
+xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey (corrId, fId, msg) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, fId, msg)
-  xftpEncodeBatch1 . (,tToSend) =<< authTransmission Nothing (Just pKey) corrId tForAuth
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth (Just pKey) corrId tForAuth
 
 xftpEncodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission thParams (corrId, fId, msg) = do
