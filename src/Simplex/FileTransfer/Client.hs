@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -22,6 +23,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (fromMaybe)
 import Data.Time (UTCTime)
 import Data.Word (Word32)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Description (mb)
@@ -39,6 +42,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( BasicAuth,
@@ -47,12 +51,13 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (HandshakeError (VERSION), THandleParams (..), TransportError (..), supportedParameters)
+import Simplex.Messaging.Transport (HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, liftError', tshow, whenM)
+import Simplex.Messaging.Util (bshow, liftEitherWith, liftError', tshow, whenM)
+import Simplex.Messaging.Version (compatibleVersion, pattern Compatible)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -65,7 +70,8 @@ data XFTPClient = XFTPClient
 
 data XFTPClientConfig = XFTPClientConfig
   { xftpNetworkConfig :: NetworkConfig,
-    uploadTimeoutPerMb :: Int64
+    uploadTimeoutPerMb :: Int64,
+    serverVRange :: VersionRangeXFTP
   }
 
 data XFTPChunkBody = XFTPChunkBody
@@ -87,12 +93,13 @@ defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig =
   XFTPClientConfig
     { xftpNetworkConfig = defaultNetworkConfig,
-      uploadTimeoutPerMb = 10000000 -- 10 seconds
+      uploadTimeoutPerMb = 10000000, -- 10 seconds
+      serverVRange = supportedFileServerVRange
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig} disconnected = runExceptT $ do
-  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1", "xftp/0"]}
+getXFTPClient :: TVar ChaChaDRG -> TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
+  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1"]}
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
@@ -103,30 +110,46 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkC
   http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
-      c0 = XFTPClient {http2Client, thParams = thParams0, transportSession, config}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
-  thVersion <- case fromMaybe "xftp/0" sessionALPN of
-    "xftp/0" -> pure $ VersionXFTP 1
-    "xftp/1" -> xftpClientHandshakeV1 c0
+  thParams <- case fromMaybe "xftp/0" sessionALPN of
+    "xftp/0" -> pure thParams0
+    "xftp/1" -> xftpClientHandshakeV1 g serverVRange keyHash http2Client thParams0
     _ -> throwError $ PCETransportError (TEHandshake VERSION)
-  let c = c0 {thParams = thParams0 {thVersion}}
+  let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c
   pure c
 
-xftpClientHandshakeV1 :: XFTPClient -> ExceptT XFTPClientError IO VersionXFTP
-xftpClientHandshakeV1 c@XFTPClient {thParams} = do
-  sv <-
-    send_ HELO >>= \case
-      FRHandshake serverVersion -> pure serverVersion
-      r -> throwError $ PCEUnexpectedResponse $ bshow r
-  send_ (HAND currentXFTPVersion) >>= \case
-    -- TODO: compatible version range
-    FROk -> pure sv
-    r -> throwError $ PCEUnexpectedResponse $ bshow r
+xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP -> ExceptT XFTPClientError IO THandleParamsXFTP
+xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey, serverCerts = _todo} thParams0 = do
+  -- step 1: pass initiative to server to get its handshake
+  let helloReq = H.requestNoBody "POST" "/" []
+  HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody'}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c helloReq Nothing
+  shsBody <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ C.unPad shsBody'
+  XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ smpDecode shsBody
+  -- step 2: validate server handshake
+  unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
+  (params, chs) <- case xftpVersionRange `compatibleVersion` serverVRange of
+    Nothing -> throwError $ PCEResponseError HANDSHAKE
+    Just (Compatible v) -> do
+      sk_ <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ do
+        let (X.CertificateChain cert, exact) = serverAuth
+        case cert of
+          [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
+          _ -> throwError "bad certificate"
+        pubKey <- C.verifyX509 serverKey exact
+        C.x509ToPublic (pubKey, []) >>= C.pubKey
+      (pk, k) <- atomically $ C.generateKeyPair g
+      let auth = THandleAuth {peerPubKey = sk_, privKey = k}
+      pure (thParams0 {thAuth = Just auth, thVersion = v}, XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = pk})
+  -- step 3: send client handshake
+  let chsReq = H.requestBuilder "POST" "/" [] $ padXftp (smpEncode chs)
+  HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c chsReq Nothing
+  -- step 4: validate server confirmation
+  unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
+  -- all done, return negotiated params
+  pure params
   where
-    send_ cmd = do
-      t <- liftEither . first PCETransportError $ xftpEncodeTransmission thParams ("", "", FileCmd SFRecipient cmd)
-      fst <$> sendXFTPTransmission c t Nothing
+    padXftp bs = either (error "assert: xftpBlockSize < 65k") byteString $ C.pad bs xftpBlockSize
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
@@ -221,10 +244,11 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let t = chunkTimeout config chunkSize
         ExceptT (sequence <$> (t `timeout` download cbState)) >>= maybe (throwError PCEResponseTimeout) pure
         where
-          download cbState = runExceptT $
-            withExceptT PCEResponseError $
-              receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
-                whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
+          download cbState =
+            runExceptT $
+              withExceptT PCEResponseError $
+                receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
+                  whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 

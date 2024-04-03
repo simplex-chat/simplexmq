@@ -25,7 +25,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.FileTransfer.Transport (VersionXFTP, XFTPErrorType (..), XFTPVersion, pattern VersionXFTP, xftpClientHandshake)
+import Simplex.FileTransfer.Transport (VersionXFTP, XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub, pattern VersionXFTP)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -107,8 +107,6 @@ data FileCommandTag (p :: FileParty) where
   FGET_ :: FileCommandTag FRecipient
   FACK_ :: FileCommandTag FRecipient
   PING_ :: FileCommandTag FRecipient
-  HELO_ :: FileCommandTag FRecipient
-  HAND_ :: FileCommandTag FRecipient
 
 deriving instance Show (FileCommandTag p)
 
@@ -123,8 +121,6 @@ instance FilePartyI p => Encoding (FileCommandTag p) where
     FGET_ -> "FGET"
     FACK_ -> "FACK"
     PING_ -> "PING"
-    HELO_ -> "HELO"
-    HAND_ -> "HAND"
   smpP = messageTagP
 
 instance Encoding FileCmdTag where
@@ -140,8 +136,6 @@ instance ProtocolMsgTag FileCmdTag where
     "FGET" -> Just $ FCT SFRecipient FGET_
     "FACK" -> Just $ FCT SFRecipient FACK_
     "PING" -> Just $ FCT SFRecipient PING_
-    "HELO" -> Just $ FCT SFRecipient HELO_
-    "HAND" -> Just $ FCT SFRecipient HAND_
     _ -> Nothing
 
 instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
@@ -150,7 +144,7 @@ instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
 instance Protocol XFTPVersion XFTPErrorType FileResponse where
   type ProtoCommand FileResponse = FileCmd
   type ProtoType FileResponse = 'PXFTP
-  protocolClientHandshake = xftpClientHandshake
+  protocolClientHandshake = xftpClientHandshakeStub
   protocolPing = FileCmd SFRecipient PING
   protocolError = \case
     FRErr e -> Just e
@@ -164,8 +158,6 @@ data FileCommand (p :: FileParty) where
   FGET :: RcvPublicDhKey -> FileCommand FRecipient
   FACK :: FileCommand FRecipient
   PING :: FileCommand FRecipient
-  HELO :: FileCommand FRecipient
-  HAND :: VersionXFTP -> FileCommand FRecipient
 
 deriving instance Show (FileCommand p)
 
@@ -192,8 +184,6 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     FGET rKey -> e (FGET_, ' ', rKey)
     FACK -> e FACK_
     PING -> e PING_
-    HELO -> e HELO_
-    HAND cVer -> e (HAND_, ' ', cVer)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -210,12 +200,6 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
       | not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
-      | isNothing auth && B.null fileId -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
-    HELO
-      | isNothing auth && B.null fileId -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
-    HAND {}
       | isNothing auth && B.null fileId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
@@ -239,8 +223,6 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
         FGET_ -> FGET <$> _smpP
         FACK_ -> pure FACK
         PING_ -> pure PING
-        HELO_ -> pure HELO
-        HAND_ -> HAND <$> _smpP
 
   fromProtocolError = fromProtocolError @XFTPVersion @XFTPErrorType @FileResponse
   {-# INLINE fromProtocolError #-}

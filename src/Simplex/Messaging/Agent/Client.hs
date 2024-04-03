@@ -165,7 +165,7 @@ import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientCo
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse)
-import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..), XFTPErrorType (DIGEST), XFTPVersion)
+import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
 import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -195,6 +195,7 @@ import Simplex.Messaging.Protocol
     ErrorType,
     MsgFlags (..),
     MsgId,
+    NtfPublicAuthKey,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -206,22 +207,21 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
-    NtfPublicAuthKey,
     SMPMsgMeta (..),
     SProtocolType (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
+    VersionRangeSMPC,
+    VersionSMPC,
     XFTPServer,
     XFTPServerWithAuth,
-    VersionSMPC,
-    VersionRangeSMPC,
     sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -531,7 +531,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
       g <- asks random
       env <- ask
       liftError' (protocolClientError SMP $ B.unpack $ strEncode srv) $
-        getProtocolClient g tSess cfg (Just msgQ) $ clientDisconnected env v
+        getProtocolClient g tSess cfg (Just msgQ) $
+          clientDisconnected env v
 
     clientDisconnected :: Env -> SMPClientVar -> SMPClient -> IO ()
     clientDisconnected env v client = do
@@ -634,7 +635,8 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
       cfg <- lift $ getClientConfig c ntfCfg
       g <- asks random
       liftError' (protocolClientError NTF $ B.unpack $ strEncode srv) $
-        getProtocolClient g tSess cfg Nothing $ clientDisconnected v
+        getProtocolClient g tSess cfg Nothing $
+          clientDisconnected v
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
     clientDisconnected v client = do
@@ -654,9 +656,11 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
       cfg <- asks $ xftpCfg . config
+      g <- asks random
       xftpNetworkConfig <- readTVarIO useNetworkConfig
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
-        X.getXFTPClient tSess cfg {xftpNetworkConfig} $ clientDisconnected v
+        X.getXFTPClient g tSess cfg {xftpNetworkConfig} $
+          clientDisconnected v
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
@@ -951,7 +955,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
   rcvPath <- getTempFilePath workDir
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
+    X.getXFTPClient g tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
       Right xftp -> withTestChunk filePath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
