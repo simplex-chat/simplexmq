@@ -175,23 +175,25 @@ benchmarks:
     source-dirs: benchmarks
     main: Bench.hs
     dependencies:
-    - containers
-    - hashable == 1.4.*
-    - hspec
-    - simplexmq
-    - tasty
-    - tasty-bench
-    - tasty-hspec
-    - unliftio
-    - unordered-containers
-    - zstd
+      - base64
+      - base64-bytestring
+      - containers
+      - hashable == 1.4.*
+      - hspec
+      - simplexmq
+      - tasty
+      - tasty-bench
+      - tasty-hspec
+      - unliftio
+      - unordered-containers
+      - zstd
     ghc-options:
-    - -fproc-alignment=64
-    - -rtsopts
-    - -threaded
-    - -with-rtsopts=-A64m
-    - -with-rtsopts=-N1
-    - -with-rtsopts=-T
+      - -fproc-alignment=64
+      - -rtsopts
+      - -threaded
+      - -with-rtsopts=-A64m
+      - -with-rtsopts=-N1
+      - -with-rtsopts=-T
 
 ghc-options:
   # - -haddock

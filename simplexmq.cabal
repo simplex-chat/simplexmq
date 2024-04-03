@@ -749,6 +749,7 @@ benchmark simplexmq-bench
   type: exitcode-stdio-1.0
   main-is: Bench.hs
   other-modules:
+      Bench.Base64
       Bench.BsConcat
       Bench.Compression
       Bench.SNTRUP761
@@ -756,7 +757,9 @@ benchmark simplexmq-bench
       Paths_simplexmq
   hs-source-dirs:
       benchmarks
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -fproc-alignment=64 -rtsopts -threaded -with-rtsopts=-A64m -with-rtsopts=-N1 -with-rtsopts=-T
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -fproc-alignment=64 -rtsopts -threaded -with-rtsopts=-A64m -with-rtsopts=-N1 -with-rtsopts=-T
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -765,7 +768,8 @@ benchmark simplexmq-bench
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
+    , base64
+    , base64-bytestring
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14

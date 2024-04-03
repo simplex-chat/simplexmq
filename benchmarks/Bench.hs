@@ -8,6 +8,7 @@ Pick one or group: cabal bench -O2 simplexmq-bench --benchmark-options "-p TRcvQ
 
 module Main where
 
+import Bench.Base64
 import Bench.BsConcat
 import Bench.Compression
 import Bench.SNTRUP761
@@ -20,5 +21,6 @@ main =
     [ bgroup "TRcvQueues" benchTRcvQueues,
       bgroup "SNTRUP761" benchSNTRUP761,
       bgroup "Compression" benchCompression,
-      bgroup "BsConcat" benchBsConcat
+      bgroup "BsConcat" benchBsConcat,
+      bgroup "Base64" benchBase64
     ]
