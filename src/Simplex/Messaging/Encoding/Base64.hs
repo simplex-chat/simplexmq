@@ -1,7 +1,16 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PackageImports #-}
 
 -- | Compatibility wrappers for base64 package, Base64 (padded) variant.
-module Simplex.Messaging.Encoding.Base64 where
+module Simplex.Messaging.Encoding.Base64
+  ( encode,
+    decode,
+    base64P,
+    base64Alphabet
+  ) where
+
+#if MIN_VERSION_bytestring(0,11,0)
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Base64.Types (extractBase64)
@@ -19,11 +28,20 @@ decode :: ByteString -> Either String ByteString
 decode = first T.unpack . decodeBase64Untyped
 {-# INLINE decode #-}
 
+#else
+
+import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Base64 (decode, encode)
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+
+#endif
+
 base64P :: A.Parser ByteString
 base64P = do
   str <- A.takeWhile1 (`B.elem` base64Alphabet)
   pad <- A.takeWhile (== '=') -- correct amount of padding can be derived from str length
-  either (fail . T.unpack) pure $ decodeBase64Untyped (str <> pad)
+  either fail pure $ decode (str <> pad)
 
 base64Alphabet :: ByteString
 base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
