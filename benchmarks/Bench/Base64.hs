@@ -5,7 +5,10 @@
 
 module Bench.Base64 where
 
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Char (isAlphaNum)
 import Test.Tasty.Bench
 import qualified "base64" Data.Base64.Types as New
 import qualified "base64" Data.ByteString.Base64 as New
@@ -36,8 +39,27 @@ benchBase64 =
       [ bench "du-old" $ nf OldUrl.decode encodedUrl,
         bcompare "du-old" . bench "du-new" $ nf NewUrl.decodeBase64Untyped encodedUrl,
         bcompare "du-old" . bench "du-typed" $ nf (NewUrl.decodeBase64 . New.assertBase64 @New.UrlPadded) encodedUrl
+      ],
+    bgroup
+      "parsing"
+      [ bench "predicates" $ nf parsePredicates encoded,
+        bcompare "predicates" . bench "alphabet" $ nf parseAlphabet encoded
       ]
   ]
+
+parsePredicates :: ByteString -> Either String ByteString
+parsePredicates = A.parseOnly $ do
+  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
+  pad <- A.takeWhile (== '=')
+  either fail pure $ Old.decode (str <> pad)
+
+parseAlphabet :: ByteString -> Either String ByteString
+parseAlphabet = A.parseOnly $ do
+  str <- A.takeWhile1 (`B.elem` base64Alphabet)
+  pad <- A.takeWhile (== '=')
+  either fail pure $ Old.decode (str <> pad)
+  where
+    base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 encoded :: ByteString
 encoded = "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
