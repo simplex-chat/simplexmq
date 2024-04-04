@@ -111,6 +111,7 @@ instance Encoding XFTPClientHandshake where
   smpP = do
     (xftpVersion, keyHash) <- smpP
     authPubKey <- smpP
+    Tail _compat <- smpP
     pure XFTPClientHandshake {xftpVersion, keyHash, authPubKey}
 
 instance Encoding XFTPServerHandshake where
@@ -122,6 +123,7 @@ instance Encoding XFTPServerHandshake where
     (xftpVersionRange, sessionId) <- smpP
     cert <- C.certChainP
     C.SignedObject key <- smpP
+    Tail _compat <- smpP
     pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey = (cert, key)}
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
