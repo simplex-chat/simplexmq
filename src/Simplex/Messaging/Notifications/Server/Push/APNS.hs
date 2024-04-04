@@ -27,9 +27,8 @@ import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as JQ
-import Data.Base64.Types (extractBase64)
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64.URL as UP
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -47,7 +46,6 @@ import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
-import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
@@ -93,8 +91,8 @@ signedJWTToken pk (JWTToken hdr claims) = do
   pure $ hc <> "." <> serialize sig
   where
     jwtEncode :: ToJSON a => a -> ByteString
-    jwtEncode = extractBase64 . UP.encodeBase64Unpadded' . LB.toStrict . J.encode
-    serialize sig = extractBase64 . UP.encodeBase64Unpadded' $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
+    jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
+    serialize sig = U.encodeUnpadded $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
 
 readECPrivateKey :: FilePath -> IO EC.PrivateKey
 readECPrivateKey f = do

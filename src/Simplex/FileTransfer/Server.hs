@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -18,6 +17,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -46,7 +46,6 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
-import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
@@ -85,7 +84,8 @@ runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> IO ()
 runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
 
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
-xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration} started = do
+xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration} started = do
+  mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
   raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
   where
@@ -110,28 +110,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 
     expireFiles :: ExpirationConfig -> M ()
     expireFiles expCfg = do
-      st <- asks store
       let interval = checkInterval expCfg * 1000000
       forever $ do
         liftIO $ threadDelay' interval
-        old <- liftIO $ expireBeforeEpoch expCfg
-        sIds <- M.keysSet <$> readTVarIO (files st)
-        forM_ sIds $ \sId -> do
-          threadDelay 100000
-          atomically (expiredFilePath st sId old)
-            >>= mapM_ (maybeRemove $ delete st sId)
-      where
-        maybeRemove del = maybe del (remove del)
-        remove del filePath =
-          ifM
-            (doesFileExist filePath)
-            ((removeFile filePath >> del) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
-            del
-        delete st sId = do
-          withFileLog (`logDeleteFile` sId)
-          void $ atomically $ deleteFile st sId
-          FileServerStats {filesExpired} <- asks serverStats
-          atomically $ modifyTVar' filesExpired (+ 1)
+        expireServerFiles (Just 100000) expCfg
 
     serverStatsThread_ :: XFTPServerConfig -> [M ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -392,7 +374,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive = do
             path <- asks $ filesPath . config
-            let fPath = path </> B.unpack (U.encode senderId)
+            let fPath = path </> B.unpack (B64.encode senderId)
             receiveChunk (XFTPRcvChunkSpec fPath size digest) >>= \case
               Right () -> do
                 stats <- asks serverStats
@@ -456,6 +438,33 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
     deletedStats stats = do
       atomically $ modifyTVar' (filesCount stats) (subtract 1)
       atomically $ modifyTVar' (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
+
+expireServerFiles :: Maybe Int -> ExpirationConfig -> M ()
+expireServerFiles itemDelay expCfg = do
+  st <- asks store
+  usedStart <- readTVarIO $ usedStorage st
+  old <- liftIO $ expireBeforeEpoch expCfg
+  files' <- readTVarIO (files st)
+  logInfo $ "Expiration check: " <> tshow (M.size files') <> " files"
+  forM_ (M.keys files') $ \sId -> do
+    mapM_ threadDelay itemDelay
+    atomically (expiredFilePath st sId old)
+      >>= mapM_ (maybeRemove $ delete st sId)
+  usedEnd <- readTVarIO $ usedStorage st
+  logInfo $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
+  where
+    mbs bs = tshow (bs `div` 1048576) <> "mb"
+    maybeRemove del = maybe del (remove del)
+    remove del filePath =
+      ifM
+        (doesFileExist filePath)
+        ((removeFile filePath >> del) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
+        del
+    delete st sId = do
+      withFileLog (`logDeleteFile` sId)
+      void . atomically $ deleteFile st sId -- will not update usedStorage if sId isn't in store
+      FileServerStats {filesExpired} <- asks serverStats
+      atomically $ modifyTVar' filesExpired (+ 1)
 
 randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random

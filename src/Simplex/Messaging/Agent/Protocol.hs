@@ -163,6 +163,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -201,7 +202,6 @@ import Simplex.Messaging.Crypto.Ratchet
     SndE2ERatchetParams
   )
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.Base64 (base64P, encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
