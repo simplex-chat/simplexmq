@@ -15,8 +15,10 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Default (def)
 import Data.Int (Int64)
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
@@ -115,10 +117,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
         tlsServerParams'
           { T.serverHooks =
               def
-                { T.onALPNClientSuggest = Just $ \alpns ->
-                    case filter (`elem` supportedXFTPhandshakes) alpns of
-                      p : _ -> pure p
-                      _ -> pure ""
+                { T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supportedXFTPhandshakes)
                 }
           }
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
