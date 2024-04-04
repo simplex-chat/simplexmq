@@ -442,7 +442,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do
         logDebug "TNEW - new token"
         st <- asks store
         ks@(srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
@@ -453,9 +453,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         atomically $ addNtfToken st tknId tkn
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
         withNtfLog (`logCreateToken` tkn)
-        incNtfStat tknCreated
+        incNtfStatT token tknCreated
         pure (corrId, "", NRTknId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -474,7 +474,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                 updateTknStatus tkn NTActive
                 tIds <- atomically $ removeInactiveTokenRegistrations st tkn
                 forM_ tIds cancelInvervalNotifications
-                incNtfStat tknVerified
+                incNtfStatT token tknVerified
                 pure NROk
             | otherwise -> do
                 logDebug "TVFY - incorrect code or token status"
@@ -493,8 +493,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               addNtfToken st tknId tkn'
               writeTBQueue pushQ (tkn', PNVerification regCode)
             withNtfLog $ \s -> logUpdateToken s tknId token' regCode
-            incNtfStat tknDeleted
-            incNtfStat tknCreated
+            incNtfStatT token tknDeleted
+            incNtfStatT token tknCreated
             pure NROk
           TDEL -> do
             logDebug "TDEL"
@@ -504,7 +504,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
             cancelInvervalNotifications tknId
             withNtfLog (`logDeleteToken` tknId)
-            incNtfStat tknDeleted
+            incNtfStatT token tknDeleted
             pure NROk
           TCRN 0 -> do
             logDebug "TCRN 0"
@@ -582,6 +582,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
 
 withNtfLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withNtfLog action = liftIO . mapM_ action =<< asks storeLog
+
+incNtfStatT :: DeviceToken -> (NtfServerStats -> TVar Int) -> M ()
+incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
+incNtfStatT _ statSel = incNtfStat statSel
 
 incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
 incNtfStat statSel = do
