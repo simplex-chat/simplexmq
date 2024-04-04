@@ -111,9 +111,9 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetwor
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
-  thParams <- case fromMaybe "xftp/0" sessionALPN of
-    "xftp/0" -> pure thParams0
-    "xftp/1" -> xftpClientHandshakeV1 g serverVRange keyHash http2Client thParams0
+  thParams <- case sessionALPN of
+    Just "xftp/1" -> xftpClientHandshakeV1 g serverVRange keyHash http2Client thParams0
+    Nothing -> pure thParams0
     _ -> throwError $ PCETransportError (TEHandshake VERSION)
   let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c

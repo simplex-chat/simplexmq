@@ -113,9 +113,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           reqBody <- getHTTP2Body r xftpBlockSize
           let thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
               req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
-          flip runReaderT env $ case fromMaybe "xftp/0" sessionALPN of
-            "xftp/0" -> processRequest req0
-            "xftp/1" ->
+          flip runReaderT env $ case sessionALPN of
+            Nothing -> processRequest req0
+            Just "xftp/1" ->
               xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
                 Nothing -> pure () -- handshake response sent
                 Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)
