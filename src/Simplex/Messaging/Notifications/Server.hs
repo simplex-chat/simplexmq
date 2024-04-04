@@ -108,7 +108,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
-      liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
+      logInfo $ "server stats log enabled: " <> T.pack statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
       let interval = 1000000 * logInterval
