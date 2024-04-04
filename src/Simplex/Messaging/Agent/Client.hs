@@ -27,6 +27,7 @@ module Simplex.Messaging.Agent.Client
     withConnLock,
     withConnLocks,
     withInvLock,
+    withLockMap,
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
@@ -799,7 +800,7 @@ withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 
 withConnLock' :: AgentClient -> ConnId -> String -> AM' a -> AM' a
 withConnLock' _ "" _ = id
-withConnLock' AgentClient {connLocks} connId name = withLockMap' connLocks connId name
+withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId name
 {-# INLINE withConnLock' #-}
 
 withInvLock :: AgentClient -> ByteString -> String -> AM a -> AM a
@@ -807,12 +808,25 @@ withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
 {-# INLINE withInvLock #-}
 
 withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
-withInvLock' AgentClient {invLocks} = withLockMap' invLocks
+withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
 withConnLocks :: AgentClient -> [ConnId] -> String -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks} = withLocksMap' connLocks . filter (not . B.null)
+withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
 {-# INLINE withConnLocks #-}
+
+withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
+withLockMap = withGetLock . getMapLock
+{-# INLINE withLockMap #-}
+
+withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
+withLocksMap_ = withGetLocks . getMapLock
+{-# INLINE withLocksMap_ #-}
+
+getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
+getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
+  where
+    newLock = createLock >>= \l -> TM.insert key l locks $> l
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> (Client msg -> AM a) -> AM a
 withClient_ c tSess@(userId, srv, _) statCmd action = do
