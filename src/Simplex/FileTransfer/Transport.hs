@@ -37,7 +37,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first, Bifunctor (bimap))
+import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -51,7 +51,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
-import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), TransportError (..), THandleParams (..))
+import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version

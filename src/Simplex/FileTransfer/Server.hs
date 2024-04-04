@@ -288,10 +288,7 @@ data ServerFile = ServerFile
   }
 
 processRequest :: XFTPTransportRequest -> M ()
-processRequest = processRequest_ processXFTPRequest
-
-processRequest_ :: (HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)) -> XFTPTransportRequest -> M ()
-processRequest_ process XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
   | otherwise = do
       case xftpDecodeTransmission thParams bodyHead of
@@ -300,31 +297,28 @@ processRequest_ process XFTPTransportRequest {thParams, reqBody = body@HTTP2Body
             Right cmd -> do
               let THandleParams {thAuth} = thParams
               verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) sig_ signed fId cmd >>= \case
-                VRVerified req -> uncurry send =<< process body req
+                VRVerified req -> uncurry send =<< processXFTPRequest body req
                 VRFailed -> send (FRErr AUTH) Nothing
             Left e -> send (FRErr e) Nothing
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
         Left e -> sendXFTPResponse ("", "", FRErr e) Nothing
   where
-    sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
-    sendXFTPResponse (corrId, fId, resp) serverFile_ =
-      liftIO $ sendResponse $ makeXFTPResponse thParams (corrId, fId, resp) serverFile_
-
-makeXFTPResponse :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> Transmission c -> Maybe ServerFile -> H.Response
-makeXFTPResponse thParams t serverFile_ = H.responseStreaming N.ok200 [] streamBody
-  where
-    streamBody send flush = case xftpEncodeTransmission thParams t of
-      Left _ -> do
-        send "padding error" -- TODO respond with BLOCK error?
-        flush
-      Right bs -> do
-        send $ byteString bs
-        flush
-        -- timeout sending file in the same way as receiving
-        forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
-          withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
-          flush
+    sendXFTPResponse (corrId, fId, resp) serverFile_ = do
+      let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
+      liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
+      where
+        streamBody t_ send done = do
+          case t_ of
+            Left _ -> do
+              send "padding error" -- TODO respond with BLOCK error?
+              done
+            Right t -> do
+              send $ byteString t
+              -- timeout sending file in the same way as receiving
+              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
+                withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
+          done
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 

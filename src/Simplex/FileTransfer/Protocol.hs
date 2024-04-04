@@ -305,8 +305,7 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
     FRSndIds {} -> noEntity
-    -- ERR responses does not always have entity ID
-    FROk -> Right cmd
+    -- ERR response does not always have entity ID
     FRErr _ -> Right cmd
     -- PONG response must not have queue ID
     FRPong -> noEntity
