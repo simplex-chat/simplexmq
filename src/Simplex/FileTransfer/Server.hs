@@ -18,7 +18,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
-import Data.ByteString.Builder (byteString)
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -32,6 +32,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
+import qualified Data.X509 as X
 import GHC.IO.Handle (hSetNewlineMode)
 import GHC.Stats (getRTSStats)
 import qualified Network.HTTP.Types as N
@@ -46,20 +47,23 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId (..), ProtocolEncoding, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, Transmission, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (THandleParams (..), THandleAuth (..))
+import Simplex.Messaging.Transport (SessionId, THandleAuth (..), THandleParams (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server (runTCPServer, tlsServerCredentials)
 import Simplex.Messaging.Util
+import Simplex.Messaging.Version (isCompatible)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
@@ -67,8 +71,6 @@ import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
 import qualified UnliftIO.Exception as E
-import Simplex.Messaging.Encoding (smpEncode, smpDecode)
-import Simplex.Messaging.Version (isCompatible)
 
 type M a = ReaderT XFTPEnv IO a
 
@@ -113,10 +115,12 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
           flip runReaderT env $ case fromMaybe "xftp/0" sessionALPN of
             "xftp/0" -> processRequest req0
-            "xftp/1" -> xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
+            "xftp/1" ->
+              xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
                 Nothing -> pure () -- handshake response sent
                 Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)
             _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 [] -- shouldn't happen: means server picked handshake protocol it doesn't know about
+    xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion))
     xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
@@ -125,10 +129,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         Just (HandshakeAccepted auth v) -> pure $ Just thParams {thAuth = Just auth, thVersion = v}
       either sendError pure r
       where
-        sendError err = do
-          liftIO . sendResponse $ H.responseBuilder N.ok200 [] $ padXftp (smpEncode err)
-          pure Nothing
-        padXftp bs = either (error "assert: xftpBlockSize < 65k") byteString $ C.pad bs xftpBlockSize
         processHello = do
           unless (B.null bodyHead) $ throwError HANDSHAKE
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
@@ -148,6 +148,12 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           atomically $ TM.insert sessionId (HandshakeAccepted auth xftpVersion) sessions
           liftIO . sendResponse $ H.responseNoBody N.ok200 []
           pure Nothing
+        sendError :: XFTPErrorType -> M (Maybe (THandleParams XFTPVersion))
+        sendError err = do
+          liftIO . sendResponse $ H.responseBuilder N.ok200 [] $ padXftp (smpEncode err)
+          pure Nothing
+        padXftp :: ByteString -> Builder
+        padXftp bs = either (error "assert: xftpBlockSize < 65k") byteString $ C.pad bs xftpBlockSize
 
     stopServer :: M ()
     stopServer = do
