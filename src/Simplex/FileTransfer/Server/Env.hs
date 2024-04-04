@@ -29,6 +29,7 @@ import Simplex.FileTransfer.Server.StoreLog
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
@@ -96,6 +97,9 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
+supportedXFTPhandshakes :: [ALPN]
+supportedXFTPhandshakes = ["xftp/1"]
+
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile} = do
   random <- liftIO C.newRandom
@@ -111,9 +115,10 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
         tlsServerParams'
           { T.serverHooks =
               def
-                { T.onALPNClientSuggest = Just $ \case
-                    [v1@"xftp/1"] -> pure v1
-                    _ -> pure ""
+                { T.onALPNClientSuggest = Just $ \alpns ->
+                    case filter (`elem` supportedXFTPhandshakes) alpns of
+                      p : _ -> pure p
+                      _ -> pure ""
                 }
           }
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile

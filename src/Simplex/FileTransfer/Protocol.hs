@@ -65,7 +65,7 @@ xftpBlockSize :: Int
 xftpBlockSize = 16384
 
 -- | File protocol clients
-data FileParty = FRecipient | FSender -- XXX: FHandshake?
+data FileParty = FRecipient | FSender
   deriving (Eq, Show)
 
 data SFileParty :: FileParty -> Type where
@@ -244,7 +244,6 @@ data FileResponseTag
   | FROk_
   | FRErr_
   | FRPong_
-  | FRHandshake_
   deriving (Show)
 
 instance Encoding FileResponseTag where
@@ -255,7 +254,6 @@ instance Encoding FileResponseTag where
     FROk_ -> "OK"
     FRErr_ -> "ERR"
     FRPong_ -> "PONG"
-    FRHandshake_ -> "HAND"
   smpP = messageTagP
 
 instance ProtocolMsgTag FileResponseTag where
@@ -266,7 +264,6 @@ instance ProtocolMsgTag FileResponseTag where
     "OK" -> Just FROk_
     "ERR" -> Just FRErr_
     "PONG" -> Just FRPong_
-    "HAND" -> Just FRHandshake_
     _ -> Nothing
 
 data FileResponse
@@ -276,7 +273,6 @@ data FileResponse
   | FROk
   | FRErr XFTPErrorType
   | FRPong
-  | FRHandshake VersionXFTP
   deriving (Show)
 
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
@@ -288,7 +284,6 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
     FROk -> e FROk_
     FRErr err -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
-    FRHandshake v -> e (FRHandshake_, ' ', v)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -300,7 +295,6 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
     FROk_ -> pure FROk
     FRErr_ -> FRErr <$> _smpP
     FRPong_ -> pure FRPong
-    FRHandshake_ -> FRHandshake <$> _smpP
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX
@@ -311,12 +305,11 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
     FRSndIds {} -> noEntity
-    -- OK/ERR responses does not always have entity ID
+    -- ERR responses does not always have entity ID
     FROk -> Right cmd
     FRErr _ -> Right cmd
     -- PONG response must not have queue ID
     FRPong -> noEntity
-    FRHandshake {} -> noEntity
     -- other server responses must have entity ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY

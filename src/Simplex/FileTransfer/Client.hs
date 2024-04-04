@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Client where
@@ -20,7 +21,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Maybe (fromMaybe)
 import Data.Time (UTCTime)
 import Data.Word (Word32)
 import qualified Data.X509 as X
@@ -120,35 +120,34 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetwor
   pure c
 
 xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP -> ExceptT XFTPClientError IO THandleParamsXFTP
-xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey, serverCerts = _todo} thParams0 = do
-  -- step 1: pass initiative to server to get its handshake
-  let helloReq = H.requestNoBody "POST" "/" []
-  HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody'}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c helloReq Nothing
-  shsBody <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ C.unPad shsBody'
-  XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ smpDecode shsBody
-  -- step 2: validate server handshake
-  unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
-  (params, chs) <- case xftpVersionRange `compatibleVersion` serverVRange of
-    Nothing -> throwError $ PCEResponseError HANDSHAKE
-    Just (Compatible v) -> do
-      sk_ <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ do
-        let (X.CertificateChain cert, exact) = serverAuth
-        case cert of
-          [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
-          _ -> throwError "bad certificate"
-        pubKey <- C.verifyX509 serverKey exact
-        C.x509ToPublic (pubKey, []) >>= C.pubKey
-      (pk, k) <- atomically $ C.generateKeyPair g
-      let auth = THandleAuth {peerPubKey = sk_, privKey = k}
-      pure (thParams0 {thAuth = Just auth, thVersion = v}, XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = pk})
-  -- step 3: send client handshake
-  let chsReq = H.requestBuilder "POST" "/" [] $ padXftp (smpEncode chs)
-  HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c chsReq Nothing
-  -- step 4: validate server confirmation
-  unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
-  -- all done, return negotiated params
-  pure params
+xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
+  shs <- getServerHandshake
+  (v, sk) <- processServerHandshake shs
+  (pk, k) <- atomically $ C.generateKeyPair g
+  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = pk}
+  pure thParams0 {thAuth = Just THandleAuth {peerPubKey = sk, privKey = k}, thVersion = v}
   where
+    getServerHandshake = do
+      let helloReq = H.requestNoBody "POST" "/" []
+      HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody'}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c helloReq Nothing
+      shsBody <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ C.unPad shsBody'
+      liftEitherWith (const $ PCEResponseError HANDSHAKE) $ smpDecode shsBody
+    processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
+      unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
+      case xftpVersionRange `compatibleVersion` serverVRange of
+        Nothing -> throwError $ PCEResponseError HANDSHAKE
+        Just (Compatible v) ->
+          fmap (v,) . liftEitherWith (const $ PCEResponseError HANDSHAKE) $ do
+            let (X.CertificateChain cert, exact) = serverAuth
+            case cert of
+              [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
+              _ -> throwError "bad certificate"
+            pubKey <- C.verifyX509 serverKey exact
+            C.x509ToPublic (pubKey, []) >>= C.pubKey
+    sendClientHandshake chs = do
+      let chsReq = H.requestBuilder "POST" "/" [] $ padXftp (smpEncode chs)
+      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c chsReq Nothing
+      unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
     padXftp bs = either (error "assert: xftpBlockSize < 65k") byteString $ C.pad bs xftpBlockSize
 
 closeXFTPClient :: XFTPClient -> IO ()
@@ -245,10 +244,9 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         ExceptT (sequence <$> (t `timeout` download cbState)) >>= maybe (throwError PCEResponseTimeout) pure
         where
           download cbState =
-            runExceptT $
-              withExceptT PCEResponseError $
-                receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
-                  whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
+            runExceptT . withExceptT PCEResponseError $
+              receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
+                whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
