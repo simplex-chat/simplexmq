@@ -185,6 +185,8 @@ ghc-options:
   - -Wincomplete-uni-patterns
   - -Wunused-type-patterns
   - -O2
+  - -finfo-table-map
+  - -fdistinct-constructor-tables
 
 default-extensions:
   - StrictData
