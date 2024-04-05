@@ -9,14 +9,15 @@
 
 module Simplex.Messaging.Server.Main where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Monad (void, (<$!>))
+import Control.Monad (void, when, (<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (isPrefixOf)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -39,12 +40,11 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-import Control.Concurrent (forkIO)
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
-smpServerCLI = smpServerCLI_ (\_ -> pure ()) (\_ _ -> pure ())
+smpServerCLI = smpServerCLI_ (\_ _ -> pure ()) (\_ -> pure ())
 
-smpServerCLI_ :: (FilePath -> IO ()) -> (Int -> FilePath -> IO ()) -> FilePath -> FilePath -> IO ()
+smpServerCLI_ :: (ServerInformation -> FilePath -> IO ()) -> (EmbeddedWebParams -> IO ()) -> FilePath -> FilePath -> IO ()
 smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
@@ -70,6 +70,8 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
     defaultServerPort = "5223"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
+    httpsCertFile = combine cfgPath "web.cert"
+    httpsKeyFile = combine cfgPath "web.key"
     initializeServer opts@InitOptions {ip, fqdn, scripted}
       | scripted = initialize opts
       | otherwise = do
@@ -156,12 +158,26 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                    \disconnect: off\n"
                 <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+                <> "\n\n\
+                   \[WEB]\n
+                   \# Set path to generate static mini-site for server information and qr codes/links
+                   \site_path: /tmp/smp-server-web\n
+                   \# Uncomment to run an embedded server on this port\n
+                   \# Onion sites can use any port and register it in the hidden service config.
+                   \# http: 80\n
+                   \# You can run an embedded TLS web server too if you provide port and cert and key files.
+                   \# Not required for running TOR-only relay.
+                   \# https: 443\n"
+                <> ("# cert: " <> T.pack httpsCertFile <> "\n")
+                <> ("# key: " <> T.pack httpsKeyFile <> "\n")
+                <> "\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
+          hostOnion = lookupValue "TRANSPORT" "host_onion" ini
           cfg@ServerConfig {information, transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
@@ -180,7 +196,18 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
       -- print information
-      void . forkIO $ runWebServer ini
+      let config =
+            ServerPublicConfig
+              { persistence = case (enableStoreLog, storeMsgsFile serverConfig) of
+                  (Nothing, Nothing) -> SPMMemoryOnly
+                  (Just _, Nothing) -> SPMQueues
+                  (_, Just _) -> SPMMessages,
+                messageExpiration = ttl <$> messageExpiration,
+                statsEnabled = isJust logStats,
+                newQueuesAllowed = allowNewQueues cfg,
+                basicAuthEnabled = isJust newQueueBasicAuth
+              }
+      runWebServer ini ServerInformation {config, information}
       runSMPServer cfg
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -234,9 +261,18 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               information = serverPublicInfo ini
             }
-    runWebServer ini = do
-      generateSite "/tmp/smp-server-web"
-      serveStaticFiles 8000 "/tmp/smp-server-web"
+    runWebServer ini si = do
+      let staticPath = "/tmp/smp-server-web"
+      generateSite si staticPath
+      let http = Just 8000
+      let https = Nothing
+      when (isJust http || isJust https) $ void . forkIO $ serveStaticFiles EmbeddedWebParams {http, https, staticPath}
+
+data EmbeddedWebParams = EmbeddedWebParams
+  { staticPath :: FilePath,
+    http :: Maybe Int,
+    https :: Maybe (FilePath, FilePath, Int)
+  }
 
 getServerSourceCode :: IO String
 getServerSourceCode =
@@ -258,31 +294,31 @@ informationIniContent sourceCode_ =
   \# If any other information fields are present, source code property also MUST be present.\n\n"
     <> (maybe ("# source_code: URI") ("source_code: " <>) sourceCode_ <> "\n\n")
     <> "# Declaring all below information is optional, any of these fields can be omitted.\n\
-      \\n\
-      \# Server usage conditions and amendments.\n\
-      \# It is recommended to use standard conditions with any amendments in a separate document.\n\
-      \# usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/stable/PRIVACY.md\n\
-      \# condition_amendments: link\n\
-      \\n\
-      \# Server location and operator.\n\
-      \# server_country: ISO-3166 2-letter code\n\
-      \# operator: entity (organization or person name)\n\
-      \# operator_country: ISO-3166 2-letter code\n\
-      \# website:\n\
-      \\n\
-      \# Administrative contacts.\n\
-      \# admin_simplex: SimpleX address\n\
-      \# admin_email:\n\
-      \# admin_pgp:\n\
-      \\n\
-      \# Contacts for complaints and feedback.\n\
-      \# complaints_simplex: SimpleX address\n\
-      \# complaints_email:\n\
-      \# complaints_pgp:\n\
-      \\n\
-      \# Hosting provider.\n\
-      \# hosting: entity (organization or person name)\n\
-      \# hosting_country: ISO-3166 2-letter code\n\n"
+       \\n\
+       \# Server usage conditions and amendments.\n\
+       \# It is recommended to use standard conditions with any amendments in a separate document.\n\
+       \# usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/stable/PRIVACY.md\n\
+       \# condition_amendments: link\n\
+       \\n\
+       \# Server location and operator.\n\
+       \# server_country: ISO-3166 2-letter code\n\
+       \# operator: entity (organization or person name)\n\
+       \# operator_country: ISO-3166 2-letter code\n\
+       \# website:\n\
+       \\n\
+       \# Administrative contacts.\n\
+       \# admin_simplex: SimpleX address\n\
+       \# admin_email:\n\
+       \# admin_pgp:\n\
+       \\n\
+       \# Contacts for complaints and feedback.\n\
+       \# complaints_simplex: SimpleX address\n\
+       \# complaints_email:\n\
+       \# complaints_pgp:\n\
+       \\n\
+       \# Hosting provider.\n\
+       \# hosting: entity (organization or person name)\n\
+       \# hosting_country: ISO-3166 2-letter code\n\n"
 
 serverPublicInfo :: Ini -> Maybe ServerPublicInfo
 serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
@@ -290,7 +326,7 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
     serverInfo sourceCode =
       ServerPublicInfo
         { sourceCode,
-          usageConditions  =
+          usageConditions =
             (\conditions -> ServerConditions {conditions, amendments = infoValue "condition_amendments"})
               <$!> infoValue "usage_conditions",
           serverCountry = countryValue "server_country",
@@ -311,7 +347,7 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
       let simplex = either error id <$!> strDecodeIni "INFORMATION" simplexField ini
           email = infoValue emailField
           pgp = infoValue pgpField
-        in case (simplex, email, pgp) of
+       in case (simplex, email, pgp) of
             (Nothing, Nothing, Nothing) -> Nothing
             _ -> Just ServerContactAddress {simplex, email, pgp}
 
@@ -417,4 +453,3 @@ cliCommandP cfgPath logPath iniFile =
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, sourceCode, scripted}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
-
