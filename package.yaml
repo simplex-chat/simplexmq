@@ -22,6 +22,8 @@ extra-source-files:
   - CHANGELOG.md
   - cbits/sha512.h
   - cbits/sntrup761.h
+  - apps/smp-server/static/*.html
+  - apps/smp-server/static/media/*
 
 dependencies:
   - aeson == 2.2.*
@@ -110,10 +112,15 @@ library:
 
 executables:
   smp-server:
-    source-dirs: apps/smp-server
+    source-dirs:
+    - apps/smp-server
+    - apps/smp-server/web
     main: Main.hs
     dependencies:
       - simplexmq
+      - warp
+      - wai-app-static
+      - file-embed
     ghc-options:
       - -threaded
       - -rtsopts

@@ -39,9 +39,13 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
+import Control.Concurrent (forkIO)
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
-smpServerCLI cfgPath logPath =
+smpServerCLI = smpServerCLI_ (\_ -> pure ()) (\_ _ -> pure ())
+
+smpServerCLI_ :: (FilePath -> IO ()) -> (Int -> FilePath -> IO ()) -> FilePath -> FilePath -> IO ()
+smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -176,6 +180,7 @@ smpServerCLI cfgPath logPath =
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
       -- print information
+      void . forkIO $ runWebServer ini
       runSMPServer cfg
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -229,6 +234,9 @@ smpServerCLI cfgPath logPath =
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               information = serverPublicInfo ini
             }
+    runWebServer ini = do
+      generateSite "/tmp/smp-server-web"
+      serveStaticFiles 8000 "/tmp/smp-server-web"
 
 getServerSourceCode :: IO String
 getServerSourceCode =
