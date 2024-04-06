@@ -188,6 +188,7 @@ import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
+import qualified Data.X509 as X
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import Network.Socket (ServiceName)
@@ -361,8 +362,16 @@ data Command (p :: Party) where
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender -- request a relay server connection by URI
-  PFWD :: C.PublicKeyX25519 -> ByteString -> Command Sender -- use CorrId as CbNonce, client to proxy
-  RFWD :: C.PublicKeyX25519 -> ByteString -> Command Sender -- use CorrId as CbNonce, proxy to relay
+  -- Transmission to proxy:
+  -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
+  -- - corrId: also used as a nonce to encrypt transmission to relay, corrId + 1 - from relay
+  -- - key (1st param in the command) is used to agree DH secret for this particular transmission and its response
+  -- Encrypted transmission should include session ID (tlsunique) from proxy-relay connection.
+  PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender -- use CorrId as CbNonce, client to proxy
+  -- Transmission forwarded to relay:
+  -- - entity ID: empty
+  -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
+  RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
 
@@ -388,6 +397,18 @@ instance Encoding SubscriptionMode where
       'C' -> pure SMOnlyCreate
       _ -> fail "bad SubscriptionMode"
 
+newtype EncTransmission = EncTransmission ByteString
+  deriving (Show)
+
+data FwdTransmission = FwdTransmission
+  { fwdCorrId :: ByteString,
+    fwdKey :: C.PublicKeyX25519,
+    fwdTransmission :: ByteString
+  }
+
+newtype EncFwdTransmission = EncFwdTransmission ByteString
+  deriving (Show)
+
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
@@ -398,9 +419,9 @@ data BrokerMsg where
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
-  PKEY :: C.PublicKeyX25519 -> C.Signature C.Ed25519 -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
-  RRES :: ByteString -> BrokerMsg -- relay to proxy
-  PRES :: ByteString -> BrokerMsg -- proxy to client
+  PKEY :: X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
+  PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
@@ -411,6 +432,17 @@ data RcvMessage = RcvMessage
   { msgId :: MsgId,
     msgBody :: EncRcvMsgBody -- e2e encrypted, with extra encryption for recipient
   }
+  deriving (Eq, Show)
+
+newtype EncFwdResponse = EncFwdResponse ByteString
+  deriving (Eq, Show)
+
+data FwdResponse = FwdResponse
+  { fwdCorrId :: ByteString,
+    fwdResponse :: ByteString
+  }
+
+newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
 
 -- | received message without server/recipient encryption
@@ -1242,9 +1274,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
-    PKEY dhPub sig -> e (PKEY_, ' ', dhPub, ' ', C.signatureBytes sig)
-    RRES encBlock -> e (RRES_, ' ', Tail encBlock)
-    PRES encBlock -> e (PRES_, ' ', Tail encBlock)
+    PKEY cert key -> e (PKEY_, ' ', C.encodeCertChain cert, C.SignedObject key)
+    RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
+    PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -1262,9 +1294,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
-    PKEY_ -> PKEY <$> _smpP <*> (_smpP >>= either fail pure . C.decodeSignature)
-    RRES_ -> RRES <$> (unTail <$> _smpP)
-    PRES_ -> error "TODO: PRES_"
+    PKEY_ -> PKEY <$> (A.space *> C.certChainP) <*> (C.getSignedExact <$> smpP)
+    RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
+    PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP

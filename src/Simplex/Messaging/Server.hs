@@ -610,7 +610,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                   ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
                   pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
             PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
-            RFWD _dhPub _encBlock -> error "TODO: processCommand.RFWD"
+            RFWD _encBlock -> error "TODO: processCommand.RFWD"
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
@@ -937,12 +937,13 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
             Left e -> pure $ err e
 
         setupProxy :: SMPServer -> M (Transmission BrokerMsg)
-        setupProxy todo'relay = do
-          let relaySessionId = "TODO: relaySessionId"
-          (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
-          (_, dummySignKey) <- atomically . C.generateKeyPair =<< asks random
-          let dummyRelayKeySignature = C.sign' dummySignKey $ smpEncode dummyRelayDhPublic
-          pure (corrId, relaySessionId, PKEY dummyRelayDhPublic dummyRelayKeySignature)
+        setupProxy todo'relay = undefined
+          -- do
+          -- let relaySessionId = "TODO: relaySessionId"
+          -- (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
+          -- (_, dummySignKey) <- atomically . C.generateKeyPair =<< asks random
+          -- let dummyRelayKeySignature = C.sign' dummySignKey $ smpEncode dummyRelayDhPublic
+          -- pure (corrId, relaySessionId, PKEY dummyRelayDhPublic dummyRelayKeySignature)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
