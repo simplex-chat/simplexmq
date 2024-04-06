@@ -113,7 +113,7 @@ data Env = Env
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
-    clientSeq :: TVar Int,
+    clientSeq :: TVar ClientId,
     clients :: TVar (IntMap Client),
     proxyServer :: SMPProxyServer -- senders served on this proxy
   }
@@ -173,7 +173,7 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
+newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
 newClient nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty

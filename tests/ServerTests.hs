@@ -930,8 +930,6 @@ instance Eq C.ASignature where
     Just Refl -> s == s'
     _ -> False
 
-deriving instance Eq (C.Signature a)
-
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
   it "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)

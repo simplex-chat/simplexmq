@@ -756,6 +756,8 @@ data Signature (a :: Algorithm) where
   SignatureEd25519 :: Ed25519.Signature -> Signature Ed25519
   SignatureEd448 :: Ed448.Signature -> Signature Ed448
 
+deriving instance Eq (Signature a)
+
 deriving instance Show (Signature a)
 
 data ASignature

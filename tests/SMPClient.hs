@@ -81,8 +81,6 @@ testSMPClient_ host port vr client = do
     g <- C.newRandom
     ks <- atomically $ C.generateKeyPair g
     runExceptT (smpClientHandshake h ks testKeyHash vr) >>= \case
-  -- runTransportClient defaultTransportClientConfig Nothing host port (Just testKeyHash) $ \h ->
-  --   liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 

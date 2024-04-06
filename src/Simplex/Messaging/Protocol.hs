@@ -405,7 +405,7 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  deriving (Show)
+  deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
   { msgId :: MsgId,
