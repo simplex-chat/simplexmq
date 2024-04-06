@@ -123,21 +123,21 @@ xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP
 xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
   shs <- getServerHandshake
   (v, sk) <- processServerHandshake shs
-  (pk, k) <- atomically $ C.generateKeyPair g
-  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = pk}
-  pure thParams0 {thAuth = Just THandleAuth {peerPubKey = sk, privKey = k}, thVersion = v}
+  (k, pk) <- atomically $ C.generateKeyPair g
+  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = k}
+  pure thParams0 {thAuth = Just THandleAuth {peerPubKey = sk, privKey = pk}, thVersion = v}
   where
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
-      HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody'}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c helloReq Nothing
-      shsBody <- liftEitherWith (const $ PCEResponseError HANDSHAKE) $ C.unPad shsBody'
-      liftEitherWith (const $ PCEResponseError HANDSHAKE) $ smpDecode shsBody
+      HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
+        liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c helloReq Nothing
+      liftHS . smpDecode =<< liftHS (C.unPad shsBody)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
       unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
       case xftpVersionRange `compatibleVersion` serverVRange of
         Nothing -> throwError $ PCEResponseError HANDSHAKE
         Just (Compatible v) ->
-          fmap (v,) . liftEitherWith (const $ PCEResponseError HANDSHAKE) $ do
+          fmap (v,) . liftHS $ do
             let (X.CertificateChain cert, exact) = serverAuth
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
@@ -145,10 +145,11 @@ xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessi
             pubKey <- C.verifyX509 serverKey exact
             C.x509ToPublic (pubKey, []) >>= C.pubKey
     sendClientHandshake chs = do
-      let chsReq = H.requestBuilder "POST" "/" [] $ padXftp (smpEncode chs)
+      chs' <- liftHS $ C.pad (smpEncode chs) xftpBlockSize
+      let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
       HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c chsReq Nothing
       unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
-    padXftp bs = either (error "assert: xftpBlockSize < 65k") byteString $ C.pad bs xftpBlockSize
+    liftHS = liftEitherWith (const $ PCEResponseError HANDSHAKE)
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client

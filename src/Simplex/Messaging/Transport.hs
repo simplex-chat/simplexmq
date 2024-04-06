@@ -246,12 +246,12 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
 getTLS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO TLS
-getTLS tlsPeer cfg tlsServerCerts ctx = withTlsUnique tlsPeer ctx newTLS
+getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
-      tlsALPN <- T.getNegotiatedProtocol ctx
-      pure TLS {tlsContext = ctx, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
+      tlsALPN <- T.getNegotiatedProtocol cxt
+      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
