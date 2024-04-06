@@ -11,12 +11,14 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
+import Control.Applicative ((<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -406,10 +408,12 @@ instance Encoding DeviceToken where
 
 instance StrEncoding DeviceToken where
   strEncode (DeviceToken p t) = strEncode p <> " " <> t
-  strP = DeviceToken <$> strP <* A.space <*> hexStringP
+  strP = nullToken <|> hexToken
     where
+      nullToken = "apns_null test_ntf_token" $> DeviceToken PPApnsNull "test_ntf_token"
+      hexToken = DeviceToken <$> strP <* A.space <*> hexStringP
       hexStringP =
-        A.takeWhile (\c -> A.isDigit c || (c >= 'a' && c <= 'f')) >>= \s ->
+        A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where
