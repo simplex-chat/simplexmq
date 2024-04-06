@@ -1,13 +1,14 @@
 module Main where
 
 import Control.Logger.Simple
+import Simplex.Messaging.Server.CLI (getEnvPath)
 import Simplex.FileTransfer.Server.Main
 
-cfgPath :: FilePath
-cfgPath = "/etc/opt/simplex-xftp"
+defaultCfgPath :: FilePath
+defaultCfgPath = "/etc/opt/simplex-xftp"
 
-logPath :: FilePath
-logPath = "/var/opt/simplex-xftp"
+defaultLogPath :: FilePath
+defaultLogPath = "/var/opt/simplex-xftp"
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
@@ -15,4 +16,6 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 main :: IO ()
 main = do
   setLogLevel LogDebug -- change to LogError in production
+  cfgPath <- getEnvPath "XFTP_SERVER_CFG_PATH" defaultCfgPath
+  logPath <- getEnvPath "XFTP_SERVER_LOG_PATH" defaultLogPath
   withGlobalLogging logCfg $ xftpServerCLI cfgPath logPath

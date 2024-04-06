@@ -19,18 +19,17 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
+import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-
-ntfServerVersion :: String
-ntfServerVersion = "1.7.0.4"
 
 defaultSMPBatchDelay :: Int
 defaultSMPBatchDelay = 10000
@@ -42,6 +41,10 @@ ntfServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
+    OnlineCert certOpts ->
+      doesFileExist iniFile >>= \case
+        True -> genOnline cfgPath certOpts
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError runServer
@@ -53,7 +56,7 @@ ntfServerCLI cfgPath logPath =
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "ntf-server.ini"
-    serverVersion = "SMP notifications server v" <> ntfServerVersion
+    serverVersion = "SMP notifications server v" <> simplexMQVersion
     defaultServerPort = "443"
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"
@@ -135,6 +138,7 @@ ntfServerCLI cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log",
+              ntfServerVRange = supportedServerNTFVRange,
               transportConfig =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
@@ -143,6 +147,7 @@ ntfServerCLI cfgPath logPath =
 
 data CliCommand
   = Init InitOptions
+  | OnlineCert CertOptions
   | Start
   | Delete
 
@@ -158,6 +163,7 @@ cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+        <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )

@@ -25,15 +25,13 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-
-xftpServerVersion :: String
-xftpServerVersion = "1.2.0.4"
 
 xftpServerCLI :: FilePath -> FilePath -> IO ()
 xftpServerCLI cfgPath logPath = do
@@ -42,6 +40,10 @@ xftpServerCLI cfgPath logPath = do
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
+    OnlineCert certOpts ->
+      doesFileExist iniFile >>= \case
+        True -> genOnline cfgPath certOpts
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError runServer
@@ -53,7 +55,7 @@ xftpServerCLI cfgPath logPath = do
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "file-server.ini"
-    serverVersion = "SimpleX XFTP server v" <> xftpServerVersion
+    serverVersion = "SimpleX XFTP server v" <> simplexMQVersion
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
@@ -95,6 +97,8 @@ xftpServerCLI cfgPath logPath = do
                \# with the users who you want to allow uploading files to your server.\n\
                \# create_password: password to upload files (any printable ASCII characters without whitespace, '@', ':' and '/')\n\
                \\n\
+               \# control_port_admin_password:\n\
+               \# control_port_user_password:\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
@@ -153,11 +157,14 @@ xftpServerCLI cfgPath logPath = do
               allowedChunkSizes = serverChunkSizes,
               allowNewFiles = fromMaybe True $ iniOnOff "AUTH" "new_files" ini,
               newFileBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
+              controlPortAdminAuth = either error id <$> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$> strDecodeIni "AUTH" "control_port_user_password" ini,
               fileExpiration =
                 Just
                   defaultFileExpiration
                     { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
                     },
+              fileTimeout = 10 * 60 * 1000000, -- 10 mins to send 4mb chunk
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig
@@ -179,6 +186,7 @@ xftpServerCLI cfgPath logPath = do
 
 data CliCommand
   = Init InitOptions
+  | OnlineCert CertOptions
   | Start
   | Delete
 
@@ -196,6 +204,7 @@ cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
+        <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )

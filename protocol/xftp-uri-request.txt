@@ -1,0 +1,16 @@
+Scheme name: xftp
+
+Status: Provisional
+
+Applications/protocols that use this scheme name:
+This scheme is used for URIs of XFTP (SimpleX File Transfer Protocol) servers,
+a client-server protocol for asynchronous file transfer via relays,
+preserving file meta-data (including size and name) and content privacy.
+
+Contact: Evgeny Poberezkin <ep@simplex.chat>
+
+Change controller: Evgeny Poberezkin <ep@simplex.chat>
+
+References:
+The syntax for server URIs in the provisional specification for SimpleX File Transfer Protocol:
+https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2022-12-26-simplex-file-transfer.md#server-address-syntax

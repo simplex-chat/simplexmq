@@ -22,6 +22,7 @@ import Control.Concurrent.STM
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:), (.:.))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -31,7 +32,7 @@ import Data.Time.Clock.System (SystemTime)
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (RcvPublicVerifyKey, RecipientId, SenderId)
+import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow, whenM)
 import System.Directory (doesFileExist, renameFile)
@@ -88,7 +89,7 @@ readWriteFileStore f st = do
   pure s
 
 readFileStore :: FilePath -> FileStore -> IO ()
-readFileStore f st = mapM_ addFileLogRecord . B.lines =<< B.readFile f
+readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addFileLogRecord s = case strDecode s of
       Left e -> B.putStrLn $ "Log parsing error (" <> B.pack e <> "): " <> B.take 100 s
@@ -109,7 +110,7 @@ writeFileStore s FileStore {files, recipients} = do
   allRcps <- readTVarIO recipients
   readTVarIO files >>= mapM_ (logFile allRcps)
   where
-    logFile :: Map RecipientId (SenderId, RcvPublicVerifyKey) -> FileRec -> IO ()
+    logFile :: Map RecipientId (SenderId, RcvPublicAuthKey) -> FileRec -> IO ()
     logFile allRcps FileRec {senderId, fileInfo, filePath, recipientIds, createdAt} = do
       logAddFile s senderId fileInfo createdAt
       (rcpErrs, rcps) <- M.mapEither getRcp . M.fromSet id <$> readTVarIO recipientIds

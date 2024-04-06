@@ -11,15 +11,17 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
-  ( AgentMonad,
-    AgentMonad',
+  ( AM',
+    AM,
     AgentConfig (..),
     InitialAgentServers (..),
     NetworkConfig (..),
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
+    tryAgentError',
     catchAgentError,
+    catchAgentError',
     agentFinally,
     Env (..),
     newSMPAgentEnv,
@@ -54,22 +56,23 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (supportedE2EEncryptVRange)
+import Simplex.Messaging.Crypto.Ratchet (PQSupport, VersionRangeE2E, supportedE2EEncryptVRange)
+import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
+import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, VersionRangeSMPC, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (TLS, Transport (..))
+import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors)
-import Simplex.Messaging.Version
+import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
 import UnliftIO.STM
 
-type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
+type AM' a = ReaderT Env IO a
 
-type AgentMonad m = (AgentMonad' m, MonadError AgentErrorType m)
+type AM a = ExceptT AgentErrorType (ReaderT Env IO) a
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),
@@ -79,17 +82,20 @@ data InitialAgentServers = InitialAgentServers
   }
 
 data AgentConfig = AgentConfig
-  { tcpPort :: ServiceName,
-    cmdSignAlg :: C.SignAlg,
+  { tcpPort :: Maybe ServiceName,
+    rcvAuthAlg :: C.AuthAlg,
+    sndAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    smpCfg :: ProtocolClientConfig,
-    ntfCfg :: ProtocolClientConfig,
+    smpCfg :: ProtocolClientConfig SMPVersion,
+    ntfCfg :: ProtocolClientConfig NTFVersion,
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
     messageTimeout :: NominalDiffTime,
+    connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
+    quotaExceededTimeout :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
@@ -110,10 +116,9 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    e2eEncryptVRange :: VersionRange,
-    smpAgentVRange :: VersionRange,
-    smpClientVRange :: VersionRange,
-    initialClientId :: Int
+    e2eEncryptVRange :: PQSupport -> VersionRangeE2E,
+    smpAgentVRange :: PQSupport -> VersionRangeSMPA,
+    smpClientVRange :: VersionRangeSMPC
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -134,30 +139,32 @@ defaultMessageRetryInterval =
             maxInterval = 60_000000
           },
       riSlow =
-        -- TODO: these timeouts can be increased in v5.0 once most clients are updated
-        -- to resume sending on QCONT messages.
-        -- After that local message expiration period should be also increased.
         RetryInterval
-          { initialInterval = 60_000000,
+          { initialInterval = 180_000000, -- 3 minutes
             increaseAfter = 60_000000,
-            maxInterval = 3600_000000 -- 1 hour
+            maxInterval = 3 * 3600_000000 -- 3 hours
           }
     }
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
-    { tcpPort = "5224",
-      cmdSignAlg = C.SignAlg C.SEd448,
+    { tcpPort = Just "5224",
+      -- while the current client version supports X25519, it can only be enabled once support for SMP v6 is dropped,
+      -- and all servers are required to support v7 to be compatible.
+      rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
+      sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
       tbqSize = 64,
-      smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
-      ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
+      smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
+      ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       messageTimeout = 2 * nominalDay,
+      connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
+      quotaExceededTimeout = 7 * nominalDay,
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
@@ -184,15 +191,13 @@ defaultAgentConfig =
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
-      smpClientVRange = supportedSMPClientVRange,
-      initialClientId = 0
+      smpClientVRange = supportedSMPClientVRange
     }
 
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
     random :: TVar ChaChaDRG,
-    clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,
@@ -200,14 +205,13 @@ data Env = Env
   }
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
-newSMPAgentEnv config@AgentConfig {initialClientId} store = do
+newSMPAgentEnv config store = do
   random <- C.newRandom
-  clientCounter <- newTVarIO initialClientId
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   xftpAgent <- atomically newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
-  pure Env {config, store, random, clientCounter, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
+  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
@@ -246,15 +250,24 @@ newXFTPAgent = do
   xftpDelWorkers <- TM.empty
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
-tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
+tryAgentError :: AM a -> AM (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
 {-# INLINE tryAgentError #-}
 
-catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
+-- unlike runExceptT, this ensures we catch IO exceptions as well
+tryAgentError' :: AM a -> AM' (Either AgentErrorType a)
+tryAgentError' = tryAllErrors' mkInternal
+{-# INLINE tryAgentError' #-}
+
+catchAgentError :: AM a -> (AgentErrorType -> AM a) -> AM a
 catchAgentError = catchAllErrors mkInternal
 {-# INLINE catchAgentError #-}
 
-agentFinally :: AgentMonad m => m a -> m b -> m a
+catchAgentError' :: AM a -> (AgentErrorType -> AM' a) -> AM' a
+catchAgentError' = catchAllErrors' mkInternal
+{-# INLINE catchAgentError' #-}
+
+agentFinally :: AM a -> AM b -> AM a
 agentFinally = allFinally mkInternal
 {-# INLINE agentFinally #-}
 

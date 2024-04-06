@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        5.5.0.4
+version:        5.6.2.1
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -101,11 +101,14 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
-      Simplex.Messaging.Agent.TAsyncs
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
       Simplex.Messaging.Agent.TRcvQueues
-      Simplex.Messaging.Builder
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
+      Simplex.Messaging.Compression
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
@@ -143,6 +146,7 @@ library
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.Stats
       Simplex.Messaging.Server.StoreLog
+      Simplex.Messaging.ServiceScheme
       Simplex.Messaging.TMap
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Buffer
@@ -157,6 +161,7 @@ library
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
       Simplex.Messaging.Version
+      Simplex.Messaging.Version.Internal
       Simplex.RemoteControl.Client
       Simplex.RemoteControl.Discovery
       Simplex.RemoteControl.Discovery.Multicast
@@ -166,7 +171,9 @@ library
       Paths_simplexmq
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
   include-dirs:
       cbits
   c-sources:
@@ -224,6 +231,7 @@ library
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -244,7 +252,9 @@ executable ntf-server
       Paths_simplexmq
   hs-source-dirs:
       apps/ntf-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -296,6 +306,7 @@ executable ntf-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -316,7 +327,9 @@ executable smp-agent
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-agent
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -368,6 +381,7 @@ executable smp-agent
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -388,7 +402,9 @@ executable smp-server
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -440,6 +456,7 @@ executable smp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -460,7 +477,9 @@ executable xftp
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -512,6 +531,7 @@ executable xftp
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -532,7 +552,9 @@ executable xftp-server
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded -rtsopts
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -584,6 +606,7 @@ executable xftp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -605,6 +628,7 @@ test-suite simplexmq-test
       AgentTests
       AgentTests.ConnectionRequestTests
       AgentTests.DoubleRatchetTests
+      AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
       AgentTests.NotificationTests
@@ -617,6 +641,7 @@ test-suite simplexmq-test
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
       CoreTests.RetryIntervalTests
+      CoreTests.TRcvQueuesTests
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
@@ -627,6 +652,7 @@ test-suite simplexmq-test
       SMPAgentClient
       SMPClient
       SMPProxyTests
+      Util
       XFTPAgent
       XFTPCLI
       XFTPClient
@@ -634,7 +660,9 @@ test-suite simplexmq-test
       Paths_simplexmq
   hs-source-dirs:
       tests
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
+  default-extensions:
+      StrictData
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*
@@ -695,6 +723,7 @@ test-suite simplexmq-test
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , yaml ==0.11.*
+    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON

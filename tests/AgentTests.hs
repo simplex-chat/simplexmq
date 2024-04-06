@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PostfixOperators #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
@@ -12,12 +13,12 @@ module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
-import AgentTests.FunctionalAPITests (functionalAPITests)
+import AgentTests.FunctionalAPITests (functionalAPITests, pattern Msg, pattern Msg')
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Maybe (fromJust)
@@ -26,15 +27,18 @@ import GHC.Stack (withFrozenCallStack)
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.Protocol hiding (MID, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQSupportOn, pattern PQSupportOff)
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
+import Simplex.Messaging.Protocol (ErrorType (..))
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import Simplex.Messaging.Util (bshow)
 import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
+import Util
 
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
@@ -46,24 +50,25 @@ agentTests (ATransport t) = do
   describe "Migration tests" migrationTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection (via agent protocol)" $ do
-    -- These tests are disabled because the agent does not work correctly with multiple connected TCP clients
-    xit "should connect via one server and one agent" $ do
-      smpAgentTest2_1_1 $ testDuplexConnection t
-    xit "should connect via one server and one agent (random IDs)" $ do
-      smpAgentTest2_1_1 $ testDuplexConnRandomIds t
+    skip "These tests are disabled because the agent does not work correctly with multiple connected TCP clients" $
+      describe "one agent" $ do
+        it "should connect via one server and one agent" $ do
+          smpAgentTest2_1_1 $ testDuplexConnection t
+        it "should connect via one server and one agent (random IDs)" $ do
+          smpAgentTest2_1_1 $ testDuplexConnRandomIds t
     it "should connect via one server and 2 agents" $ do
       smpAgentTest2_2_1 $ testDuplexConnection t
     it "should connect via one server and 2 agents (random IDs)" $ do
       smpAgentTest2_2_1 $ testDuplexConnRandomIds t
-    it "should connect via 2 servers and 2 agents" $ do
-      smpAgentTest2_2_2 $ testDuplexConnection t
-    it "should connect via 2 servers and 2 agents (random IDs)" $ do
-      smpAgentTest2_2_2 $ testDuplexConnRandomIds t
+    describe "should connect via 2 servers and 2 agents" $ do
+      pqMatrix2 t smpAgentTest2_2_2 testDuplexConnection'
+    describe "should connect via 2 servers and 2 agents (random IDs)" $ do
+      pqMatrix2 t smpAgentTest2_2_2 testDuplexConnRandomIds'
   describe "Establishing connections via `contact connection`" $ do
-    it "should connect via contact connection with one server and 3 agents" $ do
-      smpAgentTest3 $ testContactConnection t
-    it "should connect via contact connection with one server and 2 agents (random IDs)" $ do
-      smpAgentTest2_2_1 $ testContactConnRandomIds t
+    describe "should connect via contact connection with one server and 3 agents" $ do
+      pqMatrix3 t smpAgentTest3 testContactConnection
+    describe "should connect via contact connection with one server and 2 agents (random IDs)" $ do
+      pqMatrix2NoInv t smpAgentTest2_2_1 testContactConnRandomIds
     it "should support rejecting contact request" $ do
       smpAgentTest2_2_1 $ testRejectContactRequest t
   describe "Connection subscriptions" $ do
@@ -72,8 +77,8 @@ agentTests (ATransport t) = do
     it "should send notifications to client when server disconnects" $ do
       smpAgentServerTest $ testSubscrNotification t
   describe "Message delivery and server reconnection" $ do
-    it "should deliver messages after losing server connection and re-connecting" $ do
-      smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
+    describe "should deliver messages after losing server connection and re-connecting" $
+      pqMatrix2 t smpAgentTest2_2_2_needs_server testMsgDeliveryServerRestart
     it "should connect to the server when server goes up if it initially was down" $ do
       smpAgentTestN [] $ testServerConnectionAfterError t
     it "should deliver pending messages after agent restarting" $ do
@@ -133,6 +138,9 @@ action #> (corrId, connId, cmd) = withFrozenCallStack $ action `shouldReturn` (c
 (=#>) :: IO (AEntityTransmissionOrError 'Agent 'AEConn) -> (AEntityTransmission 'Agent 'AEConn -> Bool) -> Expectation
 action =#> p = withFrozenCallStack $ action >>= (`shouldSatisfy` p . correctTransmission)
 
+pattern MID :: AgentMsgId -> ACommand 'Agent 'AEConn
+pattern MID msgId = A.MID msgId PQEncOn
+
 correctTransmission :: (ACorrId, ConnId, Either AgentErrorType cmd) -> (ACorrId, ConnId, cmd)
 correctTransmission (corrId, connId, cmdOrErr) = case cmdOrErr of
   Right cmd -> (corrId, connId, cmd)
@@ -161,130 +169,188 @@ h #:# err = tryGet `shouldReturn` ()
         Just _ -> error err
         _ -> return ()
 
-pattern Msg :: MsgBody -> ACommand 'Agent e
-pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
+type PQMatrix2 c =
+  HasCallStack =>
+  TProxy c ->
+  (HasCallStack => (c -> c -> IO ()) -> Expectation) ->
+  (HasCallStack => (c, InitialKeys) -> (c, PQSupport) -> IO ()) ->
+  Spec
 
-pattern Msg' :: AgentMsgId -> MsgBody -> ACommand 'Agent e
-pattern Msg' aMsgId msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _)} _ msgBody
+pqMatrix2 :: PQMatrix2 c
+pqMatrix2 = pqMatrix2_ True
+
+pqMatrix2NoInv :: PQMatrix2 c
+pqMatrix2NoInv = pqMatrix2_ False
+
+pqMatrix2_ :: Bool -> PQMatrix2 c
+pqMatrix2_ pqInv _ smpTest test = do
+  it "dh/dh handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQSupportOff)
+  it "dh/pq handshake" $ smpTest $ \a b -> test (a, IKPQOff) (b, PQSupportOn)
+  it "pq/dh handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQSupportOff)
+  it "pq/pq handshake" $ smpTest $ \a b -> test (a, IKPQOn) (b, PQSupportOn)
+  when pqInv $ do
+    it "pq-inv/dh handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOff)
+    it "pq-inv/pq handshake" $ smpTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOn)
+
+pqMatrix3 ::
+  HasCallStack =>
+  TProxy c -> 
+  (HasCallStack => (c -> c -> c -> IO ()) -> Expectation) -> 
+  (HasCallStack => (c, InitialKeys) -> (c, PQSupport) -> (c, PQSupport) -> IO ()) ->
+  Spec
+pqMatrix3 _ smpTest test = do
+  it "dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOff) (c, PQSupportOff)
+  it "dh/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOff) (c, PQSupportOn)
+  it "dh/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOn) (c, PQSupportOff)
+  it "dh/pq/pq" $ smpTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOn) (c, PQSupportOn)
+  it "pq/dh/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOff) (c, PQSupportOff)
+  it "pq/dh/pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOff) (c, PQSupportOn)
+  it "pq/pq/dh" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOn) (c, PQSupportOff)
+  it "pq" $ smpTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOn) (c, PQSupportOn)
 
 testDuplexConnection :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
-testDuplexConnection _ alice bob = do
-  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV subscribe")
+testDuplexConnection _ alice bob = testDuplexConnection' (alice, IKPQOn) (bob, PQSupportOn)
+
+testDuplexConnection' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQSupport) -> IO ()
+testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
+  let pq = pqConnectionMode aPQ bPQ
+      pqSup = CR.pqEncToSupport pq
+  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
-  bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
+  bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
+  ("", "bob", Right (A.CONF confId pqSup' _ "bob's connInfo")) <- (alice <#:)
+  pqSup' `shouldBe` pqSup
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  bob <# ("", "alice", INFO "alice's connInfo")
-  bob <# ("", "alice", CON)
-  alice <# ("", "bob", CON)
+  bob <# ("", "alice", A.INFO pqSup "alice's connInfo")
+  bob <# ("", "alice", CON pq)
+  alice <# ("", "bob", CON pq)
   -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
-  alice #: ("3", "bob", "SEND F :hello") #> ("3", "bob", MID 4)
+  alice #: ("3", "bob", "SEND F :hello") #> ("3", "bob", A.MID 4 pq)
   alice <# ("", "bob", SENT 4)
-  bob <#= \case ("", "alice", Msg' 4 "hello") -> True; _ -> False
+  bob <#= \case ("", "alice", Msg' 4 pq' "hello") -> pq == pq'; _ -> False
   bob #: ("12", "alice", "ACK 4") #> ("12", "alice", OK)
-  alice #: ("4", "bob", "SEND F :how are you?") #> ("4", "bob", MID 5)
+  alice #: ("4", "bob", "SEND F :how are you?") #> ("4", "bob", A.MID 5 pq)
   alice <# ("", "bob", SENT 5)
-  bob <#= \case ("", "alice", Msg' 5 "how are you?") -> True; _ -> False
+  bob <#= \case ("", "alice", Msg' 5 pq' "how are you?") -> pq == pq'; _ -> False
   bob #: ("13", "alice", "ACK 5") #> ("13", "alice", OK)
-  bob #: ("14", "alice", "SEND F 9\nhello too") #> ("14", "alice", MID 6)
+  bob #: ("14", "alice", "SEND F 9\nhello too") #> ("14", "alice", A.MID 6 pq)
   bob <# ("", "alice", SENT 6)
-  alice <#= \case ("", "bob", Msg' 6 "hello too") -> True; _ -> False
+  alice <#= \case ("", "bob", Msg' 6 pq' "hello too") -> pq == pq'; _ -> False
   alice #: ("3a", "bob", "ACK 6") #> ("3a", "bob", OK)
-  bob #: ("15", "alice", "SEND F 9\nmessage 1") #> ("15", "alice", MID 7)
+  bob #: ("15", "alice", "SEND F 9\nmessage 1") #> ("15", "alice", A.MID 7 pq)
   bob <# ("", "alice", SENT 7)
-  alice <#= \case ("", "bob", Msg' 7 "message 1") -> True; _ -> False
+  alice <#= \case ("", "bob", Msg' 7 pq' "message 1") -> pq == pq'; _ -> False
   alice #: ("4a", "bob", "ACK 7") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
-  bob #: ("17", "alice", "SEND F 9\nmessage 3") #> ("17", "alice", MID 8)
+  bob #: ("17", "alice", "SEND F 9\nmessage 3") #> ("17", "alice", A.MID 8 pq)
   bob <# ("", "alice", MERR 8 (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
-testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
-testDuplexConnRandomIds _ alice bob = do
-  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV subscribe")
+testDuplexConnRandomIds :: (HasCallStack, Transport c) => TProxy c -> c -> c -> IO ()
+testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, IKPQOn) (bob, PQSupportOn)
+
+testDuplexConnRandomIds' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQSupport) -> IO ()
+testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
+  let pq = pqConnectionMode aPQ bPQ
+      pqSup = CR.pqEncToSupport pq
+  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
-  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo")
-  ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo")
+  ("", bobConn', Right (A.CONF confId pqSup' _ "bob's connInfo")) <- (alice <#:)
+  pqSup' `shouldBe` pqSup
   bobConn' `shouldBe` bobConn
   alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
-  bob <# ("", aliceConn, INFO "alice's connInfo")
-  bob <# ("", aliceConn, CON)
-  alice <# ("", bobConn, CON)
-  alice #: ("2", bobConn, "SEND F :hello") #> ("2", bobConn, MID 4)
+  bob <# ("", aliceConn, A.INFO pqSup "alice's connInfo")
+  bob <# ("", aliceConn, CON pq)
+  alice <# ("", bobConn, CON pq)
+  alice #: ("2", bobConn, "SEND F :hello") #> ("2", bobConn, A.MID 4 pq)
   alice <# ("", bobConn, SENT 4)
-  bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
+  bob <#= \case ("", c, Msg' 4 pq' "hello") -> c == aliceConn && pq == pq'; _ -> False
   bob #: ("12", aliceConn, "ACK 4") #> ("12", aliceConn, OK)
-  alice #: ("3", bobConn, "SEND F :how are you?") #> ("3", bobConn, MID 5)
+  alice #: ("3", bobConn, "SEND F :how are you?") #> ("3", bobConn, A.MID 5 pq)
   alice <# ("", bobConn, SENT 5)
-  bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
+  bob <#= \case ("", c, Msg' 5 pq' "how are you?") -> c == aliceConn && pq == pq'; _ -> False
   bob #: ("13", aliceConn, "ACK 5") #> ("13", aliceConn, OK)
-  bob #: ("14", aliceConn, "SEND F 9\nhello too") #> ("14", aliceConn, MID 6)
+  bob #: ("14", aliceConn, "SEND F 9\nhello too") #> ("14", aliceConn, A.MID 6 pq)
   bob <# ("", aliceConn, SENT 6)
-  alice <#= \case ("", c, Msg "hello too") -> c == bobConn; _ -> False
+  alice <#= \case ("", c, Msg' 6 pq' "hello too") -> c == bobConn && pq == pq'; _ -> False
   alice #: ("3a", bobConn, "ACK 6") #> ("3a", bobConn, OK)
-  bob #: ("15", aliceConn, "SEND F 9\nmessage 1") #> ("15", aliceConn, MID 7)
+  bob #: ("15", aliceConn, "SEND F 9\nmessage 1") #> ("15", aliceConn, A.MID 7 pq)
   bob <# ("", aliceConn, SENT 7)
-  alice <#= \case ("", c, Msg "message 1") -> c == bobConn; _ -> False
+  alice <#= \case ("", c, Msg' 7 pq' "message 1") -> c == bobConn && pq == pq'; _ -> False
   alice #: ("4a", bobConn, "ACK 7") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
-  bob #: ("17", aliceConn, "SEND F 9\nmessage 3") #> ("17", aliceConn, MID 8)
+  bob #: ("17", aliceConn, "SEND F 9\nmessage 3") #> ("17", aliceConn, A.MID 8 pq)
   bob <# ("", aliceConn, MERR 8 (SMP AUTH))
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
-testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
-testContactConnection _ alice bob tom = do
-  ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON subscribe")
+testContactConnection :: Transport c => (c, InitialKeys) -> (c, PQSupport) -> (c, PQSupport) -> IO ()
+testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
+  ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
+      abPQ = pqConnectionMode aPQ bPQ
+      abPQSup = CR.pqEncToSupport abPQ
+      aPQMode = CR.connPQEncryption aPQ
 
-  bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT " <> aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  ("", "alice", Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
+  bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
+  ("", "alice_contact", Right (A.REQ aInvId pqSup' _ "bob's connInfo")) <- (alice <#:)
+  pqSup' `shouldBe` bPQ
+  alice #: ("2", "bob", "ACPT " <> aInvId <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  ("", "alice", Right (A.CONF bConfId pqSup'' _ "alice's connInfo")) <- (bob <#:)
+  pqSup'' `shouldBe` abPQSup
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
-  alice <# ("", "bob", INFO "bob's connInfo 2")
-  alice <# ("", "bob", CON)
-  bob <# ("", "alice", CON)
-  alice #: ("3", "bob", "SEND F :hi") #> ("3", "bob", MID 4)
+  alice <# ("", "bob", A.INFO abPQSup "bob's connInfo 2")
+  alice <# ("", "bob", CON abPQ)
+  bob <# ("", "alice", CON abPQ)
+  alice #: ("3", "bob", "SEND F :hi") #> ("3", "bob", A.MID 4 abPQ)
   alice <# ("", "bob", SENT 4)
-  bob <#= \case ("", "alice", Msg "hi") -> True; _ -> False
+  bob <#= \case ("", "alice", Msg' 4 pq' "hi") -> pq' == abPQ; _ -> False
   bob #: ("13", "alice", "ACK 4") #> ("13", "alice", OK)
 
-  tom #: ("21", "alice", "JOIN T " <> cReq' <> " subscribe 14\ntom's connInfo") #> ("21", "alice", OK)
-  ("", "alice_contact", Right (REQ aInvId' _ "tom's connInfo")) <- (alice <#:)
-  alice #: ("4", "tom", "ACPT " <> aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
-  ("", "alice", Right (CONF tConfId _ "alice's connInfo")) <- (tom <#:)
+  let atPQ = pqConnectionMode aPQ tPQ
+      atPQSup = CR.pqEncToSupport atPQ
+  tom #: ("21", "alice", "JOIN T " <> cReq' <> enableKEMStr tPQ <> " subscribe 14\ntom's connInfo") #> ("21", "alice", OK)
+  ("", "alice_contact", Right (A.REQ aInvId' pqSup3 _ "tom's connInfo")) <- (alice <#:)
+  pqSup3 `shouldBe` tPQ
+  alice #: ("4", "tom", "ACPT " <> aInvId' <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("4", "tom", OK)
+  ("", "alice", Right (A.CONF tConfId pqSup4 _ "alice's connInfo")) <- (tom <#:)
+  pqSup4 `shouldBe` atPQSup
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
-  alice <# ("", "tom", INFO "tom's connInfo 2")
-  alice <# ("", "tom", CON)
-  tom <# ("", "alice", CON)
-  alice #: ("5", "tom", "SEND F :hi there") #> ("5", "tom", MID 4)
+  alice <# ("", "tom", A.INFO atPQSup "tom's connInfo 2")
+  alice <# ("", "tom", CON atPQ)
+  tom <# ("", "alice", CON atPQ)
+  alice #: ("5", "tom", "SEND F :hi there") #> ("5", "tom", A.MID 4 atPQ)
   alice <# ("", "tom", SENT 4)
-  tom <#= \case ("", "alice", Msg "hi there") -> True; _ -> False
+  tom <#= \case ("", "alice", Msg' 4 pq' "hi there") -> pq' == atPQ; _ -> False
   tom #: ("23", "alice", "ACK 4") #> ("23", "alice", OK)
 
-testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
-testContactConnRandomIds _ alice bob = do
-  ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON subscribe")
+testContactConnRandomIds :: Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
+testContactConnRandomIds (alice, aPQ) (bob, bPQ) = do
+  let pq = pqConnectionMode aPQ bPQ
+      pqSup = CR.pqEncToSupport pq
+  ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
 
-  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo")
-  ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo")
+  ("", aliceContact', Right (A.REQ aInvId pqSup' _ "bob's connInfo")) <- (alice <#:)
+  pqSup' `shouldBe` bPQ
   aliceContact' `shouldBe` aliceContact
 
-  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> " 16\nalice's connInfo")
-  ("", aliceConn', Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> enableKEMStr (CR.connPQEncryption aPQ) <> " 16\nalice's connInfo")
+  ("", aliceConn', Right (A.CONF bConfId pqSup'' _ "alice's connInfo")) <- (bob <#:)
+  pqSup'' `shouldBe` pqSup
   aliceConn' `shouldBe` aliceConn
 
   bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
-  alice <# ("", bobConn, INFO "bob's connInfo 2")
-  alice <# ("", bobConn, CON)
-  bob <# ("", aliceConn, CON)
+  alice <# ("", bobConn, A.INFO pqSup "bob's connInfo 2")
+  alice <# ("", bobConn, CON pq)
+  bob <# ("", aliceConn, CON pq)
 
-  alice #: ("3", bobConn, "SEND F :hi") #> ("3", bobConn, MID 4)
+  alice #: ("3", bobConn, "SEND F :hi") #> ("3", bobConn, A.MID 4 pq)
   alice <# ("", bobConn, SENT 4)
-  bob <#= \case ("", c, Msg "hi") -> c == aliceConn; _ -> False
+  bob <#= \case ("", c, Msg' 4 pq' "hi") -> c == aliceConn && pq == pq'; _ -> False
   bob #: ("13", aliceConn, "ACK 4") #> ("13", aliceConn, OK)
 
 testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
@@ -292,7 +358,7 @@ testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW T CON subscribe")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 10\nbob's info") #> ("11", "alice", OK)
-  ("", "a_contact", Right (REQ aInvId _ "bob's info")) <- (alice <#:)
+  ("", "a_contact", Right (A.REQ aInvId PQSupportOff _ "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
@@ -327,31 +393,32 @@ testSubscrNotification t (server, _) client = do
   withSmpServer (ATransport t) $
     client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
-testMsgDeliveryServerRestart :: Transport c => TProxy c -> c -> c -> IO ()
-testMsgDeliveryServerRestart t alice bob = do
+testMsgDeliveryServerRestart :: forall c. Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
+testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
+  let pq = pqConnectionMode aPQ bPQ
   withServer $ do
-    connect (alice, "alice") (bob, "bob")
-    bob #: ("1", "alice", "SEND F 2\nhi") #> ("1", "alice", MID 4)
+    connect' (alice, "alice", aPQ) (bob, "bob", bPQ)
+    bob #: ("1", "alice", "SEND F 2\nhi") #> ("1", "alice", A.MID 4 pq)
     bob <# ("", "alice", SENT 4)
-    alice <#= \case ("", "bob", Msg "hi") -> True; _ -> False
+    alice <#= \case ("", "bob", Msg' _ pq' "hi") -> pq == pq'; _ -> False
     alice #: ("11", "bob", "ACK 4") #> ("11", "bob", OK)
     alice #:# "nothing else delivered before the server is killed"
 
   let server = SMPServer "localhost" testPort2 testKeyHash
   alice <#. ("", "", DOWN server ["bob"])
-  bob #: ("2", "alice", "SEND F 11\nhello again") #> ("2", "alice", MID 5)
+  bob #: ("2", "alice", "SEND F 11\nhello again") #> ("2", "alice", A.MID 5 pq)
   bob #:# "nothing else delivered before the server is restarted"
   alice #:# "nothing else delivered before the server is restarted"
 
   withServer $ do
     bob <# ("", "alice", SENT 5)
     alice <#. ("", "", UP server ["bob"])
-    alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+    alice <#= \case ("", "bob", Msg' _ pq' "hello again") -> pq == pq'; _ -> False
     alice #: ("12", "bob", "ACK 5") #> ("12", "bob", OK)
 
   removeFile testStoreLogFile
   where
-    withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+    withServer test' = withSmpServerStoreLogOn (transport @c) testPort2 (const test') `shouldReturn` ()
 
 testServerConnectionAfterError :: forall c. Transport c => TProxy c -> [c] -> IO ()
 testServerConnectionAfterError t _ = do
@@ -359,7 +426,6 @@ testServerConnectionAfterError t _ = do
     withAgent2 $ \alice -> do
       withServer $ do
         connect (bob, "bob") (alice, "alice")
-
       bob <#. ("", "", DOWN server ["alice"])
       alice <#. ("", "", DOWN server ["bob"])
       alice #: ("1", "bob", "SEND F 5\nhello") #> ("1", "bob", MID 4)
@@ -386,10 +452,10 @@ testServerConnectionAfterError t _ = do
   where
     server = SMPServer "localhost" testPort2 testKeyHash
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
-    withAgent1 = withAgent agentTestPort testDB
-    withAgent2 = withAgent agentTestPort2 testDB2
-    withAgent :: String -> FilePath -> (c -> IO a) -> IO a
-    withAgent agentPort agentDB = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) (pure ()) . const . testSMPAgentClientOn agentPort
+    withAgent1 = withAgent agentTestPort testDB 0 
+    withAgent2 = withAgent agentTestPort2 testDB2 10
+    withAgent :: String -> FilePath -> Int -> (c -> IO a) -> IO a
+    withAgent agentPort agentDB initClientId = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) initClientId (pure ()) . const . testSMPAgentClientOn agentPort
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
 testMsgDeliveryAgentRestart t bob = do
@@ -424,7 +490,7 @@ testMsgDeliveryAgentRestart t bob = do
   removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
-    withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
+    withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) 0 (pure ()) . const . testSMPAgentClientOn agentTestPort
 
 testConcurrentMsgDelivery :: Transport c => TProxy c -> c -> c -> IO ()
 testConcurrentMsgDelivery _ alice bob = do
@@ -433,7 +499,7 @@ testConcurrentMsgDelivery _ alice bob = do
   ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW T INV subscribe")
   let cReq' = strEncode cReq
   bob #: ("11", "alice2", "JOIN T " <> cReq' <> " subscribe 14\nbob's connInfo") #> ("11", "alice2", OK)
-  ("", "bob2", Right (CONF _confId _ "bob's connInfo")) <- (alice <#:)
+  ("", "bob2", Right (A.CONF _confId PQSupportOff _ "bob's connInfo")) <- (alice <#:)
   -- below commands would be needed to accept bob's connection, but alice does not
   -- alice #: ("2", "bob", "LET " <> _confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   -- bob <# ("", "alice", INFO "alice's connInfo")
@@ -493,16 +559,33 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   -- message 8 is skipped because of alice agent sending "QCONT" message
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
 
-connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
-connect (h1, name1) (h2, name2) = do
-  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV subscribe")
+connect :: Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
+connect (h1, name1) (h2, name2) = connect' (h1, name1, IKPQOn) (h2, name2, PQSupportOn)
+
+connect' :: forall c. Transport c => (c, ByteString, InitialKeys) -> (c, ByteString, PQSupport) -> IO ()
+connect' (h1, name1, pqMode1) (h2, name2, pqMode2) = do
+  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV" <> pqConnModeStr pqMode1 <> " subscribe")
   let cReq' = strEncode cReq
-  h2 #: ("c2", name1, "JOIN T " <> cReq' <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
-  ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
+      pq = pqConnectionMode pqMode1 pqMode2
+      pqSup = CR.pqEncToSupport pq
+  h2 #: ("c2", name1, "JOIN T " <> cReq' <> enableKEMStr pqMode2 <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
+  ("", _, Right (A.CONF connId pqSup' _ "info2")) <- (h1 <#:)
+  pqSup' `shouldBe` pqSup
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
-  h2 <# ("", name1, INFO "info1")
-  h2 <# ("", name1, CON)
-  h1 <# ("", name2, CON)
+  h2 <# ("", name1, A.INFO pqSup "info1")
+  h2 <# ("", name1, CON pq)
+  h1 <# ("", name2, CON pq)
+
+pqConnectionMode :: InitialKeys -> PQSupport -> PQEncryption
+pqConnectionMode pqMode1 pqMode2 = PQEncryption $ supportPQ (CR.connPQEncryption pqMode1) && supportPQ pqMode2
+
+enableKEMStr :: PQSupport -> ByteString
+enableKEMStr PQSupportOn = " " <> strEncode PQSupportOn
+enableKEMStr _ = ""
+
+pqConnModeStr :: InitialKeys -> ByteString
+pqConnModeStr (IKNoPQ PQSupportOff) = ""
+pqConnModeStr pq =  " " <> strEncode pq
 
 sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
 sendMessage (h1, name1) (h2, name2) msg = do
@@ -547,8 +630,8 @@ syntaxTests t = do
             <> urlEncode True "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
             <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
             <> urlEncode True sampleDhKey
-            <> "&v=1"
-            <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&v=2"
+            <> "&e2e=v%3D2%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> " subscribe "
             <> "14\nbob's connInfo"
         )

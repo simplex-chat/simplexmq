@@ -30,23 +30,24 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, PQEncryption, PQSupport)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
     MsgId,
     NotifierId,
-    NtfPrivateSignKey,
-    NtfPublicVerifyKey,
+    NtfPrivateAuthKey,
+    NtfPublicAuthKey,
     RcvDhSecret,
     RcvNtfDhSecret,
-    RcvPrivateSignKey,
-    SndPrivateSignKey,
+    RcvPrivateAuthKey,
+    SndPrivateAuthKey,
+    SndPublicAuthKey,
+    VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util ((<$?>))
-import Simplex.Messaging.Version
 
 -- * Queue types
 
@@ -59,8 +60,6 @@ data SQueueStored (q :: QueueStored) where
 data DBQueueId (q :: QueueStored) where
   DBQueueId :: Int64 -> DBQueueId 'QSStored
   DBNewQueue :: DBQueueId 'QSNew
-
-deriving instance Eq (DBQueueId q)
 
 deriving instance Show (DBQueueId q)
 
@@ -75,8 +74,8 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     server :: SMPServer,
     -- | recipient queue ID
     rcvId :: SMP.RecipientId,
-    -- | key used by the recipient to sign transmissions
-    rcvPrivateKey :: RcvPrivateSignKey,
+    -- | key used by the recipient to authorize transmissions
+    rcvPrivateKey :: RcvPrivateAuthKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
     -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
@@ -95,12 +94,12 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     dbReplaceQueueId :: Maybe Int64,
     rcvSwchStatus :: Maybe RcvSwitchStatus,
     -- | SMP client version
-    smpClientVersion :: Version,
+    smpClientVersion :: VersionSMPC,
     -- | credentials used in context of notifications
     clientNtfCreds :: Maybe ClientNtfCreds,
     deleteErrors :: Int
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
 rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
@@ -119,15 +118,15 @@ canAbortRcvSwitch = maybe False canAbort . rcvSwchStatus
       RSReceivedMessage -> False
 
 data ClientNtfCreds = ClientNtfCreds
-  { -- | key pair to be used by the notification server to sign transmissions
-    ntfPublicKey :: NtfPublicVerifyKey,
-    ntfPrivateKey :: NtfPrivateSignKey,
+  { -- | key pair to be used by the notification server to authorize transmissions
+    ntfPublicKey :: NtfPublicAuthKey,
+    ntfPrivateKey :: NtfPrivateAuthKey,
     -- | queue ID to be used by the notification server for NSUB command
     notifierId :: NotifierId,
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
     rcvNtfDhSecret :: RcvNtfDhSecret
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 type SndQueue = StoredSndQueue 'QSStored
 
@@ -140,9 +139,10 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
-    -- | key pair used by the sender to sign transmissions
-    sndPublicKey :: Maybe C.APublicVerifyKey,
-    sndPrivateKey :: SndPrivateSignKey,
+    -- | key pair used by the sender to authorize transmissions
+    -- TODO combine keys to key pair so that types match
+    sndPublicKey :: Maybe SndPublicAuthKey,
+    sndPrivateKey :: SndPrivateAuthKey,
     -- | DH public key used to negotiate per-queue e2e encryption
     e2ePubKey :: Maybe C.PublicKeyX25519,
     -- | shared DH secret agreed for simple per-queue e2e encryption
@@ -157,9 +157,9 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     dbReplaceQueueId :: Maybe Int64,
     sndSwchStatus :: Maybe SndSwitchStatus,
     -- | SMP client version
-    smpClientVersion :: Version
+    smpClientVersion :: VersionSMPC
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 sndQueueInfo :: SndQueue -> SndQueueInfo
 sndQueueInfo SndQueue {server, sndSwchStatus} =
@@ -254,8 +254,6 @@ data Connection (d :: ConnType) where
   DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
   ContactConnection :: ConnData -> RcvQueue -> Connection CContact
 
-deriving instance Eq (Connection d)
-
 deriving instance Show (Connection d)
 
 toConnData :: Connection d -> ConnData
@@ -288,8 +286,6 @@ connType SCSnd = CSnd
 connType SCDuplex = CDuplex
 connType SCContact = CContact
 
-deriving instance Eq (SConnType d)
-
 deriving instance Show (SConnType d)
 
 instance TestEquality SConnType where
@@ -303,35 +299,24 @@ instance TestEquality SConnType where
 -- Used to refer to an arbitrary connection when retrieving from store.
 data SomeConn = forall d. SomeConn (SConnType d) (Connection d)
 
-instance Eq SomeConn where
-  SomeConn d c == SomeConn d' c' = case testEquality d d' of
-    Just Refl -> c == c'
-    _ -> False
-
 deriving instance Show SomeConn
 
 data ConnData = ConnData
   { connId :: ConnId,
     userId :: UserId,
-    connAgentVersion :: Version,
+    connAgentVersion :: VersionSMPA,
     enableNtfs :: Bool,
-    duplexHandshake :: Maybe Bool, -- added in agent protocol v2
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
-    ratchetSyncState :: RatchetSyncState
+    ratchetSyncState :: RatchetSyncState,
+    pqSupport :: PQSupport
   }
   deriving (Eq, Show)
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
-ratchetSyncAllowed cData@ConnData {ratchetSyncState} =
-  ratchetSyncSupported' cData && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
-
-ratchetSyncSupported' :: ConnData -> Bool
-ratchetSyncSupported' ConnData {connAgentVersion} = connAgentVersion >= 3
-
-messageRcptsSupported :: ConnData -> Bool
-messageRcptsSupported ConnData {connAgentVersion} = connAgentVersion >= 4
+ratchetSyncAllowed ConnData {ratchetSyncState, connAgentVersion} =
+  connAgentVersion >= ratchetSyncSMPAgentVersion && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
 
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool
@@ -388,11 +373,11 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
-  | ICAllowSecure SMP.RecipientId SMP.SndPublicVerifyKey
-  | ICDuplexSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICAllowSecure SMP.RecipientId SMP.SndPublicAuthKey
+  | ICDuplexSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICDeleteConn
   | ICDeleteRcvQueue SMP.RecipientId
-  | ICQSecure SMP.RecipientId SMP.SndPublicVerifyKey
+  | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICQDelete SMP.RecipientId
 
 data InternalCommandTag
@@ -539,6 +524,7 @@ data SndMsgData = SndMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
+    pqEncryption :: PQEncryption,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
   }
@@ -556,6 +542,7 @@ data PendingMsgData = PendingMsgData
     msgType :: AgentMessageType,
     msgFlags :: MsgFlags,
     msgBody :: MsgBody,
+    pqEncryption :: PQEncryption,
     msgRetryState :: Maybe RI2State,
     internalTs :: InternalTs
   }

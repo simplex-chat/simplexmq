@@ -71,7 +71,8 @@ dbBusyLoop action = loop 500 3000000
     loop :: Int -> Int -> IO a
     loop t tLim =
       action `E.catch` \(e :: SQLError) ->
-        if tLim > t && SQL.sqlError e == SQL.ErrorBusy
+        let se = SQL.sqlError e in
+        if tLim > t && (se == SQL.ErrorBusy || se == SQL.ErrorLocked)
           then do
             threadDelay t
             loop (t * 9 `div` 8) (tLim - t)

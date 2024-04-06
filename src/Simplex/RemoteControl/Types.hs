@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -17,6 +18,7 @@ import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
@@ -26,7 +28,8 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport (TLS)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (safeDecodeUtf8)
-import Simplex.Messaging.Version (Version, VersionRange, mkVersionRange)
+import Simplex.Messaging.Version (VersionRange, VersionScope, mkVersionRange)
+import Simplex.Messaging.Version.Internal
 import UnliftIO
 
 data RCErrorType
@@ -92,24 +95,37 @@ instance StrEncoding RCErrorType where
 
 -- * Discovery
 
-ipProbeVersionRange :: VersionRange
-ipProbeVersionRange = mkVersionRange 1 1
+data RCPVersion
+
+instance VersionScope RCPVersion
+
+type VersionRCP = Version RCPVersion
+
+type VersionRangeRCP = VersionRange RCPVersion
+
+pattern VersionRCP :: Word16 -> VersionRCP
+pattern VersionRCP v = Version v
+
+currentRCPVersion :: VersionRCP
+currentRCPVersion = VersionRCP 1
+
+supportedRCPVRange :: VersionRangeRCP
+supportedRCPVRange = mkVersionRange (VersionRCP 1) currentRCPVersion
 
 data IpProbe = IpProbe
-  { versionRange :: VersionRange,
+  { versionRange :: VersionRangeRCP,
     randomNonce :: ByteString
   }
   deriving (Show)
 
 instance Encoding IpProbe where
   smpEncode IpProbe {versionRange, randomNonce} = smpEncode (versionRange, 'I', randomNonce)
-
   smpP = IpProbe <$> (smpP <* "I") *> smpP
 
 -- * Session
 
 data RCHostHello = RCHostHello
-  { v :: Version,
+  { v :: VersionRCP,
     ca :: C.KeyHash,
     app :: J.Value,
     kem :: KEMPublicKey
@@ -221,17 +237,6 @@ instance Encoding RCCtrlEncHello where
 type SessionCode = ByteString
 
 type RCStepTMVar a = TMVar (Either RCErrorType a)
-
-type Tasks = TVar [Async ()]
-
-asyncRegistered :: MonadUnliftIO m => Tasks -> m () -> m ()
-asyncRegistered tasks action = async action >>= registerAsync tasks
-
-registerAsync :: MonadIO m => Tasks -> Async () -> m ()
-registerAsync tasks = atomically . modifyTVar tasks . (:)
-
-cancelTasks :: MonadIO m => Tasks -> m ()
-cancelTasks tasks = readTVarIO tasks >>= mapM_ cancel
 
 $(JQ.deriveJSON (sumTypeJSON $ dropPrefix "RCE") ''RCErrorType)
 

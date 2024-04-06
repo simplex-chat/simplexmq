@@ -1,16 +1,20 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module CLITests where
 
 import Data.Ini (lookupValue, readIniFile)
 import Data.List (isPrefixOf)
-import Simplex.FileTransfer.Server.Main (xftpServerCLI, xftpServerVersion)
+import qualified Data.X509 as X
+import qualified Data.X509.File as XF
+import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (catchAll_)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
+import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import System.Timeout (timeout)
 import Test.Hspec
@@ -51,6 +55,7 @@ cliTests = do
 
 smpServerTest :: Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
+  -- init
   capture_ (withArgs (["init", "-y"] <> ["-l" | storeLog] <> ["--no-password" | not basicAuth]) $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> cfgPath <> "/smp-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ cfgPath <> "/smp-server.ini"
@@ -61,12 +66,30 @@ smpServerTest storeLog basicAuth = do
   lookupValue "AUTH" "new_queues" ini `shouldBe` Right "on"
   lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "off"
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
+  -- start
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> logPath <> "/smp-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 5223 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
   r `shouldContain` (if basicAuth then ["creating new queues requires password"] else ["creating new queues allowed"])
+  -- cert
+  let certPath = cfgPath </> "server.crt"
+  oldCrt@X.Certificate {} <-
+    XF.readSignedObject certPath >>= \case
+      [cert] -> pure . X.signedObject $ X.getSigned cert
+      _ -> error "bad crt format"
+  r' <- lines <$> capture_ (withArgs ["cert"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
+  r' `shouldContain` ["Generated new server credentials"]
+  newCrt <-
+    XF.readSignedObject certPath >>= \case
+      [cert] -> pure . X.signedObject $ X.getSigned cert
+      _ -> error "bad crt format after cert"
+  X.certSignatureAlg oldCrt `shouldBe` X.certSignatureAlg newCrt
+  X.certSubjectDN oldCrt `shouldBe` X.certSubjectDN newCrt
+  X.certSerial oldCrt `shouldNotBe` X.certSerial newCrt
+  X.certPubKey oldCrt `shouldNotBe` X.certPubKey newCrt
+  -- delete
   capture_ (withStdin "Y" . withArgs ["delete"] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
@@ -82,7 +105,7 @@ ntfServerTest storeLog = do
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
   doesFileExist (ntfCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SMP notifications server v" <> ntfServerVersion]
+  r `shouldContain` ["SMP notifications server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
@@ -99,7 +122,7 @@ xftpServerTest storeLog = do
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
   doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
-  r `shouldContain` ["SimpleX XFTP server v" <> xftpServerVersion]
+  r `shouldContain` ["SimpleX XFTP server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> fileLogPath <> "/file-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Listening on port 443..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ xftpServerCLI fileCfgPath fileLogPath)

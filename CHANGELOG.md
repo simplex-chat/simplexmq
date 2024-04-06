@@ -1,3 +1,84 @@
+# 5.6.1
+
+Version 5.6.1.0.
+
+- Much faster iOS notification server start time (fewer skipped notifications).
+- Fix SMP server stored message stats.
+- Prevent overwriting uploaded XFTP files with subsequent upload attempts.
+- Faster base64 encoding/parsing.
+- Control port audit log and authentication.
+
+# 5.6.0
+
+Version 5.6.0.4.
+
+SMP protocol/client/server:
+- support deniable sender command authorization (to be enabled in the next version).
+- remove support for SMP protocol versions (prior to v4, 07/2022).
+
+Agent:
+- optional post-quantum key agreement using sntrup761 in double ratchet protocol.
+- improve performance of deleting multiple connections and files by batching database operations.
+- delay connection deletion to deliver pending messages.
+- API to test for notifications server.
+- remove support for client protocols versions (prior to 10/2022).
+
+XFTP server:
+- restore storage quota in case of failed uploads.
+
+Performance and stability improvements.
+
+# 5.5.3
+
+Agent:
+- notification token API also returns active notifications server.
+- support file descriptions with redirection and file URIs.
+
+Servers:
+- CLI commands for online key and certificate rotation.
+- Configure config and log paths via environment variables.
+
+# 5.5.2
+
+Extensible handshake for clients and SMP/NTF servers (ignore extra data).
+
+# 5.5.1
+
+SMP servers:
+- do not keep stats file open
+- additional stats about currently stored messages
+
+Agent:
+- support multiple notification servers (only one can be used at a time).
+- expire messages after "quota exceeded" error after 7 days (instead of 21 days previously).
+- stabilize message delivery, remove unnecessary subscription retries and traffic.
+- improve database performance for message delivery.
+- fix sockets/memory leak - a very old bug "activated" by improvements in v5.5.0.
+
+# 5.5.0
+
+Code:
+- compatible with GHC 8.10.7 to support compilation for armv7a.
+- migrate to `crypton` from deprecated `cryptonite` (the seed for DRG is now sha512-hashed).
+- use ChaChaDRG for all random IDs, keys and nonces, only using hashed entropy as seed.
+- more efficient transaction batching in SMP protocol client and server.
+
+Agent:
+- stabilize message reception and delivery, migrate message delivery to database queue.
+- additional event MSGNTF confirming that message received via notification is processed.
+- efficient processing of messages sent to multiple recipients with batched database transactions.
+- new worker abstraction for all queued tasks resilient to race conditions and some database errors.
+- many fixed race conditions.
+- background mode for iOS NSE.
+- additional error reporting to client on critical errors (to be show as alert in the clients).
+- functional api to get worker statistics.
+
+SMP/XFTP servers:
+- fix socket and memory leak on servers with high load (inactive clients without subscriptions are disconnected after set time of inactivity).
+- control port improvements.
+- fix statistics for stored queues, messages and files.
+- make writing to store log atomic (fixes a rare bug in XFTP server).
+
 # 5.4.0
 
 Migrate to GHC 9.6.3

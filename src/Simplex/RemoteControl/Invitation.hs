@@ -27,7 +27,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Version (VersionRange)
+import Simplex.RemoteControl.Types (VersionRangeRCP)
 
 data RCInvitation = RCInvitation
   { -- | CA TLS certificate fingerprint of the controller.
@@ -37,7 +37,7 @@ data RCInvitation = RCInvitation
     host :: TransportHost,
     port :: Word16,
     -- | Supported version range for remote control protocol
-    v :: VersionRange,
+    v :: VersionRangeRCP,
     -- | Application information
     app :: J.Value,
     -- | Session start time in seconds since epoch

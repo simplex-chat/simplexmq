@@ -1,20 +1,27 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module AgentTests.SQLiteTests (storeTests) where
 
+import AgentTests.EqInstances ()
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
+import Control.Monad.Trans.Except
+import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
@@ -34,12 +41,15 @@ import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (SubscriptionMode (..))
+import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
@@ -69,6 +79,7 @@ createEncryptedStore key keepKey = do
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
   Right st <- createSQLiteStore (testDB <> show r) key keepKey Migrations.app MCError
+  withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1);")
   pure st
 
 removeStore :: SQLiteStore -> IO ()
@@ -89,7 +100,7 @@ storeTests = do
       testForeignKeysEnabled
     describe "db methods" $ do
       describe "Queue and Connection management" $ do
-        describe "createRcvConn" $ do
+        describe "create Rcv connection" $ do
           testCreateRcvConn
           testCreateRcvConnRandomId
           testCreateRcvConnDuplicate
@@ -170,10 +181,20 @@ testForeignKeysEnabled =
       `shouldThrow` (\e -> SQL.sqlError e == SQL.ErrorConstraint)
 
 cData1 :: ConnData
-cData1 = ConnData {userId = 1, connId = "conn1", connAgentVersion = 1, enableNtfs = True, duplexHandshake = Nothing, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk}
+cData1 =
+  ConnData
+    { userId = 1,
+      connId = "conn1",
+      connAgentVersion = VersionSMPA 1,
+      enableNtfs = True,
+      lastExternalSndId = 0,
+      deleted = False,
+      ratchetSyncState = RSOk,
+      pqSupport = CR.PQSupportOn
+    }
 
-testPrivateSignKey :: C.APrivateSignKey
-testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+testPrivateAuthKey :: C.APrivateAuthKey
+testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
@@ -191,7 +212,7 @@ rcvQueue1 =
       connId = "conn1",
       server = smpServer1,
       rcvId = "1234",
-      rcvPrivateKey = testPrivateSignKey,
+      rcvPrivateKey = testPrivateAuthKey,
       rcvDhSecret = testDhSecret,
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
@@ -201,7 +222,7 @@ rcvQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,
-      smpClientVersion = 1,
+      smpClientVersion = VersionSMPC 1,
       clientNtfCreds = Nothing,
       deleteErrors = 0
     }
@@ -214,7 +235,7 @@ sndQueue1 =
       server = smpServer1,
       sndId = "3456",
       sndPublicKey = Nothing,
-      sndPrivateKey = testPrivateSignKey,
+      sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
@@ -222,8 +243,14 @@ sndQueue1 =
       primary = True,
       dbReplaceQueueId = Nothing,
       sndSwchStatus = Nothing,
-      smpClientVersion = 1
+      smpClientVersion = VersionSMPC 1
     }
+
+createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
+createRcvConn db g cData rq cMode = runExceptT $ do
+  connId <- ExceptT $ createNewConn db g cData cMode
+  rq' <- ExceptT $ updateNewConnRcv db connId rq
+  pure (connId, rq')
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn =
@@ -310,8 +337,8 @@ testDeleteRcvConn =
     Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
-    deleteConn db "conn1"
-      `shouldReturn` ()
+    deleteConn db Nothing "conn1"
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -322,8 +349,8 @@ testDeleteSndConn =
     Right (_, sq) <- createSndConn db g cData1 sndQueue1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
-    deleteConn db "conn1"
-      `shouldReturn` ()
+    deleteConn db Nothing "conn1"
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -335,8 +362,8 @@ testDeleteDuplexConn =
     Right sq <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
-    deleteConn db "conn1"
-      `shouldReturn` ()
+    deleteConn db Nothing "conn1"
+      `shouldReturn` Just "conn1"
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
@@ -352,7 +379,7 @@ testUpgradeRcvConnToDuplex =
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
               sndPublicKey = Nothing,
-              sndPrivateKey = testPrivateSignKey,
+              sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
@@ -360,7 +387,7 @@ testUpgradeRcvConnToDuplex =
               sndSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
-              smpClientVersion = 1
+              smpClientVersion = VersionSMPC 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CSnd)
@@ -379,7 +406,7 @@ testUpgradeSndConnToDuplex =
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               rcvId = "3456",
-              rcvPrivateKey = testPrivateSignKey,
+              rcvPrivateKey = testPrivateAuthKey,
               rcvDhSecret = testDhSecret,
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
@@ -389,7 +416,7 @@ testUpgradeSndConnToDuplex =
               rcvSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
-              smpClientVersion = 1,
+              smpClientVersion = VersionSMPC 1,
               clientNtfCreds = Nothing,
               deleteErrors = 0
             }
@@ -457,7 +484,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (brokerId, ts)
+            broker = (brokerId, ts),
+            pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
@@ -495,6 +523,7 @@ mkSndMsgData internalId internalSndId internalHash =
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,
       msgBody = hw,
+      pqEncryption = CR.PQEncOn,
       internalHash,
       prevMsgHash = internalHash
     }
@@ -633,7 +662,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) SMSubscribe
+    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 
@@ -656,7 +685,8 @@ rcvFileDescr1 =
               chunkSize = defaultChunkSize,
               replicas = [FileChunkReplica {server = xftpServer1, replicaId, replicaKey = testFileReplicaKey}]
             }
-        ]
+        ],
+      redirect = Nothing
     }
   where
     defaultChunkSize = FileSize $ mb 8
@@ -669,8 +699,8 @@ testFileSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD
 testFileCbNonce :: C.CbNonce
 testFileCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
 
-testFileReplicaKey :: C.APrivateSignKey
-testFileReplicaKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+testFileReplicaKey :: C.APrivateAuthKey
+testFileReplicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
 testGetNextRcvChunkToDownload :: SQLiteStore -> Expectation
 testGetNextRcvChunkToDownload st = do
@@ -714,9 +744,9 @@ testGetNextSndFileToPrepare st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextSndFileToPrepare db 86400
 
-    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
-    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     DB.execute_ db "UPDATE snd_files SET status = 'new' WHERE snd_file_id = 2"
 
     Left e <- getNextSndFileToPrepare db 86400
@@ -742,12 +772,12 @@ testGetNextSndChunkToUpload st = do
     Right Nothing <- getNextSndChunkToUpload db xftpServer1 86400
 
     -- create file 1
-    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     updateSndFileEncrypted db 1 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica_ db 1 newSndChunkReplica1
     DB.execute_ db "UPDATE snd_files SET num_recipients = 'bad' WHERE snd_file_id = 1"
     -- create file 2
-    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce
+    Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     updateSndFileEncrypted db 2 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica_ db 2 newSndChunkReplica1
 

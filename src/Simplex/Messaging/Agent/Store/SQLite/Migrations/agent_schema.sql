@@ -26,7 +26,9 @@ CREATE TABLE connections(
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL),
   user_id INTEGER CHECK(user_id NOT NULL)
   REFERENCES users ON DELETE CASCADE,
-  ratchet_sync_state TEXT NOT NULL DEFAULT 'ok'
+  ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
+  deleted_at_wait_delivery TEXT,
+  pq_support INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -89,6 +91,7 @@ CREATE TABLE messages(
   msg_type BLOB NOT NULL, --(H)ELLO,(R)EPLY,(D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
   msg_flags TEXT NULL,
+  pq_encryption INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(conn_id, internal_id),
   FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
@@ -159,7 +162,8 @@ CREATE TABLE ratchets(
   e2e_version INTEGER NOT NULL DEFAULT 1
   ,
   x3dh_pub_key_1 BLOB,
-  x3dh_pub_key_2 BLOB
+  x3dh_pub_key_2 BLOB,
+  pq_priv_kem BLOB
 ) WITHOUT ROWID;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,
@@ -279,6 +283,10 @@ CREATE TABLE rcv_files(
   save_file_key BLOB,
   save_file_nonce BLOB,
   failed INTEGER DEFAULT 0,
+  redirect_id INTEGER REFERENCES rcv_files ON DELETE SET NULL,
+  redirect_entity_id BLOB,
+  redirect_size INTEGER,
+  redirect_digest BLOB,
   UNIQUE(rcv_file_entity_id)
 );
 CREATE TABLE rcv_file_chunks(
@@ -322,7 +330,9 @@ CREATE TABLE snd_files(
   ,
   src_file_key BLOB,
   src_file_nonce BLOB,
-  failed INTEGER DEFAULT 0
+  failed INTEGER DEFAULT 0,
+  redirect_size INTEGER,
+  redirect_digest BLOB
 );
 CREATE TABLE snd_file_chunks(
   snd_file_chunk_id INTEGER PRIMARY KEY,
@@ -497,3 +507,15 @@ CREATE INDEX idx_commands_server_commands ON commands(
 CREATE INDEX idx_rcv_files_status_created_at ON rcv_files(status, created_at);
 CREATE INDEX idx_snd_files_status_created_at ON snd_files(status, created_at);
 CREATE INDEX idx_snd_files_snd_file_entity_id ON snd_files(snd_file_entity_id);
+CREATE INDEX idx_messages_snd_expired ON messages(
+  conn_id,
+  internal_snd_id,
+  internal_ts
+);
+CREATE INDEX idx_snd_message_deliveries_expired ON snd_message_deliveries(
+  conn_id,
+  snd_queue_id,
+  failed,
+  internal_id
+);
+CREATE INDEX idx_rcv_files_redirect_id on rcv_files(redirect_id);

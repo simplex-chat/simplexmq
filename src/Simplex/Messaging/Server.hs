@@ -13,6 +13,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -31,7 +32,7 @@ module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
     disconnectTransport,
-    verifyCmdSignature,
+    verifyCmdAuthorization,
     dummyVerifyCmd,
     randomId,
   )
@@ -47,9 +48,11 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
+import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -126,13 +129,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` withLock (savingLock s) "final" (saveServer False)
+    `finally` withLock' (savingLock s) "final" (saveServer False)
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       ss <- asks sockets
-      runTransportServerState ss started tcpPort serverParams tCfg (runClient t)
+      serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
+      env <- ask
+      liftIO $ runTransportServerState ss started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
@@ -157,7 +163,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         updateSubscribers = do
           (qId, clnt) <- readTQueue $ subQ s
           let clientToBeNotified c' =
-                if sameClientSession clnt c'
+                if sameClientId clnt c'
                   then pure Nothing
                   else do
                     yes <- readTVar $ connected c'
@@ -165,9 +171,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          void . forkIO $ do
+          tId <- atomically $ stateTVar (endThreadSeq c) $ \next -> (next, next + 1)
+          t <- forkIO $ do
             labelMyThread $ label <> ".endPreviousSubscriptions"
             atomically $ writeTBQueue (sndQ c) [(CorrId "", qId, END)]
+            atomically $ modifyTVar' (endThreads c) $ IM.delete tId
+          mkWeakThreadId t >>= atomically . modifyTVar' (endThreads c) . IM.insert tId
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
@@ -201,16 +210,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
       let interval = 1000000 * logInterval
-      withFile statsFilePath AppendMode $ \h -> liftIO $ do
-        hSetBuffering h LineBuffering
-        forever $ do
+      forever $ do
+        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+          hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomically $ swapTVar fromTime ts
           qCreated' <- atomically $ swapTVar qCreated 0
           qSecured' <- atomically $ swapTVar qSecured 0
-          qDeleted' <- atomically $ swapTVar qDeleted 0
+          qDeletedAll' <- atomically $ swapTVar qDeletedAll 0
+          qDeletedNew' <- atomically $ swapTVar qDeletedNew 0
+          qDeletedSecured' <- atomically $ swapTVar qDeletedSecured 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
           msgExpired' <- atomically $ swapTVar msgExpired 0
@@ -226,7 +237,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               [ iso8601Show $ utctDay fromTime',
                 show qCreated',
                 show qSecured',
-                show qDeleted',
+                show qDeletedAll',
                 show msgSent',
                 show msgRecv',
                 dayCount ps,
@@ -239,16 +250,19 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 monthCount psNtf,
                 show qCount',
                 show msgCount',
-                show msgExpired'
+                show msgExpired',
+                show qDeletedNew',
+                show qDeletedSecured'
               ]
-          threadDelay' interval
+        liftIO $ threadDelay' interval
 
-    runClient :: Transport c => TProxy c -> c -> M ()
-    runClient tp h = do
+    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
+    runClient signKey tp h = do
       kh <- asks serverIdentity
+      ks <- atomically . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake h kh smpServerVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake signKey h ks kh smpServerVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 
@@ -272,21 +286,36 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           hSetBuffering h LineBuffering
           hSetNewlineMode h universalNewlineMode
           hPutStrLn h "SMP server control port\n'help' for supported commands"
-          cpLoop h
+          role <- newTVarIO CPRNone
+          cpLoop h role
           where
-            cpLoop h = do
-              s <- B.hGetLine h
-              case strDecode $ trimCR s of
+            cpLoop h role = do
+              s <- trimCR <$> B.hGetLine h
+              case strDecode s of
                 Right CPQuit -> hClose h
-                Right cmd -> processCP h cmd >> cpLoop h
-                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h
-            processCP h = \case
-              CPSuspend -> hPutStrLn h "suspend not implemented"
-              CPResume -> hPutStrLn h "resume not implemented"
-              CPClients -> do
+                Right cmd -> logCmd s cmd >> processCP h role cmd >> cpLoop h role
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h role
+            logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
+              where
+                shouldLog = case cmd of
+                  CPAuth _ -> False
+                  CPHelp -> False
+                  CPQuit -> False
+                  CPSkip -> False
+                  _ -> True
+            processCP h role = \case
+              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+                where
+                  newRole ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
+                    | Just auth == admin = CPRAdmin
+                    | Just auth == user = CPRUser
+                    | otherwise = CPRNone
+              CPSuspend -> withAdminRole $ hPutStrLn h "suspend not implemented"
+              CPResume -> withAdminRole $ hPutStrLn h "resume not implemented"
+              CPClients -> withAdminRole $ do
                 active <- unliftIO u (asks clients) >>= readTVarIO
                 hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
-                forM_ (M.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
+                forM_ (IM.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
@@ -294,12 +323,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   let age = systemSeconds now - systemSeconds createdAt
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
-              CPStats -> do
-                ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
+              CPStats -> withAdminRole $ do
+                ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
                 putStat "qSecured" qSecured
-                putStat "qDeleted" qDeleted
+                putStat "qDeletedAll" qDeletedAll
+                putStat "qDeletedNew" qDeletedNew
+                putStat "qDeletedSecured" qDeletedSecured
                 putStat "msgSent" msgSent
                 putStat "msgRecv" msgRecv
                 putStat "msgSentNtf" msgSentNtf
@@ -310,7 +341,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
               CPStatsRTS -> getRTSStats >>= hPrint h
-              CPThreads -> do
+              CPThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
                 threads <- liftIO listThreads
                 hPutStrLn h $ "Threads: " <> show (length threads)
@@ -321,19 +352,19 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPSockets -> do
+              CPSockets -> withAdminRole $ do
                 (accepted', closed', active') <- unliftIO u $ asks sockets
                 (accepted, closed, active) <- atomically $ (,,) <$> readTVar accepted' <*> readTVar closed' <*> readTVar active'
                 hPutStrLn h "Sockets: "
                 hPutStrLn h $ "accepted: " <> show accepted
                 hPutStrLn h $ "closed: " <> show closed
-                hPutStrLn h $ "active: " <> show (M.size active)
-                hPutStrLn h $ "leaked: " <> show (accepted - closed - M.size active)
-              CPSocketThreads -> do
+                hPutStrLn h $ "active: " <> show (IM.size active)
+                hPutStrLn h $ "leaked: " <> show (accepted - closed - IM.size active)
+              CPSocketThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
                 (_, _, active') <- unliftIO u $ asks sockets
                 active <- readTVarIO active'
-                forM_ (M.toList active) $ \(sid, tid') ->
+                forM_ (IM.toList active) $ \(sid, tid') ->
                   deRefWeak tid' >>= \case
                     Nothing -> hPutStrLn h $ intercalate "," [show sid, "", "gone", ""]
                     Just tid -> do
@@ -343,40 +374,50 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPDelete queueId' -> unliftIO u $ do
+              CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
-                stats <- asks serverStats
                 queueId <- atomically (getQueue st SSender queueId') >>= \case
                   Left _ -> pure queueId' -- fallback to using as recipientId directly
                   Right QueueRec {recipientId} -> pure recipientId
                 r <- atomically $
-                  deleteQueue st queueId $>>= \() ->
-                    Right <$> delMsgQueueSize ms queueId
+                  deleteQueue st queueId $>>= \q ->
+                    Right . (q,) <$> delMsgQueueSize ms queueId
                 case r of
                   Left e -> liftIO . hPutStrLn h $ "error: " <> show e
-                  Right numDeleted -> do
+                  Right (q, numDeleted) -> do
                     withLog (`logDeleteQueue` queueId)
-                    atomically $ modifyTVar' (qDeleted stats) (+ 1)
-                    atomically $ modifyTVar' (qCount stats) (subtract 1)
+                    updateDeletedStats q
                     liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
-              CPSave -> withLock (savingLock srv) "control" $ do
+              CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer True
                 hPutStrLn h "server state saved!"
               CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, delete, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
+              where
+                withUserRole action = readTVarIO role >>= \case
+                  CPRAdmin -> action
+                  CPRUser -> action
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
+                withAdminRole action = readTVarIO role >>= \case
+                  CPRAdmin -> action
+                  _ -> do
+                    logError "Unauthorized control port command"
+                    hPutStrLn h "AUTH"
 
-runClientTransport :: Transport c => THandle c -> M ()
-runClientTransport th@THandle {thVersion, sessionId} = do
+runClientTransport :: Transport c => THandleSMP c -> M ()
+runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
   c <- atomically $ do
     new@Client {clientId} <- newClient nextClientId q thVersion sessionId ts
-    TM.insert clientId new active
+    modifyTVar' active $ IM.insert clientId new
     pure new
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
@@ -389,23 +430,26 @@ runClientTransport th@THandle {thVersion, sessionId} = do
     noSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
 
 clientDisconnected :: Client -> M ()
-clientDisconnected c@Client {clientId, subscriptions, connected, sessionId} = do
+clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endThreads} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
-  atomically $ writeTVar connected False
-  subs <- readTVarIO subscriptions
+  subs <- atomically $ do
+    writeTVar connected False
+    swapTVar subscriptions M.empty
   liftIO $ mapM_ cancelSub subs
-  atomically $ writeTVar subscriptions M.empty
-  cs <- asks $ subscribers . server
-  atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
-  asks clients >>= atomically . TM.delete clientId
+  srvSubs <- asks $ subscribers . server
+  atomically $ modifyTVar' srvSubs $ \cs ->
+    M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
+  asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
+  tIds <- atomically $ swapTVar endThreads IM.empty
+  liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
-      | sameClientSession c c' = Nothing
+      | sameClientId c c' = Nothing
       | otherwise = Just c'
 
-sameClientSession :: Client -> Client -> Bool
-sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
+sameClientId :: Client -> Client -> Bool
+sameClientId Client {clientId} Client {clientId = cId'} = clientId == cId'
 
 cancelSub :: TVar Sub -> IO ()
 cancelSub sub =
@@ -413,8 +457,8 @@ cancelSub sub =
     Sub {subThread = SubThread t} -> liftIO $ deRefWeak t >>= mapM_ killThread
     _ -> return ()
 
-receive :: Transport c => THandle c -> Client -> M ()
-receive th Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
+receive :: Transport c => THandleSMP c -> Client -> M ()
+receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet th)
@@ -424,22 +468,23 @@ receive th Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
     write rcvQ $ snd as
   where
     cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
-    cmdAction (sig, signed, (corrId, queueId, cmdOrError)) =
+    cmdAction (tAuth, authorized, (corrId, queueId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, queueId, ERR e)
-        Right cmd -> verified <$> verifyTransmission sig signed queueId cmd
+        Right cmd -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized queueId cmd
           where
             verified = \case
               VRVerified qr -> Right (qr, (corrId, queueId, cmd))
               VRFailed -> Left (corrId, queueId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: Transport c => THandle c -> Client -> IO ()
-send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
+send :: Transport c => THandleSMP c -> Client -> IO ()
+send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-    void . liftIO . tPut h Nothing $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
+    -- TODO we can authorize responses as well
+    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
     tOrder :: Transmission BrokerMsg -> Int
@@ -448,8 +493,8 @@ send h@THandle {thVersion = v} Client {sndQ, sessionId, sndActiveAt} = do
       NMSG {} -> 0
       _ -> 1
 
-disconnectTransport :: Transport c => THandle c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
-disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
+disconnectTransport :: Transport c => THandle v c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
@@ -463,47 +508,72 @@ disconnectTransport THandle {connection, sessionId} rcvActiveAt sndActiveAt expC
 
 data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 
-verifyTransmission :: Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> M VerificationResult
-verifyTransmission sig_ signed queueId cmd =
+-- This function verifies queue command authorization, with the objective to have constant time between the three AUTH error scenarios:
+-- - the queue and party key exist, and the provided authorization has type matching queue key, but it is made with the different key.
+-- - the queue and party key exist, but the provided authorization has incorrect type.
+-- - the queue or party key do not exist.
+-- In all cases, the time of the verification should depend only on the provided authorization type,
+-- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
+verifyTransmission :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
+verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verified` verifyCmdSignature sig_ signed k
-    Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
-    Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
+    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verifiedWith` k
+    Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
+    -- SEND will be accepted without authorization before the queue is secured with KEY command
+    Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
-    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
+    -- NSUB will not be accepted without authorization
+    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (Just q `verifiedWith`) (notifierKey <$> notifier q)) <$> get SNotifier
     Cmd SSender PRXY {} -> pure $ VRVerified Nothing
     Cmd SSender PFWD {} -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
   where
-    verifyCmd :: SParty p -> (QueueRec -> Bool) -> M VerificationResult
-    verifyCmd party f = do
-      st <- asks queueStore
-      q_ <- atomically $ getQueue st party queueId
-      pure $ case q_ of
-        Right q -> Just q `verified` f q
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    verifyMaybe :: Maybe C.APublicVerifyKey -> Bool
-    verifyMaybe = maybe (isNothing sig_) $ verifyCmdSignature sig_ signed
+    verify = verifyCmdAuthorization auth_ tAuth authorized
+    dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
+    verifyQueue :: (QueueRec -> VerificationResult) -> Either ErrorType QueueRec -> VerificationResult
+    verifyQueue = either (\_ -> dummyVerify)
     verified q cond = if cond then VRVerified q else VRFailed
+    verifiedWith q k = q `verified` verify k
+    get :: SParty p -> M (Either ErrorType QueueRec)
+    get party = do
+      st <- asks queueStore
+      atomically $ getQueue st party queueId
 
-verifyCmdSignature :: Maybe C.ASignature -> ByteString -> C.APublicVerifyKey -> Bool
-verifyCmdSignature sig_ signed key = maybe False (verify key) sig_
+verifyCmdAuthorization :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
+verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
   where
-    verify :: C.APublicVerifyKey -> C.ASignature -> Bool
-    verify (C.APublicVerifyKey a k) sig@(C.ASignature a' s) =
-      case (testEquality a a', C.signatureSize k == C.signatureSize s) of
-        (Just Refl, True) -> C.verify' k s signed
-        _ -> dummyVerifyCmd signed sig `seq` False
+    verify :: C.APublicAuthKey -> TransmissionAuth -> Bool
+    verify (C.APublicAuthKey a k) = \case
+      TASignature (C.ASignature a' s) -> case testEquality a a' of
+        Just Refl -> C.verify' k s authorized
+        _ -> C.verify' (dummySignKey a') s authorized `seq` False
+      TAAuthenticator s -> case a of
+        C.SX25519 -> verifyCmdAuth auth_ k s authorized
+        _ -> verifyCmdAuth auth_ dummyKeyX25519 s authorized `seq` False
 
-dummyVerifyCmd :: ByteString -> C.ASignature -> Bool
-dummyVerifyCmd signed (C.ASignature _ s) = C.verify' (dummyPublicKey s) s signed
+verifyCmdAuth :: Maybe (THandleAuth, C.CbNonce) -> C.PublicKeyX25519 -> C.CbAuthenticator -> ByteString -> Bool
+verifyCmdAuth auth_ k authenticator authorized = case auth_ of
+  Just (THandleAuth {privKey}, nonce) -> C.cbVerify k privKey nonce authenticator authorized
+  Nothing -> False
+
+dummyVerifyCmd :: Maybe (THandleAuth, C.CbNonce) -> ByteString -> TransmissionAuth -> Bool
+dummyVerifyCmd auth_ authorized = \case
+  TASignature (C.ASignature a s) -> C.verify' (dummySignKey a) s authorized
+  TAAuthenticator s -> verifyCmdAuth auth_ dummyKeyX25519 s authorized
 
 -- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
 -- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes
-dummyPublicKey :: C.Signature a -> C.PublicKey a
-dummyPublicKey = \case
-  C.SignatureEd25519 _ -> dummyKeyEd25519
-  C.SignatureEd448 _ -> dummyKeyEd448
+dummySignKey :: C.SignatureAlgorithm a => C.SAlgorithm a -> C.PublicKey a
+dummySignKey = \case
+  C.SEd25519 -> dummyKeyEd25519
+  C.SEd448 -> dummyKeyEd448
+
+dummyAuthKey :: Maybe TransmissionAuth -> C.APublicAuthKey
+dummyAuthKey = \case
+  Just (TASignature (C.ASignature a _)) -> case a of
+    C.SEd25519 -> C.APublicAuthKey C.SEd25519 dummyKeyEd25519
+    C.SEd448 -> C.APublicAuthKey C.SEd448 dummyKeyEd448
+  _ -> C.APublicAuthKey C.SX25519 dummyKeyX25519
 
 dummyKeyEd25519 :: C.PublicKey 'C.Ed25519
 dummyKeyEd25519 = "MCowBQYDK2VwAyEA139Oqs4QgpqbAmB0o7rZf6T19ryl7E65k4AYe0kE3Qs="
@@ -511,15 +581,18 @@ dummyKeyEd25519 = "MCowBQYDK2VwAyEA139Oqs4QgpqbAmB0o7rZf6T19ryl7E65k4AYe0kE3Qs="
 dummyKeyEd448 :: C.PublicKey 'C.Ed448
 dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/XopbOSaq9qyLhrgJWKOLyNrQPNVvpMA"
 
-client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+dummyKeyX25519 :: C.PublicKey 'C.X25519
+dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
+
+client :: Client -> Server -> M ()
+client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
       >>= atomically . writeTBQueue sndQ
   where
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> m (Transmission BrokerMsg)
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Transmission BrokerMsg)
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
       case cmd of
@@ -559,7 +632,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> SubscriptionMode -> m (Transmission BrokerMsg)
+        createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
@@ -577,7 +650,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
           (corrId,queueId,) <$> addQueueRetry 3 qik qRec
           where
             addQueueRetry ::
-              Int -> ((RecipientId, SenderId) -> QueueIdsKeys) -> ((RecipientId, SenderId) -> QueueRec) -> m BrokerMsg
+              Int -> ((RecipientId, SenderId) -> QueueIdsKeys) -> ((RecipientId, SenderId) -> QueueRec) -> M BrokerMsg
             addQueueRetry 0 _ _ = pure $ ERR INTERNAL
             addQueueRetry n qik qRec = do
               ids@(rId, _) <- getIds
@@ -602,25 +675,25 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 Right q -> logCreateQueue s q
                 _ -> pure ()
 
-            getIds :: m (RecipientId, SenderId)
+            getIds :: M (RecipientId, SenderId)
             getIds = do
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureQueue_ :: QueueStore -> SndPublicVerifyKey -> m (Transmission BrokerMsg)
+        secureQueue_ :: QueueStore -> SndPublicAuthKey -> M (Transmission BrokerMsg)
         secureQueue_ st sKey = time "KEY" $ do
           withLog $ \s -> logSecureQueue s queueId sKey
           stats <- asks serverStats
           atomically $ modifyTVar' (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
-        addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
+        addQueueNotifier_ :: QueueStore -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvNtfDhSecret = C.dh' dhKey privDhKey
           (corrId,queueId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
           where
-            addNotifierRetry :: Int -> RcvNtfPublicDhKey -> RcvNtfDhSecret -> m BrokerMsg
+            addNotifierRetry :: Int -> RcvNtfPublicDhKey -> RcvNtfDhSecret -> M BrokerMsg
             addNotifierRetry 0 _ _ = pure $ ERR INTERNAL
             addNotifierRetry n rcvPublicDhKey rcvNtfDhSecret = do
               notifierId <- randomId =<< asks (queueIdBytes . config)
@@ -632,17 +705,17 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                   withLog $ \s -> logAddNotifier s queueId ntfCreds
                   pure $ NID notifierId rcvPublicDhKey
 
-        deleteQueueNotifier_ :: QueueStore -> m (Transmission BrokerMsg)
+        deleteQueueNotifier_ :: QueueStore -> M (Transmission BrokerMsg)
         deleteQueueNotifier_ st = do
           withLog (`logDeleteNotifier` queueId)
           okResp <$> atomically (deleteQueueNotifier st queueId)
 
-        suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
+        suspendQueue_ :: QueueStore -> M (Transmission BrokerMsg)
         suspendQueue_ st = do
           withLog (`logSuspendQueue` queueId)
           okResp <$> atomically (suspendQueue st queueId)
 
-        subscribeQueue :: QueueRec -> RecipientId -> m (Transmission BrokerMsg)
+        subscribeQueue :: QueueRec -> RecipientId -> M (Transmission BrokerMsg)
         subscribeQueue qr rId = do
           atomically (TM.lookup rId subscriptions) >>= \case
             Nothing ->
@@ -655,19 +728,19 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 s ->
                   atomically (tryTakeTMVar $ delivered s) >> deliver sub
           where
-            newSub :: m (TVar Sub)
+            newSub :: M (TVar Sub)
             newSub = time "SUB newSub" . atomically $ do
               writeTQueue subscribedQ (rId, clnt)
               sub <- newTVar =<< newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
-            deliver :: TVar Sub -> m (Transmission BrokerMsg)
+            deliver :: TVar Sub -> M (Transmission BrokerMsg)
             deliver sub = do
               q <- getStoreMsgQueue "SUB" rId
               msg_ <- atomically $ tryPeekMsg q
               deliverMessage "SUB" qr rId sub q msg_
 
-        getMessage :: QueueRec -> m (Transmission BrokerMsg)
+        getMessage :: QueueRec -> M (Transmission BrokerMsg)
         getMessage qr = time "GET" $ do
           atomically (TM.lookup queueId subscriptions) >>= \case
             Nothing ->
@@ -686,7 +759,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
               sub <- newTVar s
               TM.insert queueId sub subscriptions
               pure s
-            getMessage_ :: Sub -> m (Transmission BrokerMsg)
+            getMessage_ :: Sub -> M (Transmission BrokerMsg)
             getMessage_ s = do
               q <- getStoreMsgQueue "GET" queueId
               atomically $
@@ -696,17 +769,17 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                      in setDelivered s msg $> (corrId, queueId, MSG encMsg)
                   _ -> pure (corrId, queueId, OK)
 
-        withQueue :: (QueueRec -> m (Transmission BrokerMsg)) -> m (Transmission BrokerMsg)
+        withQueue :: (QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue action = maybe (pure $ err AUTH) action qr_
 
-        subscribeNotifications :: m (Transmission BrokerMsg)
+        subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = time "NSUB" . atomically $ do
           unlessM (TM.member queueId ntfSubscriptions) $ do
             writeTQueue ntfSubscribedQ (queueId, clnt)
             TM.insert queueId () ntfSubscriptions
           pure ok
 
-        acknowledgeMsg :: QueueRec -> MsgId -> m (Transmission BrokerMsg)
+        acknowledgeMsg :: QueueRec -> MsgId -> M (Transmission BrokerMsg)
         acknowledgeMsg qr msgId = time "ACK" $ do
           atomically (TM.lookup queueId subscriptions) >>= \case
             Nothing -> pure $ err NO_MSG
@@ -732,19 +805,19 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 if msgId == msgId' || B.null msgId
                   then pure $ Just s
                   else putTMVar delivered msgId' $> Nothing
-            updateStats :: Message -> m ()
+            updateStats :: Message -> M ()
             updateStats = \case
               MessageQuota {} -> pure ()
               Message {msgFlags} -> do
                 stats <- asks serverStats
                 atomically $ modifyTVar' (msgRecv stats) (+ 1)
-                atomically $ modifyTVar' (msgCount stats) (+ 1)
+                atomically $ modifyTVar' (msgCount stats) (subtract 1)
                 atomically $ updatePeriodStats (activeQueues stats) queueId
                 when (notification msgFlags) $ do
                   atomically $ modifyTVar' (msgRecvNtf stats) (+ 1)
                   atomically $ updatePeriodStats (activeQueuesNtf stats) queueId
 
-        sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
+        sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
           | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = case status qr of
@@ -766,17 +839,17 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                           atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                           atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
-                        atomically $ modifyTVar' (msgCount stats) (subtract 1)
+                        atomically $ modifyTVar' (msgCount stats) (+ 1)
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                         pure ok
           where
-            mkMessage :: C.MaxLenBS MaxMessageLen -> m Message
+            mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)
               msgTs <- liftIO getSystemTime
               pure $ Message msgId msgTs msgFlags body
 
-            expireMessages :: MsgQueue -> m ()
+            expireMessages :: MsgQueue -> M ()
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
@@ -804,7 +877,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
-        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
+        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> M (Transmission BrokerMsg)
         deliverMessage name qr rId sub q msg_ = time (name <> " deliver") $ do
           readTVarIO sub >>= \case
             s@Sub {subThread = NoSub} ->
@@ -815,7 +888,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                 _ -> forkSub $> ok
             _ -> pure ok
           where
-            forkSub :: m ()
+            forkSub :: M ()
             forkSub = do
               atomically . modifyTVar' sub $ \s -> s {subThread = SubPending}
               t <- mkWeakThreadId =<< forkIO subscriber
@@ -833,46 +906,37 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
                     void $ setDelivered s msg
                     writeTVar sub $! s {subThread = NoSub}
 
-        time :: T.Text -> m a -> m a
+        time :: T.Text -> M a -> M a
         time name = timed name queueId
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
-        encryptMsg qr msg = case msg of
-          Message {msgFlags, msgBody}
-            | thVersion == 1 || thVersion == 2 -> encrypt msgFlags msgBody
-            | otherwise -> encrypt msgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
-          MessageQuota {} ->
-            encrypt noMsgFlags $ encodeRcvMsgBody (RcvMsgQuota msgTs')
+        encryptMsg qr msg = encrypt . encodeRcvMsgBody $ case msg of
+          Message {msgFlags, msgBody} -> RcvMsgBody {msgTs = msgTs', msgFlags, msgBody}
+          MessageQuota {} -> RcvMsgQuota msgTs'
           where
-            encrypt :: KnownNat i => MsgFlags -> C.MaxLenBS i -> RcvMessage
-            encrypt msgFlags body =
-              let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
-               in RcvMessage msgId' msgTs' msgFlags encBody
+            encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
+            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
             msgId' = messageId msg
             msgTs' = messageTs msg
 
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s msg = tryPutTMVar (delivered s) (messageId msg)
 
-        getStoreMsgQueue :: T.Text -> RecipientId -> m MsgQueue
+        getStoreMsgQueue :: T.Text -> RecipientId -> M MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
           ms <- asks msgStore
           quota <- asks $ msgQueueQuota . config
           atomically $ getMsgQueue ms rId quota
 
-        delQueueAndMsgs :: QueueStore -> m (Transmission BrokerMsg)
+        delQueueAndMsgs :: QueueStore -> M (Transmission BrokerMsg)
         delQueueAndMsgs st = do
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
-          stats <- asks serverStats
-          atomically $ modifyTVar' (qDeleted stats) (+ 1)
-          atomically $ modifyTVar' (qCount stats) (subtract 1)
-          atomically $
-            deleteQueue st queueId >>= \case
-              Left e -> pure $ err e
-              Right _ -> delMsgQueue ms queueId $> ok
+          atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
+            Right q -> updateDeletedStats q $> ok
+            Left e -> pure $ err e
 
-        setupProxy :: SMPServer -> m (Transmission BrokerMsg)
+        setupProxy :: SMPServer -> M (Transmission BrokerMsg)
         setupProxy todo'relay = do
           let relaySessionId = "TODO: relaySessionId"
           (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
@@ -889,12 +953,20 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ, sess
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
 
-withLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
+updateDeletedStats :: QueueRec -> M ()
+updateDeletedStats q = do
+  stats <- asks serverStats
+  let delSel = if isNothing (senderKey q) then qDeletedNew else qDeletedSecured
+  atomically $ modifyTVar' (delSel stats) (+ 1)
+  atomically $ modifyTVar' (qDeletedAll stats) (+ 1)
+  atomically $ modifyTVar' (qCount stats) (subtract 1)
+
+withLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withLog action = do
   env <- ask
   liftIO . mapM_ action $ storeLog (env :: Env)
 
-timed :: MonadUnliftIO m => T.Text -> RecipientId -> m a -> m a
+timed :: T.Text -> RecipientId -> M a -> M a
 timed name qId a = do
   t <- liftIO getSystemTime
   r <- a
@@ -906,10 +978,10 @@ timed name qId a = do
     diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral (systemNanoseconds t' - systemNanoseconds t)
     sec = 1000_000000
 
-randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
+randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
 
-saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => Bool -> m ()
+saveServerMessages :: Bool -> M ()
 saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
     saveMessages f = do
@@ -924,18 +996,17 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
           atomically (getMessages ms rId)
             >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
-restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m Int
+restoreServerMessages :: M Int
 restoreServerMessages = asks (storeMsgsFile . config) >>= \case
   Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
   Nothing -> pure 0
   where
     restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
-      st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (B.readFile f) >>= foldM (\expired -> restoreMsg expired st ms quota old_) 0 . B.lines) >>= \case
+      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired ms quota old_) 0 . LB.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -944,15 +1015,11 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
           logInfo "messages restored"
           pure expired
       where
-        restoreMsg !expired st ms quota old_ s = do
-          r <- liftEither . first (msgErr "parsing") $ strDecode s
-          case r of
-            MLRv3 rId msg -> addToMsgQueue rId msg
-            MLRv1 rId encMsg -> do
-              qr <- liftEitherError (msgErr "queue unknown") . atomically $ getQueue st SRecipient rId
-              msg' <- updateMsgV1toV3 qr encMsg
-              addToMsgQueue rId msg'
+        restoreMsg !expired ms quota old_ s' = do
+          MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
+          addToMsgQueue rId msg
           where
+            s = LB.toStrict s'
             addToMsgQueue rId msg = do
               (isExpired, logFull) <- atomically $ do
                 q <- getMsgQueue ms rId quota
@@ -963,14 +1030,10 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= \case
                   MessageQuota {} -> writeMsg q msg $> (False, False)
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
               pure $ if isExpired then expired + 1 else expired
-            updateMsgV1toV3 QueueRec {rcvDhSecret} RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} = do
-              let nonce = C.cbNonce msgId
-              msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.maxLenBS =<< C.cbDecrypt rcvDhSecret nonce body
-              pure Message {msgId, msgTs, msgFlags, msgBody}
             msgErr :: Show e => String -> e -> String
             msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
-saveServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
+saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
     >>= mapM_ (\f -> asks serverStats >>= atomically . getServerStatsData >>= liftIO . saveStats f)
@@ -980,7 +1043,7 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
-restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ()
+restoreServerStats :: Int -> M ()
 restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do

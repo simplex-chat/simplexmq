@@ -54,7 +54,7 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
-import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Environment (getEnv)
 import UnliftIO.STM
 
@@ -193,11 +193,12 @@ data APNSPushClientConfig = APNSPushClientConfig
     caStoreFile :: FilePath
   }
 
-apnsProviderHost :: PushProvider -> HostName
+apnsProviderHost :: PushProvider -> Maybe HostName
 apnsProviderHost = \case
-  PPApnsTest -> "localhost"
-  PPApnsDev -> "api.sandbox.push.apple.com"
-  PPApnsProd -> "api.push.apple.com"
+  PPApnsNull -> Nothing
+  PPApnsTest -> Just "localhost"
+  PPApnsDev -> Just "api.sandbox.push.apple.com"
+  PPApnsProd -> Just "api.push.apple.com"
 
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
@@ -257,11 +258,11 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
 connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
 connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg, caStoreFile} https2Client = do
   caStore_ <- XS.readCertificateStore caStoreFile
-  when (isNothing caStore_) $ putStrLn $ "Error loading CertificateStore from " <> caStoreFile
+  when (isNothing caStore_) $ logError $ "Error loading CertificateStore from " <> T.pack caStoreFile
   r <- getHTTP2Client apnsHost apnsPort caStore_ http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
-    Left e -> putStrLn $ "Error connecting to APNS: " <> show e
+    Left e -> logError $ "Error connecting to APNS: " <> tshow e
   pure r
   where
     disconnected = atomically $ writeTVar https2Client Nothing

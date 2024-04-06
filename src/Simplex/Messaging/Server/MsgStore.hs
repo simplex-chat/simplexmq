@@ -3,14 +3,11 @@
 
 module Simplex.Messaging.Server.MsgStore where
 
-import Control.Applicative ((<|>))
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (Message (..), RcvMessage (..), RecipientId)
+import Simplex.Messaging.Protocol (Message (..), RecipientId)
 
-data MsgLogRecord = MLRv3 RecipientId Message | MLRv1 RecipientId RcvMessage
+data MsgLogRecord = MLRv3 RecipientId Message
 
 instance StrEncoding MsgLogRecord where
-  strEncode = \case
-    MLRv3 rId msg -> strEncode (Str "v3", rId, msg)
-    MLRv1 rId msg -> strEncode (rId, msg)
-  strP = "v3 " *> (MLRv3 <$> strP_ <*> strP) <|> MLRv1 <$> strP_ <*> strP
+  strEncode (MLRv3 rId msg) = strEncode (Str "v3", rId, msg)
+  strP = "v3 " *> (MLRv3 <$> strP_ <*> strP)

@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -9,12 +10,13 @@
 
 module SMPAgentClient where
 
+import Control.Monad
 import Control.Monad.IO.Unlift
-import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Database.SQLite.Simple as SQL
 import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
@@ -30,10 +32,12 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..))
-import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultSMPClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
@@ -176,11 +180,17 @@ testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:50
 testSMPServer2 :: SMPServer
 testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
 
+testNtfServer :: NtfServer
+testNtfServer = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"
+
+testNtfServer2 :: NtfServer
+testNtfServer2 = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6002"
+
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = userServers [noAuthSrv testSMPServer],
-      ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
+      ntf = [testNtfServer],
       xftp = userServers [noAuthSrv testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
@@ -191,12 +201,12 @@ initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer
 agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
-    { tcpPort = agentTestPort,
+    { tcpPort = Just agentTestPort,
       tbqSize = 4,
       -- database = testDB,
-      smpCfg = defaultClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS)},
-      ntfCfg = defaultClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS)},
-      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
+      smpCfg = defaultSMPClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
+      ntfCfg = defaultNTFClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
+      reconnectInterval = fastRetryInterval,
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,
       ntfSMPWorkerDelay = 100,
@@ -204,41 +214,48 @@ agentCfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
     }
+  where
+    networkConfig = defaultNetworkConfig {tcpConnectTimeout = 3_000_000, tcpTimeout = 2_000_000}
 
-type AgentTestMonad m = (MonadUnliftIO m, MonadRandom m, MonadFail m)
+fastRetryInterval :: RetryInterval
+fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
 
-withSmpAgentThreadOn_ :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m () -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = agentCfg {tcpPort = port'}
+fastMessageRetryInterval :: RetryInterval2
+fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = fastRetryInterval}
+
+withSmpAgentThreadOn_ :: ATransport -> (ServiceName, ServiceName, FilePath) -> Int -> IO () -> (ThreadId -> IO a) -> IO a
+withSmpAgentThreadOn_ t (port', smpPort', db') initClientId afterProcess =
+  let cfg' = agentCfg {tcpPort = Just port'}
       initServers' = initAgentServers {smp = userServers [ProtoServerWithAuth (SMPServer "localhost" smpPort' testKeyHash) Nothing]}
    in serverBracket
         ( \started -> do
             Right st <- liftIO $ createAgentStore db' "" False MCError
-            runSMPAgentBlocking t cfg' initServers' st started
+            when (dbNew st) . liftIO $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
+            runSMPAgentBlocking t cfg' initServers' st initClientId started
         )
         afterProcess
 
 userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoServerWithAuth p))
 userServers srvs = M.fromList [(1, srvs)]
 
-withSmpAgentThreadOn :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
+withSmpAgentThreadOn :: ATransport -> (ServiceName, ServiceName, FilePath) -> (ThreadId -> IO a) -> IO a
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a 0 $ removeFile db'
 
-withSmpAgentOn :: AgentTestMonad m => ATransport -> (ServiceName, ServiceName, FilePath) -> m a -> m a
+withSmpAgentOn :: ATransport -> (ServiceName, ServiceName, FilePath) -> IO a -> IO a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const
 
-withSmpAgent :: AgentTestMonad m => ATransport -> m a -> m a
+withSmpAgent :: ATransport -> IO a -> IO a
 withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
-testSMPAgentClientOn :: (Transport c, MonadUnliftIO m, MonadFail m) => ServiceName -> (c -> m a) -> m a
+testSMPAgentClientOn :: Transport c => ServiceName -> (c -> IO a) -> IO a
 testSMPAgentClientOn port' client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig agentTestHost
   runTransportClient defaultTransportClientConfig Nothing useHost port' (Just testKeyHash) $ \h -> do
-    line <- liftIO $ getLn h
+    line <- getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
       else do
         error $ "wrong welcome message: " <> B.unpack line
 
-testSMPAgentClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (c -> m a) -> m a
+testSMPAgentClient :: Transport c => (c -> IO a) -> IO a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

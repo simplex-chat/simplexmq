@@ -67,6 +67,10 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -102,7 +106,11 @@ schemaMigrations =
     ("m20230814_indexes", m20230814_indexes, Just down_m20230814_indexes),
     ("m20230829_crypto_files", m20230829_crypto_files, Just down_m20230829_crypto_files),
     ("m20231222_command_created_at", m20231222_command_created_at, Just down_m20231222_command_created_at),
-    ("m20231225_failed_work_items", m20231225_failed_work_items, Just down_m20231225_failed_work_items)
+    ("m20231225_failed_work_items", m20231225_failed_work_items, Just down_m20231225_failed_work_items),
+    ("m20240121_message_delivery_indexes", m20240121_message_delivery_indexes, Just down_m20240121_message_delivery_indexes),
+    ("m20240124_file_redirect", m20240124_file_redirect, Just down_m20240124_file_redirect),
+    ("m20240223_connections_wait_delivery", m20240223_connections_wait_delivery, Just down_m20240223_connections_wait_delivery),
+    ("m20240225_ratchet_kem", m20240225_ratchet_kem, Just down_m20240225_ratchet_kem)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -128,9 +136,12 @@ run st = \case
   where
     runUp Migration {name, up, down} = withTransaction' st $ \db -> do
       when (name == "m20220811_onion_hosts") $ updateServers db
-      insert db >> execSQL db up
+      insert db >> execSQL db up'
       where
         insert db = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
+        up'
+          | dbNew st && name == "m20230110_users" = fromQuery new_m20230110_users
+          | otherwise = up
         updateServers db = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
           let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
            in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)

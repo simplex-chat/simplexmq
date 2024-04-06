@@ -15,9 +15,12 @@ module Simplex.FileTransfer.Client.Main
     CLIError (..),
     xftpClientCLI,
     cliSendFile,
+    cliSendFileOpts,
+    singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
+    maxFileSizeHard,
     fileSizeLen,
     getChunkDigest,
     SentRecipientReplica (..),
@@ -34,13 +37,14 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
+import Data.Either (partitionEithers)
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -62,7 +66,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateSignKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
@@ -75,11 +79,16 @@ import UnliftIO.Directory
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
 
+-- | Soft limit for XFTP clients. Should be checked and reported to user.
 maxFileSize :: Int64
 maxFileSize = gb 1
 
 maxFileSizeStr :: String
 maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+
+-- | Hard internal limit for XFTP agent after which it refuses to prepare chunks.
+maxFileSizeHard :: Int64
+maxFileSizeHard = gb 5
 
 fileSizeLen :: Int64
 fileSizeLen = 8
@@ -208,25 +217,25 @@ cliCommandP =
 data SentFileChunk = SentFileChunk
   { chunkNo :: Int,
     sndId :: SenderId,
-    sndPrivateKey :: SndPrivateSignKey,
+    sndPrivateKey :: SndPrivateAuthKey,
     chunkSize :: FileSize Word32,
     digest :: FileDigest,
     replicas :: [SentFileChunkReplica]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentFileChunkReplica = SentFileChunkReplica
   { server :: XFTPServer,
-    recipients :: [(ChunkReplicaId, C.APrivateSignKey)]
+    recipients :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentRecipientReplica = SentRecipientReplica
   { chunkNo :: Int,
     server :: XFTPServer,
     rcvNo :: Int,
     replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateSignKey,
+    replicaKey :: C.APrivateAuthKey,
     digest :: FileDigest,
     chunkSize :: FileSize Word32
   }
@@ -297,8 +306,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       withExceptT (CLIError . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize encPath
       digest <- liftIO $ LC.sha512Hash <$> LB.readFile encPath
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
-          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
-          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = []}
+          fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
+          fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
     uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
@@ -313,13 +322,15 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       -- the reason we don't do pooled downloads here within one server is that http2 library doesn't handle cleint concurrency, even though
       -- upload doesn't allow other requests within the same client until complete (but download does allow).
       logInfo $ "uploading " <> tshow (length chunks) <> " chunks..."
-      map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 chunks' (mapM $ uploadFileChunk a)
+      (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 chunks' . mapM $ runExceptT . uploadFileChunk a)
+      mapM_ throwError errs
+      pure $ map snd (sortOn fst rs)
       where
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec, XFTPServerWithAuth) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}, ProtoServerWithAuth xftpServer auth) = do
           logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
-          (sndKey, spKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
-          rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateSignatureKeyPair C.SEd25519 g)
+          (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
           let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
@@ -387,7 +398,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
             sentChunks
         -- SentFileChunk having sndId and sndPrivateKey represents the current implementation's limitation
         -- that sender uploads each chunk only to one server, so we can use the first replica's server for FileChunkReplica
-        sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateSignKey -> [FileChunkReplica]
+        sndReplicas :: [SentFileChunkReplica] -> ChunkReplicaId -> C.APrivateAuthKey -> [FileChunkReplica]
         sndReplicas [] _ _ = []
         sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
     writeFileDescriptions :: String -> [FileDescription 'FRecipient] -> FileDescription 'FSender -> IO ([FilePath], FilePath)
@@ -406,7 +417,8 @@ getChunkDigest :: XFTPChunkSpec -> IO ByteString
 getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
   withFile chunkPath ReadMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
+    chunk <- LB.hGet h (fromIntegral chunkSize)
+    pure $! LC.sha256Hash chunk
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
@@ -424,7 +436,9 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
             FileChunkReplica {server} : _ -> server
           srvChunks = groupAllOn srv chunks
       g <- liftIO C.newRandom
-      chunkPaths <- map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 srvChunks (mapM $ downloadFileChunk g a encPath size downloadedChunks)
+      (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 srvChunks $ mapM $ runExceptT . downloadFileChunk g a encPath size downloadedChunks)
+      mapM_ throwError errs
+      let chunkPaths = map snd $ sortOn fst rs
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
@@ -521,14 +535,19 @@ getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
 
+singleChunkSize :: Int64 -> Maybe Word32
+singleChunkSize size' =
+  listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
+  where
+    chunkSize = fromIntegral size'
+
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes size' = prepareSizes size'
   where
     (smallSize, bigSize)
       | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
-      | otherwise = (chunkSize1, chunkSize2)
-    --  | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
-    --  | otherwise = (chunkSize0, chunkSize1)
+      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      | otherwise = (chunkSize0, chunkSize1)
     size34 sz = (fromIntegral sz * 3) `div` 4
     prepareSizes 0 = []
     prepareSizes size

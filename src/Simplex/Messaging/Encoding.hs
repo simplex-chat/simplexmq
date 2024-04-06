@@ -11,7 +11,6 @@ module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),
     Large (..),
-    encodeLarge,
     _smpP,
     smpEncodeList,
     smpListP,
@@ -30,8 +29,6 @@ import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
-import Simplex.Messaging.Builder (Builder, word16BE)
-import qualified Simplex.Messaging.Builder as BB
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -113,7 +110,7 @@ lenP = fromIntegral . c2w <$> A.anyChar
 {-# INLINE lenP #-}
 
 instance Encoding a => Encoding (Maybe a) where
-  smpEncode = maybe "0" (("1" <>) . smpEncode)
+  smpEncode = maybe "0" (('1' `B.cons`) . smpEncode)
   {-# INLINE smpEncode #-}
   smpP =
     smpP >>= \case
@@ -140,10 +137,6 @@ instance Encoding Large where
     len <- fromIntegral <$> smpP @Word16
     Large <$> A.take len
   {-# INLINE smpP #-}
-
-encodeLarge :: Builder -> Builder
-encodeLarge s = word16BE (fromIntegral $ BB.length s) <> s
-{-# INLINE encodeLarge #-}
 
 instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds
