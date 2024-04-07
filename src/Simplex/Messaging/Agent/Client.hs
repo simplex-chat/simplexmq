@@ -100,6 +100,10 @@ module Simplex.Messaging.Agent.Client
     agentOperations,
     agentOperationBracket,
     waitUntilActive,
+    UserNetworkInfo (..),
+    UserNetworkType (..),
+    UserNetworkState (..),
+    waitForUserNetwork,
     throwWhenInactive,
     throwWhenNoDelivery,
     beginAgentOperation,
@@ -149,6 +153,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:.))
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -159,7 +164,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import Network.Socket (HostName)
@@ -229,7 +234,7 @@ import Simplex.Messaging.Version
 import System.Mem.Weak (Weak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
-import UnliftIO.Async (async)
+import UnliftIO.Async (async, race)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -266,6 +271,7 @@ data AgentClient = AgentClient
     xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar NetworkConfig,
+    userNetworkState :: TVar UserNetworkState,
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -396,6 +402,16 @@ data AgentStatsKey = AgentStatsKey
   }
   deriving (Eq, Ord, Show)
 
+data UserNetworkInfo = UserNetworkInfo
+  { networkType :: UserNetworkType
+  }
+  deriving (Show)
+
+data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
+  deriving (Eq, Show)
+
+data UserNetworkState = UNSOnline | UNSOffline {offlineDelay :: Int64, offlineFrom :: UTCTime}
+
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
@@ -412,6 +428,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpServers <- newTVar xftp
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar netCfg
+  userNetworkState <- newTVar UNSOnline
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -446,6 +463,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpServers,
         xftpClients,
         useNetworkConfig,
+        userNetworkState,
         subscrConns,
         activeSubs,
         pendingSubs,
@@ -581,6 +599,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
+          waitForUserNetwork c
           void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
@@ -729,6 +748,21 @@ getClientConfig AgentClient {useNetworkConfig} cfgSel = do
   cfg <- asks $ cfgSel . config
   networkConfig <- readTVarIO useNetworkConfig
   pure cfg {networkConfig}
+
+waitForUserNetwork :: AgentClient -> AM' ()
+waitForUserNetwork AgentClient {userNetworkState} =
+  readTVarIO userNetworkState >>= \case
+    UNSOnline -> pure ()
+    ns@UNSOffline {offlineDelay = d, offlineFrom = ts} ->
+      race (atomically $ unlessM online retry) (liftIO $ threadDelay' d) >>= \case
+        Left _ -> pure () -- network appeared, no action
+        Right _ -> do -- network retry delay reached, increase delay
+          ts' <- liftIO getCurrentTime
+          ni <- asks $ userNetworkInterval . config
+          atomically . unlessM online $
+            writeTVar userNetworkState $! ns {offlineDelay = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) d ni}
+  where
+    online = (\case UNSOnline -> True; UNSOffline {} -> False) <$> readTVar userNetworkState
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
@@ -1771,3 +1805,7 @@ $(J.deriveJSON defaultJSON ''WorkersSummary)
 $(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
 
 $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "UN") ''UserNetworkType)
+
+$(J.deriveJSON defaultJSON ''UserNetworkInfo)

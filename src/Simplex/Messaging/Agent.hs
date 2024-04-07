@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent
     setNtfServers,
     setNetworkConfig,
     getNetworkConfig,
+    setUserNetworkInfo,
     reconnectAllServers,
     registerNtfToken,
     verifyNtfToken,
@@ -412,6 +413,16 @@ setNetworkConfig c cfg' = do
 getNetworkConfig :: AgentClient -> IO NetworkConfig
 getNetworkConfig = readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
+
+setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
+setUserNetworkInfo c@AgentClient {userNetworkState = ns} UserNetworkInfo {networkType = nt} = withAgentEnv' c $ do
+  RetryInterval {initialInterval = offlineDelay} <- asks $ userNetworkInterval . config
+  ts <- liftIO getCurrentTime
+  atomically $
+    readTVar ns >>= \case
+      UNSOnline | nt == UNNone -> writeTVar ns UNSOffline {offlineDelay, offlineFrom = ts}
+      UNSOffline {} | nt /= UNNone -> writeTVar ns UNSOnline
+      _ -> pure ()
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
@@ -1267,6 +1278,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
+          lift $ waitForUserNetwork c
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
