@@ -411,6 +411,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 data UserNetworkState = UNSOnline | UNSOffline {offlineDelay :: Int64, offlineFrom :: UTCTime}
+  deriving (Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
