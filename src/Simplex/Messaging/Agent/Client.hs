@@ -763,6 +763,8 @@ waitForUserNetwork AgentClient {userNetworkState} =
           atomically . modifyTVar' userNetworkState $ \case
             UNSOnline -> UNSOnline
             UNSOffline {offlineDelay = d', offlineFrom = ts} ->
+              -- Using `min` to avoid multiple updates in a short period of time
+              -- and to reset `offlineDelay` if network went `on` and `off` again.
               let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
                in UNSOffline {offlineDelay = d'', offlineFrom = ts}
   where
