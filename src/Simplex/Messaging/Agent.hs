@@ -415,14 +415,13 @@ getNetworkConfig = readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkState = ns} UserNetworkInfo {networkType = nt} = withAgentEnv' c $ do
-  RetryInterval {initialInterval = offlineDelay} <- asks $ userNetworkInterval . config
+setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt} = withAgentEnv' c $ do
+  d <- asks $ initialInterval . userNetworkInterval . config
   ts <- liftIO getCurrentTime
-  atomically $
-    readTVar ns >>= \case
-      UNSOnline | nt == UNNone -> writeTVar ns UNSOffline {offlineDelay, offlineFrom = ts}
-      UNSOffline {} | nt /= UNNone -> writeTVar ns UNSOnline
-      _ -> pure ()
+  atomically . modifyTVar' userNetworkState $ \case
+    UNSOnline | nt == UNNone -> UNSOffline {offlineDelay = d, offlineFrom = ts}
+    UNSOffline {} | nt /= UNNone -> UNSOnline
+    ns -> ns
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
