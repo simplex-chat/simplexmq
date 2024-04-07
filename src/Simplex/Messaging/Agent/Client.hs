@@ -754,14 +754,17 @@ waitForUserNetwork :: AgentClient -> AM' ()
 waitForUserNetwork AgentClient {userNetworkState} =
   readTVarIO userNetworkState >>= \case
     UNSOnline -> pure ()
-    ns@UNSOffline {offlineDelay = d, offlineFrom = ts} ->
+    UNSOffline {offlineDelay = d} ->
       race (atomically $ unlessM online retry) (liftIO $ threadDelay' d) >>= \case
         Left _ -> pure () -- network appeared, no action
         Right _ -> do -- network retry delay reached, increase delay
           ts' <- liftIO getCurrentTime
           ni <- asks $ userNetworkInterval . config
-          atomically . unlessM online $
-            writeTVar userNetworkState $! ns {offlineDelay = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) d ni}
+          atomically . modifyTVar' userNetworkState $ \case
+            UNSOnline -> UNSOnline
+            UNSOffline {offlineDelay = d', offlineFrom = ts} ->
+              let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
+               in UNSOffline {offlineDelay = d'', offlineFrom = ts}
   where
     online = (\case UNSOnline -> True; UNSOffline {} -> False) <$> readTVar userNetworkState
 
