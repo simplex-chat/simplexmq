@@ -152,7 +152,7 @@ defaultUserNetworkInterval =
   RetryInterval
     { initialInterval = 1200_000000, -- 20 minutes
       increaseAfter = 0,
-      maxInterval = 3600_000000 -- 2 hours
+      maxInterval = 7200_000000 -- 2 hours
     }
 
 defaultAgentConfig :: AgentConfig

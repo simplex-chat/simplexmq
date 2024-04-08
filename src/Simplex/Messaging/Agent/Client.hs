@@ -784,13 +784,14 @@ waitForUserNetwork AgentClient {userNetworkState} =
         Right _ -> do -- network retry delay reached, increase delay
           ts' <- liftIO getCurrentTime
           ni <- asks $ userNetworkInterval . config
-          atomically . modifyTVar' userNetworkState $ \ns@UserNetworkState {offline} -> case offline of
-            Nothing -> ns
-            Just o@UNSOffline {offlineDelay = d', offlineFrom = ts} ->
+          atomically $ do
+            ns@UserNetworkState {offline} <- readTVar userNetworkState
+            forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
               -- Using `min` to avoid multiple updates in a short period of time
               -- and to reset `offlineDelay` if network went `on` and `off` again.
-              let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-               in ns {offline = Just o {offlineDelay = d''}}
+              writeTVar userNetworkState $!
+                let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
+                 in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
     online = isNothing . offline <$> readTVar userNetworkState
 
 closeAgentClient :: AgentClient -> IO ()
