@@ -428,7 +428,6 @@ setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType
       writeTVar userNetworkState $! case nt' of
         UNNone -> ns {networkType = nt', offline = Just UNSOffline {offlineDelay = d, offlineFrom = ts}}
         _ -> ns {networkType = nt', offline = Nothing}
-            
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
