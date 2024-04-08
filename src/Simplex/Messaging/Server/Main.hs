@@ -9,8 +9,8 @@
 
 module Simplex.Messaging.Server.Main where
 
-import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
+import Control.Logger.Simple
 import Control.Monad (void, when, (<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlpha, isAscii, toUpper)
@@ -159,14 +159,14 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
                 <> "\n\n\
-                   \[WEB]\n
-                   \# Set path to generate static mini-site for server information and qr codes/links
-                   \site_path: /tmp/smp-server-web\n
-                   \# Uncomment to run an embedded server on this port\n
-                   \# Onion sites can use any port and register it in the hidden service config.
-                   \# http: 80\n
-                   \# You can run an embedded TLS web server too if you provide port and cert and key files.
-                   \# Not required for running TOR-only relay.
+                   \[WEB]\n\
+                   \# Set path to generate static mini-site for server information and qr codes/links\
+                   \site_path: /tmp/smp-server-web\n\
+                   \# Uncomment to run an embedded server on this port\n\
+                   \# Onion sites can use any port and register it in the hidden service config.\
+                   \# http: 80\n\
+                   \# You can run an embedded TLS web server too if you provide port and cert and key files.\
+                   \# Not required for running TOR-only relay.\
                    \# https: 443\n"
                 <> ("# cert: " <> T.pack httpsCertFile <> "\n")
                 <> ("# key: " <> T.pack httpsKeyFile <> "\n")
@@ -177,7 +177,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          hostOnion = lookupValue "TRANSPORT" "host_onion" ini
           cfg@ServerConfig {information, transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
@@ -261,12 +260,19 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               information = serverPublicInfo ini
             }
-    runWebServer ini si = do
-      let staticPath = "/tmp/smp-server-web"
-      generateSite si staticPath
-      let http = Just 8000
-      let https = Nothing
-      when (isJust http || isJust https) $ void . forkIO $ serveStaticFiles EmbeddedWebParams {http, https, staticPath}
+    runWebServer ini si =
+      case eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini of
+        Nothing -> logWarn "No server static path set"
+        Just staticPath -> do
+          let http = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
+          let https =
+                eitherToMaybe $
+                  (,,)
+                    <$> (T.unpack <$> lookupValue "WEB" "cert" ini)
+                    <*> (T.unpack <$> lookupValue "WEB" "key" ini)
+                    <*> (read . T.unpack <$> lookupValue "WEB" "https" ini)
+          generateSite si staticPath
+          when (isJust http || isJust https) $ serveStaticFiles EmbeddedWebParams {http, https, staticPath}
 
 data EmbeddedWebParams = EmbeddedWebParams
   { staticPath :: FilePath,
@@ -292,7 +298,7 @@ informationIniContent sourceCode_ =
   \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
   \# Include correct source code URI in case the server source code is modified in any way.\n\
   \# If any other information fields are present, source code property also MUST be present.\n\n"
-    <> (maybe ("# source_code: URI") ("source_code: " <>) sourceCode_ <> "\n\n")
+    <> (maybe "# source_code: URI" ("source_code: " <>) sourceCode_ <> "\n\n")
     <> "# Declaring all below information is optional, any of these fields can be omitted.\n\
        \\n\
        \# Server usage conditions and amendments.\n\

@@ -478,6 +478,7 @@ executable smp-server
     , unliftio-core ==0.2.*
     , wai-app-static
     , warp
+    , warp-tls
     , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*

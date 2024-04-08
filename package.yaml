@@ -117,10 +117,11 @@ executables:
     - apps/smp-server/web
     main: Main.hs
     dependencies:
-      - simplexmq
-      - warp
-      - wai-app-static
       - file-embed
+      - simplexmq
+      - wai-app-static
+      - warp
+      - warp-tls
     ghc-options:
       - -threaded
       - -rtsopts
