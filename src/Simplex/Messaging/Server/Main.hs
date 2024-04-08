@@ -17,7 +17,7 @@ import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (isPrefixOf)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -195,12 +195,13 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
       -- print information
+      let persistence
+            | isNothing storeLogFile = SPMMemoryOnly
+            | isJust (storeMsgsFile cfg) = SPMMessages
+            | otherwise = SPMQueues
       let config =
             ServerPublicConfig
-              { persistence = case (enableStoreLog, storeMsgsFile serverConfig) of
-                  (Nothing, Nothing) -> SPMMemoryOnly
-                  (Just _, Nothing) -> SPMQueues
-                  (_, Just _) -> SPMMessages,
+              { persistence,
                 messageExpiration = ttl <$> messageExpiration,
                 statsEnabled = isJust logStats,
                 newQueuesAllowed = allowNewQueues cfg,

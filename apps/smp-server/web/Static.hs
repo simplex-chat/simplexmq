@@ -9,9 +9,12 @@ import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Maybe (fromMaybe)
+import Data.String (fromString)
+import Data.Text.Encoding (encodeUtf8)
 import Network.Wai.Application.Static as S
 import Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.WarpTLS as W
+import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (EmbeddedWebParams (..))
 import Simplex.Messaging.Util (bshow, tshow)
@@ -48,38 +51,88 @@ serverInformation ServerInformation {config, information} = render E.indexHtml s
   where
     substs = substConfig <> maybe [] substInfo information
     substConfig =
-      [ ("persistence", Just . bshow $ persistence config),
-        ("messageExpiration", Just . bshow $ messageExpiration config),
+      [ ( "persistence",
+          Just $ case persistence config of
+            SPMMemoryOnly -> "In-memory only"
+            SPMQueues -> "Queues"
+            SPMMessages -> "Queues and messages"
+        ),
+        ("messageExpiration", Just $ maybe "Never" (fromString . timedTTLText) $ messageExpiration config),
         ("statsEnabled", Just . bshow $ statsEnabled config),
         ("newQueuesAllowed", Just . bshow $ newQueuesAllowed config),
         ("basicAuthEnabled", Just . bshow $ basicAuthEnabled config)
       ]
-    substInfo spi = basic <> maybe [] admin (adminContacts spi) <> maybe [] complaints (complaintsContacts spi) <> maybe [] entity (hosting spi) <> server
+    substInfo spi =
+      concat
+        [ basic,
+          maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
+          maybe [("operator", Nothing)] operatorE (operator spi),
+          maybe [("admin", Nothing)] admin (adminContacts spi),
+          maybe [("complaints", Nothing)] complaints (complaintsContacts spi),
+          maybe [("hosting", Nothing)] hostingE (hosting spi),
+          server
+        ]
       where
         basic =
-          [ ("sourceCode", Just . bshow $ sourceCode spi),
-            ("usageConditions", Just . bshow $ usageConditions spi),
-            ("operator", Just . bshow $ operator spi),
-            ("website", Just . bshow $ website spi),
-            ("sourceCode", Just . bshow $ sourceCode spi)
+          [ ("sourceCode", Just . encodeUtf8 $ sourceCode spi),
+            ("website", encodeUtf8 <$> website spi)
+          ]
+        conds ServerConditions {conditions, amendments} =
+          [ ("usageConditions", Just $ encodeUtf8 conditions),
+            ("usageAmendments", encodeUtf8 <$> amendments)
+          ]
+        operatorE Entity {name, country} =
+          [ ("operator", Just ""),
+            ("operatorEntity", Just $ encodeUtf8 name),
+            ("operatorCountry", encodeUtf8 <$> country)
           ]
         admin ServerContactAddress {simplex, email, pgp} =
-          [ ("adminSimplex", bshow <$> simplex),
-            ("adminEmail", bshow <$> email),
-            ("adminSimplex", bshow <$> pgp)
+          [ ("admin", Just ""),
+            ("adminSimplex", strEncode <$> simplex),
+            ("adminEmail", encodeUtf8 <$> email),
+            ("adminPGP", encodeUtf8 <$> pgp)
           ]
         complaints ServerContactAddress {simplex, email, pgp} =
-          [ ("complaintsSimplex", bshow <$> simplex),
-            ("complaintsEmail", bshow <$> email),
-            ("complaintsSimplex", bshow <$> pgp)
+          [ ("complaints", Just ""),
+            ("complaintsSimplex", strEncode <$> simplex),
+            ("complaintsEmail", encodeUtf8 <$> email),
+            ("complaintsPGP", encodeUtf8 <$> pgp)
           ]
-        entity Entity {name, country} =
-          [ ("hostingEntity", Just $ bshow name),
-            ("hostingCountry", bshow <$> country)
+        hostingE Entity {name, country} =
+          [ ("hosting", Just ""),
+            ("hostingEntity", Just $ encodeUtf8 name),
+            ("hostingCountry", encodeUtf8 <$> country)
           ]
         server =
-          [ ("serverCountry", bshow . serverCountry <$> information)
+          [ ("serverCountry", fmap encodeUtf8 $ serverCountry =<< information)
           ]
+
+-- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences
+{-# INLINE timedTTLText #-}
+timedTTLText :: (Integral i, Show i) => i -> String
+timedTTLText 0 = "0 sec"
+timedTTLText ttl = do
+  let (m', s) = ttl `quotRem` 60
+      (h', m) = m' `quotRem` 60
+      (d', h) = h' `quotRem` 24
+      (mm, d) = d' `quotRem` 30
+  unwords $
+    [mms mm | mm /= 0]
+      <> [ds d | d /= 0]
+      <> [hs h | h /= 0]
+      <> [ms m | m /= 0]
+      <> [ss s | s /= 0]
+  where
+    ss s = show s <> " sec"
+    ms m = show m <> " min"
+    hs 1 = "1 hour"
+    hs h = show h <> " hours"
+    ds 1 = "1 day"
+    ds 7 = "1 week"
+    ds 14 = "2 weeks"
+    ds d = show d <> " days"
+    mms 1 = "1 month"
+    mms mm = show mm <> " months"
 
 -- | Rewrite source with provided substitutions
 render :: ByteString -> [(ByteString, Maybe ByteString)] -> ByteString
