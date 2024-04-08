@@ -17,6 +17,7 @@ module Simplex.Messaging.Transport.Client
     TransportHost (..),
     TransportHosts (..),
     TransportHosts_ (..),
+    validateCertificateChain
   )
 where
 
@@ -239,7 +240,7 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ serverCe
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain [_, caCert]) =
   if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
     then x509validate
     else pure [XV.UnknownCA]
@@ -249,7 +250,7 @@ validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, 
       where
         hooks = XV.defaultHooks
         checks = XV.defaultChecks {XV.checkFQHN = False}
-        certStore = XS.makeCertificateStore sc
+        certStore = XS.makeCertificateStore [caCert]
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)
 validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
