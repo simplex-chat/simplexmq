@@ -403,25 +403,32 @@ testProtocolServer c userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPXFTP -> runXFTPServerTest c userId srv
   SPNTF -> runNTFServerTest c userId srv
 
--- | set SOCKS5 proxy on/off and optionally set TCP timeout
+-- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
 setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()
-setNetworkConfig c cfg' = do
-  cfg <- atomically $ do
-    swapTVar (useNetworkConfig c) cfg'
-  when (cfg /= cfg') $ reconnectAllServers c
+setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
+  changed <- atomically $ do
+    (_, cfg) <- readTVar useNetworkConfig
+    if cfg == cfg'
+      then pure False
+      else True <$ (writeTVar useNetworkConfig $! (slowNetworkConfig cfg', cfg'))
+  when changed $ reconnectAllServers c
 
+-- returns fast network config
 getNetworkConfig :: AgentClient -> IO NetworkConfig
-getNetworkConfig = readTVarIO . useNetworkConfig
+getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt} = withAgentEnv' c $ do
+setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt'} = withAgentEnv' c $ do
   d <- asks $ initialInterval . userNetworkInterval . config
   ts <- liftIO getCurrentTime
-  atomically . modifyTVar' userNetworkState $ \case
-    UNSOnline | nt == UNNone -> UNSOffline {offlineDelay = d, offlineFrom = ts}
-    UNSOffline {} | nt /= UNNone -> UNSOnline
-    ns -> ns
+  atomically $ do
+    ns@UserNetworkState {networkType = nt} <- readTVar userNetworkState
+    when (nt' /= nt) $
+      writeTVar userNetworkState $! case nt' of
+        UNNone -> ns {networkType = nt', offline = Just UNSOffline {offlineDelay = d, offlineFrom = ts}}
+        _ -> ns {networkType = nt', offline = Nothing}
+            
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do

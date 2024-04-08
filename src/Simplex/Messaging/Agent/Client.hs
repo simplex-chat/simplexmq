@@ -81,6 +81,7 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
+    slowNetworkConfig,
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
@@ -103,6 +104,7 @@ module Simplex.Messaging.Agent.Client
     UserNetworkInfo (..),
     UserNetworkType (..),
     UserNetworkState (..),
+    UNSOffline (..),
     waitForUserNetwork,
     throwWhenInactive,
     throwWhenNoDelivery,
@@ -270,7 +272,7 @@ data AgentClient = AgentClient
     ntfClients :: TMap NtfTransportSession NtfClientVar,
     xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
-    useNetworkConfig :: TVar NetworkConfig,
+    useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkState :: TVar UserNetworkState,
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
@@ -410,7 +412,13 @@ data UserNetworkInfo = UserNetworkInfo
 data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
-data UserNetworkState = UNSOnline | UNSOffline {offlineDelay :: Int64, offlineFrom :: UTCTime}
+data UserNetworkState = UserNetworkState
+  { networkType :: UserNetworkType,
+    offline :: Maybe UNSOffline
+  }
+  deriving (Show)
+
+data UNSOffline = UNSOffline {offlineDelay :: Int64, offlineFrom :: UTCTime}
   deriving (Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
@@ -428,8 +436,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   ntfClients <- TM.empty
   xftpServers <- newTVar xftp
   xftpClients <- TM.empty
-  useNetworkConfig <- newTVar netCfg
-  userNetworkState <- newTVar UNSOnline
+  useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
+  userNetworkState <- newTVar $ UserNetworkState UNOther Nothing
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -488,6 +496,13 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         clientId,
         agentEnv
       }
+
+slowNetworkConfig :: NetworkConfig -> NetworkConfig
+slowNetworkConfig cfg@NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpTimeoutPerKb} =
+  cfg {tcpConnectTimeout = slow tcpConnectTimeout, tcpTimeout = slow tcpTimeout, tcpTimeoutPerKb = slow tcpTimeoutPerKb}
+  where
+    slow :: Integral a => a -> a
+    slow t = (t * 3) `div` 2
 
 agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
@@ -613,7 +628,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
 
 reconnectSMPClient :: TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
-  NetworkConfig {tcpTimeout} <- readTVarIO $ useNetworkConfig c
+  NetworkConfig {tcpTimeout} <- atomically $ getNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
   ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
@@ -665,7 +680,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
-getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@(userId, srv, _) = do
+getXFTPServerClient c@AgentClient {active, xftpClients} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getTSessVar c tSess xftpClients)
     >>= either
@@ -675,7 +690,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, useNetworkConfig} tSess@
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
       cfg <- asks $ xftpCfg . config
-      xftpNetworkConfig <- readTVarIO useNetworkConfig
+      xftpNetworkConfig <- atomically $ getNetworkConfig c
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
         X.getXFTPClient tSess cfg {xftpNetworkConfig} $ clientDisconnected v
 
@@ -709,7 +724,7 @@ removeTSessVar' v tSess vs =
 
 waitForProtocolClient :: ProtocolTypeI (ProtoType msg) => AgentClient -> TransportSession msg -> ClientVar msg -> AM (Client msg)
 waitForProtocolClient c (_, srv, _) v = do
-  NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
+  NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
   client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
   liftEither $ case client_ of
     Just (Right smpClient) -> Right smpClient
@@ -745,30 +760,38 @@ hostEvent :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerCli
 hostEvent event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
 
 getClientConfig :: AgentClient -> (AgentConfig -> ProtocolClientConfig v) -> AM' (ProtocolClientConfig v)
-getClientConfig AgentClient {useNetworkConfig} cfgSel = do
+getClientConfig c cfgSel = do
   cfg <- asks $ cfgSel . config
-  networkConfig <- readTVarIO useNetworkConfig
+  networkConfig <- atomically $ getNetworkConfig c
   pure cfg {networkConfig}
+
+getNetworkConfig :: AgentClient -> STM NetworkConfig
+getNetworkConfig c = do
+  (slowCfg, fastCfg) <- readTVar (useNetworkConfig c)
+  UserNetworkState {networkType} <- readTVar (userNetworkState c)
+  pure $ case networkType of
+    UNCellular -> slowCfg
+    UNNone -> slowCfg
+    _ -> fastCfg
 
 waitForUserNetwork :: AgentClient -> AM' ()
 waitForUserNetwork AgentClient {userNetworkState} =
-  readTVarIO userNetworkState >>= \case
-    UNSOnline -> pure ()
-    UNSOffline {offlineDelay = d} ->
+  (offline <$> readTVarIO userNetworkState) >>= mapM_ waitWhileOffline
+  where
+    waitWhileOffline UNSOffline {offlineDelay = d} =
       race (atomically $ unlessM online retry) (liftIO $ threadDelay' d) >>= \case
         Left _ -> pure () -- network appeared, no action
         Right _ -> do -- network retry delay reached, increase delay
           ts' <- liftIO getCurrentTime
           ni <- asks $ userNetworkInterval . config
-          atomically . modifyTVar' userNetworkState $ \case
-            UNSOnline -> UNSOnline
-            UNSOffline {offlineDelay = d', offlineFrom = ts} ->
+          atomically . modifyTVar' userNetworkState $ \ns@UserNetworkState {offline} -> case offline of
+            Nothing -> ns
+            Just o@UNSOffline {offlineDelay = d', offlineFrom = ts} ->
               -- Using `min` to avoid multiple updates in a short period of time
               -- and to reset `offlineDelay` if network went `on` and `off` again.
               let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-               in UNSOffline {offlineDelay = d'', offlineFrom = ts}
-  where
-    online = (\case UNSOnline -> True; UNSOffline {} -> False) <$> readTVar userNetworkState
+               in ns {offline = Just o {offlineDelay = d''}}
+    online = isNothing . offline <$> readTVar userNetworkState
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
@@ -825,7 +848,7 @@ closeClient c clientSel tSess =
 
 closeClient_ :: ProtocolServerClient v err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c v = do
-  NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
+  NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
   tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
@@ -986,7 +1009,7 @@ runXFTPServerTest :: AgentClient -> UserId -> XFTPServerWithAuth -> AM' (Maybe P
 runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- asks $ xftpCfg . config
   g <- asks random
-  xftpNetworkConfig <- readTVarIO $ useNetworkConfig c
+  xftpNetworkConfig <- atomically $ getNetworkConfig c
   workDir <- getXFTPWorkPath
   filePath <- getTempFilePath workDir
   rcvPath <- getTempFilePath workDir
@@ -1076,7 +1099,7 @@ mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 {-# INLINE mkSMPTSession #-}
 
 getSessionMode :: AgentClient -> IO TransportSessionMode
-getSessionMode = fmap sessionMode . readTVarIO . useNetworkConfig
+getSessionMode = atomically . fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
 newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri)
@@ -1168,7 +1191,7 @@ sendTSessionBatches statCmd statBatchSize toRQ action c qs =
   where
     batchQueues :: AM' [(SMPTransportSession, NonEmpty q)]
     batchQueues = do
-      mode <- sessionMode <$> readTVarIO (useNetworkConfig c)
+      mode <- atomically $ sessionMode <$> getNetworkConfig c
       pure . M.assocs $ foldl' (batch mode) M.empty qs
       where
         batch mode m q =
