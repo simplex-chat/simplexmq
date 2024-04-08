@@ -18,7 +18,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
-import GHC.Conc (labelThread, myThreadId, threadDelay)
+import GHC.Conc (labelThread, myThreadId, retry, threadDelay)
 import UnliftIO
 import qualified UnliftIO.Exception as UE
 
@@ -158,6 +158,14 @@ threadDelay' time = do
   let maxWait = min time $ fromIntegral (maxBound :: Int)
   threadDelay $ fromIntegral maxWait
   when (maxWait /= time) $ threadDelay' (time - maxWait)
+
+threadDelaySTM' :: STM Bool -> Int64 -> IO ()
+threadDelaySTM' _ time | time <= 0 = pure ()
+threadDelaySTM' check time = do
+  let maxWait = min time $ fromIntegral (maxBound :: Int)
+  timer <- registerDelay (fromIntegral maxWait)
+  atomically $ unlessM ((||) <$> check <*> readTVar timer) retry
+  when (maxWait /= time) $ threadDelaySTM' check (time - maxWait)
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
