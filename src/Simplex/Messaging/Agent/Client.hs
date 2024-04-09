@@ -162,7 +162,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
-import GHC.Stack (HasCallStack)
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -1418,7 +1418,7 @@ cryptoError = \case
     c = AGENT . A_CRYPTO
 
 waitForWork :: (MonadIO m, HasCallStack) => TMVar () -> m ()
-waitForWork = void . atomically' . readTMVar
+waitForWork v = withFrozenCallStack $ void . atomically' $ readTMVar v
 {-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
