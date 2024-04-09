@@ -236,7 +236,7 @@ import Simplex.Messaging.Version
 import System.Mem.Weak (Weak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
-import UnliftIO.Async (async, race)
+import UnliftIO.Async (async)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -779,20 +779,31 @@ waitForUserNetwork AgentClient {userNetworkState} =
   (offline <$> readTVarIO userNetworkState) >>= mapM_ waitWhileOffline
   where
     waitWhileOffline UNSOffline {offlineDelay = d} =
-      race (atomically $ unlessM online retry) (liftIO $ threadDelay' d) >>= \case
-        Left _ -> pure () -- network appeared, no action
-        Right _ -> do -- network retry delay reached, increase delay
-          ts' <- liftIO getCurrentTime
-          ni <- asks $ userNetworkInterval . config
-          atomically $ do
-            ns@UserNetworkState {offline} <- readTVar userNetworkState
-            forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
-              -- Using `min` to avoid multiple updates in a short period of time
-              -- and to reset `offlineDelay` if network went `on` and `off` again.
-              writeTVar userNetworkState $!
-                let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-                 in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
-    online = isNothing . offline <$> readTVar userNetworkState
+      unlessM (liftIO $ waitOnline d False) $ do -- network delay reached, increase delay
+        ts' <- liftIO getCurrentTime
+        ni <- asks $ userNetworkInterval . config
+        atomically $ do
+          ns@UserNetworkState {offline} <- readTVar userNetworkState
+          forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
+            -- Using `min` to avoid multiple updates in a short period of time
+            -- and to reset `offlineDelay` if network went `on` and `off` again.
+            writeTVar userNetworkState $!
+              let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
+                in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
+    waitOnline :: Int64 -> Bool -> IO Bool
+    waitOnline t online'
+      | t <= 0 = pure online'
+      | otherwise =
+          registerDelay (fromIntegral maxWait)
+            >>= atomically . onlineOrDelay
+            >>= waitOnline (t - maxWait)
+      where
+        maxWait = min t $ fromIntegral (maxBound :: Int)
+        onlineOrDelay delay = do
+          online <- isNothing . offline <$> readTVar userNetworkState
+          expired <- readTVar delay
+          unless (online || expired) retry
+          pure online
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
