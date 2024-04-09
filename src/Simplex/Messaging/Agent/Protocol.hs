@@ -405,6 +405,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   MSGNTF :: SMPMsgMeta -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn
+  QUOTA_CONT :: ACommand Agent AEConn
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
   DEL :: ACommand Client AEConn
@@ -467,6 +468,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   MSGNTF_ :: ACommandTag Agent AEConn
   ACK_ :: ACommandTag Client AEConn
   RCVD_ :: ACommandTag Agent AEConn
+  QUOTA_CONT_ :: ACommandTag Agent AEConn
   SWCH_ :: ACommandTag Client AEConn
   OFF_ :: ACommandTag Client AEConn
   DEL_ :: ACommandTag Client AEConn
@@ -522,6 +524,7 @@ aCommandTag = \case
   MSGNTF {} -> MSGNTF_
   ACK {} -> ACK_
   RCVD {} -> RCVD_
+  QUOTA_CONT -> QUOTA_CONT_
   SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
@@ -1668,6 +1671,7 @@ instance StrEncoding ACmdTag where
       "MSGNTF" -> ct MSGNTF_
       "ACK" -> t ACK_
       "RCVD" -> ct RCVD_
+      "QUOTA_CONT" -> ct QUOTA_CONT_
       "SWCH" -> t SWCH_
       "OFF" -> t OFF_
       "DEL" -> t DEL_
@@ -1725,6 +1729,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     MSGNTF_ -> "MSGNTF"
     ACK_ -> "ACK"
     RCVD_ -> "RCVD"
+    QUOTA_CONT_ -> "QUOTA_CONT"
     SWCH_ -> "SWCH"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
@@ -1794,6 +1799,7 @@ commandP binaryP =
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
           MSGNTF_ -> s (MSGNTF <$> strP)
           RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
+          QUOTA_CONT_ -> pure QUOTA_CONT
           DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
           DEL_CONN_ -> pure DEL_CONN
           DEL_USER_ -> s (DEL_USER <$> strP)
@@ -1857,6 +1863,7 @@ serializeCommand = \case
   MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
+  QUOTA_CONT -> s QUOTA_CONT_
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_
