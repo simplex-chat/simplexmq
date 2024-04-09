@@ -110,7 +110,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, raceAny_, threadDelay')
+import Simplex.Messaging.Util (bshow, raceAny_, threadDelay', atomically')
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 
@@ -360,8 +360,8 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       action <-
         async $
           runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
-            `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
-      c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
+            `finally` atomically' (tryPutTMVar cVar $ Left PCENetworkError)
+      c_ <- tcpConnectTimeout `timeout` atomically' (takeTMVar cVar)
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e
@@ -377,21 +377,21 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     client _ c cVar h = do
       ks <- atomically $ C.generateKeyPair g
       runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange) >>= \case
-        Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
+        Left e -> atomically' . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
           let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs}
-          atomically $ do
+          atomically' $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
           raceAny_ ([send c' th, process c', receive c' th] <> [ping c' | smpPingInterval > 0])
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPutLog h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically' (readTBQueue sndQ) >>= tPutLog h
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c -> IO ()
-    receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
+    receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically' . writeTBQueue rcvQ
 
     ping :: ProtocolClient v err msg -> IO ()
     ping c@ProtocolClient {client_ = PClient {pingErrorCount}} = do
@@ -405,7 +405,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         maxCnt = smpPingCount networkConfig
 
     process :: ProtocolClient v err msg -> IO ()
-    process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
+    process c = forever $ atomically' (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
 
     processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO ()
     processMsg c@ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr)) =
@@ -414,7 +414,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         else do
           atomically (TM.lookup corrId sentCommands) >>= \case
             Nothing -> sendMsg respOrErr
-            Just Request {entityId, responseVar} -> atomically $ do
+            Just Request {entityId, responseVar} -> atomically' $ do
               TM.delete corrId sentCommands
               putTMVar responseVar $ response entityId
       where
@@ -428,7 +428,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           | otherwise = Left . PCEUnexpectedResponse $ bshow respOrErr
         sendMsg :: Either err msg -> IO ()
         sendMsg = \case
-          Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c entId msg) msgQ
+          Right msg -> atomically' $ mapM_ (`writeTBQueue` serverTransmission c entId msg) msgQ
           Left e -> putStrLn $ "SMP client error: " <> show e
 
 proxyUsername :: TransportSession msg -> ByteString
@@ -525,7 +525,7 @@ processSUBResponse c (Response rId r) = case r of
   Left e -> pure $ Left e
 
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
-writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ $ client_ c)
+writeSMPMessage c rId msg = atomically' $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ $ client_ c)
 
 serverTransmission :: ProtocolClient v err msg -> RecipientId -> msg -> ServerTransmission v msg
 serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} entityId message =
@@ -702,7 +702,7 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
-        | otherwise -> atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
+        | otherwise -> atomically' (writeTBQueue sndQ s) >> response <$> getResponse c r
         where
           s
             | batch = tEncodeBatch1 t
@@ -712,17 +712,17 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
 getResponse :: ProtocolClient v err msg -> Request err msg -> IO (Response err msg)
 getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Request {entityId, responseVar} = do
   response <-
-    timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
+    timeout tcpTimeout (atomically' (takeTMVar responseVar)) >>= \case
       Just r -> atomically (writeTVar pingErrorCount 0) $> r
       Nothing -> pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entId, cmd) = do
-  corrId <- atomically getNextCorrId
+  corrId <- atomically' getNextCorrId
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, entId, cmd)
       auth = authTransmission (thAuth thParams) pKey_ corrId tForAuth
-  r <- atomically $ mkRequest corrId
+  r <- atomically' $ mkRequest corrId
   pure ((,tToSend) <$> auth, r)
   where
     getNextCorrId :: STM CorrId

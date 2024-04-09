@@ -38,7 +38,7 @@ import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
+import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow, atomically')
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO (timeout)
@@ -114,7 +114,7 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
     forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
       let closeConn _ = do
-            atomically $ modifyTVar' clients $ IM.delete cId 
+            atomically $ modifyTVar' clients $ IM.delete cId
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
             atomically $ modifyTVar' gracefullyClosed (+1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
@@ -129,7 +129,7 @@ closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
   readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   close sock
-  void . atomically $ tryPutTMVar started False
+  void . atomically' $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -148,7 +148,7 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
       bind sock $ addrAddress addr
       listen sock 1024
       pure sock
-    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
+    setStarted sock = atomically' (tryPutTMVar started True) >> pure sock
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters

@@ -278,7 +278,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>), atomically')
 import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -420,11 +420,11 @@ openSQLiteStore st@SQLiteStore {dbClosed} key keepKey =
 openSQLiteStore_ :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
 openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
   bracketOnError
-    (atomically $ takeTMVar dbConnection)
-    (atomically . tryPutTMVar dbConnection)
+    (atomically' $ takeTMVar dbConnection)
+    (atomically' . tryPutTMVar dbConnection)
     $ \DB.Connection {slow} -> do
       DB.Connection {conn} <- connectDB dbFilePath key
-      atomically $ do
+      atomically' $ do
         putTMVar dbConnection DB.Connection {conn, slow}
         writeTVar dbClosed False
         writeTVar dbKey $! storeKey key keepKey
@@ -1214,7 +1214,7 @@ setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
     db
     [sql|
       UPDATE ratchets
-      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?, pq_priv_kem = ? 
+      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?, pq_priv_kem = ?
       WHERE conn_id = ?
     |]
     (x3dhPrivKey1, x3dhPrivKey2, C.publicKey x3dhPrivKey1, C.publicKey x3dhPrivKey2, pqPrivKem, connId)
@@ -2248,7 +2248,7 @@ createWithRandomId' gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
+randomId gVar n = atomically' $ U.encode <$> C.randomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)

@@ -29,6 +29,7 @@ import Simplex.Messaging.Transport.HTTP2
 import UnliftIO.STM
 import UnliftIO.Timeout
 import qualified Data.X509 as X
+import Simplex.Messaging.Util (atomically')
 
 data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),
@@ -107,8 +108,8 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
     runClient :: HClient -> IO (Either HTTP2ClientError HTTP2Client)
     runClient c = do
       cVar <- newEmptyTMVarIO
-      action <- async $ setup (client c cVar) `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
-      c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
+      action <- async $ setup (client c cVar) `E.finally` atomically' (putTMVar cVar $ Left HCNetworkError)
+      c_ <- connTimeout config `timeout` atomically' (takeTMVar cVar)
       pure $ case c_ of
         Just (Right c') -> Right c' {action = Just action}
         Just (Left e) -> Left e
@@ -128,18 +129,18 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
                 sessionId = tlsUniq tls,
                 sessionALPN = tlsALPN tls
               }
-      atomically $ do
+      atomically' $ do
         writeTVar (connected c) True
         putTMVar cVar (Right c')
       process c' sendReq `E.finally` disconnected
 
     process :: HTTP2Client -> H.Client HTTP2Response
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
-      (req, respVar) <- atomically $ readTBQueue reqQ
+      (req, respVar) <- atomically' $ readTBQueue reqQ
       sendReq req $ \r -> do
         respBody <- getHTTP2Body r (bodyHeadSize config)
         let resp = HTTP2Response {response = r, respBody}
-        atomically $ putTMVar respVar resp
+        atomically' $ putTMVar respVar resp
         pure resp
 
 -- | Disconnects client from the server and terminates client threads.
@@ -151,7 +152,7 @@ sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
   resp <- newEmptyTMVarIO
   atomically $ writeTBQueue reqQ (req, resp)
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resp))
+  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically' (takeTMVar resp))
 
 -- | this function should not be used until HTTP2 is thread safe, use sendRequest
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)

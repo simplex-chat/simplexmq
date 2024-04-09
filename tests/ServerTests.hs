@@ -44,6 +44,7 @@ import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
+import Simplex.Messaging.Util (atomically')
 
 serverTests :: ATransport -> Spec
 serverTests t@(ATransport t') = do
@@ -396,9 +397,9 @@ testGetCommand t =
     smpTest t $ \sh -> do
       queue <- newEmptyTMVarIO
       testSMPClient @c $ \rh ->
-        atomically . putTMVar queue =<< createAndSecureQueue rh sPub
+        atomically' . putTMVar queue =<< createAndSecureQueue rh sPub
       testSMPClient @c $ \rh -> do
-        (sId, rId, rKey, dhShared) <- atomically $ takeTMVar queue
+        (sId, rId, rKey, dhShared) <- atomically' $ takeTMVar queue
         let dec = decryptMsgV3 dhShared
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello")
         Resp "2" _ (Msg mId1 msg1) <- signSendRecv rh rKey ("2", rId, GET)

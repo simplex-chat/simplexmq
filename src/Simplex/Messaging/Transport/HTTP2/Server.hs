@@ -16,7 +16,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
-import Simplex.Messaging.Util (threadDelay')
+import Simplex.Messaging.Util (threadDelay', atomically')
 import UnliftIO (finally)
 import UnliftIO.Concurrent (forkIO, killThread)
 
@@ -58,7 +58,7 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
     runHTTP2Server started http2Port bufferSize tlsServerParams transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
-  void . atomically $ takeTMVar started
+  void . atomically' $ takeTMVar started
   pure HTTP2Server {action, reqQ}
 
 closeHTTP2Server :: HTTP2Server -> IO ()

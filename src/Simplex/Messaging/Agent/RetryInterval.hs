@@ -18,7 +18,7 @@ import Control.Concurrent (forkIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Int (Int64)
-import Simplex.Messaging.Util (threadDelay', whenM)
+import Simplex.Messaging.Util (threadDelay', whenM, atomically')
 import UnliftIO.STM
 
 data RetryInterval = RetryInterval
@@ -82,8 +82,8 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
           waiting <- newTVarIO True
           _ <- liftIO . forkIO $ do
             threadDelay' delay
-            atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
-          atomically $ do
+            atomically' $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
+          atomically' $ do
             takeTMVar lock
             writeTVar waiting False
 

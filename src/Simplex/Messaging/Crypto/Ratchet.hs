@@ -150,7 +150,7 @@ currentE2EEncryptVersion = VersionE2E 2
 -- TODO v5.7 remove dependency of version range on whether PQ encryption is used
 supportedE2EEncryptVRange :: PQSupport -> VersionRangeE2E
 supportedE2EEncryptVRange pq =
-  mkVersionRange kdfX3DHE2EEncryptVersion $ case pq of 
+  mkVersionRange kdfX3DHE2EEncryptVersion $ case pq of
     PQSupportOn -> pqRatchetE2EEncryptVersion
     PQSupportOff -> currentE2EEncryptVersion
 

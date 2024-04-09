@@ -38,7 +38,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, SMPServer, sameSrvAddr)
-import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
+import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM, atomically')
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO, threadDelay)
@@ -48,7 +48,7 @@ runNtfSupervisor :: AgentClient -> AM' ()
 runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
-    cmd@(connId, _) <- atomically . readTBQueue $ ntfSubQ ns
+    cmd@(connId, _) <- atomically' . readTBQueue $ ntfSubQ ns
     handleErr connId . agentOperationBracket c AONtfNetwork waitUntilActive $
       runExceptT (processNtfSub c cmd) >>= \case
         Left e -> notifyErr connId e
@@ -265,7 +265,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
                   setRcvQueueNtfCreds db connId $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
                   updateNtfSubscription db sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NtfSubNTFAction NSACreate) ts
                 ns <- asks ntfSupervisor
-                atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
+                atomically' $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
               _ -> workerInternalError c connId "NSASmpKey - no active token"
           NSASmpDelete -> do
             rq_ <- withStore' c $ \db -> do
@@ -278,10 +278,10 @@ rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
 rescheduleAction doWork ts actionTs
   | actionTs <= ts = pure False
   | otherwise = do
-      void . atomically $ tryTakeTMVar doWork
+      void . atomically' $ tryTakeTMVar doWork
       void . forkIO $ do
         liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
-        atomically $ hasWorkToDo' doWork
+        atomically' $ hasWorkToDo' doWork
       pure True
 
 retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
@@ -293,9 +293,9 @@ retryOnError c name loop done e = do
     _ -> done e
   where
     retryLoop = do
-      atomically $ endAgentOperation c AONtfNetwork
-      atomically $ throwWhenInactive c
-      atomically $ beginAgentOperation c AONtfNetwork
+      atomically' $ endAgentOperation c AONtfNetwork
+      atomically' $ throwWhenInactive c
+      atomically' $ beginAgentOperation c AONtfNetwork
       loop
 
 workerInternalError :: AgentClient -> ConnId -> String -> AM ()
@@ -334,7 +334,7 @@ closeNtfSupervisor ns = do
   stopWorkers $ ntfWorkers ns
   stopWorkers $ ntfSMPWorkers ns
   where
-    stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
+    stopWorkers workers = atomically' (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 getNtfServer :: AgentClient -> AM' (Maybe NtfServer)
 getNtfServer c = do

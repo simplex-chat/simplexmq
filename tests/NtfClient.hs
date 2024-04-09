@@ -51,6 +51,7 @@ import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Simplex.Messaging.Util (atomically')
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -223,7 +224,7 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
   pure APNSMockServer {action, apnsQ, http2Server}
   where
     runAPNSMockServer apnsQ HTTP2Server {reqQ} = forever $ do
-      HTTP2Request {reqBody = HTTP2Body {bodyHead}, sendResponse} <- atomically $ readTBQueue reqQ
+      HTTP2Request {reqBody = HTTP2Body {bodyHead}, sendResponse} <- atomically' $ readTBQueue reqQ
       let sendApnsResponse = \case
             APNSRespOk -> sendResponse $ H.responseNoBody N.ok200 []
             APNSRespError status reason ->

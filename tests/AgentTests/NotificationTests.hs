@@ -68,6 +68,7 @@ import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
 import Util
+import Simplex.Messaging.Util (atomically')
 
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists filePath = do
@@ -170,7 +171,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
@@ -198,13 +199,13 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     _ <- ntfData' .-> "verification"
     _ <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
@@ -223,7 +224,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
@@ -231,7 +232,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
 
     NTRegistered <- registerNtfToken a' tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
     nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
@@ -258,7 +259,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   ntfData <- withNtfServer t . runRight $ do
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     liftIO $ sendApnsResponse APNSRespOk
     pure ntfData
   -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
@@ -272,7 +273,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
     nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
@@ -295,7 +296,7 @@ testNtfTokenMultipleServers t APNSMockServer {apnsQ} = do
       -- register a new token, the agent picks a server and stores its choice
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-        atomically $ readTBQueue apnsQ
+        atomically' $ readTBQueue apnsQ
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
       liftIO $ sendApnsResponse APNSRespOk
@@ -365,7 +366,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
+      atomically' $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     vNonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
@@ -450,7 +451,7 @@ registerTestToken a token mode apnsQ = do
   let tkn = DeviceToken PPApnsTest token
   NTRegistered <- registerNtfToken a tkn mode
   Just APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-    timeout 1000000 . atomically $ readTBQueue apnsQ
+    timeout 1000000 . atomically' $ readTBQueue apnsQ
   verification' <- ntfData' .-> "verification"
   nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
   liftIO $ sendApnsResponse' APNSRespOk
@@ -764,7 +765,7 @@ testMessage_ apnsQ a aId b bId msg = do
 
 messageNotification :: HasCallStack => TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
-  1000000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+  1000000 `timeout` atomically' (readTBQueue apnsQ) >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -782,6 +783,6 @@ messageNotificationData c apnsQ = do
 
 noNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
 noNotification apnsQ = do
-  500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+  500000 `timeout` atomically' (readTBQueue apnsQ) >>= \case
     Nothing -> pure ()
     _ -> error "unexpected notification"

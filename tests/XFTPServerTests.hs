@@ -33,6 +33,7 @@ import System.FilePath ((</>))
 import Test.Hspec
 import UnliftIO.STM
 import XFTPClient
+import Simplex.Messaging.Util (atomically')
 
 xftpServerTests :: Spec
 xftpServerTests =
@@ -185,7 +186,7 @@ testWrongChunkSize = xftpTest $ \c -> do
   g <- C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcvKey, _rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-  B.writeFile testChunkPath =<< atomically (C.randomBytes (kb 96) g)
+  B.writeFile testChunkPath =<< atomically' (C.randomBytes (kb 96) g)
   digest <- LC.sha256Hash <$> LB.readFile testChunkPath
   let file = FileInfo {sndKey, size = kb 96, digest}
   runRight_ $
@@ -220,15 +221,15 @@ testInactiveClientExpiration :: Expectation
 testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
   g <- liftIO C.newRandom
-  c <- ExceptT $ getXFTPClient g (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
+  c <- ExceptT $ getXFTPClient g (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically' $ putTMVar disconnected ())
   pingXFTP c
   liftIO $ do
     threadDelay 100000
-    atomically (tryReadTMVar disconnected) `shouldReturn` Nothing
+    atomically' (tryReadTMVar disconnected) `shouldReturn` Nothing
   pingXFTP c
   liftIO $ do
     threadDelay 3000000
-    atomically (tryTakeTMVar disconnected) `shouldReturn` Just ()
+    atomically' (tryTakeTMVar disconnected) `shouldReturn` Just ()
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 

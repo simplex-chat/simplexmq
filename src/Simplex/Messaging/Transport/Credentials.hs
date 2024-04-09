@@ -23,6 +23,7 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import qualified Network.TLS as TLS
 import qualified Simplex.Messaging.Crypto as C
 import qualified Time.System as Hourglass
+import Simplex.Messaging.Util (atomically')
 
 -- | Generate a certificate chain to be used with TLS fingerprint-pinning
 --

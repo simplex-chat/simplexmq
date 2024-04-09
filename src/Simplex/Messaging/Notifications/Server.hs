@@ -116,16 +116,16 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          fromTime' <- atomically $ swapTVar fromTime ts
-          tknCreated' <- atomically $ swapTVar tknCreated 0
-          tknVerified' <- atomically $ swapTVar tknVerified 0
-          tknDeleted' <- atomically $ swapTVar tknDeleted 0
-          subCreated' <- atomically $ swapTVar subCreated 0
-          subDeleted' <- atomically $ swapTVar subDeleted 0
-          ntfReceived' <- atomically $ swapTVar ntfReceived 0
-          ntfDelivered' <- atomically $ swapTVar ntfDelivered 0
-          tkn <- atomically $ periodStatCounts activeTokens ts
-          sub <- atomically $ periodStatCounts activeSubs ts
+          fromTime' <- atomically' $ swapTVar fromTime ts
+          tknCreated' <- atomically' $ swapTVar tknCreated 0
+          tknVerified' <- atomically' $ swapTVar tknVerified 0
+          tknDeleted' <- atomically' $ swapTVar tknDeleted 0
+          subCreated' <- atomically' $ swapTVar subCreated 0
+          subDeleted' <- atomically' $ swapTVar subDeleted 0
+          ntfReceived' <- atomically' $ swapTVar ntfReceived 0
+          ntfDelivered' <- atomically' $ swapTVar ntfDelivered 0
+          tkn <- atomically' $ periodStatCounts activeTokens ts
+          sub <- atomically' $ periodStatCounts activeSubs ts
           hPutStrLn h $
             intercalate
               ","
@@ -151,7 +151,7 @@ resubscribe NtfSubscriber {newSubQ} = do
   logInfo "Preparing SMP resubscriptions..."
   subs <- readTVarIO =<< asks (subscriptions . store)
   subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
-  atomically . writeTBQueue newSubQ $ map NtfSub subs'
+  atomically' . writeTBQueue newSubQ $ map NtfSub subs'
   logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
 
 ntfSubscriber :: NtfSubscriber -> M ()
@@ -160,14 +160,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
   where
     subscribe :: M ()
     subscribe = forever $ do
-      subs <- atomically (readTBQueue newSubQ)
+      subs <- atomically' (readTBQueue newSubQ)
       let ss = L.groupAllWith server subs
       batchSize <- asks $ subsBatchSize . config
       forM_ ss $ \serverSubs -> do
         let srv = server $ L.head serverSubs
             batches = toChunks batchSize $ L.toList serverSubs
         SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber srv
-        mapM_ (atomically . writeTQueue subscriberSubQ) batches
+        mapM_ (atomically' . writeTQueue subscriberSubQ) batches
 
     server :: NtfEntityRec 'Subscription -> SMPServer
     server (NtfSub sub) = ntfSubServer sub
@@ -186,14 +186,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     runSMPSubscriber :: SMPSubscriber -> M ()
     runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
       forever $ do
-        subs <- atomically (peekTQueue subscriberSubQ)
+        subs <- atomically' (peekTQueue subscriberSubQ)
         let subs' = L.map (\(NtfSub sub) -> sub) subs
             srv = server $ L.head subs
         logSubStatus srv "subscribing" $ length subs
         mapM_ (\NtfSubData {smpQueue} -> updateSubStatus smpQueue NSPending) subs'
         rs <- liftIO $ subscribeQueues srv subs'
         (subs'', oks, errs) <- foldM process ([], 0, []) rs
-        atomically $ do
+        atomically' $ do
           void $ readTQueue subscriberSubQ
           mapM_ (writeTQueue subscriberSubQ . L.map NtfSub) $ L.nonEmpty subs''
         logSubStatus srv "retrying" $ length subs''
@@ -218,7 +218,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, ntfId, msg) <- atomically' $ readTBQueue msgQ
       let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
@@ -226,8 +226,8 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           st <- asks store
           NtfPushServer {pushQ} <- asks pushServer
           stats <- asks serverStats
-          atomically $ updatePeriodStats (activeSubs stats) ntfId
-          atomically $
+          atomically' $ updatePeriodStats (activeSubs stats) ntfId
+          atomically' $
             findNtfSubscriptionToken st smpQueue
               >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
           incNtfStat ntfReceived
@@ -236,7 +236,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveAgent =
       forever $
-        atomically (readTBQueue agentQ) >>= \case
+        atomically' (readTBQueue agentQ) >>= \case
           CAConnected _ -> pure ()
           CADisconnected srv subs -> do
             logSubStatus srv "disconnected" $ length subs
@@ -280,7 +280,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     updateSubStatus smpQueue status = do
       st <- asks store
-      atomically (findNtfSubscription st smpQueue) >>= mapM_ update
+      atomically' (findNtfSubscription st smpQueue) >>= mapM_ update
       where
         update NtfSubData {ntfSubId, subStatus} = do
           old <- atomically $ stateTVar subStatus (,status)
@@ -288,7 +288,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
-  (tkn@NtfTknData {ntfTknId, token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  (tkn@NtfTknData {ntfTknId, token = DeviceToken pp _, tknStatus}, ntf) <- atomically' (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
   case ntf of
@@ -307,7 +307,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       void $ deliverNotification pp tkn ntf
     PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
-      atomically $ updatePeriodStats (activeTokens stats) ntfTknId
+      atomically' $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
       incNtfStat ntfDelivered
   where
@@ -343,7 +343,7 @@ runNtfClientTransport :: Transport c => THandleNTF c -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newNtfServerClient qSize params ts
+  c <- atomically' $ newNtfServerClient qSize params ts
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
@@ -373,7 +373,7 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
 
 send :: Transport c => THandleNTF c -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
-  t <- atomically $ readTBQueue sndQ
+  t <- atomically' $ readTBQueue sndQ
   void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
   atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
@@ -387,7 +387,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
-      r_ <- atomically $ getNtfTokenRegistration st tkn
+      r_ <- atomically' $ getNtfTokenRegistration st tkn
       pure $
         if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
@@ -397,26 +397,26 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
             _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
-      t_ <- atomically $ getNtfToken st entId
+      t_ <- atomically' $ getNtfToken st entId
       verifyToken t_ (`verifiedTknCmd` c)
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
-      s_ <- atomically $ findNtfSubscription st smpQueue
+      s_ <- atomically' $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
-          t_ <- atomically $ getActiveNtfToken st tknId
+          t_ <- atomically' $ getActiveNtfToken st tknId
           verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
-              t_ <- atomically $ getActiveNtfToken st subTknId
+              t_ <- atomically' $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
             else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
-      s_ <- atomically $ getNtfSubscription st entId
+      s_ <- atomically' $ getNtfSubscription st entId
       case s_ of
         Just s@NtfSubData {tokenId = subTknId} -> do
-          t_ <- atomically $ getActiveNtfToken st subTknId
+          t_ <- atomically' $ getActiveNtfToken st subTknId
           verifyToken' t_ $ verifiedSubCmd s c
         _ -> pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
   where
@@ -436,9 +436,9 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
-    atomically (readTBQueue rcvQ)
+    atomically' (readTBQueue rcvQ)
       >>= processCommand
-      >>= atomically . writeTBQueue sndQ
+      >>= atomically' . writeTBQueue sndQ
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
@@ -449,8 +449,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
-        tkn <- atomically $ mkNtfTknData tknId newTkn ks dhSecret regCode
-        atomically $ addNtfToken st tknId tkn
+        tkn <- atomically' $ mkNtfTknData tknId newTkn ks dhSecret regCode
+        atomically' $ addNtfToken st tknId tkn
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
         withNtfLog (`logCreateToken` tkn)
         incNtfStatT token tknCreated
@@ -472,7 +472,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                 logDebug "TVFY - token verified"
                 st <- asks store
                 updateTknStatus tkn NTActive
-                tIds <- atomically $ removeInactiveTokenRegistrations st tkn
+                tIds <- atomically' $ removeInactiveTokenRegistrations st tkn
                 forM_ tIds cancelInvervalNotifications
                 incNtfStatT token tknVerified
                 pure NROk
@@ -486,7 +486,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             logDebug "TRPL - replace token"
             st <- asks store
             regCode <- getRegCode
-            atomically $ do
+            atomically' $ do
               removeTokenRegistration st tkn
               writeTVar tknStatus NTRegistered
               let tkn' = tkn {token = token', tknRegCode = regCode}
@@ -499,9 +499,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           TDEL -> do
             logDebug "TDEL"
             st <- asks store
-            qs <- atomically $ deleteNtfToken st tknId
+            qs <- atomically' $ deleteNtfToken st tknId
             forM_ qs $ \SMPQueueNtf {smpServer, notifierId} ->
-              atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+              atomically' $ removeSubscription ca smpServer (SPNotifier, notifierId)
             cancelInvervalNotifications tknId
             withNtfLog (`logDeleteToken` tknId)
             incNtfStatT token tknDeleted
@@ -538,10 +538,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         logDebug "SNEW - new subscription"
         st <- asks store
         subId <- getId
-        sub <- atomically $ mkNtfSubData subId newSub
+        sub <- atomically' $ mkNtfSubData subId newSub
         resp <-
-          atomically (addNtfSubscription st subId sub) >>= \case
-            Just _ -> atomically (writeTBQueue newSubQ [NtfSub sub]) $> NRSubId subId
+          atomically' (addNtfSubscription st subId sub) >>= \case
+            Just _ -> atomically' (writeTBQueue newSubQ [NtfSub sub]) $> NRSubId subId
             _ -> pure $ NRErr AUTH
         withNtfLog (`logCreateSubscription` sub)
         incNtfStat subCreated
@@ -562,8 +562,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           SDEL -> do
             logDebug "SDEL"
             st <- asks store
-            atomically $ deleteNtfSubscription st subId
-            atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+            atomically' $ deleteNtfSubscription st subId
+            atomically' $ removeSubscription ca smpServer (SPNotifier, notifierId)
             withNtfLog (`logDeleteSubscription` subId)
             incNtfStat subDeleted
             pure NROk
@@ -595,7 +595,7 @@ incNtfStat statSel = do
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= atomically . getNtfServerStatsData >>= liftIO . saveStats f)
+    >>= mapM_ (\f -> asks serverStats >>= atomically' . getNtfServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
@@ -610,7 +610,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setNtfServerStats s d
+          atomically' $ setNtfServerStats s d
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Left e -> do

@@ -21,7 +21,7 @@ import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Util (diffToMilliseconds)
+import Simplex.Messaging.Util (diffToMilliseconds, atomically')
 import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -40,8 +40,8 @@ data SQLiteStore = SQLiteStore
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
 withConnection SQLiteStore {dbConnection} =
   bracket
-    (atomically $ takeTMVar dbConnection)
-    (atomically . putTMVar dbConnection)
+    (atomically' $ takeTMVar dbConnection)
+    (atomically' . putTMVar dbConnection)
 
 withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withConnection' st action = withConnection st $ action . DB.conn

@@ -45,6 +45,7 @@ import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.STM
+import Simplex.Messaging.Util (atomically')
 
 ntfServerTests :: ATransport -> Spec
 ntfServerTests t = do
@@ -112,7 +113,7 @@ testNotificationSubscription (ATransport t) =
           -- register and verify token
           RespNtf "1" "" (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", "", TNEW $ NewNtfTkn tkn tknPub dhPub)
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse = send} <-
-            atomically $ readTBQueue apnsQ
+            atomically' $ readTBQueue apnsQ
           send APNSRespOk
           let dhSecret = C.dh' ntfDh dhPriv
               Right verification = ntfData .-> "verification"
@@ -131,7 +132,7 @@ testNotificationSubscription (ATransport t) =
           threadDelay 50000
           Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
           -- receive notification
-          APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
+          APNSMockRequest {notification, sendApnsResponse = send'} <- atomically' $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
@@ -155,7 +156,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
           tId `shouldBe` tId'
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}, sendApnsResponse = send2} <-
-            atomically $ readTBQueue apnsQ
+            atomically' $ readTBQueue apnsQ
           send2 APNSRespOk
           let Right verification2 = ntfData2 .-> "verification"
               Right nonce2 = C.cbNonce <$> ntfData2 .-> "nonce"
@@ -164,7 +165,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
           -- send message
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
-          APNSMockRequest {notification = notification3, sendApnsResponse = send3} <- atomically $ readTBQueue apnsQ
+          APNSMockRequest {notification = notification3, sendApnsResponse = send3} <- atomically' $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
               Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"

@@ -27,7 +27,7 @@ import Simplex.Messaging.Transport (supportedParameters)
 import qualified Simplex.Messaging.Transport as Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, runTransportServerSocket, startTCPServer)
-import Simplex.Messaging.Util (ifM, tshow)
+import Simplex.Messaging.Util (ifM, tshow, atomically')
 import Simplex.RemoteControl.Discovery.Multicast (setMembership)
 import Simplex.RemoteControl.Types
 import UnliftIO
@@ -73,7 +73,7 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
   started <- newEmptyTMVarIO
   bracketOnError (startTCPServer started $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
     ifM
-      (atomically $ readTMVar started)
+      (atomically' $ readTMVar started)
       (runServer started socket)
       (setPort Nothing)
   where
@@ -82,7 +82,7 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
       logInfo $ "System-assigned port: " <> tshow port
       setPort $ Just port
       runTransportServerSocket started (pure socket) "RCP TLS" serverParams defaultTransportServerConfig server
-    setPort = void . atomically . tryPutTMVar startedOnPort
+    setPort = void . atomically' . tryPutTMVar startedOnPort
     serverParams =
       def
         { TLS.serverWantClientCert = True,
@@ -112,19 +112,19 @@ closeListener subscribers sock =
 
 joinMulticast :: TMVar Int -> N.Socket -> N.HostAddress -> IO ()
 joinMulticast subscribers sock group = do
-  now <- atomically $ takeTMVar subscribers
+  now <- atomically' $ takeTMVar subscribers
   when (now == 0) $ do
     setMembership sock group True >>= \case
-      Left e -> atomically (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
-      Right () -> atomically $ putTMVar subscribers (now + 1)
+      Left e -> atomically' (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
+      Right () -> atomically' $ putTMVar subscribers (now + 1)
 
 partMulticast :: TMVar Int -> N.Socket -> N.HostAddress -> IO ()
 partMulticast subscribers sock group = do
-  now <- atomically $ takeTMVar subscribers
+  now <- atomically' $ takeTMVar subscribers
   when (now == 1) $
     setMembership sock group False >>= \case
-      Left e -> atomically (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
-      Right () -> atomically $ putTMVar subscribers (now - 1)
+      Left e -> atomically' (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
+      Right () -> atomically' $ putTMVar subscribers (now - 1)
 
 listenerHostAddr4 :: UDP.ListenSocket -> N.HostAddress
 listenerHostAddr4 sock = case UDP.mySockAddr sock of

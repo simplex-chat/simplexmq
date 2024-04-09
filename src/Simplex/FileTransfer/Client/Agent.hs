@@ -24,7 +24,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (catchAll_)
+import Simplex.Messaging.Util (catchAll_, atomically')
 import UnliftIO
 
 type XFTPClientVar = TMVar (Either XFTPClientAgentError XFTPClient)
@@ -63,7 +63,7 @@ type ME a = ExceptT XFTPClientAgentError IO a
 
 getXFTPServerClient :: TVar ChaChaDRG -> XFTPClientAgent -> XFTPServer -> ME XFTPClient
 getXFTPServerClient g XFTPClientAgent {xftpClients, config} srv = do
-  atomically getClientVar >>= either newXFTPClient waitForXFTPClient
+  atomically' getClientVar >>= either newXFTPClient waitForXFTPClient
   where
     connectClient :: ME XFTPClient
     connectClient =
@@ -88,7 +88,7 @@ getXFTPServerClient g XFTPClientAgent {xftpClients, config} srv = do
     waitForXFTPClient :: XFTPClientVar -> ME XFTPClient
     waitForXFTPClient clientVar = do
       let XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} = xftpConfig config
-      client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
+      client_ <- liftIO $ tcpConnectTimeout `timeout` atomically' (readTMVar clientVar)
       liftEither $ case client_ of
         Just (Right c) -> Right c
         Just (Left e) -> Left e
@@ -102,12 +102,12 @@ getXFTPServerClient g XFTPClientAgent {xftpClients, config} srv = do
           tryError connectClient >>= \r -> case r of
             Right client -> do
               logInfo $ "connected to " <> showServer srv
-              atomically $ putTMVar clientVar r
+              atomically' $ putTMVar clientVar r
               pure client
             Left e@(XFTPClientAgentError _ e') -> do
               if temporaryClientError e'
                 then retryAction
-                else atomically $ do
+                else atomically' $ do
                   putTMVar clientVar r
                   TM.delete srv xftpClients
               throwError e
@@ -125,6 +125,6 @@ closeXFTPServerClient XFTPClientAgent {xftpClients, config} srv =
   where
     closeClient cVar = do
       let NetworkConfig {tcpConnectTimeout} = xftpNetworkConfig $ xftpConfig config
-      tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
+      tcpConnectTimeout `timeout` atomically' (readTMVar cVar) >>= \case
         Just (Right client) -> closeXFTPClient client `catchAll_` pure ()
         _ -> pure ()

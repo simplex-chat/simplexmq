@@ -11,6 +11,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import GHC.IO.Exception (IOErrorType (..), IOException (..), ioException)
 import System.Timeout (timeout)
+import Simplex.Messaging.Util (atomically')
 
 data TBuffer = TBuffer
   { buffer :: TVar ByteString,
@@ -26,8 +27,8 @@ newTBuffer = do
 withBufferLock :: TBuffer -> IO a -> IO a
 withBufferLock TBuffer {getLock} =
   E.bracket_
-    (atomically $ takeTMVar getLock)
-    (atomically $ putTMVar getLock ())
+    (atomically' $ takeTMVar getLock)
+    (atomically' $ putTMVar getLock ())
 
 -- | Attempt to read some bytes, appending it to the existing buffer
 peekBuffered :: TBuffer -> Int -> IO ByteString -> IO (ByteString, Maybe ByteString)

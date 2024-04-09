@@ -54,6 +54,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
 import UnliftIO.Directory (removeFile)
+import Simplex.Messaging.Util (atomically')
 
 testDB :: String
 testDB = "tests/tmp/smp-agent.test.db"
@@ -88,7 +89,7 @@ removeStore db = do
   removeFile $ dbFilePath db
   where
     close :: SQLiteStore -> IO ()
-    close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
+    close st = mapM_ DB.close =<< atomically' (tryTakeTMVar $ dbConnection st)
 
 storeTests :: Spec
 storeTests = do

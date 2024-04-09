@@ -37,7 +37,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (safeDecodeUtf8, whenM)
+import Simplex.Messaging.Util (safeDecodeUtf8, whenM, atomically')
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
@@ -196,7 +196,7 @@ readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.read
   where
     addNtfLogRecord s = case strDecode s of
       Left e -> logError $ "Log parsing error (" <> T.pack e <> "): " <> safeDecodeUtf8 (B.take 100 s)
-      Right lr -> atomically $ case lr of
+      Right lr -> atomically' $ case lr of
         CreateToken r@NtfTknRec {ntfTknId} -> do
           tkn <- mkTknData r
           addNtfToken st ntfTknId tkn

@@ -70,7 +70,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
-import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM, atomically')
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -110,7 +110,7 @@ closeXFTPAgent a = do
   stopWorkers $ xftpSndWorkers a
   stopWorkers $ xftpDelWorkers a
   where
-    stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
+    stopWorkers workers = atomically' (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 xftpReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> AM RcvFileId
 xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect}) cfArgs = do
@@ -131,7 +131,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
           relSavePathRedirect = relPrefixPath </> "xftp.redirect-decrypted"
       lift $ createDirectory =<< toFSFilePath relTmpPathRedirect
       lift $ createEmptyFile =<< toFSFilePath relSavePathRedirect
-      cfArgsRedirect <- atomically $ CF.randomArgs g
+      cfArgsRedirect <- atomically' $ CF.randomArgs g
       let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
       -- create download tasks
       withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile
@@ -170,7 +170,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     lift $ waitForWork doWork
-    atomically $ assertAgentForeground c
+    atomically' $ assertAgentForeground c
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> AM ()
@@ -188,7 +188,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
                 when notifyOnRetry $ notify c rcvFileEntityId $ RFERR e
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
-              atomically $ assertAgentForeground c
+              atomically' $ assertAgentForeground c
               loop
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> AM ()
@@ -198,7 +198,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
-      atomically $ waitUntilForeground c
+      atomically' $ waitUntilForeground c
       (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
         RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
@@ -244,7 +244,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
   cfg <- asks config
   forever $ do
     lift $ waitForWork doWork
-    atomically $ assertAgentForeground c
+    atomically' $ assertAgentForeground c
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> AM ()
@@ -270,12 +270,12 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
         Nothing -> do
           notify c rcvFileEntityId $ RFDONE fsSavePath
           lift $ forM_ tmpPath (removePath <=< toFSFilePath)
-          atomically $ waitUntilForeground c
+          atomically' $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
         Just RcvFileRedirect {redirectFileInfo, redirectDbId} -> do
           let RedirectFileInfo {size = redirectSize, digest = redirectDigest} = redirectFileInfo
           lift $ forM_ tmpPath (removePath <=< toFSFilePath)
-          atomically $ waitUntilForeground c
+          atomically' $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
           -- proceed with redirect
           yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
@@ -339,7 +339,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
   let directYaml = prefixPath </> "direct.yaml"
-  cfArgs <- atomically $ CF.randomArgs g
+  cfArgs <- atomically' $ CF.randomArgs g
   let file = CryptoFile directYaml (Just cfArgs)
   liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
@@ -362,7 +362,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
   cfg <- asks config
   forever $ do
     lift $ waitForWork doWork
-    atomically $ assertAgentForeground c
+    atomically' $ assertAgentForeground c
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> AM ()
@@ -415,7 +415,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
         createChunk :: Int -> SndFileChunk -> AM ()
         createChunk numRecipients' ch = do
-          atomically $ assertAgentForeground c
+          atomically' $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
           lift . void $ getXFTPSndWorker True c (Just srv)
@@ -426,7 +426,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
                 createWithNextSrv usedSrvs
                   `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where
-                retryLoop loop = atomically (assertAgentForeground c) >> loop
+                retryLoop loop = atomically' (assertAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
               deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
               when deleted $ throwError $ INTERNAL "file deleted, aborting chunk creation"
@@ -445,7 +445,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     lift $ waitForWork doWork
-    atomically $ assertAgentForeground c
+    atomically' $ assertAgentForeground c
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> AM ()
@@ -463,7 +463,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
                 when notifyOnRetry $ notify c sndFileEntityId $ SFERR e
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
-              atomically $ assertAgentForeground c
+              atomically' $ assertAgentForeground c
               loop
             retryDone e = sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (show e)
     uploadFileChunk :: AgentConfig -> SndFileChunk -> SndFileChunkReplica -> AM ()
@@ -472,9 +472,9 @@ runXFTPSndWorker c srv Worker {doWork} = do
       fsFilePath <- lift $ toFSFilePath filePath
       unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
-      atomically $ assertAgentForeground c
+      atomically' $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
-      atomically $ waitUntilForeground c
+      atomically' $ waitUntilForeground c
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
@@ -610,7 +610,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     lift $ waitForWork doWork
-    atomically $ assertAgentForeground c
+    atomically' $ assertAgentForeground c
     runXFTPOperation cfg
   where
     runXFTPOperation :: AgentConfig -> AM ()
@@ -629,7 +629,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
                 when notifyOnRetry $ notify c "" $ SFERR e
                 liftIO $ closeXFTPServerClient c userId server chunkDigest
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
-              atomically $ assertAgentForeground c
+              atomically' $ assertAgentForeground c
               loop
             retryDone = delWorkerInternalError c deletedSndChunkReplicaId
             deleteChunkReplica = do

@@ -107,7 +107,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         Right pk' -> pure pk'
         Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
       env <- ask
-      sessions <- atomically TM.empty
+      sessions <- atomically' TM.empty
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
       liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
         reqBody <- getHTTP2Body r xftpBlockSize
@@ -191,15 +191,15 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          fromTime' <- atomically $ swapTVar fromTime ts
-          filesCreated' <- atomically $ swapTVar filesCreated 0
-          fileRecipients' <- atomically $ swapTVar fileRecipients 0
-          filesUploaded' <- atomically $ swapTVar filesUploaded 0
-          filesExpired' <- atomically $ swapTVar filesExpired 0
-          filesDeleted' <- atomically $ swapTVar filesDeleted 0
-          files <- atomically $ periodStatCounts filesDownloaded ts
-          fileDownloads' <- atomically $ swapTVar fileDownloads 0
-          fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
+          fromTime' <- atomically' $ swapTVar fromTime ts
+          filesCreated' <- atomically' $ swapTVar filesCreated 0
+          fileRecipients' <- atomically' $ swapTVar fileRecipients 0
+          filesUploaded' <- atomically' $ swapTVar filesUploaded 0
+          filesExpired' <- atomically' $ swapTVar filesExpired 0
+          filesDeleted' <- atomically' $ swapTVar filesDeleted 0
+          files <- atomically' $ periodStatCounts filesDownloaded ts
+          fileDownloads' <- atomically' $ swapTVar fileDownloads 0
+          fileDownloadAcks' <- atomically' $ swapTVar fileDownloadAcks 0
           filesCount' <- readTVarIO filesCount
           filesSize' <- readTVarIO filesSize
           hPutStrLn h $
@@ -268,8 +268,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
-                  let asSender = ExceptT . atomically $ getFile fs SFSender fileId
-                  let asRecipient = ExceptT . atomically $ getFile fs SFRecipient fileId
+                  let asSender = ExceptT . atomically' $ getFile fs SFSender fileId
+                  let asRecipient = ExceptT . atomically' $ getFile fs SFRecipient fileId
                   (fr, _) <- asSender `catchError` const asRecipient
                   ExceptT $ deleteServerFile_ fr
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
@@ -336,7 +336,7 @@ verifyXFTPTransmission auth_ tAuth authorized fId cmd =
     verifyCmd :: SFileParty p -> M VerificationResult
     verifyCmd party = do
       st <- asks store
-      atomically $ verify <$> getFile st party fId
+      atomically' $ verify <$> getFile st party fId
       where
         verify = \case
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
@@ -397,7 +397,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     retryAdd 0 _ = pure $ Left INTERNAL
     retryAdd n add = do
       fId <- getFileId
-      atomically (add fId) >>= \case
+      atomically' (add fId) >>= \case
         Left DUPLICATE_ -> retryAdd (n - 1) add
         r -> pure r
     addRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M FileResponse
@@ -447,7 +447,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 pure FROk
               Left e -> do
                 us <- asks $ usedStorage . store
-                atomically . modifyTVar' us $ subtract (fromIntegral size)
+                atomically' . modifyTVar' us $ subtract (fromIntegral size)
                 liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
                 pure $ FRErr e
           receiveChunk spec = do
@@ -465,7 +465,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
             Right sbState -> do
               stats <- asks serverStats
               atomically $ modifyTVar' (fileDownloads stats) (+ 1)
-              atomically $ updatePeriodStats (filesDownloaded stats) senderId
+              atomically' $ updatePeriodStats (filesDownloaded stats) senderId
               pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
             _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)
@@ -480,7 +480,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     ackFileReception rId fr = do
       withFileLog (`logAckFile` rId)
       st <- asks store
-      atomically $ deleteRecipient st rId fr
+      atomically' $ deleteRecipient st rId fr
       stats <- asks serverStats
       atomically $ modifyTVar' (fileDownloadAcks stats) (+ 1)
       pure FROk
@@ -493,7 +493,7 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
     stats <- asks serverStats
     ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     st <- asks store
-    void $ atomically $ deleteFile st senderId
+    void $ atomically' $ deleteFile st senderId
     atomically $ modifyTVar' (filesDeleted stats) (+ 1)
   where
     deletedStats stats = do
@@ -509,7 +509,7 @@ expireServerFiles itemDelay expCfg = do
   logInfo $ "Expiration check: " <> tshow (M.size files') <> " files"
   forM_ (M.keys files') $ \sId -> do
     mapM_ threadDelay itemDelay
-    atomically (expiredFilePath st sId old)
+    atomically' (expiredFilePath st sId old)
       >>= mapM_ (maybeRemove $ delete st sId)
   usedEnd <- readTVarIO $ usedStorage st
   logInfo $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
@@ -523,7 +523,7 @@ expireServerFiles itemDelay expCfg = do
         del
     delete st sId = do
       withFileLog (`logDeleteFile` sId)
-      void . atomically $ deleteFile st sId -- will not update usedStorage if sId isn't in store
+      void . atomically' $ deleteFile st sId -- will not update usedStorage if sId isn't in store
       FileServerStats {filesExpired} <- asks serverStats
       atomically $ modifyTVar' filesExpired (+ 1)
 
@@ -546,7 +546,7 @@ incFileStat statSel = do
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= atomically . getFileServerStatsData >>= liftIO . saveStats f)
+    >>= mapM_ (\f -> asks serverStats >>= atomically' . getFileServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
@@ -564,7 +564,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           FileStore {files, usedStorage} <- asks store
           _filesCount <- M.size <$> readTVarIO files
           _filesSize <- readTVarIO usedStorage
-          atomically $ setFileServerStats s d {_filesCount, _filesSize}
+          atomically' $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount

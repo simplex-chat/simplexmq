@@ -19,6 +19,7 @@ import Simplex.RemoteControl.Types
 import Test.Hspec
 import UnliftIO
 import UnliftIO.Concurrent
+import Simplex.Messaging.Util (atomically')
 
 remoteControlTests :: Spec
 remoteControlTests = do
@@ -72,9 +73,9 @@ testNewPairing = do
     logNote "c 2"
     putMVar invVar (inv, hc)
     logNote "c 3"
-    Right (sessId, _tls, r') <- atomically $ takeTMVar r
+    Right (sessId, _tls, r') <- atomically' $ takeTMVar r
     logNote "c 4"
-    Right (_rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
+    Right (_rcHostSession, _rcHelloBody, _hp') <- atomically' $ takeTMVar r'
     logNote "c 5"
     threadDelay 250000
     logNote "ctrl: ciao"
@@ -89,11 +90,11 @@ testNewPairing = do
     logNote "h 1"
     (rcCtrlClient, r) <- RC.connectRCCtrl drg inv Nothing (J.String "app")
     logNote "h 2"
-    Right (sessId', _tls, r') <- atomically $ takeTMVar r
+    Right (sessId', _tls, r') <- atomically' $ takeTMVar r
     logNote "h 3"
     liftIO $ RC.confirmCtrlSession rcCtrlClient True
     logNote "h 4"
-    Right (_rcCtrlSession, _rcCtrlPairing) <- atomically $ takeTMVar r'
+    Right (_rcCtrlSession, _rcCtrlPairing) <- atomically' $ takeTMVar r'
     logNote "h 5"
     threadDelay 250000
     logNote "ctrl: adios"
@@ -162,8 +163,8 @@ runCtrl :: TVar ChaChaDRG -> Bool -> RCHostPairing -> MVar RCSignedInvitation ->
 runCtrl drg multicast hp invVar = async . runRight $ do
   (_found, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") multicast Nothing Nothing
   putMVar invVar inv
-  Right (_sessId, _tls, r') <- atomically $ takeTMVar r
-  Right (_rcHostSession, _rcHelloBody, hp') <- atomically $ takeTMVar r'
+  Right (_sessId, _tls, r') <- atomically' $ takeTMVar r
+  Right (_rcHostSession, _rcHelloBody, hp') <- atomically' $ takeTMVar r'
   threadDelay 250000
   liftIO $ RC.cancelHostClient hc
   pure hp'
@@ -172,9 +173,9 @@ runHostURI :: TVar ChaChaDRG -> Maybe RCCtrlPairing -> RCSignedInvitation -> IO 
 runHostURI drg cp_ signedInv = async . runRight $ do
   inv <- maybe (fail "bad invite") pure $ verifySignedInvitation signedInv
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv cp_ (J.String "app")
-  Right (_sessId', _tls, r') <- atomically $ takeTMVar r
+  Right (_sessId', _tls, r') <- atomically' $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True
-  Right (_rcCtrlSession, cp') <- atomically $ takeTMVar r'
+  Right (_rcCtrlSession, cp') <- atomically' $ takeTMVar r'
   threadDelay 250000
   pure cp'
 
@@ -182,8 +183,8 @@ runHostMulticast :: TVar ChaChaDRG -> TMVar Int -> RCCtrlPairing -> IO (Async RC
 runHostMulticast drg subscribers cp = async . runRight $ do
   (pairing, inv) <- RC.discoverRCCtrl subscribers (cp :| [])
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv (Just pairing) (J.String "app")
-  Right (_sessId', _tls, r') <- atomically $ takeTMVar r
+  Right (_sessId', _tls, r') <- atomically' $ takeTMVar r
   liftIO $ RC.confirmCtrlSession rcCtrlClient True
-  Right (_rcCtrlSession, cp') <- atomically $ takeTMVar r'
+  Right (_rcCtrlSession, cp') <- atomically' $ takeTMVar r'
   threadDelay 250000
   pure cp'

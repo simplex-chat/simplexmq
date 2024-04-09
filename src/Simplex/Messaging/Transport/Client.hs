@@ -50,7 +50,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Util (bshow, (<$?>), catchAll, tshow)
+import Simplex.Messaging.Util (bshow, (<$?>), catchAll, tshow, atomically')
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -143,7 +143,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
     connectTLS (Just hostName) tCfg clientParams sock >>= \tls -> do
-      chain <- atomically (tryTakeTMVar serverCert) >>= \case
+      chain <- atomically' (tryTakeTMVar serverCert) >>= \case
         Nothing -> do
           logError "onServerCertificate didn't fire or failed to get cert chain"
           closeTLS tls >> error "onServerCertificate failed"
@@ -234,7 +234,7 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ serverCe
     onServerCert _ _ _ c = do
       errs <- maybe def (\ca -> validateCertificateChain ca host p c) cafp_
       when (null errs) $
-        atomically (putTMVar serverCerts c)
+        atomically' (putTMVar serverCerts c)
       pure errs
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]

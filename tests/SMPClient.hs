@@ -25,6 +25,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Util (atomically')
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Environment (lookupEnv)
 import System.Info (os)
@@ -137,7 +138,7 @@ serverBracket process afterProcess f = do
     (\t -> waitFor started "start" >> f t >>= \r -> r <$ threadDelay 100000)
   where
     waitFor started s =
-      5_000_000 `timeout` atomically (takeTMVar started) >>= \case
+      5_000_000 `timeout` atomically' (takeTMVar started) >>= \case
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 

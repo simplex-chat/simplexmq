@@ -43,7 +43,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, NotifierId, NtfPrivateAuthKey, Pro
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, toChunks, ($>>=))
+import Simplex.Messaging.Util (catchAll_, toChunks, ($>>=), atomically')
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.Exception (Exception)
@@ -154,7 +154,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
     waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
     waitForSMPClient smpVar = do
       let ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
-      smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar smpVar)
+      smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically' (readTMVar smpVar)
       liftEither $ case smpClient_ of
         Just (Right smpClient) -> Right smpClient
         Just (Left e) -> Left e
@@ -168,12 +168,12 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
           tryE connectClient >>= \r -> case r of
             Right smp -> do
               logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-              atomically $ putTMVar smpVar r
+              atomically' $ putTMVar smpVar r
               successAction smp
             Left e -> do
               if e == PCENetworkError || e == PCEResponseTimeout
                 then retryAction
-                else atomically $ do
+                else atomically' $ do
                   putTMVar smpVar (Left e)
                   TM.delete srv smpClients
               throwE e
@@ -195,7 +195,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
     removeClientAndSubs :: IO (Maybe (Map SMPSub C.APrivateAuthKey))
-    removeClientAndSubs = atomically $ do
+    removeClientAndSubs = atomically' $ do
       TM.delete srv smpClients
       TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
       where
@@ -229,9 +229,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
     reconnectClient = do
       withSMP ca srv $ \smp -> do
         liftIO $ notify $ CAReconnected srv
-        cs_ <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
+        cs_ <- atomically' $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
         forM_ cs_ $ \cs -> do
-          subs' <- filterM (fmap not . atomically . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
+          subs' <- filterM (fmap not . atomically' . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
           let (nSubs, rSubs) = partition (isNotifier . fst . fst) subs'
           subscribe_ smp SPNotifier nSubs
           subscribe_ smp SPRecipient rSubs
@@ -252,9 +252,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg} sr
                     map (\(sub, r) -> bimap (fst sub,) (const sub) r) $ L.toList rs'
                   (errs, oks) = partitionEithers rs''
                   (tempErrs, finalErrs) = partition (temporaryClientError . snd) errs
-              mapM_ (atomically . addSubscription ca srv) oks
+              mapM_ (atomically' . addSubscription ca srv) oks
               mapM_ (liftIO . notify . CAResubscribed srv) $ L.nonEmpty $ map fst oks
-              mapM_ (atomically . removePendingSubscription ca srv . fst) finalErrs
+              mapM_ (atomically' . removePendingSubscription ca srv . fst) finalErrs
               mapM_ (liftIO . notify . CASubError srv) $ L.nonEmpty finalErrs
               mapM_ (throwE . snd) $ listToMaybe tempErrs
 
@@ -271,7 +271,7 @@ closeSMPServerClients :: SMPClientAgent -> IO ()
 closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeClient)
   where
     closeClient smpVar =
-      atomically (readTMVar smpVar) >>= \case
+      atomically' (readTMVar smpVar) >>= \case
         Right smp -> closeProtocolClient smp `catchAll_` pure ()
         _ -> pure ()
 
@@ -288,15 +288,15 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
 
 subscribeQueue :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateAuthKey) -> ExceptT SMPClientError IO ()
 subscribeQueue ca srv sub = do
-  atomically $ addPendingSubscription ca srv sub
+  atomically' $ addPendingSubscription ca srv sub
   withSMP ca srv $ \smp -> subscribe_ smp `catchE` handleErr
   where
     subscribe_ smp = do
       smpSubscribe smp sub
-      atomically $ addSubscription ca srv sub
+      atomically' $ addSubscription ca srv sub
 
     handleErr e = do
-      atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
+      atomically' . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
         removePendingSubscription ca srv (fst sub)
       throwE e
 
@@ -308,7 +308,7 @@ subscribeQueuesNtfs = subscribeQueues_ SPNotifier
 
 subscribeQueues_ :: SMPSubParty -> SMPClientAgent -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO (NonEmpty (QueueId, Either SMPClientError ()))
 subscribeQueues_ party ca srv subs = do
-  atomically $ forM_ subs $ addPendingSubscription ca srv . first (party,)
+  atomically' $ forM_ subs $ addPendingSubscription ca srv . first (party,)
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Left e -> pure $ L.map ((,Left e) . fst) subs
     Right smp -> smpSubscribeQueues party ca smp srv subs
@@ -316,7 +316,7 @@ subscribeQueues_ party ca srv subs = do
 smpSubscribeQueues :: SMPSubParty -> SMPClientAgent -> SMPClient -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO (NonEmpty (QueueId, Either SMPClientError ()))
 smpSubscribeQueues party ca smp srv subs = do
   rs <- L.zip subs <$> subscribe smp (L.map swap subs)
-  atomically $ forM rs $ \(sub, r) ->
+  atomically' $ forM rs $ \(sub, r) ->
     (fst sub,) <$> case r of
       Right () -> do
         addSubscription ca srv $ first (party,) sub

@@ -4,6 +4,7 @@
 module Simplex.Messaging.Util where
 
 import qualified Control.Exception as E
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -19,6 +20,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time (NominalDiffTime)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import UnliftIO
 import qualified UnliftIO.Exception as UE
 
@@ -167,3 +169,11 @@ diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
+
+{-# INLINE atomically' #-}
+atomically' :: (MonadIO m, HasCallStack) => STM a -> m a
+atomically' f =
+  liftIO $
+    atomically f `UE.catch` \e@E.BlockedIndefinitelyOnSTM -> do
+      withFrozenCallStack $ logError "BlockedIndefinitelyOnSTM"
+      throwIO e

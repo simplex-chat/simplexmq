@@ -114,45 +114,30 @@ executables:
     main: Main.hs
     dependencies:
       - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
 
   ntf-server:
     source-dirs: apps/ntf-server
     main: Main.hs
     dependencies:
       - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
 
   xftp-server:
     source-dirs: apps/xftp-server
     main: Main.hs
     dependencies:
       - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
 
   smp-agent:
     source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
       - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
 
   xftp:
     source-dirs: apps/xftp
     main: Main.hs
     dependencies:
       - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
 
 tests:
   simplexmq-test:
@@ -180,6 +165,8 @@ ghc-options:
   - -Wincomplete-uni-patterns
   - -Wunused-type-patterns
   - -O2
+  - -threaded
+  - -rtsopts
 
 default-extensions:
   - StrictData
