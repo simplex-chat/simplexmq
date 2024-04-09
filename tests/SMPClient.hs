@@ -124,7 +124,7 @@ withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceNa
 withSmpServerConfigOn t cfg' port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
-    (pure ())
+    (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn t = withSmpServerConfigOn t cfg
