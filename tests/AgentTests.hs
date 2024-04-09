@@ -557,7 +557,7 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   inAnyOrder
       (tGetAgent alice)
       [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
-        \case ("", c, Right QUOTA_CONT) -> c == "bob"; _ -> False
+        \case ("", c, Right QCONT) -> c == "bob"; _ -> False
       ]
   bob <#= \case ("", "alice", Msg "over quota") -> True; _ -> False
   -- message 8 is skipped because of alice agent sending "QCONT" message

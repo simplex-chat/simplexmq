@@ -1083,7 +1083,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
     ackMessage b' aId 4 Nothing
     liftIO . getInAnyOrder a $
       [ \case ("", c, APC SAEConn (SENT 6)) -> c == bId; _ -> False,
-        \case ("", c, APC SAEConn QUOTA_CONT) -> c == bId; _ -> False
+        \case ("", c, APC SAEConn QCONT) -> c == bId; _ -> False
       ]
     get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 4) "3") -> c == aId; _ -> False
     ackMessage b' aId 6 Nothing
@@ -1112,7 +1112,7 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     ackMessage b' aId 4 Nothing
     liftIO . getInAnyOrder a $
       [ \case ("", c, APC SAEConn (SENT 8)) -> c == bId; _ -> False,
-        \case ("", c, APC SAEConn QUOTA_CONT) -> c == bId; _ -> False
+        \case ("", c, APC SAEConn QCONT) -> c == bId; _ -> False
       ]
     get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 6) "5") -> c == aId; _ -> False
     ackMessage b' aId 6 Nothing
