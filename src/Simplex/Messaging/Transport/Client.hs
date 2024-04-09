@@ -17,6 +17,7 @@ module Simplex.Messaging.Transport.Client
     TransportHost (..),
     TransportHosts (..),
     TransportHosts_ (..),
+    validateCertificateChain
   )
 where
 
@@ -113,12 +114,13 @@ data TransportClientConfig = TransportClientConfig
   { socksProxy :: Maybe SocksProxy,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
-    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey)
+    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
+    alpn :: Maybe [ALPN]
   }
   deriving (Eq, Show)
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing
+defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing Nothing
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
@@ -129,10 +131,10 @@ runTransportClient :: Transport c => TransportClientConfig -> Maybe ByteString -
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials} proxyUsername host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials serverCert
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
         _ -> connectTCPClient hostName
@@ -215,14 +217,15 @@ instance ToJSON SocksProxy where
 instance FromJSON SocksProxy where
   parseJSON = strParseJSON "SocksProxy"
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> TMVar X.CertificateChain -> T.ClientParams
-mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ serverCerts =
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> TMVar X.CertificateChain -> T.ClientParams
+mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ serverCerts =
   (T.defaultParamsClient host p)
     { T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
       T.clientHooks =
         def
           { T.onServerCertificate = onServerCert,
-            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_
+            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_,
+            T.onSuggestALPN = pure alpn_
           },
       T.clientSupported = supported
     }
@@ -237,7 +240,7 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ serverCerts =
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain [_, caCert]) =
   if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
     then x509validate
     else pure [XV.UnknownCA]
@@ -247,7 +250,7 @@ validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, 
       where
         hooks = XV.defaultHooks
         checks = XV.defaultChecks {XV.checkFQHN = False}
-        certStore = XS.makeCertificateStore sc
+        certStore = XS.makeCertificateStore [caCert]
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)
 validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]

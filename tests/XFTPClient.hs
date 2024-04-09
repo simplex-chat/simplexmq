@@ -13,6 +13,7 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec
@@ -124,7 +125,8 @@ testXFTPClientConfig :: XFTPClientConfig
 testXFTPClientConfig = defaultXFTPClientConfig
 
 testXFTPClient :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
-testXFTPClient client =
-  getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> pure ()) >>= \case
+testXFTPClient client = do
+  g <- C.newRandom
+  getXFTPClient g (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e
