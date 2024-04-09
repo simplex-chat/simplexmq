@@ -9,6 +9,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.FileTransfer.Server where
 
@@ -18,7 +19,7 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
-import Data.ByteString.Builder (byteString)
+import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
@@ -32,6 +33,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
+import qualified Data.X509 as X
 import GHC.IO.Handle (hSetNewlineMode)
 import GHC.Stats (getRTSStats)
 import qualified Network.HTTP.Types as N
@@ -46,18 +48,22 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId, RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
+import Simplex.Messaging.Protocol (CorrId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Transport (THandleParams (..))
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SessionId, THandleAuth (..), THandleParams (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
-import Simplex.Messaging.Transport.Server (runTCPServer)
+import Simplex.Messaging.Transport.Server (runTCPServer, tlsServerCredentials)
 import Simplex.Messaging.Util
+import Simplex.Messaging.Version (isCompatible)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
@@ -69,7 +75,7 @@ import qualified UnliftIO.Exception as E
 type M a = ReaderT XFTPEnv IO a
 
 data XFTPTransportRequest = XFTPTransportRequest
-  { thParams :: THandleParams XFTPVersion,
+  { thParams :: THandleParamsXFTP,
     reqBody :: HTTP2Body,
     request :: H.Request,
     sendResponse :: H.Response -> IO ()
@@ -83,6 +89,10 @@ runXFTPServer cfg = do
 runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> IO ()
 runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
 
+data Handshake
+  = HandshakeSent C.PrivateKeyX25519
+  | HandshakeAccepted THandleAuth VersionXFTP
+
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration} started = do
   mapM_ (expireServerFiles Nothing) fileExpiration
@@ -92,12 +102,62 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     runServer :: M ()
     runServer = do
       serverParams <- asks tlsServerParams
+      let (chain, pk) = tlsServerCredentials serverParams
+      signKey <- liftIO $ case C.x509ToPrivate (pk, []) >>= C.privKey of
+        Right pk' -> pure pk'
+        Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
       env <- ask
-      liftIO $
-        runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration $ \sessionId r sendResponse -> do
-          reqBody <- getHTTP2Body r xftpBlockSize
-          let thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, implySessId = False, batch = True}
-          processRequest XFTPTransportRequest {thParams, request = r, reqBody, sendResponse} `runReaderT` env
+      sessions <- atomically TM.empty
+      let cleanup sessionId = atomically $ TM.delete sessionId sessions
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
+        reqBody <- getHTTP2Body r xftpBlockSize
+        let thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
+            req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
+        flip runReaderT env $ case sessionALPN of
+          Nothing -> processRequest req0
+          Just "xftp/1" ->
+            xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
+              Nothing -> pure () -- handshake response sent
+              Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)
+          _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 [] -- shouldn't happen: means server picked handshake protocol it doesn't know about
+    xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion))
+    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
+      s <- atomically $ TM.lookup sessionId sessions
+      r <- runExceptT $ case s of
+        Nothing -> processHello
+        Just (HandshakeSent pk) -> processClientHandshake pk
+        Just (HandshakeAccepted auth v) -> pure $ Just thParams {thAuth = Just auth, thVersion = v}
+      either sendError pure r
+      where
+        processHello = do
+          unless (B.null bodyHead) $ throwError HANDSHAKE
+          (k, pk) <- atomically . C.generateKeyPair =<< asks random
+          atomically $ TM.insert sessionId (HandshakeSent pk) sessions
+          let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
+          let hs = XFTPServerHandshake {xftpVersionRange = supportedFileServerVRange, sessionId, authPubKey}
+          shs <- encodeXftp hs
+          liftIO . sendResponse $ H.responseBuilder N.ok200 [] shs
+          pure Nothing
+        processClientHandshake privKey = do
+          unless (B.length bodyHead == xftpBlockSize) $ throwError HANDSHAKE
+          body <- liftHS $ C.unPad bodyHead
+          XFTPClientHandshake {xftpVersion, keyHash, authPubKey} <- liftHS $ smpDecode body
+          kh <- asks serverIdentity
+          unless (keyHash == kh) $ throwError HANDSHAKE
+          unless (xftpVersion `isCompatible` supportedFileServerVRange) $ throwError HANDSHAKE
+          let auth = THandleAuth {peerPubKey = authPubKey, privKey}
+          atomically $ TM.insert sessionId (HandshakeAccepted auth xftpVersion) sessions
+          liftIO . sendResponse $ H.responseNoBody N.ok200 []
+          pure Nothing
+        sendError :: XFTPErrorType -> M (Maybe (THandleParams XFTPVersion))
+        sendError err = do
+          runExceptT (encodeXftp err) >>= \case
+            Right bs -> liftIO . sendResponse $ H.responseBuilder N.ok200 [] bs
+            Left _ -> logError $ "Error encoding handshake error: " <> tshow err
+          pure Nothing
+        encodeXftp :: Encoding a => a -> ExceptT XFTPErrorType (ReaderT XFTPEnv IO) Builder
+        encodeXftp a = byteString <$> liftHS (C.pad (smpEncode a) xftpBlockSize)
+        liftHS = liftEitherWith (const HANDSHAKE)
 
     stopServer :: M ()
     stopServer = do
@@ -183,7 +243,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           role <- newTVarIO CPRNone
           cpLoop h role
           where
-            cpLoop h role  = do
+            cpLoop h role = do
               s <- trimCR <$> B.hGetLine h
               case strDecode s of
                 Right CPQuit -> hClose h
@@ -217,12 +277,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPQuit -> pure ()
               CPSkip -> pure ()
               where
-                withUserRole action = readTVarIO role >>= \case
-                  CPRAdmin -> action
-                  CPRUser -> action
-                  _ -> do
-                    logError "Unauthorized control port command"
-                    hPutStrLn h "AUTH"
+                withUserRole action =
+                  readTVarIO role >>= \case
+                    CPRAdmin -> action
+                    CPRUser -> action
+                    _ -> do
+                      logError "Unauthorized control port command"
+                      hPutStrLn h "AUTH"
 
 data ServerFile = ServerFile
   { filePath :: FilePath,
@@ -235,10 +296,11 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
   | otherwise = do
       case xftpDecodeTransmission thParams bodyHead of
-        Right (sig_, signed, (corrId, fId, cmdOrErr)) -> do
+        Right (sig_, signed, (corrId, fId, cmdOrErr)) ->
           case cmdOrErr of
             Right cmd -> do
-              verifyXFTPTransmission sig_ signed fId cmd >>= \case
+              let THandleParams {thAuth} = thParams
+              verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) sig_ signed fId cmd >>= \case
                 VRVerified req -> uncurry send =<< processXFTPRequest body req
                 VRFailed -> send (FRErr AUTH) Nothing
             Left e -> send (FRErr e) Nothing
@@ -246,7 +308,6 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
             send resp = sendXFTPResponse (corrId, fId, resp)
         Left e -> sendXFTPResponse ("", "", FRErr e) Nothing
   where
-    sendXFTPResponse :: (CorrId, XFTPFileId, FileResponse) -> Maybe ServerFile -> M ()
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
       let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
@@ -265,8 +326,8 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
-verifyXFTPTransmission :: Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
-verifyXFTPTransmission tAuth authorized fId cmd =
+verifyXFTPTransmission :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission auth_ tAuth authorized fId cmd =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
@@ -281,7 +342,7 @@ verifyXFTPTransmission tAuth authorized fId cmd =
           Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
           _ -> maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdAuthorization Nothing tAuth authorized k then VRVerified req else VRFailed
+    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case

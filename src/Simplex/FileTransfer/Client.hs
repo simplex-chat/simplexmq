@@ -4,11 +4,14 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Client where
 
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
@@ -20,6 +23,8 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time (UTCTime)
 import Data.Word (Word32)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
@@ -36,6 +41,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( BasicAuth,
@@ -44,12 +50,13 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (THandleParams (..), supportedParameters)
-import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost)
+import Simplex.Messaging.Transport (HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), supportedParameters)
+import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, whenM)
+import Simplex.Messaging.Util (bshow, liftEitherWith, liftError', tshow, whenM)
+import Simplex.Messaging.Version (compatibleVersion, pattern Compatible)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -61,7 +68,8 @@ data XFTPClient = XFTPClient
   }
 
 data XFTPClientConfig = XFTPClientConfig
-  { xftpNetworkConfig :: NetworkConfig
+  { xftpNetworkConfig :: NetworkConfig,
+    serverVRange :: VersionRangeXFTP
   }
 
 data XFTPChunkBody = XFTPChunkBody
@@ -82,12 +90,13 @@ type XFTPClientError = ProtocolClientError XFTPErrorType
 defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig =
   XFTPClientConfig
-    { xftpNetworkConfig = defaultNetworkConfig
+    { xftpNetworkConfig = defaultNetworkConfig,
+      serverVRange = supportedFileServerVRange
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig} disconnected = runExceptT $ do
-  let tcConfig = transportClientConfig xftpNetworkConfig
+getXFTPClient :: TVar ChaChaDRG -> TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
+  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1"]}
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
@@ -95,12 +104,49 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkC
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
-  http2Client <- withExceptT xftpClientError . ExceptT $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
-  let HTTP2Client {sessionId} = http2Client
-      thParams = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = currentXFTPVersion, thAuth = Nothing, implySessId = False, batch = True}
-      c = XFTPClient {http2Client, thParams, transportSession, config}
+  http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
+  let HTTP2Client {sessionId, sessionALPN} = http2Client
+      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
+  logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
+  thParams <- case sessionALPN of
+    Just "xftp/1" -> xftpClientHandshakeV1 g serverVRange keyHash http2Client thParams0
+    Nothing -> pure thParams0
+    _ -> throwError $ PCETransportError (TEHandshake VERSION)
+  let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c
   pure c
+
+xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP -> ExceptT XFTPClientError IO THandleParamsXFTP
+xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
+  shs <- getServerHandshake
+  (v, sk) <- processServerHandshake shs
+  (k, pk) <- atomically $ C.generateKeyPair g
+  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = k}
+  pure thParams0 {thAuth = Just THandleAuth {peerPubKey = sk, privKey = pk}, thVersion = v}
+  where
+    getServerHandshake = do
+      let helloReq = H.requestNoBody "POST" "/" []
+      HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
+        liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c helloReq Nothing
+      liftHS . smpDecode =<< liftHS (C.unPad shsBody)
+    processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
+      unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
+      case xftpVersionRange `compatibleVersion` serverVRange of
+        Nothing -> throwError $ PCEResponseError HANDSHAKE
+        Just (Compatible v) ->
+          fmap (v,) . liftHS $ do
+            let (X.CertificateChain cert, exact) = serverAuth
+            case cert of
+              [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
+              _ -> throwError "bad certificate"
+            pubKey <- C.verifyX509 serverKey exact
+            C.x509ToPublic (pubKey, []) >>= C.pubKey
+    sendClientHandshake chs = do
+      chs' <- liftHS $ C.pad (smpEncode chs) xftpBlockSize
+      let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
+      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c chsReq Nothing
+      unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
+    liftHS = liftEitherWith (const $ PCEResponseError HANDSHAKE)
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
@@ -195,8 +241,8 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let t = chunkTimeout config chunkSize
         ExceptT (sequence <$> (t `timeout` download cbState)) >>= maybe (throwError PCEResponseTimeout) pure
         where
-          download cbState = runExceptT $
-            withExceptT PCEResponseError $
+          download cbState =
+            runExceptT . withExceptT PCEResponseError $
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
                 whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE

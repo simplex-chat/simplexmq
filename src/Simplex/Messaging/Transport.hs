@@ -54,6 +54,7 @@ module Simplex.Messaging.Transport
     -- * TLS Transport
     TLS (..),
     SessionId,
+    ALPN,
     connectTLS,
     closeTLS,
     supportedParameters,
@@ -228,9 +229,12 @@ data TLS = TLS
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
+    tlsALPN :: Maybe ALPN,
     tlsServerCerts :: X.CertificateChain,
     tlsTransportConfig :: TransportConfig
   }
+
+type ALPN = ByteString
 
 connectTLS :: T.TLSParams p => Maybe HostName -> TransportConfig -> p -> Socket -> IO T.Context
 connectTLS host_ TransportConfig {logTLSErrors} params sock =
@@ -246,7 +250,8 @@ getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
-      pure TLS {tlsContext = cxt, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
+      tlsALPN <- T.getNegotiatedProtocol cxt
+      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =

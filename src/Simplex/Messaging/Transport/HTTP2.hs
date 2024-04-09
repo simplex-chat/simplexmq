@@ -16,15 +16,15 @@ import qualified Network.HTTP2.Server as HS
 import Network.Socket (SockAddr (..))
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
-import Simplex.Messaging.Transport (SessionId, TLS (tlsUniq), Transport (cGet, cPut))
+import Simplex.Messaging.Transport (TLS, Transport (cGet, cPut))
 import Simplex.Messaging.Transport.Buffer
 import qualified System.TimeManager as TI
 
 defaultHTTP2BufferSize :: BufferSize
 defaultHTTP2BufferSize = 32768
 
-withHTTP2 :: BufferSize -> (Config -> SessionId -> IO a) -> TLS -> IO a
-withHTTP2 sz run c = E.bracket (allocHTTP2Config c sz) freeSimpleConfig (`run` tlsUniq c)
+withHTTP2 :: BufferSize -> (Config -> IO a) -> IO () -> TLS -> IO a
+withHTTP2 sz run fin c = E.bracket (allocHTTP2Config c sz) (\cfg -> freeSimpleConfig cfg `E.finally` fin) run
 
 allocHTTP2Config :: TLS -> BufferSize -> IO Config
 allocHTTP2Config c sz = do
