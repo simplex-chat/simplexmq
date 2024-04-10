@@ -2368,10 +2368,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                     case L.nonEmpty keepSqs of
                       Just sqs' -> do
                         -- move inside case?
-                        withStore' c $ \db -> mapM_ (deleteConnSndQueue db connId) delSqs
                         sq_@SndQueue {sndPublicKey, e2ePubKey} <- lift $ newSndQueue userId connId qInfo
-                        let sq'' = (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-                        sq2 <- withStore c $ \db -> addConnSndQueue db connId sq''
+                        sq2 <- withStore c $ \db -> do
+                          liftIO $ mapM_ (deleteConnSndQueue db connId) delSqs
+                          addConnSndQueue db connId (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
                         case (sndPublicKey, e2ePubKey) of
                           (Just sndPubKey, Just dhPublicKey) -> do
                             logServer "<--" c srv rId $ "MSG <QADD>:" <> logSecret srvMsgId <> " " <> logSecret (senderId queueAddress)
