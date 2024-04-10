@@ -194,8 +194,8 @@ pqMatrix2_ pqInv _ smpTest test = do
 
 pqMatrix3 ::
   HasCallStack =>
-  TProxy c -> 
-  (HasCallStack => (c -> c -> c -> IO ()) -> Expectation) -> 
+  TProxy c ->
+  (HasCallStack => (c -> c -> c -> IO ()) -> Expectation) ->
   (HasCallStack => (c, InitialKeys) -> (c, PQSupport) -> (c, PQSupport) -> IO ()) ->
   Spec
 pqMatrix3 _ smpTest test = do
@@ -452,7 +452,7 @@ testServerConnectionAfterError t _ = do
   where
     server = SMPServer "localhost" testPort2 testKeyHash
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
-    withAgent1 = withAgent agentTestPort testDB 0 
+    withAgent1 = withAgent agentTestPort testDB 0
     withAgent2 = withAgent agentTestPort2 testDB2 10
     withAgent :: String -> FilePath -> Int -> (c -> IO a) -> IO a
     withAgent agentPort agentDB initClientId = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) initClientId (pure ()) . const . testSMPAgentClientOn agentPort
