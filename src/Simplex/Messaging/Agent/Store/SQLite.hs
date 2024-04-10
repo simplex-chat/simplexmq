@@ -398,8 +398,7 @@ connectDB path key = do
     prepare db = do
       let db' = SQL.connectionHandle $ DB.conn db
       let exec = SQLite3.exec db'
-      r <- extendedErrcode db'
-      print (path, r)
+      void $ extendedErrcode db'
       unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
       exec . fromQuery $
         [sql|
