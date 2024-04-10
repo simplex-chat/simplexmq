@@ -171,6 +171,9 @@ tests:
       - timeit == 2.0.*
     ghc-options:
       - -threaded
+      - -rtsopts
+      - -with-rtsopts=-A64M
+      - -with-rtsopts=-N1
 
 ghc-options:
   # - -haddock

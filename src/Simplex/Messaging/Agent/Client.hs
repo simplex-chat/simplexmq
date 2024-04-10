@@ -133,7 +133,7 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkIO, threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, throwSTM)
-import Control.Exception (AsyncException (..))
+import Control.Exception (AsyncException (..), BlockedIndefinitelyOnSTM (..))
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -790,7 +790,7 @@ closeClient c clientSel tSess =
 closeClient_ :: ProtocolServerClient v err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c v = do
   NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
-  tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
+  E.handle (\BlockedIndefinitelyOnSTM -> pure ()) $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
     Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
     _ -> pure ()
 

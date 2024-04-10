@@ -5,7 +5,7 @@
 
 module XFTPClient where
 
-import Control.Concurrent (ThreadId)
+import Control.Concurrent (ThreadId, threadDelay)
 import Data.String (fromString)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
@@ -53,7 +53,7 @@ withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => Thread
 withXFTPServerCfg cfg =
   serverBracket
     (`runXFTPServerBlocking` cfg)
-    (pure ())
+    (threadDelay 10000)
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig

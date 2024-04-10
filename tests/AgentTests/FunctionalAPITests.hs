@@ -67,6 +67,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
+import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
@@ -79,15 +80,15 @@ import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteS
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (TSMEntity, TSMUser), defaultSMPClientConfig)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern PQEncOn, pattern PQEncOff, pattern PQSupportOn, pattern PQSupportOff)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF, authBatchCmdsNTFVersion)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, authBatchCmdsNTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, batchCmdsSMPVersion, basicAuthSMPVersion, currentServerSMPRelayVersion)
+import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
@@ -116,20 +117,20 @@ withTimeout a test =
     Nothing -> error "operation timed out"
     Just t -> liftIO $ test t
 
-get :: MonadIO m => AgentClient -> m (AEntityTransmission 'AEConn)
-get = get' @'AEConn
+get :: (MonadIO m, HasCallStack) => AgentClient -> m (AEntityTransmission 'AEConn)
+get c = withFrozenCallStack $ get' @'AEConn c
 
-rfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AERcvFile)
-rfGet = get' @'AERcvFile
+rfGet :: (MonadIO m, HasCallStack) => AgentClient -> m (AEntityTransmission 'AERcvFile)
+rfGet c = withFrozenCallStack $ get' @'AERcvFile c
 
-sfGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AESndFile)
-sfGet = get' @'AESndFile
+sfGet :: (MonadIO m, HasCallStack) => AgentClient -> m (AEntityTransmission 'AESndFile)
+sfGet c = withFrozenCallStack $ get' @'AESndFile c
 
-nGet :: MonadIO m => AgentClient -> m (AEntityTransmission 'AENone)
-nGet = get' @'AENone
+nGet :: (MonadIO m, HasCallStack) => AgentClient -> m (AEntityTransmission 'AENone)
+nGet c = withFrozenCallStack $ get' @'AENone c
 
-get' :: forall e m. (MonadIO m, AEntityI e) => AgentClient -> m (AEntityTransmission e)
-get' c = do
+get' :: forall e m. (MonadIO m, AEntityI e, HasCallStack) => AgentClient -> m (AEntityTransmission e)
+get' c = withFrozenCallStack $ do
   (corrId, connId, APC e cmd) <- pGet c
   case testEquality e (sAEntity @e) of
     Just Refl -> pure (corrId, connId, cmd)
@@ -222,11 +223,11 @@ runRight action =
     Left e -> error $ "Unexpected error: " <> show e
 
 getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission 'Agent -> Bool] -> Expectation
-getInAnyOrder c = inAnyOrder (pGet c)
+getInAnyOrder c ts = withFrozenCallStack $ inAnyOrder (pGet c) ts
 
 inAnyOrder :: (Show a, MonadIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
 inAnyOrder _ [] = pure ()
-inAnyOrder g rs = do
+inAnyOrder g rs = withFrozenCallStack $ do
   r <- g
   let rest = filter (not . expected r) rs
   if length rest < length rs
@@ -283,7 +284,7 @@ functionalAPITests t = do
         testIncreaseConnAgentVersionMaxCompatible t
       it "should increase when connection was negotiated on different versions" $
         testIncreaseConnAgentVersionStartDifferentVersion t
-      -- TODO PQ tests for upgrading connection to PQ encryption
+    -- TODO PQ tests for upgrading connection to PQ encryption
     it "should deliver message after client restart" $
       testDeliverClientRestart t
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
@@ -443,7 +444,7 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
 
 testMatrix2 :: ATransport -> (PQSupport -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn 
+  it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn
   it "v7 to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 $ runTest PQSupportOn
   it "current to v7" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 $ runTest PQSupportOn
   it "current with v7 server" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQSupportOn
@@ -454,10 +455,10 @@ testMatrix2 t runTest = do
 
 testRatchetMatrix2 :: ATransport -> (PQSupport -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
-  it "ratchet next" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn 
-  it "ratchet next to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 $ runTest PQSupportOn 
-  it "ratchet current to next" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 $ runTest PQSupportOn 
-  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQSupportOn 
+  it "ratchet next" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn
+  it "ratchet next to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 $ runTest PQSupportOn
+  it "ratchet current to next" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 $ runTest PQSupportOn
+  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQSupportOn
   it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 $ runTest PQSupportOff
   it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 $ runTest PQSupportOff
   it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 $ runTest PQSupportOff
@@ -532,7 +533,7 @@ runAgentClientTest pqSupport alice@AgentClient {} bob baseId =
 testEnablePQEncryption :: HasCallStack => IO ()
 testEnablePQEncryption =
   withAgentClients2 $ \ca cb -> runRight_ $ do
-    g <- liftIO C.newRandom  
+    g <- liftIO C.newRandom
     (aId, bId) <- makeConnection_ PQSupportOff ca cb
     let a = (ca, aId)
         b = (cb, bId)
@@ -1673,6 +1674,7 @@ testDeleteConnectionAsync t =
       pure ([bId1, bId2, bId3] :: [ConnId])
     runRight_ $ do
       deleteConnectionsAsync a False connIds
+      nGet a =##> \case ("", "", DOWN {}) -> True; _ -> False
       get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
       get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
       get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
@@ -2167,6 +2169,7 @@ testAbortSwitchStartedReinitiate servers = do
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    liftIO $ threadDelay 1000000
     liftIO . getInAnyOrder b $
       [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
         switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing]
