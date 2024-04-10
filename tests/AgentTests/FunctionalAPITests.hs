@@ -104,13 +104,13 @@ type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 (##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
 a ##> t = withTimeout a (`shouldBe` t)
 
-(=##>) :: (Show a, HasCallStack, MonadUnliftIO m) => m a -> (a -> Bool) -> m ()
+(=##>) :: (Show a, HasCallStack, MonadUnliftIO m) => m a -> (HasCallStack => a -> Bool) -> m ()
 a =##> p =
   withTimeout a $ \r -> do
     unless (p r) $ liftIO $ putStrLn $ "value failed predicate: " <> show r
     r `shouldSatisfy` p
 
-withTimeout :: (HasCallStack, MonadUnliftIO m) => m a -> (a -> Expectation) -> m ()
+withTimeout :: (HasCallStack, MonadUnliftIO m) => m a -> (HasCallStack => a -> Expectation) -> m ()
 withTimeout a test =
   timeout 10_000000 a >>= \case
     Nothing -> error "operation timed out"
@@ -1100,7 +1100,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
     ackMessage b' aId 6 Nothing
   disposeAgentClient a
 
-testExpireManyMessagesQuota :: HasCallStack => ATransport -> IO ()
+testExpireManyMessagesQuota :: ATransport -> IO ()
 testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
@@ -1115,7 +1115,15 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     liftIO $ threadDelay 1000000
     8 <- sendMessage a bId SMP.noMsgFlags "5" -- this won't expire
     get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
-    get a =##> \case ("", c, MERRS [6, 7] (SMP QUOTA)) -> bId == c; _ -> False
+    get a >>= \case
+      ("", c, MERR 6 (SMP QUOTA)) -> do
+        liftIO $ bId `shouldBe` c
+        get a =##> \case ("", c', MERR 7 (SMP QUOTA)) -> bId == c'; ("", c', MERRS [7] (SMP QUOTA)) -> bId == c'; _ -> False
+      ("", c, MERRS [6] (SMP QUOTA)) -> do
+        liftIO $ bId `shouldBe` c
+        get a =##> \case ("", c', MERR 7 (SMP QUOTA)) -> bId == c'; _ -> False
+      ("", c, MERRS [6, 7] (SMP QUOTA)) -> liftIO $ bId `shouldBe` c
+      r -> error $ show r
     pure (aId, bId)
   withAgent 3 agentCfg initAgentServers testDB2 $ \b' -> runRight_ $ do
     subscribeConnection b' aId
