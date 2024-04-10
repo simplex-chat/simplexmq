@@ -160,13 +160,13 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
                 <> "\n\n\
                    \[WEB]\n\
-                   \# Set path to generate static mini-site for server information and qr codes/links\
-                   \site_path: /tmp/smp-server-web\n\
+                   \# Set path to generate static mini-site for server information and qr codes/links\n\
+                   \static_path: /tmp/smp-server-web\n\n\
                    \# Uncomment to run an embedded server on this port\n\
-                   \# Onion sites can use any port and register it in the hidden service config.\
-                   \# http: 80\n\
-                   \# You can run an embedded TLS web server too if you provide port and cert and key files.\
-                   \# Not required for running TOR-only relay.\
+                   \# Onion sites can use any port and register it in the hidden service config.\n\
+                   \# http: 80\n\n\
+                   \# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
+                   \# Not required for running TOR-only relay.\n\
                    \# https: 443\n"
                 <> ("# cert: " <> T.pack httpsCertFile <> "\n")
                 <> ("# key: " <> T.pack httpsKeyFile <> "\n")
