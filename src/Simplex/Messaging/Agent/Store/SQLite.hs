@@ -254,6 +254,7 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
+import Database.SQLite3.Direct (extendedErrcode)
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
@@ -395,7 +396,10 @@ connectDB path key = do
   pure db
   where
     prepare db = do
-      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
+      let db' = SQL.connectionHandle $ DB.conn db
+      let exec = SQLite3.exec db'
+      r <- extendedErrcode db'
+      print (path, r)
       unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
       exec . fromQuery $
         [sql|
@@ -1214,7 +1218,7 @@ setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
     db
     [sql|
       UPDATE ratchets
-      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?, pq_priv_kem = ? 
+      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?, pq_priv_kem = ?
       WHERE conn_id = ?
     |]
     (x3dhPrivKey1, x3dhPrivKey2, C.publicKey x3dhPrivKey1, C.publicKey x3dhPrivKey2, pqPrivKem, connId)
