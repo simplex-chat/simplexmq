@@ -395,8 +395,7 @@ connectDB path key = do
   pure db
   where
     prepare db = do
-      let db' = SQL.connectionHandle $ DB.conn db
-      let exec = SQLite3.exec db'
+      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
       unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
       exec . fromQuery $
         [sql|
