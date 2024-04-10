@@ -26,6 +26,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS (tlsALPN), getServerCerts, getServerVerifyKey, tlsUniq)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
+import Simplex.Messaging.Util (eitherToMaybe)
 import UnliftIO.STM
 import UnliftIO.Timeout
 import qualified Data.X509 as X
@@ -34,7 +35,7 @@ data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),
     sessionId :: SessionId,
     sessionALPN :: Maybe ALPN,
-    serverKey :: C.APublicVerifyKey,
+    serverKey :: Maybe C.APublicVerifyKey, -- may not always be a key we control (i.e. APNS with apple-mandated key types)
     serverCerts :: X.CertificateChain,
     sessionTs :: UTCTime,
     sendReq :: Request -> (Response -> IO HTTP2Response) -> IO HTTP2Response,
@@ -109,10 +110,10 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
       cVar <- newEmptyTMVarIO
       action <- async $ setup (client c cVar) `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
       c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
-      pure $ case c_ of
-        Just (Right c') -> Right c' {action = Just action}
-        Just (Left e) -> Left e
-        Nothing -> Left HCNetworkError
+      case c_ of
+        Just (Right c') -> pure $ Right c' {action = Just action}
+        Just (Left e) -> pure $ Left e
+        Nothing -> cancel action $> Left HCNetworkError
 
     client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS -> H.Client HTTP2Response
     client c cVar tls sendReq = do
@@ -121,7 +122,7 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
             HTTP2Client
               { action = Nothing,
                 client_ = c,
-                serverKey = either (error "assert: TLS has server chain and key") id $ getServerVerifyKey tls,
+                serverKey = eitherToMaybe $ getServerVerifyKey tls,
                 serverCerts = getServerCerts tls,
                 sendReq,
                 sessionTs,
