@@ -456,18 +456,20 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
-        Just path -> do
-          g <- asks random
-          (sDhKey, spDhKey) <- atomically $ C.generateKeyPair g
-          let dhSecret = C.dh' rDhKey spDhKey
-          cbNonce <- atomically $ C.randomCbNonce g
-          case LC.cbInit dhSecret cbNonce of
-            Right sbState -> do
-              stats <- asks serverStats
-              atomically $ modifyTVar' (fileDownloads stats) (+ 1)
-              atomically $ updatePeriodStats (filesDownloaded stats) senderId
-              pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
-            _ -> pure (FRErr INTERNAL, Nothing)
+        Just path -> ifM (doesFileExist path) sendFile (pure (FRErr AUTH, Nothing))
+          where
+            sendFile = do
+              g <- asks random
+              (sDhKey, spDhKey) <- atomically $ C.generateKeyPair g
+              let dhSecret = C.dh' rDhKey spDhKey
+              cbNonce <- atomically $ C.randomCbNonce g
+              case LC.cbInit dhSecret cbNonce of
+                Right sbState -> do
+                  stats <- asks serverStats
+                  atomically $ modifyTVar' (fileDownloads stats) (+ 1)
+                  atomically $ updatePeriodStats (filesDownloaded stats) senderId
+                  pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
+                _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)
 
     deleteServerFile :: FileRec -> M FileResponse
