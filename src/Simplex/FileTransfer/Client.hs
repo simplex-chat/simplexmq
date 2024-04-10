@@ -130,7 +130,7 @@ xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessi
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
-        liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c helloReq Nothing
+        liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c helloReq Nothing
       liftHS . smpDecode =<< liftHS (C.unPad shsBody)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
       unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
@@ -147,7 +147,7 @@ xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessi
     sendClientHandshake chs = do
       chs' <- liftHS $ C.pad (smpEncode chs) xftpBlockSize
       let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
-      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequestDirect c chsReq Nothing
+      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c chsReq Nothing
       unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
     liftHS = liftEitherWith (const $ PCEResponseError HANDSHAKE)
 
