@@ -27,7 +27,6 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
-import Simplex.FileTransfer.Description (mb)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
@@ -70,7 +69,6 @@ data XFTPClient = XFTPClient
 
 data XFTPClientConfig = XFTPClientConfig
   { xftpNetworkConfig :: NetworkConfig,
-    uploadTimeoutPerMb :: Int64,
     serverVRange :: VersionRangeXFTP
   }
 
@@ -93,7 +91,6 @@ defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig =
   XFTPClientConfig
     { xftpNetworkConfig = defaultNetworkConfig,
-      uploadTimeoutPerMb = 10000000, -- 10 seconds
       serverVRange = supportedFileServerVRange
     }
 
@@ -190,8 +187,8 @@ sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
 sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = do
   let req = H.requestStreaming N.methodPost "/" [] streamBody
-      reqTimeout = (\XFTPChunkSpec {chunkSize} -> chunkTimeout config chunkSize) <$> chunkSpec_
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req reqTimeout
+      reqTimeout = xftpReqTimeout config $ (\XFTPChunkSpec {chunkSize} -> chunkSize) <$> chunkSpec_
+  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req (Just reqTimeout)
   when (B.length bodyHead /= xftpBlockSize) $ throwError $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
   (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission thParams bodyHead
@@ -251,8 +248,13 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
       _ -> throwError $ PCEResponseError NO_FILE
     (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
 
+xftpReqTimeout :: XFTPClientConfig -> Maybe Word32 -> Int
+xftpReqTimeout cfg@XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpTimeout}} chunkSize_ =
+  maybe tcpTimeout (chunkTimeout cfg) chunkSize_
+
 chunkTimeout :: XFTPClientConfig -> Word32 -> Int
-chunkTimeout config chunkSize = fromIntegral $ (fromIntegral chunkSize * uploadTimeoutPerMb config) `div` mb 1
+chunkTimeout XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpTimeout, tcpTimeoutPerKb}} sz =
+  tcpTimeout + fromIntegral (min ((fromIntegral sz `div` 1024) * tcpTimeoutPerKb) (fromIntegral (maxBound :: Int)))
 
 deleteXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> SenderId -> ExceptT XFTPClientError IO ()
 deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse
