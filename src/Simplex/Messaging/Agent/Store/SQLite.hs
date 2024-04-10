@@ -254,7 +254,6 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Database.SQLite3 as SQLite3
-import Database.SQLite3.Direct (extendedErrcode)
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
@@ -398,7 +397,6 @@ connectDB path key = do
     prepare db = do
       let db' = SQL.connectionHandle $ DB.conn db
       let exec = SQLite3.exec db'
-      void $ extendedErrcode db'
       unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
       exec . fromQuery $
         [sql|
