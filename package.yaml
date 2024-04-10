@@ -172,6 +172,9 @@ tests:
     ghc-options:
       - -threaded
       - -rtsopts
+      - -with-rtsopts=-A64M
+      - -with-rtsopts=-N1
+      - -with-rtsopts=-s
 
 ghc-options:
   # - -haddock
