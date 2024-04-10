@@ -543,8 +543,9 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
 
         runRight_ . void $ do
           -- receive file 1 again
-          -- TODO should fail with AUTH error
-          _rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
+          rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
+          ("", rfId1', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
+          liftIO $ rfId1 `shouldBe`  rfId1'
 
           -- receive file 2
           testReceive' rcp rfd2 filePath2
