@@ -142,7 +142,7 @@ xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessi
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
               _ -> throwError "bad certificate"
-            pubKey <- C.verifyX509 serverKey exact
+            pubKey <- maybe (throwError "bad server key type") (`C.verifyX509` exact) serverKey
             C.x509ToPublic (pubKey, []) >>= C.pubKey
     sendClientHandshake chs = do
       chs' <- liftHS $ C.pad (smpEncode chs) xftpBlockSize

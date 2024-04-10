@@ -26,6 +26,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS (tlsALPN), getServerCerts, getServerVerifyKey, tlsUniq)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
+import Simplex.Messaging.Util (eitherToMaybe)
 import UnliftIO.STM
 import UnliftIO.Timeout
 import qualified Data.X509 as X
@@ -34,7 +35,7 @@ data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),
     sessionId :: SessionId,
     sessionALPN :: Maybe ALPN,
-    serverKey :: C.APublicVerifyKey,
+    serverKey :: Maybe C.APublicVerifyKey, -- may not always be a key we control (i.e. APNS with apple-mandated key types)
     serverCerts :: X.CertificateChain,
     sessionTs :: UTCTime,
     sendReq :: Request -> (Response -> IO HTTP2Response) -> IO HTTP2Response,
@@ -121,7 +122,7 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
             HTTP2Client
               { action = Nothing,
                 client_ = c,
-                serverKey = either (error "assert: TLS has server chain and key") id $ getServerVerifyKey tls,
+                serverKey = eitherToMaybe $ getServerVerifyKey tls,
                 serverCerts = getServerCerts tls,
                 sendReq,
                 sessionTs,
