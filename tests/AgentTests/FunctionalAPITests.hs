@@ -2169,7 +2169,6 @@ testAbortSwitchStartedReinitiate servers = do
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
   withB' $ \b -> do
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-    liftIO $ threadDelay 1000000
     liftIO . getInAnyOrder b $
       [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
         switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing]
