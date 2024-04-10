@@ -338,11 +338,9 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
 
 testRunNTFServerTests :: ATransport -> NtfServer -> IO (Maybe ProtocolTestFailure)
 testRunNTFServerTests t srv =
-  withNtfServerThreadOn t ntfTestPort $ \ntf ->
-    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-      r <- testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
-      killThread ntf
-      pure r
+  withNtfServerOn t ntfTestPort $
+    withAgent 1 agentCfg initAgentServers testDB $ \a ->
+      testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentClient -> AgentClient -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@AgentClient {agentEnv = Env {config = aliceCfg}} bob = do
