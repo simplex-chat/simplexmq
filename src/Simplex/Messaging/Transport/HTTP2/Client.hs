@@ -109,10 +109,10 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
       cVar <- newEmptyTMVarIO
       action <- async $ setup (client c cVar) `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
       c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
-      pure $ case c_ of
-        Just (Right c') -> Right c' {action = Just action}
-        Just (Left e) -> Left e
-        Nothing -> Left HCNetworkError
+      case c_ of
+        Just (Right c') -> pure $ Right c' {action = Just action}
+        Just (Left e) -> pure $ Left e
+        Nothing -> cancel action $> Left HCNetworkError
 
     client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS -> H.Client HTTP2Response
     client c cVar tls sendReq = do
