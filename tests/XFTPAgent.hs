@@ -237,18 +237,16 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
       B.readFile out `shouldReturn` inBytes
 
 testXFTPAgentSendReceiveMatrix :: Spec
-testXFTPAgentSendReceiveMatrix = forM_ matrix $ \(label, sender, server, receiver) -> it label $ run sender server receiver
+testXFTPAgentSendReceiveMatrix = do
+  it "new clients, old server" $ run newClient oldServer newClient
+  it "old clients, new server" $ run oldClient newServer oldClient
+  it "new sender, old recipient" $ run newClient newServer newClient
+  it "old sender, new recipient" $ run oldClient newServer newClient
   where
-    matrix = do
-      (lSnd, sender) <- [oldClient, newClient]
-      (lSrv, server) <- [oldServer, newServer]
-      (lRcv, receiver) <- [oldClient, newClient]
-      let label = lSnd <> "-" <> lSrv <> "-" <> lRcv
-      pure (label, sender, server, receiver)
-    oldClient = ("oc", agentCfg {xftpCfg = (xftpCfg agentCfg) {clientALPN = Nothing}})
-    newClient = ("nc", agentCfg)
-    oldServer = ("os", testXFTPServerConfig_ Nothing)
-    newServer = ("ns", testXFTPServerConfig)
+    oldClient = agentCfg {xftpCfg = (xftpCfg agentCfg) {clientALPN = Nothing}}
+    newClient = agentCfg
+    oldServer = testXFTPServerConfig_ Nothing
+    newServer = testXFTPServerConfig
     run :: HasCallStack => AgentConfig -> XFTPServerConfig -> AgentConfig -> IO ()
     run sender server receiver =
       withXFTPServerCfg server $ \_t -> do
@@ -259,7 +257,6 @@ testXFTPAgentSendReceiveMatrix = forM_ matrix $ \(label, sender, server, receive
         withAgent 2 receiver initAgentServers testDB2 $ \rcp -> do
           rfId <- runRight $ testReceive rcp rfd filePath
           xftpDeleteRcvFile rcp rfId
-        logWarn "done"
 
 createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = createRandomFile' "testfile"
